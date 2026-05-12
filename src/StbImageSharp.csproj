@@ -1,17 +1,42 @@
 <Project Sdk="Microsoft.NET.Sdk">
-    <PropertyGroup>
-        <Authors>StbImageSharpTeam</Authors>
-        <Product>StbImageSharp</Product>
-        <PackageId>StbImageSharp</PackageId>
-        <TargetFrameworks>netstandard2.0;net471</TargetFrameworks>
-        <Description>C# port of the stb_image.h</Description>
-        <PackageLicenseUrl>Public Domain</PackageLicenseUrl>
-        <PackageProjectUrl>https://github.com/StbSharp/StbImageSharp</PackageProjectUrl>
-        <Version>2.30.15</Version>
-        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    </PropertyGroup>
 
-    <PropertyGroup Condition="'$(Configuration)'=='Release'">
-        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    </PropertyGroup>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+    <!-- Versioning is driven by the CI workflow (VERSION_PREFIX env). 2.30 keeps
+         feature-version parity with the upstream StbSharp/StbImageSharp 2.30.x
+         release line; the .x patch / build number comes from github.run_number. -->
+    <VersionPrefix>2.30.0</VersionPrefix>
+    <AssemblyVersion>2.30.0.0</AssemblyVersion>
+
+    <PackageId>SharpAstro.StbImage</PackageId>
+    <Product>SharpAstro.StbImage</Product>
+    <Authors>SharpAstro (port of StbSharp/StbImageSharp by Roman Shapiro et al.)</Authors>
+    <Description>SharpAstro fork of StbImageSharp — pure-managed C# port of stb_image.h. Decodes JPG (baseline), PNG, BMP, TGA, PSD, GIF, HDR. AOT-compatible, no native binaries.</Description>
+    <PackageTags>image png jpeg bmp gif tga psd hdr decoder stb aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../UNLICENSE" Pack="true" PackagePath="/" />
+    <None Include="../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
 </Project>
