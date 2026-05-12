@@ -276,7 +276,16 @@ namespace StbImageSharp
 
             var br = new BitReader(jpeg, pos);
             int mcusUntilRestart = restartInterval; // 0 means "no restart"
-            var firstSampleOfScan = true;
+            // Per T.81 H.1.2.1: the first sample of EACH component in the scan
+            // uses the default predictor (1 << (P - Pt - 1)) — not just the
+            // first sample of the first component. Track per-component so all
+            // chains start from defaultPred. Same semantics applies after every
+            // restart marker (H.1.2.2). Treating this as a single global flag
+            // (the prior implementation) only seeded comp 0's chain correctly;
+            // comp 1+ would fall through to prevRow[i][0] = 0 on their first
+            // sample, encoding all subsequent values offset by -defaultPred.
+            Span<bool> firstSampleOfComponent = ns <= 16 ? stackalloc bool[ns] : new bool[ns];
+            firstSampleOfComponent.Fill(true);
 
             // Pull per-scan Huffman table references once.
             var dcTables = new HuffmanTable[ns];
@@ -303,11 +312,12 @@ namespace StbImageSharp
                     for (var i = 0; i < ns; i++)
                     {
                         int predictor;
-                        if (firstSampleOfScan)
+                        if (firstSampleOfComponent[i])
                         {
-                            // T.81 H.1.2.1: very first sample of scan / after-restart uses default.
+                            // T.81 H.1.2.1: first sample of THIS component (scan start or
+                            // after restart) uses the default predictor.
                             predictor = defaultPred;
-                            firstSampleOfScan = false;
+                            firstSampleOfComponent[i] = false;
                         }
                         else if (col == 0)
                         {
@@ -362,7 +372,7 @@ namespace StbImageSharp
                             // already-decoded neighbours.
                             br.ExpectRestartMarker();
                             mcusUntilRestart = restartInterval;
-                            firstSampleOfScan = true;
+                            firstSampleOfComponent.Fill(true);
                         }
                     }
                 }
