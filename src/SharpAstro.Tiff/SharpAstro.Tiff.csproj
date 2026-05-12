@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+    <VersionPrefix>2.30.0</VersionPrefix>
+    <AssemblyVersion>2.30.0.0</AssemblyVersion>
+
+    <PackageId>SharpAstro.Tiff</PackageId>
+    <Product>SharpAstro.Tiff</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>Pure-managed TIFF reader/writer for .NET. Supports multi-page, 8/16/32-bit uint and IEEE-Float samples, Uncompressed/Deflate/ZlibPkzip, contig planar config, SampleFormat/SMin/SMax/ICC round-trip, both II and MM byte order. AOT-compatible.</Description>
+    <PackageTags>tiff image codec aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../UNLICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- PngDeflateSource accepts PNG input and unfilters rows via SharpAstro.Png's
+         PngPredictor — semantic dep: "TIFF that accepts PNG sources needs to know
+         PNG row prediction". Other TIFF code paths don't touch PNG. -->
+    <ProjectReference Include="..\SharpAstro.Png\SharpAstro.Png.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+    <InternalsVisibleTo Include="SharpAstro.Exif" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

@@ -9,6 +9,6 @@
   </ItemGroup>
   
   <ItemGroup>
-    <ProjectReference Include="..\..\src\StbImageSharp.csproj" />
+    <ProjectReference Include="..\..\src\StbImageSharp\StbImageSharp.csproj" />
   </ItemGroup>
 </Project>

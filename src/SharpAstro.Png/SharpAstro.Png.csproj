@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+    <VersionPrefix>2.30.0</VersionPrefix>
+    <AssemblyVersion>2.30.0.0</AssemblyVersion>
+
+    <PackageId>SharpAstro.Png</PackageId>
+    <Product>SharpAstro.Png</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>Pure-managed PNG writer for .NET. Adaptive per-row filter selection (libpng "minimum sum of absolute values" heuristic), 8/16-bit RGBA/Gray, iCCP chunk for ICC profiles, eXIf chunk for embedded EXIF, sRGB chunk. Also exports PngPredictor for callers that need row unfilter outside PNG decode (TIFF Predictor=2 / PDF FlateDecode).</Description>
+    <PackageTags>png image codec writer encoder aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../UNLICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

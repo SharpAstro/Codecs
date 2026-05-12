@@ -7,7 +7,7 @@
 	<PackageReference Include="SixLabors.ImageSharp" Version="3.1.5" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\StbImageSharp.csproj" />
+    <ProjectReference Include="..\..\src\StbImageSharp\StbImageSharp.csproj" />
     <ProjectReference Include="..\Stb.Native\Stb.Native.vcxproj" />
   </ItemGroup>
 </Project>
