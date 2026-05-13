@@ -48,8 +48,13 @@ public sealed record TiffPageOptions
     /// <summary>Rows per strip. 0 = entire image as one strip. Only used when Layout=Strip.</summary>
     public int RowsPerStrip { get; init; } = 0;
 
-    /// <summary>Raw ICC profile bytes (tag 34675). Null = no profile embedded.</summary>
-    public byte[]? IccProfile { get; init; }
+    /// <summary>
+    /// Raw ICC profile bytes (tag 34675). Empty (the default) = no profile embedded.
+    /// Accepts <see cref="ReadOnlyMemory{T}"/> so callers can pass bundled blobs like
+    /// <c>SharpAstro.Color.Icc.IccProfiles.SRgbV4</c> without an explicit copy at the
+    /// call site — the writer internalises the bytes once at the API boundary.
+    /// </summary>
+    public ReadOnlyMemory<byte> IccProfile { get; init; }
 
     public static TiffPageOptions Default { get; } = new();
 }

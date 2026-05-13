@@ -7,8 +7,8 @@
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
-    <VersionPrefix>2.30.0</VersionPrefix>
-    <AssemblyVersion>2.30.0.0</AssemblyVersion>
+    <VersionPrefix>3.0.0</VersionPrefix>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Color.Icc</PackageId>
     <Product>SharpAstro.Color.Icc</Product>

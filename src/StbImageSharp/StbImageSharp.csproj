@@ -7,11 +7,12 @@
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
-    <!-- Versioning is driven by the CI workflow (VERSION_PREFIX env). 2.30 keeps
-         feature-version parity with the upstream StbSharp/StbImageSharp 2.30.x
-         release line; the .x patch / build number comes from github.run_number. -->
-    <VersionPrefix>2.30.0</VersionPrefix>
-    <AssemblyVersion>2.30.0.0</AssemblyVersion>
+    <!-- Versioning is driven by the CI workflow (VERSION_PREFIX env). All packages
+         in this repo (StbImageSharp port + SharpAstro.* codec family) ship in
+         lockstep with a shared run-number patch. Bumped from 2.30 -> 3.0 alongside
+         the SharpAstro.Tiff IccProfile API break. -->
+    <VersionPrefix>3.0.0</VersionPrefix>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.StbImage</PackageId>
     <Product>SharpAstro.StbImage</Product>

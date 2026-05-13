@@ -124,7 +124,7 @@ public sealed class TiffReaderRoundTripTests
         var pixels = new byte[width * height * 3]; // uint8 RGB
         for (var i = 0; i < pixels.Length; i++) pixels[i] = (byte)(i * 17);
 
-        var profile = IccProfiles.SRgbV4.ToArray();
+        var profile = IccProfiles.SRgbV4;
         var tiff = await WriteSinglePageAsync(pixels, width, height, new TiffPageOptions
         {
             SamplesPerPixel = 3,
@@ -137,7 +137,7 @@ public sealed class TiffReaderRoundTripTests
 
         var page = TiffReader.Read(tiff).Pages[0];
         page.IccProfile.ShouldNotBeNull();
-        page.IccProfile!.ShouldBe(profile);
+        profile.Span.SequenceEqual(page.IccProfile).ShouldBeTrue();
         page.Pixels.ShouldBe(pixels);
     }
 

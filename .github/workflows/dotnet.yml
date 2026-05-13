@@ -8,10 +8,11 @@ on:
   workflow_dispatch:
 
 env:
-  # Feature-version 2.30 matches the upstream StbSharp/StbImageSharp 2.30.x
-  # release line; build numbers come from CI run sequence so every push to main
-  # gets a monotonically-increasing patch version.
-  VERSION_PREFIX: 2.30.${{ github.run_number }}
+  # Lockstep version: every package in this repo (StbImageSharp port + the
+  # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg family) ships at the
+  # same Major.Minor and a shared run-number patch. Bumped from 2.30 -> 3.0
+  # with the SharpAstro.Tiff IccProfile API break (byte[]? -> ReadOnlyMemory<byte>).
+  VERSION_PREFIX: 3.0.${{ github.run_number }}
   VERSION_REV: ${{ github.run_attempt }}
   VERSION_HASH: +${{ github.sha }}
   BUILD_CONF: Release

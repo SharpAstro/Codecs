@@ -4,18 +4,17 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
     <VersionPrefix>3.0.0</VersionPrefix>
     <AssemblyVersion>3.0.0.0</AssemblyVersion>
 
-    <PackageId>SharpAstro.Png</PackageId>
-    <Product>SharpAstro.Png</Product>
+    <PackageId>SharpAstro.Jpeg</PackageId>
+    <Product>SharpAstro.Jpeg</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed PNG writer for .NET. Adaptive per-row filter selection (libpng "minimum sum of absolute values" heuristic), 8/16-bit RGBA/Gray, iCCP chunk for ICC profiles, eXIf chunk for embedded EXIF, sRGB chunk. Also exports PngPredictor for callers that need row unfilter outside PNG decode (TIFF Predictor=2 / PDF FlateDecode).</Description>
-    <PackageTags>png image codec writer encoder aot</PackageTags>
+    <Description>Pure-managed JPEG helpers for .NET. Currently exposes JpegIccInjector — inject an ICC profile (APP2 segment) into an existing JPEG byte stream produced by any encoder. AOT-compatible, single-segment ICC only (up to 65519-byte profiles).</Description>
+    <PackageTags>jpeg icc color profile aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>

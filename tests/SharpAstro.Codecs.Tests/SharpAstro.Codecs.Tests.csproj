@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\SharpAstro.Exif\SharpAstro.Exif.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Png\SharpAstro.Png.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Color.Icc\SharpAstro.Color.Icc.csproj" />
+    <ProjectReference Include="..\..\src\SharpAstro.Jpeg\SharpAstro.Jpeg.csproj" />
   </ItemGroup>
 
   <ItemGroup>

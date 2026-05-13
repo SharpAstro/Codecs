@@ -144,8 +144,8 @@ public sealed class TiffWriter : IAsyncDisposable
             ifd.SetAscii(TiffTag.Artist, options.Artist);
         if (!string.IsNullOrEmpty(options.Software))
             ifd.SetAscii(TiffTag.Software, options.Software);
-        if (options.IccProfile is { Length: > 0 })
-            ifd.SetUndefined(TiffTag.IccProfile, options.IccProfile);
+        if (!options.IccProfile.IsEmpty)
+            ifd.SetUndefined(TiffTag.IccProfile, options.IccProfile.ToArray());
 
         return ifd;
     }
