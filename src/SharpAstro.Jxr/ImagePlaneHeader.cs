@@ -141,6 +141,11 @@ public sealed class ImagePlaneHeader
             reader.SkipBits(4); // RESERVED_F
         }
 
+        // NumComponents is bitstream-encoded only for NComponent; for the named
+        // formats it's implied by InternalClrFmt — derive it so downstream code
+        // (e.g. MbDc.DecodeMb's VAL_DC_YUV path) sees the correct component count.
+        h.NumComponents = ComponentCountFor(h.InternalClrFmt);
+
         if (h.InternalClrFmt == JxrInternalColorFormat.NComponent)
         {
             var numMinus1 = (int)reader.ReadBits(4);
@@ -211,4 +216,21 @@ public sealed class ImagePlaneHeader
         var slack = (8 - (reader.BitPosition & 7)) & 7;
         if (slack > 0) reader.SkipBits(slack);
     }
+
+    /// <summary>
+    /// Component count implied by <paramref name="fmt"/>. For NComponent the
+    /// real count lives in the bitstream and overrides this default.
+    /// </summary>
+    public static int ComponentCountFor(JxrInternalColorFormat fmt) => fmt switch
+    {
+        JxrInternalColorFormat.YOnly      => 1,
+        JxrInternalColorFormat.YUV420     => 3,
+        JxrInternalColorFormat.YUV422     => 3,
+        JxrInternalColorFormat.YUV444     => 3,
+        JxrInternalColorFormat.YUVK       => 4,
+        JxrInternalColorFormat.Rgb        => 3,
+        JxrInternalColorFormat.Rgbe       => 4,
+        JxrInternalColorFormat.NComponent => 1, // placeholder; real value comes from bitstream
+        _ => throw new ArgumentOutOfRangeException(nameof(fmt), fmt, "unknown internal colour format"),
+    };
 }
