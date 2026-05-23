@@ -111,9 +111,10 @@ public static class TileSpatial
                 {
                     MbCbphp.DecodeMb(ref reader, cbphpState!, numComponents, cbphpBuf!);
                     mb.Hp = new int[numComponents * 256];
-                    // Note: mb.MbHpMode is supplied by the caller-side state machine
-                    // (derived from LP coefficients); for this orchestrator we default
-                    // to mode 0 (horizontal scan) — same value the encoder used.
+                    // mbHpMode must match the encoder's choice. T.832 derives it from
+                    // the just-decoded LP coefficients of this MB — same input both
+                    // sides see, so the choice matches.
+                    mb.MbHpMode = DeriveMbHpMode(mb.Lp, format, numComponents);
                     MbHp.DecodeMb(ref reader, hpState!, mb.MbHpMode, format, numComponents, cbphpBuf!, mb.Hp);
                 }
                 mbs[row * widthInMb + col] = mb;
@@ -154,6 +155,50 @@ public static class TileSpatial
                     nameof(mbs));
         }
     }
+
+    /// <summary>
+    /// Derive mbHpMode from a just-decoded MB's LP coefficients — T.832 §9.6.3.2 /
+    /// Table 135. Same input/output as <see cref="HpPrediction.CalcMode"/>, but
+    /// works on the flat per-MB array directly so we don't need to allocate a
+    /// singleton 4D buffer on the decode path.
+    /// </summary>
+    private static int DeriveMbHpMode(int[] mbLp, JxrInternalColorFormat format, int numComponents)
+    {
+        // Luma channel (component 0). T.832 Table 135 also folds in chroma
+        // contributions for YUV* formats; for non-YUV (and YOnly / RGB / etc.)
+        // only the luma plane contributes here, matching HpPrediction.CalcMode.
+        var strHor = Abs(mbLp[1]) + Abs(mbLp[2]) + Abs(mbLp[3]);
+        var strVer = Abs(mbLp[4]) + Abs(mbLp[8]) + Abs(mbLp[12]);
+
+        if (format != JxrInternalColorFormat.YOnly && format != JxrInternalColorFormat.NComponent && numComponents >= 3)
+        {
+            for (var c = 1; c <= 2; c++)
+            {
+                var b = c * 16;
+                strHor += Abs(mbLp[b + 1]);
+                if (format == JxrInternalColorFormat.YUV420)
+                {
+                    strVer += Abs(mbLp[b + 2]);
+                }
+                else if (format == JxrInternalColorFormat.YUV422)
+                {
+                    strVer += Abs(mbLp[b + 2]) + Abs(mbLp[b + 6]);
+                    strHor += Abs(mbLp[b + 5]);
+                }
+                else
+                {
+                    strVer += Abs(mbLp[b + 4]);
+                }
+            }
+        }
+
+        const int iOrWt = 4;
+        if (strHor * iOrWt < strVer) return 0; // predict from left
+        if (strVer * iOrWt < strHor) return 1; // predict from top
+        return 2;                              // no prediction
+    }
+
+    private static int Abs(int x) => x < 0 ? -x : x;
 
     private static void WriteByteAlignment(BitWriter writer)
     {

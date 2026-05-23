@@ -102,6 +102,116 @@ public static class JxrEncoder
         return img.Encode();
     }
 
+    /// <summary>
+    /// Encode an 8-bit grayscale image with the NoFlexbits band configuration
+    /// (DC + LP + HP, no flexbits refinement). Lossless for arbitrary pixel
+    /// content at OverlapMode = 0.
+    /// </summary>
+    public static byte[] EncodeBd8GrayscaleNoFlexbits(byte[] pixels, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(width));
+        if ((width & 15) != 0 || (height & 15) != 0)
+            throw new ArgumentException($"width and height must be multiples of 16 (got {width}×{height})");
+        if (pixels.Length < width * height)
+            throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height}");
+
+        var mbW = width >> 4;
+        var mbH = height >> 4;
+
+        // Storage shaped for the prediction layers.
+        var mbDc = new int[mbW, mbH, 1];
+        var mbDcLp = new int[mbW, mbH, 1, 16];        // pos 0 = super-DC, pos 1..15 = LP
+        var mbHp = new int[mbW, mbH, 1, 16, 16];      // pos 0 of each block unused
+
+        Span<int> subBlock = stackalloc int[16];
+        Span<int> dcGrid = stackalloc int[16];
+
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        {
+            // Forward pyramid: per-subblock FCT then DC-grid FCT.
+            for (var sbRow = 0; sbRow < 4; sbRow++)
+            for (var sbCol = 0; sbCol < 4; sbCol++)
+            {
+                LoadSubBlock(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
+                Transforms.FCT4x4(subBlock);
+                var blkIdx = sbRow * 4 + sbCol;
+                dcGrid[blkIdx] = subBlock[0];
+                // Stash positions 1..15 of this sub-block as HP coefficients.
+                for (var p = 1; p < 16; p++)
+                    mbHp[mbx, mby, 0, blkIdx, p] = subBlock[p];
+            }
+            Transforms.FCT4x4(dcGrid);
+            // Position 0 of dcGrid = super-DC; positions 1..15 = LP coefficients.
+            mbDc[mbx, mby, 0] = dcGrid[0];
+            for (var p = 0; p < 16; p++)
+                mbDcLp[mbx, mby, 0, p] = dcGrid[p];
+        }
+
+        // Prediction cascade in spec order: DC → LP → HP.
+        var predDc = new int[mbW, mbH, 1];
+        var mbDcMode = new int[mbW, mbH];
+        DcPrediction.Encode(mbDc, predDc, JxrInternalColorFormat.YOnly, mbDcMode: mbDcMode);
+
+        var predDcLp = new int[mbW, mbH, 1, 16];
+        LpPrediction.Encode(mbDcLp, predDcLp, mbDcMode, JxrInternalColorFormat.YOnly);
+
+        var mbHpMode = new int[mbW, mbH];
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+            mbHpMode[mbx, mby] = HpPrediction.CalcMode(mbDcLp, mbx, mby, JxrInternalColorFormat.YOnly, numComponents: 1);
+        HpPrediction.Encode(mbHp, mbHpMode, JxrInternalColorFormat.YOnly);
+
+        // Pack into Macroblock[].
+        var mbs = new Macroblock[mbW * mbH];
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        {
+            var lp = new int[16];
+            // Position 0 of mb.Lp is the super-DC slot (ignored by MbLp), but copy
+            // anyway to keep the layout symmetric with the decoder.
+            for (var p = 0; p < 16; p++) lp[p] = mbDcLp[mbx, mby, 0, p];
+
+            var hp = new int[256];
+            for (var blk = 0; blk < 16; blk++)
+            for (var p = 1; p < 16; p++)
+                hp[blk * 16 + p] = mbHp[mbx, mby, 0, blk, p];
+
+            mbs[mby * mbW + mbx] = new Macroblock
+            {
+                Dc = [mbDc[mbx, mby, 0]],
+                Lp = lp,
+                Hp = hp,
+                MbHpMode = mbHpMode[mbx, mby],
+            };
+        }
+
+        var img = new CodedImage
+        {
+            ImageHeader = new ImageHeader
+            {
+                OutputClrFmt = JxrOutputColorFormat.YOnly,
+                OutputBitDepth = JxrOutputBitDepth.Bd8,
+                ShortHeaderFlag = true,
+                WidthMinus1 = (uint)(width - 1),
+                HeightMinus1 = (uint)(height - 1),
+            },
+            PlaneHeader = new ImagePlaneHeader
+            {
+                InternalClrFmt = JxrInternalColorFormat.YOnly,
+                BandsPresent = JxrBandsPresent.NoFlexbits,
+                NumComponents = 1,
+                DcQuant = 1,
+                LpQuant = 1,
+                HpQuant = 1,
+            },
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
+            Macroblocks = mbs,
+        };
+        return img.Encode();
+    }
+
     private static void LoadSubBlock(byte[] pixels, int width, int x0, int y0, Span<int> dst)
     {
         for (var r = 0; r < 4; r++)
