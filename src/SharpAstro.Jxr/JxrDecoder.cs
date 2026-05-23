@@ -170,6 +170,101 @@ public static class JxrDecoder
         return pixels;
     }
 
+    /// <summary>
+    /// Decode a BD8 + Rgb + NoFlexbits codestream produced by
+    /// <see cref="JxrEncoder.EncodeBd8RgbNoFlexbits"/>. Returns interleaved
+    /// <c>R, G, B</c> bytes in row-major order — <c>width × height × 3</c>.
+    /// </summary>
+    public static byte[] DecodeBd8RgbNoFlexbits(
+        ReadOnlySpan<byte> codestream, out int width, out int height)
+    {
+        var img = CodedImage.Decode(codestream);
+
+        if (img.ImageHeader.OutputClrFmt != JxrOutputColorFormat.Rgb ||
+            img.ImageHeader.OutputBitDepth != JxrOutputBitDepth.Bd8 ||
+            img.PlaneHeader.InternalClrFmt != JxrInternalColorFormat.Rgb ||
+            img.PlaneHeader.BandsPresent != JxrBandsPresent.NoFlexbits)
+        {
+            throw new NotSupportedException(
+                $"JxrDecoder.DecodeBd8RgbNoFlexbits expects Rgb/BD8/NoFlexbits; " +
+                $"got {img.ImageHeader.OutputClrFmt}/{img.ImageHeader.OutputBitDepth}/" +
+                $"{img.PlaneHeader.InternalClrFmt}/{img.PlaneHeader.BandsPresent}");
+        }
+
+        width = img.Width;
+        height = img.Height;
+        if ((width & 15) != 0 || (height & 15) != 0)
+            throw new NotSupportedException("non-multiple-of-16 dimensions not yet supported");
+
+        const int numComponents = 3;
+        const JxrInternalColorFormat format = JxrInternalColorFormat.Rgb;
+
+        var mbW = img.WidthInMb;
+        var mbH = img.HeightInMb;
+
+        var mbDc = new int[mbW, mbH, numComponents];
+        var mbDcLp = new int[mbW, mbH, numComponents, 16];
+        var mbHp = new int[mbW, mbH, numComponents, 16, 16];
+
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        {
+            var mb = img.Macroblocks[mby * mbW + mbx];
+            for (var comp = 0; comp < numComponents; comp++)
+            {
+                mbDc[mbx, mby, comp] = mb.Dc[comp];
+                for (var p = 0; p < 16; p++)
+                    mbDcLp[mbx, mby, comp, p] = mb.Lp[comp * 16 + p];
+                for (var blk = 0; blk < 16; blk++)
+                for (var p = 1; p < 16; p++)
+                    mbHp[mbx, mby, comp, blk, p] = mb.Hp[comp * 256 + blk * 16 + p];
+            }
+        }
+
+        var mbHpMode = new int[mbW, mbH];
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+            mbHpMode[mbx, mby] = HpPrediction.CalcMode(mbDcLp, mbx, mby, format, numComponents);
+        HpPrediction.Decode(mbHp, mbHpMode, format);
+
+        var predDc = new int[mbW, mbH, numComponents];
+        var mbDcMode = new int[mbW, mbH];
+        DcPrediction.Decode(mbDc, predDc, format, mbDcMode: mbDcMode);
+
+        var predDcLp = new int[mbW, mbH, numComponents, 16];
+        LpPrediction.Decode(mbDcLp, predDcLp, mbDcMode, format);
+
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var comp = 0; comp < numComponents; comp++)
+            mbDcLp[mbx, mby, comp, 0] = mbDc[mbx, mby, comp];
+
+        var pixels = new byte[width * height * 3];
+        Span<int> subBlock = stackalloc int[16];
+        Span<int> dcGrid = stackalloc int[16];
+
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var comp = 0; comp < numComponents; comp++)
+        {
+            for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, comp, p];
+            Transforms.ICT4x4(dcGrid);
+
+            for (var sbRow = 0; sbRow < 4; sbRow++)
+            for (var sbCol = 0; sbCol < 4; sbCol++)
+            {
+                var blkIdx = sbRow * 4 + sbCol;
+                subBlock[0] = dcGrid[blkIdx];
+                for (var p = 1; p < 16; p++)
+                    subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
+                Transforms.ICT4x4(subBlock);
+                StoreSubBlockRgb(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+            }
+        }
+
+        return pixels;
+    }
+
     private static void StoreSubBlock(byte[] pixels, int width, int x0, int y0, ReadOnlySpan<int> src)
     {
         for (var r = 0; r < 4; r++)
@@ -180,6 +275,18 @@ public static class JxrDecoder
             if (v < 0) v = 0;
             else if (v > 255) v = 255;
             pixels[(y0 + r) * width + (x0 + c)] = (byte)v;
+        }
+    }
+
+    private static void StoreSubBlockRgb(byte[] pixels, int width, int x0, int y0, int comp, ReadOnlySpan<int> src)
+    {
+        for (var r = 0; r < 4; r++)
+        for (var c = 0; c < 4; c++)
+        {
+            var v = src[r * 4 + c] + JxrEncoder.Bd8Bias;
+            if (v < 0) v = 0;
+            else if (v > 255) v = 255;
+            pixels[((y0 + r) * width + (x0 + c)) * 3 + comp] = (byte)v;
         }
     }
 }

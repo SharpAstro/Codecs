@@ -235,6 +235,161 @@ public sealed class JxrPixelRoundTripTests
             decoded[i].ShouldBe(src[i], $"pixel {i}");
     }
 
+    // ----------------------------------------------------------------------
+    // BD8 RGB NoFlexbits — multi-component pipeline.
+    // ----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData((byte)0,   (byte)0,   (byte)0)]
+    [InlineData((byte)50,  (byte)100, (byte)150)]
+    [InlineData((byte)255, (byte)255, (byte)255)]
+    [InlineData((byte)200, (byte)50,  (byte)25)]
+    public void Uniform_16x16_RgbNoFlexbits_IsLossless(byte r, byte g, byte b)
+    {
+        var src = new byte[16 * 16 * 3];
+        for (var i = 0; i < src.Length; i += 3)
+        {
+            src[i + 0] = r;
+            src[i + 1] = g;
+            src[i + 2] = b;
+        }
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out var w, out var h);
+
+        w.ShouldBe(16);
+        h.ShouldBe(16);
+        decoded.Length.ShouldBe(src.Length);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void RgbHorizontalGradient_16x16_NoFlexbits_IsLossless()
+    {
+        // Different gradient per channel — exercises cross-component DC prediction
+        // and per-component LP+HP.
+        var src = new byte[16 * 16 * 3];
+        for (var y = 0; y < 16; y++)
+        for (var x = 0; x < 16; x++)
+        {
+            var i = (y * 16 + x) * 3;
+            src[i + 0] = (byte)(x * 16);         // R: horizontal sweep
+            src[i + 1] = (byte)(255 - x * 16);   // G: reverse sweep
+            src[i + 2] = (byte)((x * 8) & 0xff); // B: faster sweep
+        }
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void RgbVerticalGradient_16x16_NoFlexbits_IsLossless()
+    {
+        var src = new byte[16 * 16 * 3];
+        for (var y = 0; y < 16; y++)
+        for (var x = 0; x < 16; x++)
+        {
+            var i = (y * 16 + x) * 3;
+            src[i + 0] = (byte)(y * 16);
+            src[i + 1] = (byte)(y * 8);
+            src[i + 2] = (byte)(255 - y * 16);
+        }
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void RgbCheckerboard_16x16_NoFlexbits_IsLossless()
+    {
+        var src = new byte[16 * 16 * 3];
+        for (var y = 0; y < 16; y++)
+        for (var x = 0; x < 16; x++)
+        {
+            var i = (y * 16 + x) * 3;
+            var on = ((x + y) & 1) == 0;
+            src[i + 0] = on ? (byte)0 : (byte)255;
+            src[i + 1] = on ? (byte)255 : (byte)0;
+            src[i + 2] = on ? (byte)128 : (byte)64;
+        }
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void RgbRandom_16x16_NoFlexbits_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0xDEADC0DE));
+        var src = new byte[16 * 16 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void RgbRandom_32x32_NoFlexbits_IsLossless()
+    {
+        // 2×2 MB grid with RGB content — exercises cross-MB DC + LP prediction
+        // for all three components in parallel.
+        var rng = new Random(unchecked((int)0xBA5EBA11));
+        var src = new byte[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 32, 32);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void RgbRandom_64x64_NoFlexbits_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0x12345678));
+        var src = new byte[64 * 64 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 64, 64);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void RgbPureRedImage_RoundTrips()
+    {
+        // Extreme cross-channel asymmetry: red maxed, green/blue zero.
+        var src = new byte[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i += 3)
+        {
+            src[i + 0] = 255;
+            src[i + 1] = 0;
+            src[i + 2] = 0;
+        }
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 32, 32);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i]);
+    }
+
     [Fact]
     public void HpPredictionAlone_HorizontalGradient_RoundTrips()
     {
