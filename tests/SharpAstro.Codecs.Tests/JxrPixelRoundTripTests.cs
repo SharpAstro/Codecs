@@ -390,6 +390,170 @@ public sealed class JxrPixelRoundTripTests
             decoded[i].ShouldBe(src[i]);
     }
 
+    // ----------------------------------------------------------------------
+    // BD16 — the actual HDR-master target. Same pipeline, wider samples.
+    // ----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData((ushort)0)]
+    [InlineData((ushort)1)]
+    [InlineData((ushort)32768)]
+    [InlineData((ushort)50000)]
+    [InlineData((ushort)65535)]
+    public void Uniform_16x16_Bd16Grayscale_IsLossless(ushort fill)
+    {
+        var src = new ushort[16 * 16];
+        Array.Fill(src, fill);
+
+        var bytes = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16GrayscaleNoFlexbits(bytes, out var w, out var h);
+
+        w.ShouldBe(16);
+        h.ShouldBe(16);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(fill, $"pixel {i}");
+    }
+
+    [Fact]
+    public void Bd16Gradient_16x16_IsLossless()
+    {
+        // Full-range 16-bit horizontal gradient.
+        var src = new ushort[16 * 16];
+        for (var y = 0; y < 16; y++)
+        for (var x = 0; x < 16; x++)
+            src[y * 16 + x] = (ushort)(x * 4096);
+
+        var bytes = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16GrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Bd16Random_16x16_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0xABCD1234));
+        var src = new ushort[16 * 16];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16GrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Bd16Random_32x32_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0xBADC0FFE));
+        var src = new ushort[32 * 32];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(src, 32, 32);
+        var decoded = JxrDecoder.DecodeBd16GrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Bd16ExtremeValues_RoundTrip()
+    {
+        // Mix of 0, 65535, and mid-range — stresses sign bit, MSB, and dynamic range.
+        var src = new ushort[16 * 16];
+        for (var i = 0; i < src.Length; i++)
+            src[i] = (i & 3) switch
+            {
+                0 => (ushort)0,
+                1 => (ushort)65535,
+                2 => (ushort)32768,
+                _ => (ushort)1,
+            };
+
+        var bytes = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16GrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    // ----------------------------------------------------------------------
+    // BD16 RGB — the actual HDR-master deliverable.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Bd16RgbUniform_RoundTrip()
+    {
+        var src = new ushort[16 * 16 * 3];
+        for (var i = 0; i < src.Length; i += 3)
+        {
+            src[i + 0] = 12345;
+            src[i + 1] = 23456;
+            src[i + 2] = 34567;
+        }
+
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out var w, out var h);
+
+        w.ShouldBe(16);
+        h.ShouldBe(16);
+        decoded.Length.ShouldBe(src.Length);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void Bd16RgbGradient_16x16_IsLossless()
+    {
+        // Per-channel gradient, each at different rates.
+        var src = new ushort[16 * 16 * 3];
+        for (var y = 0; y < 16; y++)
+        for (var x = 0; x < 16; x++)
+        {
+            var i = (y * 16 + x) * 3;
+            src[i + 0] = (ushort)(x * 4096);
+            src[i + 1] = (ushort)((15 - x) * 4096);
+            src[i + 2] = (ushort)(y * 4096);
+        }
+
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Bd16RgbRandom_32x32_IsLossless()
+    {
+        // Closest yet to the HDR-master shape: multi-MB 16-bit RGB random.
+        var rng = new Random(unchecked((int)0xC0DEFACE));
+        var src = new ushort[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 32, 32);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Bd16RgbRandom_64x64_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0x5A11B0AD));
+        var src = new ushort[64 * 64 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 64, 64);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
     [Fact]
     public void HpPredictionAlone_HorizontalGradient_RoundTrips()
     {

@@ -28,6 +28,9 @@ public static class JxrEncoder
     /// </summary>
     public const int Bd8Bias = 128;
 
+    /// <summary>Pre-scaling bias for BD16 (T.832 D.2) — half the 16-bit range.</summary>
+    public const int Bd16Bias = 32768;
+
     /// <summary>
     /// Encode an 8-bit grayscale image with the DcOnly band configuration.
     /// Returns the raw JXR codestream (not yet wrapped in an Annex A container).
@@ -327,6 +330,218 @@ public static class JxrEncoder
         return img.Encode();
     }
 
+    /// <summary>
+    /// Encode a 16-bit grayscale image with the NoFlexbits band configuration.
+    /// Lossless for arbitrary content at OverlapMode = 0. This is the HDR-master
+    /// target path for monochrome.
+    /// </summary>
+    public static byte[] EncodeBd16GrayscaleNoFlexbits(ushort[] pixels, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(width));
+        if ((width & 15) != 0 || (height & 15) != 0)
+            throw new ArgumentException($"width and height must be multiples of 16 (got {width}×{height})");
+        if (pixels.Length < width * height)
+            throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height}");
+
+        var mbW = width >> 4;
+        var mbH = height >> 4;
+
+        var mbDc = new int[mbW, mbH, 1];
+        var mbDcLp = new int[mbW, mbH, 1, 16];
+        var mbHp = new int[mbW, mbH, 1, 16, 16];
+
+        Span<int> subBlock = stackalloc int[16];
+        Span<int> dcGrid = stackalloc int[16];
+
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        {
+            for (var sbRow = 0; sbRow < 4; sbRow++)
+            for (var sbCol = 0; sbCol < 4; sbCol++)
+            {
+                LoadSubBlock16(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
+                Transforms.FCT4x4(subBlock);
+                var blkIdx = sbRow * 4 + sbCol;
+                dcGrid[blkIdx] = subBlock[0];
+                for (var p = 1; p < 16; p++)
+                    mbHp[mbx, mby, 0, blkIdx, p] = subBlock[p];
+            }
+            Transforms.FCT4x4(dcGrid);
+            mbDc[mbx, mby, 0] = dcGrid[0];
+            for (var p = 0; p < 16; p++)
+                mbDcLp[mbx, mby, 0, p] = dcGrid[p];
+        }
+
+        const JxrInternalColorFormat format = JxrInternalColorFormat.YOnly;
+        var predDc = new int[mbW, mbH, 1];
+        var mbDcMode = new int[mbW, mbH];
+        DcPrediction.Encode(mbDc, predDc, format, mbDcMode: mbDcMode);
+
+        var predDcLp = new int[mbW, mbH, 1, 16];
+        LpPrediction.Encode(mbDcLp, predDcLp, mbDcMode, format);
+
+        var mbHpMode = new int[mbW, mbH];
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+            mbHpMode[mbx, mby] = HpPrediction.CalcMode(mbDcLp, mbx, mby, format, numComponents: 1);
+        HpPrediction.Encode(mbHp, mbHpMode, format);
+
+        var mbs = new Macroblock[mbW * mbH];
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        {
+            var lp = new int[16];
+            for (var p = 0; p < 16; p++) lp[p] = mbDcLp[mbx, mby, 0, p];
+            var hp = new int[256];
+            for (var blk = 0; blk < 16; blk++)
+            for (var p = 1; p < 16; p++)
+                hp[blk * 16 + p] = mbHp[mbx, mby, 0, blk, p];
+            mbs[mby * mbW + mbx] = new Macroblock
+            {
+                Dc = [mbDc[mbx, mby, 0]],
+                Lp = lp,
+                Hp = hp,
+                MbHpMode = mbHpMode[mbx, mby],
+            };
+        }
+
+        var img = new CodedImage
+        {
+            ImageHeader = new ImageHeader
+            {
+                OutputClrFmt = JxrOutputColorFormat.YOnly,
+                OutputBitDepth = JxrOutputBitDepth.Bd16,
+                ShortHeaderFlag = true,
+                WidthMinus1 = (uint)(width - 1),
+                HeightMinus1 = (uint)(height - 1),
+            },
+            PlaneHeader = new ImagePlaneHeader
+            {
+                InternalClrFmt = format,
+                BandsPresent = JxrBandsPresent.NoFlexbits,
+                NumComponents = 1,
+                ShiftBits = 0, // no extra bit-depth shift for plain 16-bit unsigned
+                DcQuant = 1,
+                LpQuant = 1,
+                HpQuant = 1,
+            },
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
+            Macroblocks = mbs,
+        };
+        return img.Encode();
+    }
+
+    /// <summary>
+    /// Encode a 16-bit RGB image (interleaved R, G, B in row-major order) — the
+    /// primary HDR-master deliverable shape for the SharpAstro pipeline.
+    /// </summary>
+    public static byte[] EncodeBd16RgbNoFlexbits(ushort[] pixels, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(width));
+        if ((width & 15) != 0 || (height & 15) != 0)
+            throw new ArgumentException($"width and height must be multiples of 16 (got {width}×{height})");
+        if (pixels.Length < width * height * 3)
+            throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height * 3}");
+
+        const int numComponents = 3;
+        const JxrInternalColorFormat format = JxrInternalColorFormat.Rgb;
+
+        var mbW = width >> 4;
+        var mbH = height >> 4;
+
+        var mbDc = new int[mbW, mbH, numComponents];
+        var mbDcLp = new int[mbW, mbH, numComponents, 16];
+        var mbHp = new int[mbW, mbH, numComponents, 16, 16];
+
+        Span<int> subBlock = stackalloc int[16];
+        Span<int> dcGrid = stackalloc int[16];
+
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var comp = 0; comp < numComponents; comp++)
+        {
+            for (var sbRow = 0; sbRow < 4; sbRow++)
+            for (var sbCol = 0; sbCol < 4; sbCol++)
+            {
+                LoadSubBlock16Rgb(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+                Transforms.FCT4x4(subBlock);
+                var blkIdx = sbRow * 4 + sbCol;
+                dcGrid[blkIdx] = subBlock[0];
+                for (var p = 1; p < 16; p++)
+                    mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
+            }
+            Transforms.FCT4x4(dcGrid);
+            mbDc[mbx, mby, comp] = dcGrid[0];
+            for (var p = 0; p < 16; p++)
+                mbDcLp[mbx, mby, comp, p] = dcGrid[p];
+        }
+
+        var predDc = new int[mbW, mbH, numComponents];
+        var mbDcMode = new int[mbW, mbH];
+        DcPrediction.Encode(mbDc, predDc, format, mbDcMode: mbDcMode);
+
+        var predDcLp = new int[mbW, mbH, numComponents, 16];
+        LpPrediction.Encode(mbDcLp, predDcLp, mbDcMode, format);
+
+        var mbHpMode = new int[mbW, mbH];
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+            mbHpMode[mbx, mby] = HpPrediction.CalcMode(mbDcLp, mbx, mby, format, numComponents);
+        HpPrediction.Encode(mbHp, mbHpMode, format);
+
+        var mbs = new Macroblock[mbW * mbH];
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        {
+            var dc = new int[numComponents];
+            var lp = new int[numComponents * 16];
+            var hp = new int[numComponents * 256];
+            for (var comp = 0; comp < numComponents; comp++)
+            {
+                dc[comp] = mbDc[mbx, mby, comp];
+                for (var p = 0; p < 16; p++)
+                    lp[comp * 16 + p] = mbDcLp[mbx, mby, comp, p];
+                for (var blk = 0; blk < 16; blk++)
+                for (var p = 1; p < 16; p++)
+                    hp[comp * 256 + blk * 16 + p] = mbHp[mbx, mby, comp, blk, p];
+            }
+            mbs[mby * mbW + mbx] = new Macroblock
+            {
+                Dc = dc,
+                Lp = lp,
+                Hp = hp,
+                MbHpMode = mbHpMode[mbx, mby],
+            };
+        }
+
+        var img = new CodedImage
+        {
+            ImageHeader = new ImageHeader
+            {
+                OutputClrFmt = JxrOutputColorFormat.Rgb,
+                OutputBitDepth = JxrOutputBitDepth.Bd16,
+                ShortHeaderFlag = true,
+                WidthMinus1 = (uint)(width - 1),
+                HeightMinus1 = (uint)(height - 1),
+            },
+            PlaneHeader = new ImagePlaneHeader
+            {
+                InternalClrFmt = format,
+                BandsPresent = JxrBandsPresent.NoFlexbits,
+                NumComponents = numComponents,
+                ShiftBits = 0,
+                DcQuant = 1,
+                LpQuant = 1,
+                HpQuant = 1,
+            },
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
+            Macroblocks = mbs,
+        };
+        return img.Encode();
+    }
+
     private static void LoadSubBlock(byte[] pixels, int width, int x0, int y0, Span<int> dst)
     {
         for (var r = 0; r < 4; r++)
@@ -339,5 +554,19 @@ public static class JxrEncoder
         for (var r = 0; r < 4; r++)
         for (var c = 0; c < 4; c++)
             dst[r * 4 + c] = pixels[((y0 + r) * width + (x0 + c)) * 3 + comp] - Bd8Bias;
+    }
+
+    private static void LoadSubBlock16(ushort[] pixels, int width, int x0, int y0, Span<int> dst)
+    {
+        for (var r = 0; r < 4; r++)
+        for (var c = 0; c < 4; c++)
+            dst[r * 4 + c] = pixels[(y0 + r) * width + (x0 + c)] - Bd16Bias;
+    }
+
+    private static void LoadSubBlock16Rgb(ushort[] pixels, int width, int x0, int y0, int comp, Span<int> dst)
+    {
+        for (var r = 0; r < 4; r++)
+        for (var c = 0; c < 4; c++)
+            dst[r * 4 + c] = pixels[((y0 + r) * width + (x0 + c)) * 3 + comp] - Bd16Bias;
     }
 }
