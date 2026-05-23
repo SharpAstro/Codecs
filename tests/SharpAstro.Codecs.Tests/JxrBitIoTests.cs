@@ -156,7 +156,7 @@ public sealed class JxrBitIoTests
         // per table (Table 52 in the spec has two columns).
         foreach (var tableIndex in new[] { 0, 1 })
         {
-            var table = VlcTables.AbsLevelIndex(tableIndex);
+            var table = VlcTables.AbsLevelIndex[tableIndex];
             for (var v = 0; v <= 6; v++)
             {
                 var w = new BitWriter();
