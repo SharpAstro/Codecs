@@ -96,13 +96,62 @@ public sealed class JxrPixelRoundTripTests
     }
 
     [Fact]
-    public void NonMultipleOf16_Throws()
+    public void NonMultipleOf16_DcOnly_Encodes()
     {
+        // After Phase 8 the encoder pads sample reads to the image edge so any
+        // dimension works. DcOnly stays lossy for non-uniform content so we
+        // just verify it produces a valid codestream and decodes to the
+        // declared dimensions.
         var src = new byte[17 * 17];
-        var threw = false;
-        try { JxrEncoder.EncodeBd8GrayscaleDcOnly(src, 17, 17); }
-        catch (ArgumentException) { threw = true; }
-        threw.ShouldBeTrue();
+        var bytes = JxrEncoder.EncodeBd8GrayscaleDcOnly(src, 17, 17);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleDcOnly(bytes, out var w, out var h);
+        w.ShouldBe(17);
+        h.ShouldBe(17);
+        decoded.Length.ShouldBe(17 * 17);
+    }
+
+    [Fact]
+    public void NonAligned_17x17_NoFlexbits_IsLossless()
+    {
+        // The killer feature: real astrophoto dimensions are rarely 16-aligned.
+        var rng = new Random(unchecked((int)0xA17A17));
+        var src = new byte[17 * 17];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 17, 17);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out var w, out var h);
+        w.ShouldBe(17);
+        h.ShouldBe(17);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void NonAligned_33x47_RgbNoFlexbits_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0x3347));
+        var src = new byte[33 * 47 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 33, 47);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out var w, out var h);
+        w.ShouldBe(33);
+        h.ShouldBe(47);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void NonAligned_50x50_Bd16Rgb_IsLossless_HdrTarget()
+    {
+        // Mid-sized non-aligned BD16 RGB — closest test to actual astro file shape.
+        var rng = new Random(unchecked((int)0x50505050));
+        var src = new ushort[50 * 50 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 50, 50);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out var w, out var h);
+        w.ShouldBe(50);
+        h.ShouldBe(50);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"sample {i}");
     }
 
     [Fact]

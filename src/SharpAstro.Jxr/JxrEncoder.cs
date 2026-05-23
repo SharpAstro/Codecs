@@ -40,13 +40,11 @@ public static class JxrEncoder
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "image dimensions must be positive");
-        if ((width & 15) != 0 || (height & 15) != 0)
-            throw new ArgumentException($"width and height must be multiples of 16 (got {width}×{height}); edge-padding lands in a follow-on commit");
         if (pixels.Length < width * height)
             throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height}");
 
-        var mbW = width >> 4;
-        var mbH = height >> 4;
+        var mbW = (width + 15) >> 4;
+        var mbH = (height + 15) >> 4;
         var mbs = new Macroblock[mbW * mbH];
 
         // Scratch buffers reused across MBs.
@@ -63,7 +61,7 @@ public static class JxrEncoder
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
                 // Load 4×4 sub-block from the source image with pre-scaling.
-                LoadSubBlock(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
+                LoadSubBlock(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
                 Transforms.FCT4x4(subBlock);
                 dcGrid[sbRow * 4 + sbCol] = subBlock[0];
             }
@@ -114,13 +112,11 @@ public static class JxrEncoder
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
-        if ((width & 15) != 0 || (height & 15) != 0)
-            throw new ArgumentException($"width and height must be multiples of 16 (got {width}×{height})");
         if (pixels.Length < width * height)
             throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height}");
 
-        var mbW = width >> 4;
-        var mbH = height >> 4;
+        var mbW = (width + 15) >> 4;
+        var mbH = (height + 15) >> 4;
 
         // Storage shaped for the prediction layers.
         var mbDc = new int[mbW, mbH, 1];
@@ -137,7 +133,7 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                LoadSubBlock(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
+                LoadSubBlock(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
@@ -227,16 +223,14 @@ public static class JxrEncoder
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
-        if ((width & 15) != 0 || (height & 15) != 0)
-            throw new ArgumentException($"width and height must be multiples of 16 (got {width}×{height})");
         if (pixels.Length < width * height * 3)
             throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height * 3}");
 
         const int numComponents = 3;
         const JxrInternalColorFormat format = JxrInternalColorFormat.Rgb;
 
-        var mbW = width >> 4;
-        var mbH = height >> 4;
+        var mbW = (width + 15) >> 4;
+        var mbH = (height + 15) >> 4;
 
         var mbDc = new int[mbW, mbH, numComponents];
         var mbDcLp = new int[mbW, mbH, numComponents, 16];
@@ -252,7 +246,7 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                LoadSubBlockRgb(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+                LoadSubBlockRgb(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
@@ -339,13 +333,11 @@ public static class JxrEncoder
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
-        if ((width & 15) != 0 || (height & 15) != 0)
-            throw new ArgumentException($"width and height must be multiples of 16 (got {width}×{height})");
         if (pixels.Length < width * height)
             throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height}");
 
-        var mbW = width >> 4;
-        var mbH = height >> 4;
+        var mbW = (width + 15) >> 4;
+        var mbH = (height + 15) >> 4;
 
         var mbDc = new int[mbW, mbH, 1];
         var mbDcLp = new int[mbW, mbH, 1, 16];
@@ -360,7 +352,7 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                LoadSubBlock16(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
+                LoadSubBlock16(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
@@ -440,16 +432,14 @@ public static class JxrEncoder
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
-        if ((width & 15) != 0 || (height & 15) != 0)
-            throw new ArgumentException($"width and height must be multiples of 16 (got {width}×{height})");
         if (pixels.Length < width * height * 3)
             throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height * 3}");
 
         const int numComponents = 3;
         const JxrInternalColorFormat format = JxrInternalColorFormat.Rgb;
 
-        var mbW = width >> 4;
-        var mbH = height >> 4;
+        var mbW = (width + 15) >> 4;
+        var mbH = (height + 15) >> 4;
 
         var mbDc = new int[mbW, mbH, numComponents];
         var mbDcLp = new int[mbW, mbH, numComponents, 16];
@@ -465,7 +455,7 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                LoadSubBlock16Rgb(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+                LoadSubBlock16Rgb(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
@@ -542,32 +532,53 @@ public static class JxrEncoder
         return img.Encode();
     }
 
-    private static void LoadSubBlock(byte[] pixels, int width, int x0, int y0, Span<int> dst)
+    // Sub-block loaders. All clamp coordinates to the image bounds so that
+    // edge MBs covering padded pixels read the nearest real sample (T.832 D.1.2
+    // edge-extension by replication). Keeps the FCT happy without needing a
+    // separate padded buffer allocation.
+
+    private static void LoadSubBlock(byte[] pixels, int width, int height, int x0, int y0, Span<int> dst)
     {
         for (var r = 0; r < 4; r++)
         for (var c = 0; c < 4; c++)
-            dst[r * 4 + c] = pixels[(y0 + r) * width + (x0 + c)] - Bd8Bias;
+        {
+            var y = y0 + r; if (y >= height) y = height - 1;
+            var x = x0 + c; if (x >= width)  x = width  - 1;
+            dst[r * 4 + c] = pixels[y * width + x] - Bd8Bias;
+        }
     }
 
-    private static void LoadSubBlockRgb(byte[] pixels, int width, int x0, int y0, int comp, Span<int> dst)
+    private static void LoadSubBlockRgb(byte[] pixels, int width, int height, int x0, int y0, int comp, Span<int> dst)
     {
         for (var r = 0; r < 4; r++)
         for (var c = 0; c < 4; c++)
-            dst[r * 4 + c] = pixels[((y0 + r) * width + (x0 + c)) * 3 + comp] - Bd8Bias;
+        {
+            var y = y0 + r; if (y >= height) y = height - 1;
+            var x = x0 + c; if (x >= width)  x = width  - 1;
+            dst[r * 4 + c] = pixels[(y * width + x) * 3 + comp] - Bd8Bias;
+        }
     }
 
-    private static void LoadSubBlock16(ushort[] pixels, int width, int x0, int y0, Span<int> dst)
+    private static void LoadSubBlock16(ushort[] pixels, int width, int height, int x0, int y0, Span<int> dst)
     {
         for (var r = 0; r < 4; r++)
         for (var c = 0; c < 4; c++)
-            dst[r * 4 + c] = pixels[(y0 + r) * width + (x0 + c)] - Bd16Bias;
+        {
+            var y = y0 + r; if (y >= height) y = height - 1;
+            var x = x0 + c; if (x >= width)  x = width  - 1;
+            dst[r * 4 + c] = pixels[y * width + x] - Bd16Bias;
+        }
     }
 
-    private static void LoadSubBlock16Rgb(ushort[] pixels, int width, int x0, int y0, int comp, Span<int> dst)
+    private static void LoadSubBlock16Rgb(ushort[] pixels, int width, int height, int x0, int y0, int comp, Span<int> dst)
     {
         for (var r = 0; r < 4; r++)
         for (var c = 0; c < 4; c++)
-            dst[r * 4 + c] = pixels[((y0 + r) * width + (x0 + c)) * 3 + comp] - Bd16Bias;
+        {
+            var y = y0 + r; if (y >= height) y = height - 1;
+            var x = x0 + c; if (x >= width)  x = width  - 1;
+            dst[r * 4 + c] = pixels[(y * width + x) * 3 + comp] - Bd16Bias;
+        }
     }
 
     /// <summary>
@@ -598,11 +609,15 @@ public static class JxrEncoder
             outputBitDepth: JxrOutputBitDepth.Bd16F,
             lenMantissa: 10,
             expBias: 15 - 128,
-            loadSubBlock: (src, w, x0, y0, _, dst) =>
+            loadSubBlock: (src, w, h, x0, y0, _, dst) =>
             {
                 for (var r = 0; r < 4; r++)
                 for (var c = 0; c < 4; c++)
-                    dst[r * 4 + c] = src[(y0 + r) * w + (x0 + c)] - Bd16Bias;
+                {
+                    var y = y0 + r; if (y >= h) y = h - 1;
+                    var x = x0 + c; if (x >= w) x = w - 1;
+                    dst[r * 4 + c] = src[y * w + x] - Bd16Bias;
+                }
             });
         return bytes;
     }
@@ -625,11 +640,15 @@ public static class JxrEncoder
             outputBitDepth: JxrOutputBitDepth.Bd16F,
             lenMantissa: 10,
             expBias: 15 - 128,
-            loadSubBlock: (src, w, x0, y0, comp, dst) =>
+            loadSubBlock: (src, w, h, x0, y0, comp, dst) =>
             {
                 for (var r = 0; r < 4; r++)
                 for (var c = 0; c < 4; c++)
-                    dst[r * 4 + c] = src[((y0 + r) * w + (x0 + c)) * 3 + comp] - Bd16Bias;
+                {
+                    var y = y0 + r; if (y >= h) y = h - 1;
+                    var x = x0 + c; if (x >= w) x = w - 1;
+                    dst[r * 4 + c] = src[(y * w + x) * 3 + comp] - Bd16Bias;
+                }
             });
     }
 
@@ -637,13 +656,11 @@ public static class JxrEncoder
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
-        if ((width & 15) != 0 || (height & 15) != 0)
-            throw new ArgumentException($"width and height must be multiples of 16 (got {width}×{height})");
         if (halfBits.Length < width * height * expectedComponents)
             throw new ArgumentException($"halfBits has length {halfBits.Length}, expected ≥ {width * height * expectedComponents}");
     }
 
-    private delegate void LoadSubBlockUshort(ushort[] src, int width, int x0, int y0, int comp, Span<int> dst);
+    private delegate void LoadSubBlockUshort(ushort[] src, int width, int height, int x0, int y0, int comp, Span<int> dst);
 
     private static byte[] EncodeBd16PipelineCore(
         ushort[] src,
@@ -657,8 +674,8 @@ public static class JxrEncoder
         int expBias,
         LoadSubBlockUshort loadSubBlock)
     {
-        var mbW = width >> 4;
-        var mbH = height >> 4;
+        var mbW = (width + 15) >> 4;
+        var mbH = (height + 15) >> 4;
 
         var mbDc = new int[mbW, mbH, numComponents];
         var mbDcLp = new int[mbW, mbH, numComponents, 16];
@@ -674,7 +691,7 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                loadSubBlock(src, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+                loadSubBlock(src, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
