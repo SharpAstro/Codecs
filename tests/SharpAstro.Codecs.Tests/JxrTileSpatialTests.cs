@@ -208,7 +208,7 @@ public sealed class JxrTileSpatialTests
     [Fact]
     public void UnsupportedBandsPresent_Throws_AllBands()
     {
-        // Until HP wiring lands, BANDS_PRESENT in {AllBands, NoFlexbits} is rejected.
+        // AllBands requires the FlexBits refinement layer — not yet wired.
         var headers = TileBandHeaders.Uniform(JxrBandsPresent.AllBands);
         var w = new BitWriter();
         var threw = false;
@@ -350,6 +350,180 @@ public sealed class JxrTileSpatialTests
         try
         {
             TileSpatial.Write(w, headers, JxrBandsPresent.NoHighpass,
+                trimFlexBitsFlag: false,
+                JxrInternalColorFormat.YOnly, 1, 1, 1, new[] { mb });
+        }
+        catch (ArgumentException) { threw = true; }
+        threw.ShouldBeTrue();
+    }
+
+    // ----------------------------------------------------------------------
+    // BANDS_PRESENT = NoFlexbits (DC + LP + CBPHP + HP) tests
+    //
+    // All tests pin MbHpMode = 0 (horizontal scan). Per-MB derivation of
+    // MbHpMode from LP coefficients is a separate piece of work.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void SingleMb_YOnly_NoFlexbits_ZeroHp_RoundTrips()
+    {
+        // All HP blocks zero — exercises the CBPHP=0 path for every block.
+        var headers = TileBandHeaders.Uniform(JxrBandsPresent.NoFlexbits);
+        var mb = new Macroblock
+        {
+            Dc = [25],
+            Lp = new int[16],
+            Hp = new int[256], // 16 4×4 blocks × 16 coeffs
+            MbHpMode = 0,
+        };
+
+        var w = new BitWriter();
+        TileSpatial.Write(w, headers, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.YOnly, 1, 1, 1, new[] { mb });
+
+        (w.BitPosition % 8).ShouldBe(0);
+
+        var r = new BitReader(w.AsSpan());
+        var decoded = TileSpatial.Read(ref r, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.YOnly, 1, 1, 1, out _);
+
+        decoded[0].Dc[0].ShouldBe(25);
+        decoded[0].Hp.Length.ShouldBe(256);
+        for (var i = 0; i < 256; i++) decoded[0].Hp[i].ShouldBe(0, $"hp[{i}]");
+    }
+
+    [Fact]
+    public void SingleMb_YOnly_NoFlexbits_OneNonZeroBlock_RoundTrips()
+    {
+        // Exactly one 4×4 sub-block is non-zero — CBPHP bitmap has exactly
+        // one bit set, exercising the NUM_CBPHP=1 / REF_CBPHP=u(2) path.
+        var headers = TileBandHeaders.Uniform(JxrBandsPresent.NoFlexbits);
+        var hp = new int[256];
+        // Put a non-zero coefficient at block 0, position 5.
+        hp[0 * 16 + 5] = 42;
+
+        var mb = new Macroblock { Dc = [0], Lp = new int[16], Hp = hp, MbHpMode = 0 };
+
+        var w = new BitWriter();
+        TileSpatial.Write(w, headers, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.YOnly, 1, 1, 1, new[] { mb });
+
+        var r = new BitReader(w.AsSpan());
+        var decoded = TileSpatial.Read(ref r, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.YOnly, 1, 1, 1, out _);
+
+        decoded[0].Hp[0 * 16 + 5].ShouldBe(42);
+        // Everything else stays zero.
+        for (var i = 0; i < 256; i++)
+            if (i != 5) decoded[0].Hp[i].ShouldBe(0, $"hp[{i}]");
+    }
+
+    [Fact]
+    public void SingleMb_YOnly_NoFlexbits_AllBlocksNonZero_RoundTrips()
+    {
+        // Every 4×4 sub-block has at least one non-zero coefficient —
+        // CBPHP bitmap = 0xFFFF, exercising the NUM_CBPHP=4 (all groups set) path.
+        var headers = TileBandHeaders.Uniform(JxrBandsPresent.NoFlexbits);
+        var hp = new int[256];
+        for (var blk = 0; blk < 16; blk++)
+            hp[blk * 16 + 1] = blk + 1; // one non-zero coeff per block
+
+        var mb = new Macroblock { Dc = [0], Lp = new int[16], Hp = hp, MbHpMode = 0 };
+
+        var w = new BitWriter();
+        TileSpatial.Write(w, headers, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.YOnly, 1, 1, 1, new[] { mb });
+
+        var r = new BitReader(w.AsSpan());
+        var decoded = TileSpatial.Read(ref r, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.YOnly, 1, 1, 1, out _);
+
+        for (var blk = 0; blk < 16; blk++)
+            decoded[0].Hp[blk * 16 + 1].ShouldBe(blk + 1, $"block {blk} coeff 1");
+    }
+
+    [Fact]
+    public void Grid_2x2_YOnly_NoFlexbits_RoundTrips()
+    {
+        // 4 MBs each with distinct DC, LP, and HP content — exercises all
+        // four adaptive state machines (DC/LP/CBPHP/HP) crossing MB boundaries.
+        var headers = TileBandHeaders.Uniform(JxrBandsPresent.NoFlexbits);
+        var mbs = new Macroblock[4];
+        for (var i = 0; i < 4; i++)
+        {
+            var lp = new int[16];
+            for (var p = 1; p < 16; p++) lp[p] = (i + 1) * 2;
+            var hp = new int[256];
+            // Vary which blocks are non-zero per MB.
+            hp[(i * 3) * 16 + 1] = (i + 1) * 10;
+            mbs[i] = new Macroblock { Dc = [(i + 1) * 50], Lp = lp, Hp = hp, MbHpMode = 0 };
+        }
+
+        var w = new BitWriter();
+        TileSpatial.Write(w, headers, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.YOnly, 1, 2, 2, mbs);
+
+        var r = new BitReader(w.AsSpan());
+        var decoded = TileSpatial.Read(ref r, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.YOnly, 1, 2, 2, out _);
+
+        for (var i = 0; i < 4; i++)
+        {
+            decoded[i].Dc[0].ShouldBe((i + 1) * 50, $"mb {i} dc");
+            decoded[i].Hp[(i * 3) * 16 + 1].ShouldBe((i + 1) * 10, $"mb {i} hp");
+        }
+    }
+
+    [Fact]
+    public void SingleMb_Rgb_NoFlexbits_RoundTrips()
+    {
+        // 3-component RGB through the full DC + LP + CBPHP + HP chain.
+        var headers = TileBandHeaders.Uniform(JxrBandsPresent.NoFlexbits);
+        var lp = new int[3 * 16];
+        var hp = new int[3 * 256];
+        for (var c = 0; c < 3; c++)
+        {
+            for (var p = 1; p < 16; p++) lp[c * 16 + p] = (c + 1) * p;
+            // Drop one non-zero HP coefficient per component.
+            hp[c * 256 + (c * 4) * 16 + 1] = (c + 1) * 7;
+        }
+        var mb = new Macroblock { Dc = new[] { 5, 15, 25 }, Lp = lp, Hp = hp, MbHpMode = 0 };
+
+        var w = new BitWriter();
+        TileSpatial.Write(w, headers, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.Rgb, 3, 1, 1, new[] { mb });
+
+        var r = new BitReader(w.AsSpan());
+        var decoded = TileSpatial.Read(ref r, JxrBandsPresent.NoFlexbits,
+            trimFlexBitsFlag: false,
+            JxrInternalColorFormat.Rgb, 3, 1, 1, out _);
+
+        for (var c = 0; c < 3; c++)
+        {
+            decoded[0].Dc[c].ShouldBe((c + 1) * 10 - 5);
+            decoded[0].Hp[c * 256 + (c * 4) * 16 + 1].ShouldBe((c + 1) * 7, $"c={c}");
+        }
+    }
+
+    [Fact]
+    public void NoFlexbits_MbsHpMissing_Throws()
+    {
+        var headers = TileBandHeaders.Uniform(JxrBandsPresent.NoFlexbits);
+        var mb = new Macroblock { Dc = [0], Lp = new int[16] }; // Hp left empty
+        var w = new BitWriter();
+        var threw = false;
+        try
+        {
+            TileSpatial.Write(w, headers, JxrBandsPresent.NoFlexbits,
                 trimFlexBitsFlag: false,
                 JxrInternalColorFormat.YOnly, 1, 1, 1, new[] { mb });
         }

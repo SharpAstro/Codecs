@@ -15,9 +15,11 @@ namespace SharpAstro.Jxr;
 ///   <item><see cref="JxrBandsPresent.NoHighpass"/> — emits MB_DC + MB_LP. Restricted to
 ///         CBPLP_CH_BIT formats (YOnly / YUVK / NComponent / Rgb); the YUV420/422/444
 ///         CBPLP_YUV1/YUV2 joint-VLC path lives in MbLp and is not yet wired.</item>
+///   <item><see cref="JxrBandsPresent.NoFlexbits"/> — emits MB_DC + MB_LP + MB_CBPHP + MB_HP.
+///         The CBPHP bitmap is computed via <see cref="MbHp.ComputeCbphp"/> in a pre-pass
+///         and written before the HP coefficient data, per T.832 §8.7.16.</item>
 /// </list>
-/// <para>NoFlexbits and AllBands paths (which add MB_CBPHP + MB_HP + FlexBits) land
-/// in follow-on commits.</para>
+/// <para>AllBands path (NoFlexbits + FlexBits refinement) lands in a follow-on commit.</para>
 /// </remarks>
 public static class TileSpatial
 {
@@ -43,7 +45,11 @@ public static class TileSpatial
 
         var dcState = new MbDcState();
         var lpState = bands != JxrBandsPresent.DcOnly ? new MbLpState() : null;
-        // HP / CBPHP states will land here when bands include the HP subband.
+        var hasHp = bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass;
+        var cbphpState = hasHp ? new MbCbphpState() : null;
+        var hpState = hasHp ? new MbHpState() : null;
+        var cbphpBuf = hasHp ? new int[numComponents] : null;
+        var hpDummyCbphp = hasHp ? new int[numComponents] : null;
 
         for (var row = 0; row < heightInMb; row++)
         {
@@ -53,7 +59,14 @@ public static class TileSpatial
                 MbDc.EncodeMb(writer, dcState, format, numComponents, mb.Dc);
                 if (lpState is not null)
                     MbLp.EncodeMb(writer, lpState, format, numComponents, mb.Lp);
-                // HP+CBPHP dispatch slots in here.
+                if (hasHp)
+                {
+                    // CBPHP must appear in the bitstream before HP coefficient data,
+                    // so compute it in a pre-pass and feed it to MbCbphp.
+                    MbHp.ComputeCbphp(numComponents, mb.Hp, cbphpBuf!);
+                    MbCbphp.EncodeMb(writer, cbphpState!, numComponents, cbphpBuf!);
+                    MbHp.EncodeMb(writer, hpState!, mb.MbHpMode, format, numComponents, mb.Hp, hpDummyCbphp!);
+                }
             }
         }
 
@@ -71,13 +84,17 @@ public static class TileSpatial
         int heightInMb,
         out TileBandHeaders headers)
     {
-        if (bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass)
-            throw new NotSupportedException($"TILE_SPATIAL.Read currently supports BANDS_PRESENT ∈ {{DcOnly, NoHighpass}} (got {bands})");
+        if (bands == JxrBandsPresent.AllBands)
+            throw new NotSupportedException("TILE_SPATIAL.Read AllBands (with FlexBits refinement) not yet supported");
 
         headers = TileBandHeaders.Read(ref reader, bands, trimFlexBitsFlag);
 
         var dcState = new MbDcState();
         var lpState = bands != JxrBandsPresent.DcOnly ? new MbLpState() : null;
+        var hasHp = bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass;
+        var cbphpState = hasHp ? new MbCbphpState() : null;
+        var hpState = hasHp ? new MbHpState() : null;
+        var cbphpBuf = hasHp ? new int[numComponents] : null;
         var mbs = new Macroblock[widthInMb * heightInMb];
         for (var row = 0; row < heightInMb; row++)
         {
@@ -90,6 +107,15 @@ public static class TileSpatial
                     mb.Lp = new int[numComponents * 16];
                     MbLp.DecodeMb(ref reader, lpState, format, numComponents, mb.Lp);
                 }
+                if (hasHp)
+                {
+                    MbCbphp.DecodeMb(ref reader, cbphpState!, numComponents, cbphpBuf!);
+                    mb.Hp = new int[numComponents * 256];
+                    // Note: mb.MbHpMode is supplied by the caller-side state machine
+                    // (derived from LP coefficients); for this orchestrator we default
+                    // to mode 0 (horizontal scan) — same value the encoder used.
+                    MbHp.DecodeMb(ref reader, hpState!, mb.MbHpMode, format, numComponents, cbphpBuf!, mb.Hp);
+                }
                 mbs[row * widthInMb + col] = mb;
             }
         }
@@ -101,14 +127,15 @@ public static class TileSpatial
     private static void ValidateBandsAndMbs(
         JxrBandsPresent bands, int widthInMb, int heightInMb, Macroblock[] mbs, int numComponents)
     {
-        if (bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass)
-            throw new NotSupportedException($"TILE_SPATIAL.Write currently supports BANDS_PRESENT ∈ {{DcOnly, NoHighpass}} (got {bands})");
+        if (bands == JxrBandsPresent.AllBands)
+            throw new NotSupportedException("TILE_SPATIAL.Write AllBands (with FlexBits refinement) not yet supported");
         if (widthInMb < 1 || heightInMb < 1)
             throw new ArgumentOutOfRangeException(nameof(widthInMb), "tile must contain at least one macroblock");
         if (mbs.Length != widthInMb * heightInMb)
             throw new ArgumentException(
                 $"mbs has length {mbs.Length}, expected {widthInMb * heightInMb} ({widthInMb}×{heightInMb})",
                 nameof(mbs));
+        var hasHp = bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass;
         for (var i = 0; i < mbs.Length; i++)
         {
             if (mbs[i] is null)
@@ -120,6 +147,10 @@ public static class TileSpatial
             if (bands != JxrBandsPresent.DcOnly && mbs[i].Lp.Length < numComponents * 16)
                 throw new ArgumentException(
                     $"mbs[{i}].Lp has length {mbs[i].Lp.Length}, expected ≥ {numComponents * 16} for BANDS_PRESENT={bands}",
+                    nameof(mbs));
+            if (hasHp && mbs[i].Hp.Length < numComponents * 256)
+                throw new ArgumentException(
+                    $"mbs[{i}].Hp has length {mbs[i].Hp.Length}, expected ≥ {numComponents * 256} for BANDS_PRESENT={bands}",
                     nameof(mbs));
         }
     }

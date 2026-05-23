@@ -246,6 +246,44 @@ public static class MbHp
     /// that this method doesn't implement. Luma-only or full-size-chroma
     /// only for now.
     /// </summary>
+    /// <summary>
+    /// Compute the per-component CBPHP bitmap for an MB without writing any
+    /// bits. The result matches what <see cref="EncodeMb"/> would have
+    /// written into its <c>cbphpOut</c> argument and is suitable for feeding
+    /// to <see cref="MbCbphp.EncodeMb"/> (which must run BEFORE
+    /// <see cref="EncodeMb"/> in the codestream, per T.832 §8.7.16).
+    /// </summary>
+    /// <param name="blocks"><c>numComponents × 256</c> ints (16 4×4 blocks per component, position 0 unused).</param>
+    /// <param name="cbphpOut">Per-component CBPHP bitmaps. Bit <c>i</c> is set if block
+    /// <c>HierScanOrder[i]</c> of that component has any non-zero coefficient in positions 1..15.</param>
+    public static void ComputeCbphp(int numComponents, ReadOnlySpan<int> blocks, Span<int> cbphpOut)
+    {
+        if (blocks.Length < numComponents * 256)
+            throw new ArgumentException($"blocks must hold {numComponents} × 256 ints", nameof(blocks));
+        if (cbphpOut.Length < numComponents)
+            throw new ArgumentException($"cbphpOut must hold ≥ {numComponents} ints", nameof(cbphpOut));
+
+        for (var c = 0; c < numComponents; c++)
+        {
+            var componentBlocks = blocks.Slice(c * 256, 256);
+            var componentCbphp = 0;
+            for (var i = 0; i < 16; i++)
+            {
+                var iBlockMap = (int)HierScanOrder[i];
+                var blockSpan = componentBlocks.Slice(iBlockMap * 16, 16);
+                for (var p = 1; p < 16; p++)
+                {
+                    if (blockSpan[p] != 0)
+                    {
+                        componentCbphp |= 1 << i;
+                        break;
+                    }
+                }
+            }
+            cbphpOut[c] = componentCbphp;
+        }
+    }
+
     private static void EnsureFullSizeChroma(JxrInternalColorFormat format)
     {
         if (format == JxrInternalColorFormat.YUV420 || format == JxrInternalColorFormat.YUV422)
