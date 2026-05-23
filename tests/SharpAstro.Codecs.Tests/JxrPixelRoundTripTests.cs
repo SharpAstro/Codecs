@@ -554,6 +554,114 @@ public sealed class JxrPixelRoundTripTests
             decoded[i].ShouldBe(src[i], $"sample {i}");
     }
 
+    // ----------------------------------------------------------------------
+    // BD16F — IEEE binary16 (half-float). The HDR-master target for linear-
+    // light / radiance pipelines. Same integer pipeline as BD16; the bit
+    // patterns round-trip exactly.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Bd16FGrayscale_Zeroes_RoundTrips()
+    {
+        var src = new ushort[16 * 16]; // all zeros = +0.0 half-floats
+        var bytes = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16FGrayscaleNoFlexbits(bytes, out var w, out var h);
+        w.ShouldBe(16);
+        h.ShouldBe(16);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe((ushort)0);
+    }
+
+    [Theory]
+    [InlineData((ushort)0x0000)] // +0.0
+    [InlineData((ushort)0x8000)] // -0.0
+    [InlineData((ushort)0x3C00)] // +1.0
+    [InlineData((ushort)0xBC00)] // -1.0
+    [InlineData((ushort)0x7BFF)] // +max normal
+    [InlineData((ushort)0xFBFF)] // -max normal
+    public void Bd16FGrayscale_UniformHalfBits_RoundTrip(ushort halfPattern)
+    {
+        var src = new ushort[16 * 16];
+        Array.Fill(src, halfPattern);
+        var bytes = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16FGrayscaleNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(halfPattern, $"pixel {i}");
+    }
+
+    [Fact]
+    public void Bd16FGrayscale_RandomBits_IsLossless()
+    {
+        // Random 16-bit patterns — includes some NaN, Inf, denormals. The integer
+        // FCT pipeline must preserve them as bit patterns.
+        var rng = new Random(unchecked((int)0xF10A75));
+        var src = new ushort[16 * 16];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16FGrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Bd16FRgb_UniformWhite_RoundTrips()
+    {
+        // +1.0 across all three channels: 0x3C00 = IEEE half-float 1.0.
+        const ushort one = 0x3C00;
+        var src = new ushort[16 * 16 * 3];
+        Array.Fill(src, one);
+
+        var bytes = JxrEncoder.EncodeBd16FRgbNoFlexbits(src, 16, 16);
+        var decoded = JxrDecoder.DecodeBd16FRgbNoFlexbits(bytes, out var w, out var h);
+        w.ShouldBe(16);
+        h.ShouldBe(16);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(one);
+    }
+
+    [Fact]
+    public void Bd16FRgb_Random_32x32_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0xF10AF10A));
+        var src = new ushort[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16FRgbNoFlexbits(src, 32, 32);
+        var decoded = JxrDecoder.DecodeBd16FRgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Bd16FRgb_Random_64x64_IsLossless()
+    {
+        // The full HDR-master deliverable shape: 64×64 half-float RGB.
+        var rng = new Random(unchecked((int)0xAAAA5555));
+        var src = new ushort[64 * 64 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16FRgbNoFlexbits(src, 64, 64);
+        var decoded = JxrDecoder.DecodeBd16FRgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Bd16FRgb_PlaneHeaderCarriesHalfFloatMetadata()
+    {
+        // Verify the IMAGE_PLANE_HEADER actually advertises the half-float layout
+        // (LEN_MANTISSA=10, EXP_BIAS=15-128) so downstream tools can interpret.
+        var src = new ushort[16 * 16 * 3];
+        var bytes = JxrEncoder.EncodeBd16FRgbNoFlexbits(src, 16, 16);
+
+        var img = CodedImage.Decode(bytes);
+        img.ImageHeader.OutputBitDepth.ShouldBe(JxrOutputBitDepth.Bd16F);
+        img.PlaneHeader.LenMantissa.ShouldBe((byte)10);
+        img.PlaneHeader.ExpBias.ShouldBe((sbyte)(15 - 128));
+    }
+
     [Fact]
     public void HpPredictionAlone_HorizontalGradient_RoundTrips()
     {

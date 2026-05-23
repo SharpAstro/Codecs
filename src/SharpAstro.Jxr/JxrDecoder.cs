@@ -474,4 +474,97 @@ public static class JxrDecoder
             pixels[((y0 + r) * width + (x0 + c)) * 3 + comp] = (ushort)v;
         }
     }
+
+    /// <summary>
+    /// Decode a BD16F + YOnly + NoFlexbits codestream — half-float monochrome. The
+    /// returned ushorts are IEEE binary16 bit patterns (same layout as
+    /// <c>System.Half</c>).
+    /// </summary>
+    public static ushort[] DecodeBd16FGrayscaleNoFlexbits(
+        ReadOnlySpan<byte> codestream, out int width, out int height)
+    {
+        var img = CodedImage.Decode(codestream);
+        ValidateBd16F(img, JxrOutputColorFormat.YOnly, JxrInternalColorFormat.YOnly);
+
+        width = img.Width;
+        height = img.Height;
+        if ((width & 15) != 0 || (height & 15) != 0)
+            throw new NotSupportedException("non-multiple-of-16 dimensions not yet supported");
+
+        return DecodeBd16PipelineCore(img, numComponents: 1, JxrInternalColorFormat.YOnly);
+    }
+
+    /// <summary>
+    /// Decode a BD16F + Rgb + NoFlexbits codestream — half-float RGB, the HDR-master
+    /// deliverable. Returns interleaved <c>R, G, B</c> half-float bit patterns.
+    /// </summary>
+    public static ushort[] DecodeBd16FRgbNoFlexbits(
+        ReadOnlySpan<byte> codestream, out int width, out int height)
+    {
+        var img = CodedImage.Decode(codestream);
+        ValidateBd16F(img, JxrOutputColorFormat.Rgb, JxrInternalColorFormat.Rgb);
+
+        width = img.Width;
+        height = img.Height;
+        if ((width & 15) != 0 || (height & 15) != 0)
+            throw new NotSupportedException("non-multiple-of-16 dimensions not yet supported");
+
+        return DecodeBd16PipelineCore(img, numComponents: 3, JxrInternalColorFormat.Rgb);
+    }
+
+    private static void ValidateBd16F(CodedImage img,
+        JxrOutputColorFormat expectedOut, JxrInternalColorFormat expectedInternal)
+    {
+        if (img.ImageHeader.OutputClrFmt != expectedOut ||
+            img.ImageHeader.OutputBitDepth != JxrOutputBitDepth.Bd16F ||
+            img.PlaneHeader.InternalClrFmt != expectedInternal ||
+            img.PlaneHeader.BandsPresent != JxrBandsPresent.NoFlexbits)
+        {
+            throw new NotSupportedException(
+                $"BD16F decode expects {expectedOut}/Bd16F/{expectedInternal}/NoFlexbits; got " +
+                $"{img.ImageHeader.OutputClrFmt}/{img.ImageHeader.OutputBitDepth}/" +
+                $"{img.PlaneHeader.InternalClrFmt}/{img.PlaneHeader.BandsPresent}");
+        }
+    }
+
+    private static ushort[] DecodeBd16PipelineCore(CodedImage img, int numComponents, JxrInternalColorFormat format)
+    {
+        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, format, numComponents);
+
+        var width = img.Width;
+        var height = img.Height;
+        var mbW = img.WidthInMb;
+        var mbH = img.HeightInMb;
+
+        var pixels = numComponents == 1
+            ? new ushort[width * height]
+            : new ushort[width * height * numComponents];
+
+        Span<int> subBlock = stackalloc int[16];
+        Span<int> dcGrid = stackalloc int[16];
+
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var comp = 0; comp < numComponents; comp++)
+        {
+            for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, comp, p];
+            Transforms.ICT4x4(dcGrid);
+
+            for (var sbRow = 0; sbRow < 4; sbRow++)
+            for (var sbCol = 0; sbCol < 4; sbCol++)
+            {
+                var blkIdx = sbRow * 4 + sbCol;
+                subBlock[0] = dcGrid[blkIdx];
+                for (var p = 1; p < 16; p++)
+                    subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
+                Transforms.ICT4x4(subBlock);
+
+                if (numComponents == 1)
+                    StoreSubBlock16(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
+                else
+                    StoreSubBlock16Rgb(pixels, width, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+            }
+        }
+        return pixels;
+    }
 }

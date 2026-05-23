@@ -88,6 +88,7 @@ public sealed class ImagePlaneHeader
             case JxrOutputBitDepth.Bd32S:
                 writer.WriteBits(ShiftBits, 8);
                 break;
+            case JxrOutputBitDepth.Bd16F:
             case JxrOutputBitDepth.Bd32F:
                 writer.WriteBits(LenMantissa, 8);
                 writer.WriteBits((uint)(byte)ExpBias, 8); // EXP_BIAS = i(8); raw 8 bits, two's-complement.
@@ -161,6 +162,7 @@ public sealed class ImagePlaneHeader
             case JxrOutputBitDepth.Bd32S:
                 h.ShiftBits = (byte)reader.ReadBits(8);
                 break;
+            case JxrOutputBitDepth.Bd16F:
             case JxrOutputBitDepth.Bd32F:
                 h.LenMantissa = (byte)reader.ReadBits(8);
                 h.ExpBias = unchecked((sbyte)reader.ReadBits(8));
