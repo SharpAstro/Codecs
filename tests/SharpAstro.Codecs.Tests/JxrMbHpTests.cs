@@ -122,6 +122,87 @@ public sealed class JxrMbHpTests
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Multi-component (RGB / NComponent / YUV444 / YUVK)
+    // -----------------------------------------------------------------------
+
+    private static int[] RandomMultiComponentMb(int numComponents, Random rng, int density = 4)
+    {
+        var mb = new int[numComponents * 256];
+        for (var c = 0; c < numComponents; c++)
+            for (var b = 0; b < 16; b++)
+                for (var p = 1; p < 16; p++)
+                    if (rng.Next(0, density) == 0)
+                        mb[c * 256 + b * 16 + p] = rng.Next(-100, 101);
+        return mb;
+    }
+
+    [Theory]
+    [InlineData(JxrInternalColorFormat.Rgb, 3, 0)]
+    [InlineData(JxrInternalColorFormat.Rgb, 3, 1)]
+    [InlineData(JxrInternalColorFormat.YUV444, 3, 0)]
+    [InlineData(JxrInternalColorFormat.NComponent, 4, 0)]
+    [InlineData(JxrInternalColorFormat.YUVK, 4, 1)]
+    public void MultiComponentMb_RoundTrips(JxrInternalColorFormat format, int numComponents, int mbhpMode)
+    {
+        var rng = new Random(0x4242 + (int)format);
+        var mb = RandomMultiComponentMb(numComponents, rng);
+
+        var encState = new MbHpState();
+        var w = new BitWriter();
+        var cbphpOut = new int[numComponents];
+        MbHp.EncodeMb(w, encState, mbhpMode, format, numComponents, mb, cbphpOut);
+
+        var decState = new MbHpState();
+        var r = new BitReader(w.AsSpan());
+        var decoded = new int[numComponents * 256];
+        MbHp.DecodeMb(ref r, decState, mbhpMode, format, numComponents, cbphpOut, decoded);
+
+        for (var c = 0; c < numComponents; c++)
+            for (var b = 0; b < 16; b++)
+                for (var p = 1; p < 16; p++)
+                    decoded[c * 256 + b * 16 + p].ShouldBe(mb[c * 256 + b * 16 + p],
+                        $"component {c} block {b} pos {p}");
+    }
+
+    [Fact]
+    public void MultiComponentMb_RandomSweep()
+    {
+        var rng = new Random(unchecked((int)0xBEEFCAFE));
+        for (var trial = 0; trial < 30; trial++)
+        {
+            var format = JxrInternalColorFormat.Rgb;
+            var mb = RandomMultiComponentMb(3, rng);
+
+            var encState = new MbHpState();
+            var w = new BitWriter();
+            var cbphpOut = new int[3];
+            MbHp.EncodeMb(w, encState, mbhpMode: 0, format, 3, mb, cbphpOut);
+
+            var decState = new MbHpState();
+            var r = new BitReader(w.AsSpan());
+            var decoded = new int[768];
+            MbHp.DecodeMb(ref r, decState, mbhpMode: 0, format, 3, cbphpOut, decoded);
+
+            for (var i = 0; i < 768; i++)
+            {
+                if (i % 16 == 0) continue; // skip DC position of each block
+                decoded[i].ShouldBe(mb[i], $"trial {trial} index {i}");
+            }
+        }
+    }
+
+    [Fact]
+    public void YuvSubsampled_NotYetSupported_Throws()
+    {
+        var state = new MbHpState();
+        var w = new BitWriter();
+        Should.Throw<NotSupportedException>(() =>
+            MbHp.EncodeMb(w, state, 0, JxrInternalColorFormat.YUV420, 3, new int[768], new int[3]));
+        Should.Throw<NotSupportedException>(() =>
+            MbHp.EncodeMb(w, state, 0, JxrInternalColorFormat.YUV422, 3, new int[768], new int[3]));
+    }
+
     [Fact]
     public void CbphpBitOrdering_MatchesHierScanIterationOrder()
     {

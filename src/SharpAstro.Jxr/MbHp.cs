@@ -123,6 +123,137 @@ public static class MbHp
             numComponents: 1);
     }
 
+    /// <summary>
+    /// Encode the HP-band of one multi-component macroblock for formats
+    /// where every component has 16 blocks (4×4): RGB, NComponent, YUV444,
+    /// YUVK. Component 0 is treated as Luma, components 1..N-1 as Chroma.
+    /// </summary>
+    /// <param name="blocks"><c>numComponents * 256</c> ints, contiguous per component.</param>
+    /// <param name="cbphpOut">Per-component CBPHP bitmaps (length ≥ numComponents). Populated on return.</param>
+    public static void EncodeMb(
+        BitWriter writer,
+        MbHpState state,
+        int mbhpMode,
+        JxrInternalColorFormat format,
+        int numComponents,
+        ReadOnlySpan<int> blocks,
+        Span<int> cbphpOut)
+    {
+        EnsureFullSizeChroma(format);
+        if (blocks.Length < numComponents * 256)
+            throw new ArgumentException($"blocks must hold {numComponents} components × 256 ints", nameof(blocks));
+        if (cbphpOut.Length < numComponents)
+            throw new ArgumentException($"cbphpOut must hold {numComponents} ints", nameof(cbphpOut));
+
+        var scan = mbhpMode == 1 ? state.ScanVertical : state.ScanHorizontal;
+        var iLapMeanLum = 0;
+        var iLapMeanChr = 0;
+
+        for (var c = 0; c < numComponents; c++)
+        {
+            var bChroma = c > 0;
+            var componentBlocks = blocks.Slice(c * 256, 256);
+            var componentCbphp = 0;
+
+            for (var i = 0; i < 16; i++)
+            {
+                var iBlockMap = (int)HierScanOrder[i];
+                var blockSpan = componentBlocks.Slice(iBlockMap * 16, 16);
+
+                var hasNonZero = false;
+                for (var p = 1; p < 16; p++)
+                {
+                    if (blockSpan[p] != 0)
+                    {
+                        hasNonZero = true;
+                        break;
+                    }
+                }
+
+                if (hasNonZero)
+                {
+                    componentCbphp |= 1 << i;
+                    var n = EncodeBlock(writer, state, scan, bChroma, blockSpan);
+                    if (bChroma) iLapMeanChr += n;
+                    else iLapMeanLum += n;
+                }
+            }
+
+            cbphpOut[c] = componentCbphp;
+        }
+
+        CoefficientModel.Update(
+            ref state.Model,
+            iLapMean0: iLapMeanLum,
+            iLapMean1: iLapMeanChr,
+            CoefficientModel.Band.Hp,
+            format,
+            numComponents);
+    }
+
+    /// <summary>Decode the HP-band of one multi-component macroblock — dual of <see cref="EncodeMb"/>.</summary>
+    public static void DecodeMb(
+        ref BitReader reader,
+        MbHpState state,
+        int mbhpMode,
+        JxrInternalColorFormat format,
+        int numComponents,
+        ReadOnlySpan<int> cbphpPerComponent,
+        Span<int> blocks)
+    {
+        EnsureFullSizeChroma(format);
+        if (blocks.Length < numComponents * 256)
+            throw new ArgumentException($"blocks must hold {numComponents} components × 256 ints", nameof(blocks));
+        if (cbphpPerComponent.Length < numComponents)
+            throw new ArgumentException($"cbphpPerComponent must hold {numComponents} ints", nameof(cbphpPerComponent));
+
+        // Zero AC positions; DC positions are caller's responsibility.
+        for (var c = 0; c < numComponents; c++)
+            for (var b = 0; b < 16; b++)
+                for (var p = 1; p < 16; p++)
+                    blocks[c * 256 + b * 16 + p] = 0;
+
+        var scan = mbhpMode == 1 ? state.ScanVertical : state.ScanHorizontal;
+        var iLapMeanLum = 0;
+        var iLapMeanChr = 0;
+
+        for (var c = 0; c < numComponents; c++)
+        {
+            var bChroma = c > 0;
+            var componentCbphp = cbphpPerComponent[c];
+            for (var i = 0; i < 16; i++)
+            {
+                if ((componentCbphp & (1 << i)) == 0) continue;
+                var iBlockMap = (int)HierScanOrder[i];
+                var n = DecodeBlock(ref reader, state, scan, bChroma, blocks.Slice(c * 256 + iBlockMap * 16, 16));
+                if (bChroma) iLapMeanChr += n;
+                else iLapMeanLum += n;
+            }
+        }
+
+        CoefficientModel.Update(
+            ref state.Model,
+            iLapMean0: iLapMeanLum,
+            iLapMean1: iLapMeanChr,
+            CoefficientModel.Band.Hp,
+            format,
+            numComponents);
+    }
+
+    /// <summary>
+    /// Reject YUV420/YUV422 formats — these have reduced chroma block counts
+    /// (1 or 2 blocks per chroma component) and need a separate code path
+    /// that this method doesn't implement. Luma-only or full-size-chroma
+    /// only for now.
+    /// </summary>
+    private static void EnsureFullSizeChroma(JxrInternalColorFormat format)
+    {
+        if (format == JxrInternalColorFormat.YUV420 || format == JxrInternalColorFormat.YUV422)
+            throw new NotSupportedException(
+                "MbHp.EncodeMb / DecodeMb does not yet handle YUV420 or YUV422 chroma subsampling; " +
+                "use the dedicated YUV420/YUV422 path (not yet implemented) for those formats.");
+    }
+
     // -----------------------------------------------------------------------
     // Snapshot/restore wrappers around BlockAdaptive
     //
