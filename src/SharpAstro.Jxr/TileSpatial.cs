@@ -9,14 +9,15 @@ namespace SharpAstro.Jxr;
 /// <c>MB_DC → MB_LP? → MB_CBPHP? → MB_HP? → FlexBits?</c>.
 /// </summary>
 /// <remarks>
-/// <para>This first cut intentionally restricts the supported configurations:</para>
+/// <para>Currently supported <c>BANDS_PRESENT</c> values:</para>
 /// <list type="bullet">
-///   <item><c>BANDS_PRESENT</c> currently must be <see cref="JxrBandsPresent.DcOnly"/>.
-///         LP / HP / FlexBits paths land in follow-on commits — the MB_LP / MB_HP /
-///         MB_CBPHP coders already exist, but wiring them in needs additional
-///         neighbour-prediction state which has its own scope.</item>
-///   <item>FlexBits refinement (BANDS_PRESENT == AllBands) — deferred with the HP work.</item>
+///   <item><see cref="JxrBandsPresent.DcOnly"/> — emits only MB_DC per macroblock.</item>
+///   <item><see cref="JxrBandsPresent.NoHighpass"/> — emits MB_DC + MB_LP. Restricted to
+///         CBPLP_CH_BIT formats (YOnly / YUVK / NComponent / Rgb); the YUV420/422/444
+///         CBPLP_YUV1/YUV2 joint-VLC path lives in MbLp and is not yet wired.</item>
 /// </list>
+/// <para>NoFlexbits and AllBands paths (which add MB_CBPHP + MB_HP + FlexBits) land
+/// in follow-on commits.</para>
 /// </remarks>
 public static class TileSpatial
 {
@@ -41,7 +42,8 @@ public static class TileSpatial
         headers.Write(writer, bands, trimFlexBitsFlag);
 
         var dcState = new MbDcState();
-        // LP / HP / CBPHP states will land here when bands beyond DcOnly are supported.
+        var lpState = bands != JxrBandsPresent.DcOnly ? new MbLpState() : null;
+        // HP / CBPHP states will land here when bands include the HP subband.
 
         for (var row = 0; row < heightInMb; row++)
         {
@@ -49,7 +51,9 @@ public static class TileSpatial
             {
                 var mb = mbs[row * widthInMb + col];
                 MbDc.EncodeMb(writer, dcState, format, numComponents, mb.Dc);
-                // BANDS_PRESENT != DcOnly paths fall through here in later iterations.
+                if (lpState is not null)
+                    MbLp.EncodeMb(writer, lpState, format, numComponents, mb.Lp);
+                // HP+CBPHP dispatch slots in here.
             }
         }
 
@@ -67,12 +71,13 @@ public static class TileSpatial
         int heightInMb,
         out TileBandHeaders headers)
     {
-        if (bands != JxrBandsPresent.DcOnly)
-            throw new NotSupportedException($"TILE_SPATIAL.Read currently supports BANDS_PRESENT=DcOnly only (got {bands})");
+        if (bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass)
+            throw new NotSupportedException($"TILE_SPATIAL.Read currently supports BANDS_PRESENT ∈ {{DcOnly, NoHighpass}} (got {bands})");
 
         headers = TileBandHeaders.Read(ref reader, bands, trimFlexBitsFlag);
 
         var dcState = new MbDcState();
+        var lpState = bands != JxrBandsPresent.DcOnly ? new MbLpState() : null;
         var mbs = new Macroblock[widthInMb * heightInMb];
         for (var row = 0; row < heightInMb; row++)
         {
@@ -80,6 +85,11 @@ public static class TileSpatial
             {
                 var mb = new Macroblock { Dc = new int[numComponents] };
                 MbDc.DecodeMb(ref reader, dcState, format, numComponents, mb.Dc);
+                if (lpState is not null)
+                {
+                    mb.Lp = new int[numComponents * 16];
+                    MbLp.DecodeMb(ref reader, lpState, format, numComponents, mb.Lp);
+                }
                 mbs[row * widthInMb + col] = mb;
             }
         }
@@ -91,8 +101,8 @@ public static class TileSpatial
     private static void ValidateBandsAndMbs(
         JxrBandsPresent bands, int widthInMb, int heightInMb, Macroblock[] mbs, int numComponents)
     {
-        if (bands != JxrBandsPresent.DcOnly)
-            throw new NotSupportedException($"TILE_SPATIAL.Write currently supports BANDS_PRESENT=DcOnly only (got {bands})");
+        if (bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass)
+            throw new NotSupportedException($"TILE_SPATIAL.Write currently supports BANDS_PRESENT ∈ {{DcOnly, NoHighpass}} (got {bands})");
         if (widthInMb < 1 || heightInMb < 1)
             throw new ArgumentOutOfRangeException(nameof(widthInMb), "tile must contain at least one macroblock");
         if (mbs.Length != widthInMb * heightInMb)
@@ -106,6 +116,10 @@ public static class TileSpatial
             if (mbs[i].Dc.Length < numComponents)
                 throw new ArgumentException(
                     $"mbs[{i}].Dc has length {mbs[i].Dc.Length}, expected ≥ {numComponents}",
+                    nameof(mbs));
+            if (bands != JxrBandsPresent.DcOnly && mbs[i].Lp.Length < numComponents * 16)
+                throw new ArgumentException(
+                    $"mbs[{i}].Lp has length {mbs[i].Lp.Length}, expected ≥ {numComponents * 16} for BANDS_PRESENT={bands}",
                     nameof(mbs));
         }
     }
