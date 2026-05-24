@@ -110,15 +110,28 @@ public static class JxrEncoder
     /// </summary>
     public static byte[] EncodeBd8GrayscaleNoFlexbits(byte[] pixels, int width, int height,
         JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
         if (pixels.Length < width * height)
             throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height}");
+        if (overlapMode is < 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(overlapMode), "supported values are 0 (no POT) and 1 (single-stage POT)");
 
         var mbW = (width + 15) >> 4;
         var mbH = (height + 15) >> 4;
+
+        // Pre-scaled working buffer: image-sized signed ints. For OverlapMode=1
+        // we apply POT in pixel space before the FCT cascade reads sub-blocks.
+        var working = new int[width * height];
+        for (var y = 0; y < height; y++)
+        for (var x = 0; x < width; x++)
+            working[y * width + x] = pixels[y * width + x] - Bd8Bias;
+
+        if (overlapMode == 1)
+            ApplyPreFilterPot(working, width, height);
 
         // Storage shaped for the prediction layers.
         var mbDc = new int[mbW, mbH, 1];
@@ -135,7 +148,7 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                LoadSubBlock(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
+                LoadSubBlockFromWorking(working, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
@@ -211,7 +224,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd8, tiling),
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd8, tiling, overlapMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = JxrInternalColorFormat.YOnly,
@@ -232,7 +245,8 @@ public static class JxrEncoder
     /// optionally populating the tile-grid fields if a layout is supplied.
     /// </summary>
     internal static ImageHeader BuildImageHeader(int width, int height,
-        JxrOutputColorFormat outFmt, JxrOutputBitDepth outBd, JxrTileLayout? tiling)
+        JxrOutputColorFormat outFmt, JxrOutputBitDepth outBd, JxrTileLayout? tiling,
+        int overlapMode = 0)
     {
         var h = new ImageHeader
         {
@@ -241,6 +255,7 @@ public static class JxrEncoder
             ShortHeaderFlag = true,
             WidthMinus1 = (uint)(width - 1),
             HeightMinus1 = (uint)(height - 1),
+            OverlapMode = overlapMode,
         };
         if (tiling is not null)
         {
@@ -251,6 +266,62 @@ public static class JxrEncoder
             h.TileHeightInMb = tiling.TileHeightInMb;
         }
         return h;
+    }
+
+    /// <summary>
+    /// OverlapMode=1 forward POT — apply <see cref="OverlapFilters.OverlapPreFilter4x4"/>
+    /// to every 4×4 patch centred on a sub-block-grid junction whose full
+    /// footprint lies inside the image. The working buffer is updated in place;
+    /// subsequent sub-block extraction reads the POT-modified values.
+    /// </summary>
+    internal static void ApplyPreFilterPot(int[] working, int width, int height)
+    {
+        Span<int> patch = stackalloc int[16];
+        // Sub-block grid lines are at multiples of 4. A POT patch centred at
+        // (jx, jy) covers pixels (jx-2..jx+1, jy-2..jy+1) — only valid when
+        // both jx and jy ≥ 2 and ≤ width-2 / height-2.
+        for (var jy = 4; jy + 2 <= height; jy += 4)
+        for (var jx = 4; jx + 2 <= width;  jx += 4)
+        {
+            // Extract 4×4 patch.
+            for (var r = 0; r < 4; r++)
+            for (var c = 0; c < 4; c++)
+                patch[r * 4 + c] = working[(jy - 2 + r) * width + (jx - 2 + c)];
+            OverlapFilters.OverlapPreFilter4x4(patch);
+            // Write back.
+            for (var r = 0; r < 4; r++)
+            for (var c = 0; c < 4; c++)
+                working[(jy - 2 + r) * width + (jx - 2 + c)] = patch[r * 4 + c];
+        }
+    }
+
+    /// <summary>OverlapMode=1 inverse POT — applies <see cref="OverlapFilters.OverlapPostFilter4x4"/> at the same patch positions.</summary>
+    internal static void ApplyPostFilterPot(int[] working, int width, int height)
+    {
+        Span<int> patch = stackalloc int[16];
+        for (var jy = 4; jy + 2 <= height; jy += 4)
+        for (var jx = 4; jx + 2 <= width;  jx += 4)
+        {
+            for (var r = 0; r < 4; r++)
+            for (var c = 0; c < 4; c++)
+                patch[r * 4 + c] = working[(jy - 2 + r) * width + (jx - 2 + c)];
+            OverlapFilters.OverlapPostFilter4x4(patch);
+            for (var r = 0; r < 4; r++)
+            for (var c = 0; c < 4; c++)
+                working[(jy - 2 + r) * width + (jx - 2 + c)] = patch[r * 4 + c];
+        }
+    }
+
+    /// <summary>Load a 4×4 sub-block from a pre-scaled signed-int working buffer with edge clamping.</summary>
+    internal static void LoadSubBlockFromWorking(int[] working, int width, int height, int x0, int y0, Span<int> dst)
+    {
+        for (var r = 0; r < 4; r++)
+        for (var c = 0; c < 4; c++)
+        {
+            var y = y0 + r; if (y >= height) y = height - 1;
+            var x = x0 + c; if (x >= width)  x = width  - 1;
+            dst[r * 4 + c] = working[y * width + x];
+        }
     }
 
     /// <summary>

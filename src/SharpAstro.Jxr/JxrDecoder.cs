@@ -152,7 +152,10 @@ var mbW = img.WidthInMb;
         for (var mbx = 0; mbx < mbW; mbx++)
             mbDcLp[mbx, mby, 0, 0] = mbDc[mbx, mby, 0];
 
-        var pixels = new byte[width * height];
+        // Inverse FCT cascade into a signed-int working buffer. When OverlapMode=1
+        // is in effect, apply the POT post-filter at sub-block-grid junctions
+        // BEFORE un-prescaling to bytes.
+        var working = new int[width * height];
         Span<int> subBlock = stackalloc int[16];
         Span<int> dcGrid = stackalloc int[16];
 
@@ -170,11 +173,39 @@ var mbW = img.WidthInMb;
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, 0, blkIdx, p];
                 Transforms.ICT4x4(subBlock);
-                StoreSubBlock(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
+                StoreSubBlockToWorking(working, width, height,
+                    mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
             }
         }
 
+        if (img.ImageHeader.OverlapMode == 1)
+            JxrEncoder.ApplyPostFilterPot(working, width, height);
+        else if (img.ImageHeader.OverlapMode != 0)
+            throw new NotSupportedException($"OverlapMode {img.ImageHeader.OverlapMode} not yet supported (only 0 and 1)");
+
+        var pixels = new byte[width * height];
+        for (var y = 0; y < height; y++)
+        for (var x = 0; x < width; x++)
+        {
+            var v = working[y * width + x] + JxrEncoder.Bd8Bias;
+            if (v < 0) v = 0;
+            else if (v > 255) v = 255;
+            pixels[y * width + x] = (byte)v;
+        }
+
         return pixels;
+    }
+
+    /// <summary>Store a 4×4 sub-block of signed ints into the working buffer; out-of-bounds positions are ignored.</summary>
+    internal static void StoreSubBlockToWorking(int[] working, int width, int height, int x0, int y0, ReadOnlySpan<int> src)
+    {
+        for (var r = 0; r < 4; r++)
+        for (var c = 0; c < 4; c++)
+        {
+            var y = y0 + r; var x = x0 + c;
+            if (y >= height || x >= width) continue;
+            working[y * width + x] = src[r * 4 + c];
+        }
     }
 
     /// <summary>

@@ -993,6 +993,62 @@ public sealed class JxrPixelRoundTripTests
         top[0, 0].ShouldBeTrue("MB row 0 always tile-top");
     }
 
+    // ----------------------------------------------------------------------
+    // POT (OverlapMode > 0) — apply OverlapPreFilter4x4 at sub-block-grid
+    // junctions before FCT; decoder applies the inverse OverlapPostFilter4x4
+    // after ICT. Round-trip is bit-exact regardless of content.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Pot_Uniform_16x16_IsLossless()
+    {
+        var src = new byte[16 * 16];
+        Array.Fill(src, (byte)123);
+
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 16, 16, overlapMode: 1);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe((byte)123, $"pixel {i}");
+    }
+
+    [Fact]
+    public void Pot_Random_16x16_IsLossless()
+    {
+        // 16×16: 9 internal sub-block-grid junctions at {4,8,12}×{4,8,12}.
+        // All POT patches fit; the inverse pair guarantees round-trip.
+        var rng = new Random(unchecked((int)0x6075E001));
+        var src = new byte[16 * 16];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 16, 16, overlapMode: 1);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Pot_Random_32x32_IsLossless_CrossMb()
+    {
+        // 32×32 spans 2×2 MBs. Sub-block-grid junctions at multiples of 4 from
+        // 4 to 28 inclusive — 7 × 7 = 49 internal junctions. The junctions at
+        // x or y = 16 straddle the MB boundary; POT must compose correctly with
+        // the per-MB FCT cascade.
+        var rng = new Random(unchecked((int)0x6075E032));
+        var src = new byte[32 * 32];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 32, 32, overlapMode: 1);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Pot_HeaderRecordsOverlapMode()
+    {
+        var src = new byte[16 * 16];
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 16, 16, overlapMode: 1);
+        var img = CodedImage.Decode(bytes);
+        img.ImageHeader.OverlapMode.ShouldBe(1);
+    }
+
     [Fact]
     public void HpPredictionAlone_HorizontalGradient_RoundTrips()
     {
