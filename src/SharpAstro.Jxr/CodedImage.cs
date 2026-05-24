@@ -104,6 +104,22 @@ public sealed class CodedImage
             throw new NotSupportedException("CodedImage.Decode: frequency-mode codestream not yet supported");
 
         var plane = ImagePlaneHeader.Read(ref reader, img.OutputBitDepth);
+
+        // INDEX_TABLE_TILES (T.832 §8.7.1.3) sits between IMAGE_PLANE_HEADER and
+        // PROFILE_LEVEL_INFO when IndexTablePresentFlag is set. We don't yet
+        // exploit the seek offsets — sequential decode works either way — but
+        // we must read past the table or the next structure parses garbage.
+        if (img.IndexTablePresentFlag)
+        {
+            var numVerTiles = img.TilingFlag ? img.NumVerTilesMinus1 + 1 : 1;
+            var numHorTiles = img.TilingFlag ? img.NumHorTilesMinus1 + 1 : 1;
+            var tilesCount = numVerTiles * numHorTiles;
+            // Spatial mode: one entry per tile. Frequency mode would multiply
+            // by the number of present bands — when we add frequency-mode
+            // decode this expectation widens.
+            _ = IndexTableTiles.Read(ref reader, tilesCount);
+        }
+
         var profile = ProfileLevelInfo.Read(ref reader);
 
         var width = (int)(img.WidthMinus1 + 1);
