@@ -1050,6 +1050,73 @@ public sealed class JxrPixelRoundTripTests
     }
 
     [Fact]
+    public void Pot_Bd8Rgb_Random_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0xB055C8B));
+        var src = new byte[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 32, 32, overlapMode: 1);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void Pot_Bd16Grayscale_Random_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0x1605555));
+        var src = new ushort[32 * 32];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(src, 32, 32, overlapMode: 1);
+        var decoded = JxrDecoder.DecodeBd16GrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Pot_Bd16Rgb_Random_IsLossless()
+    {
+        // The full HDR-master path with POT: BD16 RGB, 32×32 random.
+        var rng = new Random(unchecked((int)0x16C8C8C8));
+        var src = new ushort[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 32, 32, overlapMode: 1);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Pot_Bd16FRgb_Random_IsLossless()
+    {
+        // Half-float HDR with POT.
+        var rng = new Random(unchecked((int)0x1F1F1F1F));
+        var src = new ushort[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16FRgbNoFlexbits(src, 32, 32, overlapMode: 1);
+        var decoded = JxrDecoder.DecodeBd16FRgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Pot_Bd16FGrayscale_Random_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0x16F16F16));
+        var src = new ushort[16 * 16];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(src, 16, 16, overlapMode: 1);
+        var decoded = JxrDecoder.DecodeBd16FGrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
     public void HpPredictionAlone_HorizontalGradient_RoundTrips()
     {
         // Isolate the HP-prediction layer from the codestream. Build mbHp

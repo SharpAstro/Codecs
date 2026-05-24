@@ -324,6 +324,59 @@ public static class JxrEncoder
         }
     }
 
+    /// <summary>Per-component variant of <see cref="LoadSubBlockFromWorking"/>; reads one channel from an interleaved working buffer.</summary>
+    internal static void LoadSubBlockFromWorkingRgb(int[] working, int width, int height,
+        int x0, int y0, int comp, int numComponents, Span<int> dst)
+    {
+        for (var r = 0; r < 4; r++)
+        for (var c = 0; c < 4; c++)
+        {
+            var y = y0 + r; if (y >= height) y = height - 1;
+            var x = x0 + c; if (x >= width)  x = width  - 1;
+            dst[r * 4 + c] = working[(y * width + x) * numComponents + comp];
+        }
+    }
+
+    /// <summary>
+    /// Per-component POT pre-filter for an interleaved RGB working buffer. Each
+    /// of the <paramref name="numComponents"/> channels gets its own pass — POT
+    /// is purely intra-channel, so the channels are independent.
+    /// </summary>
+    internal static void ApplyPreFilterPotRgb(int[] working, int width, int height, int numComponents)
+    {
+        Span<int> patch = stackalloc int[16];
+        for (var comp = 0; comp < numComponents; comp++)
+        for (var jy = 4; jy + 2 <= height; jy += 4)
+        for (var jx = 4; jx + 2 <= width;  jx += 4)
+        {
+            for (var r = 0; r < 4; r++)
+            for (var c = 0; c < 4; c++)
+                patch[r * 4 + c] = working[((jy - 2 + r) * width + (jx - 2 + c)) * numComponents + comp];
+            OverlapFilters.OverlapPreFilter4x4(patch);
+            for (var r = 0; r < 4; r++)
+            for (var c = 0; c < 4; c++)
+                working[((jy - 2 + r) * width + (jx - 2 + c)) * numComponents + comp] = patch[r * 4 + c];
+        }
+    }
+
+    /// <summary>Inverse of <see cref="ApplyPreFilterPotRgb"/> — per-component POT post-filter.</summary>
+    internal static void ApplyPostFilterPotRgb(int[] working, int width, int height, int numComponents)
+    {
+        Span<int> patch = stackalloc int[16];
+        for (var comp = 0; comp < numComponents; comp++)
+        for (var jy = 4; jy + 2 <= height; jy += 4)
+        for (var jx = 4; jx + 2 <= width;  jx += 4)
+        {
+            for (var r = 0; r < 4; r++)
+            for (var c = 0; c < 4; c++)
+                patch[r * 4 + c] = working[((jy - 2 + r) * width + (jx - 2 + c)) * numComponents + comp];
+            OverlapFilters.OverlapPostFilter4x4(patch);
+            for (var r = 0; r < 4; r++)
+            for (var c = 0; c < 4; c++)
+                working[((jy - 2 + r) * width + (jx - 2 + c)) * numComponents + comp] = patch[r * 4 + c];
+        }
+    }
+
     /// <summary>
     /// Encode an 8-bit RGB image (interleaved R, G, B in row-major order)
     /// with the NoFlexbits band configuration. Lossless for arbitrary
@@ -334,18 +387,26 @@ public static class JxrEncoder
     /// </param>
     public static byte[] EncodeBd8RgbNoFlexbits(byte[] pixels, int width, int height,
         JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
         if (pixels.Length < width * height * 3)
             throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height * 3}");
+        if (overlapMode is < 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(overlapMode), "supported values are 0 and 1");
 
         const int numComponents = 3;
         const JxrInternalColorFormat format = JxrInternalColorFormat.Rgb;
 
         var mbW = (width + 15) >> 4;
         var mbH = (height + 15) >> 4;
+
+        // Pre-scaled interleaved RGB working buffer.
+        var working = new int[width * height * 3];
+        for (var i = 0; i < width * height * 3; i++) working[i] = pixels[i] - Bd8Bias;
+        if (overlapMode == 1) ApplyPreFilterPotRgb(working, width, height, numComponents);
 
         var mbDc = new int[mbW, mbH, numComponents];
         var mbDcLp = new int[mbW, mbH, numComponents, 16];
@@ -361,7 +422,7 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                LoadSubBlockRgb(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+                LoadSubBlockFromWorkingRgb(working, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, numComponents, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
@@ -434,7 +495,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd8, tiling),
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd8, tiling, overlapMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -457,15 +518,22 @@ public static class JxrEncoder
     /// </summary>
     public static byte[] EncodeBd16GrayscaleNoFlexbits(ushort[] pixels, int width, int height,
         JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
         if (pixels.Length < width * height)
             throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height}");
+        if (overlapMode is < 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(overlapMode), "supported values are 0 and 1");
 
         var mbW = (width + 15) >> 4;
         var mbH = (height + 15) >> 4;
+
+        var working = new int[width * height];
+        for (var i = 0; i < width * height; i++) working[i] = pixels[i] - Bd16Bias;
+        if (overlapMode == 1) ApplyPreFilterPot(working, width, height);
 
         var mbDc = new int[mbW, mbH, 1];
         var mbDcLp = new int[mbW, mbH, 1, 16];
@@ -480,7 +548,7 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                LoadSubBlock16(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
+                LoadSubBlockFromWorking(working, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
@@ -543,7 +611,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd16, tiling),
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd16, tiling, overlapMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -566,18 +634,25 @@ public static class JxrEncoder
     /// </summary>
     public static byte[] EncodeBd16RgbNoFlexbits(ushort[] pixels, int width, int height,
         JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
         if (pixels.Length < width * height * 3)
             throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height * 3}");
+        if (overlapMode is < 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(overlapMode), "supported values are 0 and 1");
 
         const int numComponents = 3;
         const JxrInternalColorFormat format = JxrInternalColorFormat.Rgb;
 
         var mbW = (width + 15) >> 4;
         var mbH = (height + 15) >> 4;
+
+        var working = new int[width * height * 3];
+        for (var i = 0; i < width * height * 3; i++) working[i] = pixels[i] - Bd16Bias;
+        if (overlapMode == 1) ApplyPreFilterPotRgb(working, width, height, numComponents);
 
         var mbDc = new int[mbW, mbH, numComponents];
         var mbDcLp = new int[mbW, mbH, numComponents, 16];
@@ -593,7 +668,7 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                LoadSubBlock16Rgb(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+                LoadSubBlockFromWorkingRgb(working, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, numComponents, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
@@ -661,7 +736,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd16, tiling),
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd16, tiling, overlapMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -743,7 +818,8 @@ public static class JxrEncoder
     /// </remarks>
     public static byte[] EncodeBd16FGrayscaleNoFlexbits(ushort[] halfBits, int width, int height,
         JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0)
     {
         ValidateBd16F(halfBits, width, height, expectedComponents: 1);
 
@@ -759,16 +835,7 @@ public static class JxrEncoder
             expBias: 15 - 128,
             tiling: tiling,
             dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
-            loadSubBlock: (src, w, h, x0, y0, _, dst) =>
-            {
-                for (var r = 0; r < 4; r++)
-                for (var c = 0; c < 4; c++)
-                {
-                    var y = y0 + r; if (y >= h) y = h - 1;
-                    var x = x0 + c; if (x >= w) x = w - 1;
-                    dst[r * 4 + c] = src[y * w + x] - Bd16Bias;
-                }
-            });
+            overlapMode: overlapMode);
         return bytes;
     }
 
@@ -778,7 +845,8 @@ public static class JxrEncoder
     /// </summary>
     public static byte[] EncodeBd16FRgbNoFlexbits(ushort[] halfBits, int width, int height,
         JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0)
     {
         ValidateBd16F(halfBits, width, height, expectedComponents: 3);
 
@@ -794,16 +862,7 @@ public static class JxrEncoder
             expBias: 15 - 128,
             tiling: tiling,
             dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
-            loadSubBlock: (src, w, h, x0, y0, comp, dst) =>
-            {
-                for (var r = 0; r < 4; r++)
-                for (var c = 0; c < 4; c++)
-                {
-                    var y = y0 + r; if (y >= h) y = h - 1;
-                    var x = x0 + c; if (x >= w) x = w - 1;
-                    dst[r * 4 + c] = src[(y * w + x) * 3 + comp] - Bd16Bias;
-                }
-            });
+            overlapMode: overlapMode);
     }
 
     private static void ValidateBd16F(ushort[] halfBits, int width, int height, int expectedComponents)
@@ -813,8 +872,6 @@ public static class JxrEncoder
         if (halfBits.Length < width * height * expectedComponents)
             throw new ArgumentException($"halfBits has length {halfBits.Length}, expected ≥ {width * height * expectedComponents}");
     }
-
-    private delegate void LoadSubBlockUshort(ushort[] src, int width, int height, int x0, int y0, int comp, Span<int> dst);
 
     private static byte[] EncodeBd16PipelineCore(
         ushort[] src,
@@ -830,10 +887,23 @@ public static class JxrEncoder
         byte dcQp,
         byte lpQp,
         byte hpQp,
-        LoadSubBlockUshort loadSubBlock)
+        int overlapMode = 0)
     {
+        if (overlapMode is < 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(overlapMode), "supported values are 0 and 1");
+
         var mbW = (width + 15) >> 4;
         var mbH = (height + 15) >> 4;
+
+        // Pre-scaled signed-int working buffer. Layout: width × height × numComponents
+        // interleaved (single-component case degenerates to a flat ints buffer).
+        var working = new int[width * height * numComponents];
+        for (var i = 0; i < width * height * numComponents; i++) working[i] = src[i] - Bd16Bias;
+        if (overlapMode == 1)
+        {
+            if (numComponents == 1) ApplyPreFilterPot(working, width, height);
+            else ApplyPreFilterPotRgb(working, width, height, numComponents);
+        }
 
         var mbDc = new int[mbW, mbH, numComponents];
         var mbDcLp = new int[mbW, mbH, numComponents, 16];
@@ -849,7 +919,12 @@ public static class JxrEncoder
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                loadSubBlock(src, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+                var x0 = mbx * 16 + sbCol * 4;
+                var y0 = mby * 16 + sbRow * 4;
+                if (numComponents == 1)
+                    LoadSubBlockFromWorking(working, width, height, x0, y0, subBlock);
+                else
+                    LoadSubBlockFromWorkingRgb(working, width, height, x0, y0, comp, numComponents, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
                 dcGrid[blkIdx] = subBlock[0];
@@ -917,7 +992,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, outputClrFmt, outputBitDepth, tiling),
+            ImageHeader = BuildImageHeader(width, height, outputClrFmt, outputBitDepth, tiling, overlapMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,

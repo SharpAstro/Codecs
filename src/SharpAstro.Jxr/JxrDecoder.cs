@@ -286,7 +286,8 @@ const int numComponents = 3;
         for (var comp = 0; comp < numComponents; comp++)
             mbDcLp[mbx, mby, comp, 0] = mbDc[mbx, mby, comp];
 
-        var pixels = new byte[width * height * 3];
+        // Inverse FCT into signed-int working buffer (interleaved RGB).
+        var working = new int[width * height * 3];
         Span<int> subBlock = stackalloc int[16];
         Span<int> dcGrid = stackalloc int[16];
 
@@ -305,11 +306,38 @@ const int numComponents = 3;
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
                 Transforms.ICT4x4(subBlock);
-                StoreSubBlockRgb(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+                StoreSubBlockToWorkingRgb(working, width, height,
+                    mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, numComponents, subBlock);
             }
         }
 
+        if (img.ImageHeader.OverlapMode == 1)
+            JxrEncoder.ApplyPostFilterPotRgb(working, width, height, numComponents);
+        else if (img.ImageHeader.OverlapMode != 0)
+            throw new NotSupportedException($"OverlapMode {img.ImageHeader.OverlapMode} not yet supported");
+
+        var pixels = new byte[width * height * 3];
+        for (var i = 0; i < pixels.Length; i++)
+        {
+            var v = working[i] + JxrEncoder.Bd8Bias;
+            if (v < 0) v = 0;
+            else if (v > 255) v = 255;
+            pixels[i] = (byte)v;
+        }
         return pixels;
+    }
+
+    /// <summary>Store a 4×4 sub-block into an interleaved-RGB working buffer; out-of-bounds positions ignored.</summary>
+    internal static void StoreSubBlockToWorkingRgb(int[] working, int width, int height, int x0, int y0,
+        int comp, int numComponents, ReadOnlySpan<int> src)
+    {
+        for (var r = 0; r < 4; r++)
+        for (var c = 0; c < 4; c++)
+        {
+            var y = y0 + r; var x = x0 + c;
+            if (y >= height || x >= width) continue;
+            working[(y * width + x) * numComponents + comp] = src[r * 4 + c];
+        }
     }
 
     // Sub-block stores skip pixels past the declared image bounds — the
@@ -366,32 +394,8 @@ const int numComponents = 3;
 
         width = img.Width;
         height = img.Height;
-var (mbDc, mbDcLp, mbHp) = UnpackAndInversePredict(img, JxrInternalColorFormat.YOnly, 1);
-
-        var pixels = new ushort[width * height];
-        Span<int> subBlock = stackalloc int[16];
-        Span<int> dcGrid = stackalloc int[16];
-        var mbW = img.WidthInMb;
-        var mbH = img.HeightInMb;
-
-        for (var mby = 0; mby < mbH; mby++)
-        for (var mbx = 0; mbx < mbW; mbx++)
-        {
-            for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, 0, p];
-            Transforms.ICT4x4(dcGrid);
-
-            for (var sbRow = 0; sbRow < 4; sbRow++)
-            for (var sbCol = 0; sbCol < 4; sbCol++)
-            {
-                var blkIdx = sbRow * 4 + sbCol;
-                subBlock[0] = dcGrid[blkIdx];
-                for (var p = 1; p < 16; p++)
-                    subBlock[p] = mbHp[mbx, mby, 0, blkIdx, p];
-                Transforms.ICT4x4(subBlock);
-                StoreSubBlock16(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
-            }
-        }
-        return pixels;
+        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, JxrInternalColorFormat.YOnly, 1);
+        return InverseFctToUshort(img, mbDcLp, mbHp, numComponents: 1, JxrEncoder.Bd16Bias);
     }
 
     /// <summary>
@@ -417,14 +421,28 @@ var (mbDc, mbDcLp, mbHp) = UnpackAndInversePredict(img, JxrInternalColorFormat.Y
 
         width = img.Width;
         height = img.Height;
-const int numComponents = 3;
-        var (mbDc, mbDcLp, mbHp) = UnpackAndInversePredict(img, JxrInternalColorFormat.Rgb, numComponents);
+        const int numComponents = 3;
+        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, JxrInternalColorFormat.Rgb, numComponents);
+        return InverseFctToUshort(img, mbDcLp, mbHp, numComponents, JxrEncoder.Bd16Bias);
+    }
 
-        var pixels = new ushort[width * height * 3];
-        Span<int> subBlock = stackalloc int[16];
-        Span<int> dcGrid = stackalloc int[16];
+    /// <summary>
+    /// Shared decoder tail for BD16 / BD16F: inverse FCT into a signed-int
+    /// working buffer, optionally apply POT post-filter, then un-prescale to
+    /// ushort output (16-bit unsigned for BD16; half-float bit patterns for
+    /// BD16F — both rely on the same bias=32768 invertible mapping).
+    /// </summary>
+    private static ushort[] InverseFctToUshort(CodedImage img, int[,,,] mbDcLp, int[,,,,] mbHp,
+        int numComponents, int bias)
+    {
+        var width = img.Width;
+        var height = img.Height;
         var mbW = img.WidthInMb;
         var mbH = img.HeightInMb;
+
+        var working = new int[width * height * numComponents];
+        Span<int> subBlock = stackalloc int[16];
+        Span<int> dcGrid = stackalloc int[16];
 
         for (var mby = 0; mby < mbH; mby++)
         for (var mbx = 0; mbx < mbW; mbx++)
@@ -441,8 +459,30 @@ const int numComponents = 3;
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
                 Transforms.ICT4x4(subBlock);
-                StoreSubBlock16Rgb(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
+                var x0 = mbx * 16 + sbCol * 4;
+                var y0 = mby * 16 + sbRow * 4;
+                if (numComponents == 1)
+                    JxrDecoder.StoreSubBlockToWorking(working, width, height, x0, y0, subBlock);
+                else
+                    StoreSubBlockToWorkingRgb(working, width, height, x0, y0, comp, numComponents, subBlock);
             }
+        }
+
+        if (img.ImageHeader.OverlapMode == 1)
+        {
+            if (numComponents == 1) JxrEncoder.ApplyPostFilterPot(working, width, height);
+            else JxrEncoder.ApplyPostFilterPotRgb(working, width, height, numComponents);
+        }
+        else if (img.ImageHeader.OverlapMode != 0)
+            throw new NotSupportedException($"OverlapMode {img.ImageHeader.OverlapMode} not yet supported");
+
+        var pixels = new ushort[width * height * numComponents];
+        for (var i = 0; i < pixels.Length; i++)
+        {
+            var v = working[i] + bias;
+            if (v < 0) v = 0;
+            else if (v > 65535) v = 65535;
+            pixels[i] = (ushort)v;
         }
         return pixels;
     }
@@ -568,7 +608,8 @@ const int numComponents = 3;
 
         width = img.Width;
         height = img.Height;
-return DecodeBd16PipelineCore(img, numComponents: 1, JxrInternalColorFormat.YOnly);
+        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, JxrInternalColorFormat.YOnly, 1);
+        return InverseFctToUshort(img, mbDcLp, mbHp, numComponents: 1, JxrEncoder.Bd16Bias);
     }
 
     /// <summary>
@@ -583,7 +624,8 @@ return DecodeBd16PipelineCore(img, numComponents: 1, JxrInternalColorFormat.YOnl
 
         width = img.Width;
         height = img.Height;
-return DecodeBd16PipelineCore(img, numComponents: 3, JxrInternalColorFormat.Rgb);
+        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, JxrInternalColorFormat.Rgb, 3);
+        return InverseFctToUshort(img, mbDcLp, mbHp, numComponents: 3, JxrEncoder.Bd16Bias);
     }
 
     private static void ValidateBd16F(CodedImage img,
@@ -601,44 +643,4 @@ return DecodeBd16PipelineCore(img, numComponents: 3, JxrInternalColorFormat.Rgb)
         }
     }
 
-    private static ushort[] DecodeBd16PipelineCore(CodedImage img, int numComponents, JxrInternalColorFormat format)
-    {
-        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, format, numComponents);
-
-        var width = img.Width;
-        var height = img.Height;
-        var mbW = img.WidthInMb;
-        var mbH = img.HeightInMb;
-
-        var pixels = numComponents == 1
-            ? new ushort[width * height]
-            : new ushort[width * height * numComponents];
-
-        Span<int> subBlock = stackalloc int[16];
-        Span<int> dcGrid = stackalloc int[16];
-
-        for (var mby = 0; mby < mbH; mby++)
-        for (var mbx = 0; mbx < mbW; mbx++)
-        for (var comp = 0; comp < numComponents; comp++)
-        {
-            for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, comp, p];
-            Transforms.ICT4x4(dcGrid);
-
-            for (var sbRow = 0; sbRow < 4; sbRow++)
-            for (var sbCol = 0; sbCol < 4; sbCol++)
-            {
-                var blkIdx = sbRow * 4 + sbCol;
-                subBlock[0] = dcGrid[blkIdx];
-                for (var p = 1; p < 16; p++)
-                    subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
-                Transforms.ICT4x4(subBlock);
-
-                if (numComponents == 1)
-                    StoreSubBlock16(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
-                else
-                    StoreSubBlock16Rgb(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, subBlock);
-            }
-        }
-        return pixels;
-    }
 }
