@@ -154,4 +154,95 @@ public sealed class JxrFileRoundTripTests
         catch (NotSupportedException) { threw = true; }
         threw.ShouldBeTrue();
     }
+
+    // ----------------------------------------------------------------------
+    // System.Half overloads — the natural API shape for HDR float pipelines.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Half_GrayscaleRoundTrip()
+    {
+        var src = new Half[16 * 16];
+        // Mix of typical HDR values: 0, 1, 2, 0.5, large, small.
+        var samples = new[] { (Half)0f, (Half)1f, (Half)2f, (Half)0.5f, (Half)100f, (Half)0.001f };
+        for (var i = 0; i < src.Length; i++) src[i] = samples[i % samples.Length];
+
+        var bytes = JxrFileFormatter.SaveBd16FGrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrFileFormatter.LoadBd16FGrayscaleNoFlexbitsAsHalf(bytes, out var w, out var h, out _);
+        w.ShouldBe(16);
+        h.ShouldBe(16);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Half_RgbRoundTrip_HdrPipelineShape()
+    {
+        // Closest to what an actual HDR astro pipeline would emit:
+        // half-float RGB radiance values with mixed magnitudes.
+        var rng = new Random(unchecked((int)0xDDEEFF11));
+        var src = new Half[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++)
+            src[i] = (Half)((rng.NextSingle() - 0.5f) * 100f);
+
+        var bytes = JxrFileFormatter.SaveBd16FRgbNoFlexbits(src, 32, 32);
+        var decoded = JxrFileFormatter.LoadBd16FRgbNoFlexbitsAsHalf(bytes, out var w, out var h, out _);
+        w.ShouldBe(32);
+        h.ShouldBe(32);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Half_PreservesSpecialValues()
+    {
+        // ±0, ±Inf, NaN, denormals — the integer pipeline preserves bit patterns
+        // so these must all round-trip exactly even though FCT arithmetic doesn't
+        // "understand" the float meaning.
+        var src = new Half[16 * 16];
+        src[0] = (Half)0f;
+        src[1] = -(Half)0f;
+        src[2] = Half.PositiveInfinity;
+        src[3] = Half.NegativeInfinity;
+        src[4] = Half.NaN;
+        src[5] = (Half)6.0e-8f; // smallest normal half
+        // Fill rest with 1.0 to keep AC content non-zero.
+        for (var i = 6; i < src.Length; i++) src[i] = (Half)1f;
+
+        var bytes = JxrFileFormatter.SaveBd16FGrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrFileFormatter.LoadBd16FGrayscaleNoFlexbitsAsHalf(bytes, out _, out _, out _);
+
+        // For ±0 and NaN we need to compare bit patterns rather than values
+        // (NaN != NaN by IEEE rules).
+        BitConverter.HalfToUInt16Bits(decoded[0]).ShouldBe(BitConverter.HalfToUInt16Bits(src[0]));
+        BitConverter.HalfToUInt16Bits(decoded[1]).ShouldBe(BitConverter.HalfToUInt16Bits(src[1]));
+        decoded[2].ShouldBe(Half.PositiveInfinity);
+        decoded[3].ShouldBe(Half.NegativeInfinity);
+        BitConverter.HalfToUInt16Bits(decoded[4]).ShouldBe(BitConverter.HalfToUInt16Bits(src[4]));
+        decoded[5].ShouldBe(src[5]);
+    }
+
+    // ----------------------------------------------------------------------
+    // Realistic-size stress test — closest to actual astro file shape.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void LargeBd16Rgb_512x512_RoundTrips()
+    {
+        // 0.75 MPix BD16 RGB — exercise the pipeline at a size representative
+        // of mid-resolution astro crops. Not the full 9 MPix the user's pipeline
+        // produces, but enough to catch any size-dependent bugs without making
+        // the test suite slow.
+        const int size = 512;
+        var rng = new Random(unchecked((int)0x51251251));
+        var src = new ushort[size * size * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var fileBytes = JxrFileFormatter.SaveBd16RgbNoFlexbits(src, size, size);
+        var decoded = JxrFileFormatter.LoadBd16RgbNoFlexbits(fileBytes, out var w, out var h, out _);
+        w.ShouldBe(size);
+        h.ShouldBe(size);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
 }

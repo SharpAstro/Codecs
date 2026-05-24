@@ -123,6 +123,65 @@ public static class JxrFileFormatter
         return pixels;
     }
 
+    // ---- BD16F overloads taking System.Half directly -----------------------
+
+    /// <summary>
+    /// <see cref="SaveBd16FGrayscaleNoFlexbits(ushort[],int,int,byte[]?,byte[]?)"/>
+    /// overload that accepts <see cref="Half"/> samples directly — useful when the
+    /// caller's HDR pipeline already produces <c>Half[]</c>. The half-float bit
+    /// patterns are forwarded unchanged.
+    /// </summary>
+    public static byte[] SaveBd16FGrayscaleNoFlexbits(Half[] pixels, int width, int height,
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null)
+        => SaveBd16FGrayscaleNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata);
+
+    /// <summary>
+    /// Decode a BD16F grayscale codestream and return the samples as
+    /// <see cref="Half"/> values for direct use in HDR pipelines.
+    /// </summary>
+    public static Half[] LoadBd16FGrayscaleNoFlexbitsAsHalf(ReadOnlySpan<byte> fileBytes,
+        out int width, out int height, out JxrFile container)
+    {
+        var bits = LoadBd16FGrayscaleNoFlexbits(fileBytes, out width, out height, out container);
+        return UshortArrayToHalf(bits);
+    }
+
+    /// <summary>
+    /// <see cref="SaveBd16FRgbNoFlexbits(ushort[],int,int,byte[]?,byte[]?)"/>
+    /// overload taking <see cref="Half"/> samples — full HDR-master deliverable
+    /// shape directly from the calling pipeline.
+    /// </summary>
+    public static byte[] SaveBd16FRgbNoFlexbits(Half[] pixels, int width, int height,
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null)
+        => SaveBd16FRgbNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata);
+
+    /// <summary>
+    /// Decode a BD16F RGB codestream and return interleaved <see cref="Half"/>
+    /// R, G, B samples.
+    /// </summary>
+    public static Half[] LoadBd16FRgbNoFlexbitsAsHalf(ReadOnlySpan<byte> fileBytes,
+        out int width, out int height, out JxrFile container)
+    {
+        var bits = LoadBd16FRgbNoFlexbits(fileBytes, out width, out height, out container);
+        return UshortArrayToHalf(bits);
+    }
+
+    private static ushort[] HalfArrayToUshort(Half[] halves)
+    {
+        var result = new ushort[halves.Length];
+        for (var i = 0; i < halves.Length; i++)
+            result[i] = BitConverter.HalfToUInt16Bits(halves[i]);
+        return result;
+    }
+
+    private static Half[] UshortArrayToHalf(ushort[] bits)
+    {
+        var result = new Half[bits.Length];
+        for (var i = 0; i < bits.Length; i++)
+            result[i] = BitConverter.UInt16BitsToHalf(bits[i]);
+        return result;
+    }
+
     // -------------------------------------------------------------------------
 
     private static byte[] WrapInContainer(uint width, uint height, JxrPixelFormat pixelFormat,
