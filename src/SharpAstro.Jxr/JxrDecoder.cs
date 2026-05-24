@@ -141,6 +141,17 @@ var mbW = img.WidthInMb;
         for (var mbx = 0; mbx < mbW; mbx++)
             mbDcLp[mbx, mby, 0, 0] = mbDc[mbx, mby, 0];
 
+        // Dequantize using the per-band QP from the plane header. QP=1 is a no-op.
+        var dcDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.DcQuant);
+        var lpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.LpQuant);
+        var hpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.HpQuant);
+        JxrQuant.DequantizeDc(mbDc, dcDiv);
+        JxrQuant.DequantizeLp(mbDcLp, lpDiv);
+        JxrQuant.DequantizeHp(mbHp, hpDiv);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+            mbDcLp[mbx, mby, 0, 0] = mbDc[mbx, mby, 0];
+
         var pixels = new byte[width * height];
         Span<int> subBlock = stackalloc int[16];
         Span<int> dcGrid = stackalloc int[16];

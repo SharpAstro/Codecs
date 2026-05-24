@@ -829,6 +829,83 @@ public sealed class JxrPixelRoundTripTests
             decoded[i].ShouldBe(src[i], $"sample {i}");
     }
 
+    // ----------------------------------------------------------------------
+    // Lossy quantization — QP > 1 trades fidelity for smaller files. With
+    // QP = 1 the path is bit-exact (already covered everywhere).
+    // ----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData((byte)42)]
+    [InlineData((byte)128)]
+    [InlineData((byte)200)]
+    public void Lossy_Uniform_StillBitExact(byte fill)
+    {
+        // Uniform 16×16 content has zero AC content, so quantization touches
+        // only the super-DC. The DC after FCT is a multiple of 16, so dividing
+        // by QP=2 (or 4) rounds exactly — round-trip stays lossless.
+        var src = new byte[16 * 16];
+        Array.Fill(src, fill);
+
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 16, 16,
+            tiling: null, dcQp: 2, lpQp: 2, hpQp: 2);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(fill, $"pixel {i}");
+    }
+
+    [Fact]
+    public void Lossy_Random_BoundedError()
+    {
+        // Random content + QP=4: lossy round-trip introduces error proportional
+        // to QP. Verify max pixel error stays in a reasonable bound (much less
+        // than 256, so the image is still recognisable).
+        var rng = new Random(unchecked((int)0x10553404));
+        var src = new byte[32 * 32];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 32, 32,
+            tiling: null, dcQp: 4, lpQp: 4, hpQp: 4);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out _, out _);
+
+        var maxErr = 0;
+        for (var i = 0; i < src.Length; i++)
+            maxErr = Math.Max(maxErr, Math.Abs(src[i] - decoded[i]));
+
+        // QP=4 should give per-pixel error well under 60 for BD8 content
+        // (FCT energy spreads coefficient quantization across pixels but stays bounded).
+        maxErr.ShouldBeLessThan(60, $"max pixel error too large: {maxErr}");
+    }
+
+    [Fact]
+    public void Lossy_PlaneHeaderRecordsQp()
+    {
+        // The QP values must survive the codestream so the decoder applies the
+        // matching dequantization.
+        var src = new byte[16 * 16];
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 16, 16,
+            tiling: null, dcQp: 7, lpQp: 11, hpQp: 13);
+
+        var img = CodedImage.Decode(bytes);
+        img.PlaneHeader.DcQuant.ShouldBe((byte)7);
+        img.PlaneHeader.LpQuant.ShouldBe((byte)11);
+        img.PlaneHeader.HpQuant.ShouldBe((byte)13);
+    }
+
+    [Fact]
+    public void JxrQuant_QpIndexToDivisor_KnownValues()
+    {
+        // Spot-check the T.832 mantissa+exponent formula.
+        JxrQuant.QpIndexToDivisor(0).ShouldBe(1);
+        JxrQuant.QpIndexToDivisor(1).ShouldBe(1);
+        JxrQuant.QpIndexToDivisor(15).ShouldBe(15);
+        JxrQuant.QpIndexToDivisor(16).ShouldBe(16);
+        JxrQuant.QpIndexToDivisor(17).ShouldBe(17);
+        JxrQuant.QpIndexToDivisor(31).ShouldBe(31);
+        JxrQuant.QpIndexToDivisor(32).ShouldBe(32);   // MAN=16, EXP=1 → 32
+        JxrQuant.QpIndexToDivisor(48).ShouldBe(64);   // MAN=16, EXP=2 → 64
+    }
+
     [Fact]
     public void JxrTileLayout_BuildMasks_MarksTileBoundaries()
     {

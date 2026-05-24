@@ -109,7 +109,8 @@ public static class JxrEncoder
     /// content at OverlapMode = 0.
     /// </summary>
     public static byte[] EncodeBd8GrayscaleNoFlexbits(byte[] pixels, int width, int height,
-        JxrTileLayout? tiling = null)
+        JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -148,6 +149,20 @@ public static class JxrEncoder
             for (var p = 0; p < 16; p++)
                 mbDcLp[mbx, mby, 0, p] = dcGrid[p];
         }
+
+        // Quantize BEFORE prediction so both encoder and decoder operate on
+        // the same quantized values — keeps cross-MB prediction consistent.
+        // QP=1 is a no-op so the lossless paths skip work entirely.
+        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
+        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp);
+        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp);
+        JxrQuant.QuantizeDc(mbDc, dcDiv);
+        JxrQuant.QuantizeLp(mbDcLp, lpDiv);
+        JxrQuant.QuantizeHp(mbHp, hpDiv);
+        // Mirror super-DC into mbDcLp[..., 0] so the LP context sees the same value.
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+            mbDcLp[mbx, mby, 0, 0] = mbDc[mbx, mby, 0];
 
         // Tile-aware DC prediction: masks force "no prediction" across tile
         // boundaries so encoder and decoder agree on neighbour availability.
@@ -202,9 +217,9 @@ public static class JxrEncoder
                 InternalClrFmt = JxrInternalColorFormat.YOnly,
                 BandsPresent = JxrBandsPresent.NoFlexbits,
                 NumComponents = 1,
-                DcQuant = 1,
-                LpQuant = 1,
-                HpQuant = 1,
+                DcQuant = dcQp,
+                LpQuant = lpQp,
+                HpQuant = hpQp,
             },
             ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
             Macroblocks = mbs,
