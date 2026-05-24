@@ -272,6 +272,85 @@ public sealed class JxrFileRoundTripTests
             decoded[i].ShouldBe(src[i], $"sample {i}");
     }
 
+    // ----------------------------------------------------------------------
+    // Alpha-plane round-trip — RGB + separate alpha codestream wrapped in a
+    // real container, matching the JXR convention for Rgba64Bpp /
+    // RgbaHalf64Bpp / Bgra32Bpp pixel formats.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Bd16RgbWithAlpha_FileRoundTrip()
+    {
+        // 32×32 BD16 RGBA: separate RGB + alpha arrays in, real .jxr file out,
+        // both arrays back via the load helper. The seagull-nebula shape (minus
+        // the frequency-mode codestream layout we don't yet support).
+        var rng = new Random(unchecked((int)0xA17D8A1A));
+        var rgb = new ushort[32 * 32 * 3];
+        var alpha = new ushort[32 * 32];
+        for (var i = 0; i < rgb.Length; i++) rgb[i] = (ushort)rng.Next(0, 65536);
+        for (var i = 0; i < alpha.Length; i++) alpha[i] = (ushort)rng.Next(0, 65536);
+
+        var fileBytes = JxrFileFormatter.SaveBd16RgbWithAlphaNoFlexbits(rgb, alpha, 32, 32);
+        var (decodedRgb, decodedAlpha) = JxrFileFormatter.LoadBd16RgbWithAlphaNoFlexbits(
+            fileBytes, out var w, out var h, out var container);
+
+        w.ShouldBe(32);
+        h.ShouldBe(32);
+        container.PixelFormat.ShouldBe(JxrPixelFormat.Rgba64Bpp);
+        container.AlphaCodestream.ShouldNotBeNull();
+
+        for (var i = 0; i < rgb.Length; i++)
+            decodedRgb[i].ShouldBe(rgb[i], $"rgb sample {i}");
+        for (var i = 0; i < alpha.Length; i++)
+            decodedAlpha[i].ShouldBe(alpha[i], $"alpha sample {i}");
+    }
+
+    [Fact]
+    public void Bd16FRgbWithAlpha_HalfApi_FileRoundTrip()
+    {
+        // Full HDR-with-alpha shape: half-float RGB + half-float alpha.
+        var rng = new Random(unchecked((int)0xA1A1A1A1));
+        var rgb = new Half[16 * 16 * 3];
+        var alpha = new Half[16 * 16];
+        for (var i = 0; i < rgb.Length; i++)
+            rgb[i] = (Half)((rng.NextSingle() - 0.5f) * 10f);
+        for (var i = 0; i < alpha.Length; i++)
+            alpha[i] = (Half)rng.NextSingle();
+
+        var fileBytes = JxrFileFormatter.SaveBd16FRgbWithAlphaNoFlexbits(rgb, alpha, 16, 16);
+        var (decodedRgb, decodedAlpha) = JxrFileFormatter.LoadBd16FRgbWithAlphaNoFlexbitsAsHalf(
+            fileBytes, out var w, out var h, out var container);
+
+        w.ShouldBe(16);
+        h.ShouldBe(16);
+        container.PixelFormat.ShouldBe(JxrPixelFormat.RgbaHalf64Bpp);
+
+        for (var i = 0; i < rgb.Length; i++)
+            decodedRgb[i].ShouldBe(rgb[i], $"rgb sample {i}");
+        for (var i = 0; i < alpha.Length; i++)
+            decodedAlpha[i].ShouldBe(alpha[i], $"alpha sample {i}");
+    }
+
+    [Fact]
+    public void RgbWithAlpha_Tiled_RoundTrips()
+    {
+        // Alpha + multi-tile compose: encoder applies the same tile grid to
+        // both the primary and alpha codestreams.
+        var rng = new Random(unchecked((int)0x71735071));
+        var rgb = new ushort[64 * 64 * 3];
+        var alpha = new ushort[64 * 64];
+        for (var i = 0; i < rgb.Length; i++) rgb[i] = (ushort)rng.Next(0, 65536);
+        for (var i = 0; i < alpha.Length; i++) alpha[i] = (ushort)rng.Next(0, 65536);
+
+        var layout = JxrTileLayout.Uniform(4, 4, cols: 2, rows: 2);
+        var fileBytes = JxrFileFormatter.SaveBd16RgbWithAlphaNoFlexbits(rgb, alpha, 64, 64, tiling: layout);
+        var (decodedRgb, decodedAlpha) = JxrFileFormatter.LoadBd16RgbWithAlphaNoFlexbits(
+            fileBytes, out _, out _, out _);
+
+        for (var i = 0; i < rgb.Length; i++) decodedRgb[i].ShouldBe(rgb[i], $"rgb {i}");
+        for (var i = 0; i < alpha.Length; i++) decodedAlpha[i].ShouldBe(alpha[i], $"a {i}");
+    }
+
     [Fact]
     public void LargeBd16Rgb_512x512_RoundTrips()
     {

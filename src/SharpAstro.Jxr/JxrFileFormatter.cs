@@ -174,6 +174,103 @@ public static class JxrFileFormatter
         return UshortArrayToHalf(bits);
     }
 
+    // ---- Alpha-plane support: RGB + separate alpha codestream ----------------
+    //
+    // The JXR convention for "RGBA" pixel formats (Rgba64Bpp / RgbaHalf64Bpp /
+    // Bgra32Bpp) is to encode the colour channels in the primary codestream and
+    // the alpha channel in a separate one. The container holds both and tags
+    // the file with the RGBA pixel-format GUID so external decoders know the
+    // logical layout.
+
+    /// <summary>
+    /// Save 16-bit RGB + alpha as a real <c>.jxr</c> file. <paramref name="rgbPixels"/>
+    /// is <c>w × h × 3</c> interleaved RGB ushorts; <paramref name="alphaPixels"/>
+    /// is <c>w × h</c> ushorts. The output container has
+    /// <see cref="JxrPixelFormat.Rgba64Bpp"/>.
+    /// </summary>
+    public static byte[] SaveBd16RgbWithAlphaNoFlexbits(
+        ushort[] rgbPixels, ushort[] alphaPixels, int width, int height,
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+    {
+        var primary = JxrEncoder.EncodeBd16RgbNoFlexbits(rgbPixels, width, height, tiling, dcQp, lpQp, hpQp);
+        var alpha = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(alphaPixels, width, height, tiling, dcQp, lpQp, hpQp);
+        return WrapWithAlpha((uint)width, (uint)height, JxrPixelFormat.Rgba64Bpp, primary, alpha, iccProfile, xmpMetadata);
+    }
+
+    /// <summary>Inverse of <see cref="SaveBd16RgbWithAlphaNoFlexbits"/> — returns separate RGB + alpha arrays.</summary>
+    public static (ushort[] rgb, ushort[] alpha) LoadBd16RgbWithAlphaNoFlexbits(
+        ReadOnlySpan<byte> fileBytes, out int width, out int height, out JxrFile container)
+    {
+        container = JxrContainer.Read(fileBytes);
+        EnsurePixelFormat(container, JxrPixelFormat.Rgba64Bpp);
+        if (container.AlphaCodestream is null)
+            throw new InvalidDataException("Rgba64Bpp file is missing its alpha codestream");
+
+        var rgb = JxrDecoder.DecodeBd16RgbNoFlexbits(container.Codestream, out width, out height);
+        var alpha = JxrDecoder.DecodeBd16GrayscaleNoFlexbits(container.AlphaCodestream, out _, out _);
+        return (rgb, alpha);
+    }
+
+    /// <summary>
+    /// Save 16-bit half-float RGB + alpha as a real <c>.jxr</c> file — full
+    /// HDR-master shape with alpha for compositing workflows.
+    /// </summary>
+    public static byte[] SaveBd16FRgbWithAlphaNoFlexbits(
+        ushort[] rgbHalfBits, ushort[] alphaHalfBits, int width, int height,
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+    {
+        var primary = JxrEncoder.EncodeBd16FRgbNoFlexbits(rgbHalfBits, width, height, tiling, dcQp, lpQp, hpQp);
+        var alpha = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(alphaHalfBits, width, height, tiling, dcQp, lpQp, hpQp);
+        return WrapWithAlpha((uint)width, (uint)height, JxrPixelFormat.RgbaHalf64Bpp, primary, alpha, iccProfile, xmpMetadata);
+    }
+
+    /// <summary>Inverse of <see cref="SaveBd16FRgbWithAlphaNoFlexbits"/>.</summary>
+    public static (ushort[] rgb, ushort[] alpha) LoadBd16FRgbWithAlphaNoFlexbits(
+        ReadOnlySpan<byte> fileBytes, out int width, out int height, out JxrFile container)
+    {
+        container = JxrContainer.Read(fileBytes);
+        EnsurePixelFormat(container, JxrPixelFormat.RgbaHalf64Bpp);
+        if (container.AlphaCodestream is null)
+            throw new InvalidDataException("RgbaHalf64Bpp file is missing its alpha codestream");
+
+        var rgb = JxrDecoder.DecodeBd16FRgbNoFlexbits(container.Codestream, out width, out height);
+        var alpha = JxrDecoder.DecodeBd16FGrayscaleNoFlexbits(container.AlphaCodestream, out _, out _);
+        return (rgb, alpha);
+    }
+
+    /// <summary>Half-typed overload for BD16F RGBA — accepts and returns <see cref="Half"/>[].</summary>
+    public static byte[] SaveBd16FRgbWithAlphaNoFlexbits(
+        Half[] rgbPixels, Half[] alphaPixels, int width, int height,
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        => SaveBd16FRgbWithAlphaNoFlexbits(
+            HalfArrayToUshort(rgbPixels), HalfArrayToUshort(alphaPixels),
+            width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp);
+
+    /// <summary>Half-typed decode pair for BD16F RGBA.</summary>
+    public static (Half[] rgb, Half[] alpha) LoadBd16FRgbWithAlphaNoFlexbitsAsHalf(
+        ReadOnlySpan<byte> fileBytes, out int width, out int height, out JxrFile container)
+    {
+        var (rgbBits, alphaBits) = LoadBd16FRgbWithAlphaNoFlexbits(fileBytes, out width, out height, out container);
+        return (UshortArrayToHalf(rgbBits), UshortArrayToHalf(alphaBits));
+    }
+
+    private static byte[] WrapWithAlpha(uint width, uint height, JxrPixelFormat pixelFormat,
+        byte[] primaryCodestream, byte[] alphaCodestream, byte[]? iccProfile, byte[]? xmpMetadata)
+    {
+        var file = new JxrFile(
+            Width: width,
+            Height: height,
+            PixelFormat: pixelFormat,
+            Codestream: primaryCodestream,
+            AlphaCodestream: alphaCodestream,
+            IccProfile: iccProfile,
+            XmpMetadata: xmpMetadata);
+        return JxrContainer.Write(file);
+    }
+
     private static ushort[] HalfArrayToUshort(Half[] halves)
     {
         var result = new ushort[halves.Length];
