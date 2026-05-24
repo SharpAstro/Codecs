@@ -18,9 +18,10 @@ public static class JxrFileFormatter
     // ---- 8-bit grayscale ----------------------------------------------------
 
     public static byte[] SaveBd8GrayscaleNoFlexbits(byte[] pixels, int width, int height,
-        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null)
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
-        var codestream = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(pixels, width, height, tiling);
+        var codestream = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.Gray8Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -36,9 +37,10 @@ public static class JxrFileFormatter
     // ---- 8-bit RGB ----------------------------------------------------------
 
     public static byte[] SaveBd8RgbNoFlexbits(byte[] pixels, int width, int height,
-        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null)
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
-        var codestream = JxrEncoder.EncodeBd8RgbNoFlexbits(pixels, width, height, tiling);
+        var codestream = JxrEncoder.EncodeBd8RgbNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.Rgb24Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -54,9 +56,10 @@ public static class JxrFileFormatter
     // ---- 16-bit grayscale ---------------------------------------------------
 
     public static byte[] SaveBd16GrayscaleNoFlexbits(ushort[] pixels, int width, int height,
-        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null)
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
-        var codestream = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(pixels, width, height, tiling);
+        var codestream = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.Gray16Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -72,9 +75,10 @@ public static class JxrFileFormatter
     // ---- 16-bit RGB (HDR-master target) -------------------------------------
 
     public static byte[] SaveBd16RgbNoFlexbits(ushort[] pixels, int width, int height,
-        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null)
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
-        var codestream = JxrEncoder.EncodeBd16RgbNoFlexbits(pixels, width, height, tiling);
+        var codestream = JxrEncoder.EncodeBd16RgbNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.Rgb48Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -90,9 +94,10 @@ public static class JxrFileFormatter
     // ---- BD16F grayscale (half-float) ---------------------------------------
 
     public static byte[] SaveBd16FGrayscaleNoFlexbits(ushort[] halfBits, int width, int height,
-        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null)
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
-        var codestream = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(halfBits, width, height, tiling);
+        var codestream = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(halfBits, width, height, tiling, dcQp, lpQp, hpQp);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.GrayHalf16Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -108,9 +113,10 @@ public static class JxrFileFormatter
     // ---- BD16F RGB (HDR-master target) --------------------------------------
 
     public static byte[] SaveBd16FRgbNoFlexbits(ushort[] halfBits, int width, int height,
-        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null)
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
-        var codestream = JxrEncoder.EncodeBd16FRgbNoFlexbits(halfBits, width, height, tiling);
+        var codestream = JxrEncoder.EncodeBd16FRgbNoFlexbits(halfBits, width, height, tiling, dcQp, lpQp, hpQp);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.RgbHalf48Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -132,8 +138,9 @@ public static class JxrFileFormatter
     /// patterns are forwarded unchanged.
     /// </summary>
     public static byte[] SaveBd16FGrayscaleNoFlexbits(Half[] pixels, int width, int height,
-        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null)
-        => SaveBd16FGrayscaleNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling);
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        => SaveBd16FGrayscaleNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp);
 
     /// <summary>
     /// Decode a BD16F grayscale codestream and return the samples as
@@ -152,8 +159,9 @@ public static class JxrFileFormatter
     /// shape directly from the calling pipeline.
     /// </summary>
     public static byte[] SaveBd16FRgbNoFlexbits(Half[] pixels, int width, int height,
-        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null)
-        => SaveBd16FRgbNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling);
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        => SaveBd16FRgbNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp);
 
     /// <summary>
     /// Decode a BD16F RGB codestream and return interleaved <see cref="Half"/>
