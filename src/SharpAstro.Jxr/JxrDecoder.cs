@@ -244,6 +244,17 @@ const int numComponents = 3;
         for (var comp = 0; comp < numComponents; comp++)
             mbDcLp[mbx, mby, comp, 0] = mbDc[mbx, mby, comp];
 
+        var dcDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.DcQuant);
+        var lpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.LpQuant);
+        var hpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.HpQuant);
+        JxrQuant.DequantizeDc(mbDc, dcDiv);
+        JxrQuant.DequantizeLp(mbDcLp, lpDiv);
+        JxrQuant.DequantizeHp(mbHp, hpDiv);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var comp = 0; comp < numComponents; comp++)
+            mbDcLp[mbx, mby, comp, 0] = mbDc[mbx, mby, comp];
+
         var pixels = new byte[width * height * 3];
         Span<int> subBlock = stackalloc int[16];
         Span<int> dcGrid = stackalloc int[16];
@@ -450,6 +461,18 @@ const int numComponents = 3;
         var predDcLp = new int[mbW, mbH, numComponents, 16];
         LpPrediction.Decode(mbDcLp, predDcLp, mbDcMode, format);
 
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var comp = 0; comp < numComponents; comp++)
+            mbDcLp[mbx, mby, comp, 0] = mbDc[mbx, mby, comp];
+
+        // Dequantize using the per-band QP from the plane header (QP=1 is no-op).
+        var dcDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.DcQuant);
+        var lpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.LpQuant);
+        var hpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.HpQuant);
+        JxrQuant.DequantizeDc(mbDc, dcDiv);
+        JxrQuant.DequantizeLp(mbDcLp, lpDiv);
+        JxrQuant.DequantizeHp(mbHp, hpDiv);
         for (var mby = 0; mby < mbH; mby++)
         for (var mbx = 0; mbx < mbW; mbx++)
         for (var comp = 0; comp < numComponents; comp++)

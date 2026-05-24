@@ -893,6 +893,78 @@ public sealed class JxrPixelRoundTripTests
     }
 
     [Fact]
+    public void Lossy_Bd8Rgb_Random_BoundedError()
+    {
+        var rng = new Random(unchecked((int)0x70557B));
+        var src = new byte[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 32, 32,
+            tiling: null, dcQp: 4, lpQp: 4, hpQp: 4);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        var maxErr = 0;
+        for (var i = 0; i < src.Length; i++)
+            maxErr = Math.Max(maxErr, Math.Abs(src[i] - decoded[i]));
+        maxErr.ShouldBeLessThan(60);
+    }
+
+    [Fact]
+    public void Lossy_Bd16Rgb_Random_BoundedError()
+    {
+        var rng = new Random(unchecked((int)0x16557B));
+        var src = new ushort[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 32, 32,
+            tiling: null, dcQp: 4, lpQp: 4, hpQp: 4);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out _, out _);
+
+        var maxErr = 0;
+        for (var i = 0; i < src.Length; i++)
+            maxErr = Math.Max(maxErr, Math.Abs(src[i] - decoded[i]));
+        // BD16 error scales with QP × FCT-energy-spread. QP=4 ⇒ tolerance ~few hundred.
+        maxErr.ShouldBeLessThan(500);
+    }
+
+    [Fact]
+    public void Lossy_Bd16FGrayscale_Bd16FPath_QpRoundTrips()
+    {
+        // BD16F at QP=2 is still lossy because the integer pipeline operates on
+        // half-float bit patterns. Verify the decoder finishes (no overflow /
+        // crash) and the data shape comes back.
+        var src = new ushort[32 * 32]; // all 0x3C00 = +1.0
+        Array.Fill(src, (ushort)0x3C00);
+
+        var bytes = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(src, 32, 32,
+            tiling: null, dcQp: 2, lpQp: 2, hpQp: 2);
+        var decoded = JxrDecoder.DecodeBd16FGrayscaleNoFlexbits(bytes, out var w, out var h);
+        w.ShouldBe(32);
+        h.ShouldBe(32);
+        // Uniform content → still lossless even with QP>1.
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe((ushort)0x3C00);
+    }
+
+    [Fact]
+    public void Lossy_TiledAndQp_Combined_RoundTrips()
+    {
+        // Tiles AND lossy together — verify they compose correctly.
+        var rng = new Random(unchecked((int)0xC0DE16557B));
+        var src = new byte[64 * 64];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var layout = JxrTileLayout.Uniform(4, 4, cols: 2, rows: 2);
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 64, 64,
+            tiling: layout, dcQp: 3, lpQp: 3, hpQp: 3);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out _, out _);
+
+        var maxErr = 0;
+        for (var i = 0; i < src.Length; i++)
+            maxErr = Math.Max(maxErr, Math.Abs(src[i] - decoded[i]));
+        maxErr.ShouldBeLessThan(60);
+    }
+
+    [Fact]
     public void JxrQuant_QpIndexToDivisor_KnownValues()
     {
         // Spot-check the T.832 mantissa+exponent formula.

@@ -262,7 +262,8 @@ public static class JxrEncoder
     /// <c>width × height × 3</c> bytes, interleaved as <c>R, G, B, R, G, B, …</c>.
     /// </param>
     public static byte[] EncodeBd8RgbNoFlexbits(byte[] pixels, int width, int height,
-        JxrTileLayout? tiling = null)
+        JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -301,6 +302,18 @@ public static class JxrEncoder
             for (var p = 0; p < 16; p++)
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
         }
+
+        // Quantize before prediction; QP=1 is a no-op.
+        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
+        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp);
+        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp);
+        JxrQuant.QuantizeDc(mbDc, dcDiv);
+        JxrQuant.QuantizeLp(mbDcLp, lpDiv);
+        JxrQuant.QuantizeHp(mbHp, hpDiv);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var c = 0; c < numComponents; c++)
+            mbDcLp[mbx, mby, c, 0] = mbDc[mbx, mby, c];
 
         // Tile-aware DC prediction.
         bool[,]? leftMask = null;
@@ -356,9 +369,9 @@ public static class JxrEncoder
                 InternalClrFmt = format,
                 BandsPresent = JxrBandsPresent.NoFlexbits,
                 NumComponents = numComponents,
-                DcQuant = 1,
-                LpQuant = 1,
-                HpQuant = 1,
+                DcQuant = dcQp,
+                LpQuant = lpQp,
+                HpQuant = hpQp,
             },
             ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
             Macroblocks = mbs,
@@ -372,7 +385,8 @@ public static class JxrEncoder
     /// target path for monochrome.
     /// </summary>
     public static byte[] EncodeBd16GrayscaleNoFlexbits(ushort[] pixels, int width, int height,
-        JxrTileLayout? tiling = null)
+        JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -409,6 +423,17 @@ public static class JxrEncoder
         }
 
         const JxrInternalColorFormat format = JxrInternalColorFormat.YOnly;
+
+        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
+        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp);
+        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp);
+        JxrQuant.QuantizeDc(mbDc, dcDiv);
+        JxrQuant.QuantizeLp(mbDcLp, lpDiv);
+        JxrQuant.QuantizeHp(mbHp, hpDiv);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+            mbDcLp[mbx, mby, 0, 0] = mbDc[mbx, mby, 0];
+
         bool[,]? leftMask = null;
         bool[,]? topMask = null;
         if (tiling is not null) (leftMask, topMask) = tiling.BuildMasks(mbW, mbH);
@@ -454,9 +479,9 @@ public static class JxrEncoder
                 BandsPresent = JxrBandsPresent.NoFlexbits,
                 NumComponents = 1,
                 ShiftBits = 0,
-                DcQuant = 1,
-                LpQuant = 1,
-                HpQuant = 1,
+                DcQuant = dcQp,
+                LpQuant = lpQp,
+                HpQuant = hpQp,
             },
             ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
             Macroblocks = mbs,
@@ -469,7 +494,8 @@ public static class JxrEncoder
     /// primary HDR-master deliverable shape for the SharpAstro pipeline.
     /// </summary>
     public static byte[] EncodeBd16RgbNoFlexbits(ushort[] pixels, int width, int height,
-        JxrTileLayout? tiling = null)
+        JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -508,6 +534,17 @@ public static class JxrEncoder
             for (var p = 0; p < 16; p++)
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
         }
+
+        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
+        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp);
+        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp);
+        JxrQuant.QuantizeDc(mbDc, dcDiv);
+        JxrQuant.QuantizeLp(mbDcLp, lpDiv);
+        JxrQuant.QuantizeHp(mbHp, hpDiv);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var c = 0; c < numComponents; c++)
+            mbDcLp[mbx, mby, c, 0] = mbDc[mbx, mby, c];
 
         bool[,]? leftMask = null;
         bool[,]? topMask = null;
@@ -560,9 +597,9 @@ public static class JxrEncoder
                 BandsPresent = JxrBandsPresent.NoFlexbits,
                 NumComponents = numComponents,
                 ShiftBits = 0,
-                DcQuant = 1,
-                LpQuant = 1,
-                HpQuant = 1,
+                DcQuant = dcQp,
+                LpQuant = lpQp,
+                HpQuant = hpQp,
             },
             ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
             Macroblocks = mbs,
@@ -634,7 +671,8 @@ public static class JxrEncoder
     /// FCT pipeline preserves bit patterns exactly.
     /// </remarks>
     public static byte[] EncodeBd16FGrayscaleNoFlexbits(ushort[] halfBits, int width, int height,
-        JxrTileLayout? tiling = null)
+        JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
         ValidateBd16F(halfBits, width, height, expectedComponents: 1);
 
@@ -649,6 +687,7 @@ public static class JxrEncoder
             lenMantissa: 10,
             expBias: 15 - 128,
             tiling: tiling,
+            dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
             loadSubBlock: (src, w, h, x0, y0, _, dst) =>
             {
                 for (var r = 0; r < 4; r++)
@@ -667,7 +706,8 @@ public static class JxrEncoder
     /// dynamic range in a JPEG XR codestream.
     /// </summary>
     public static byte[] EncodeBd16FRgbNoFlexbits(ushort[] halfBits, int width, int height,
-        JxrTileLayout? tiling = null)
+        JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
     {
         ValidateBd16F(halfBits, width, height, expectedComponents: 3);
 
@@ -682,6 +722,7 @@ public static class JxrEncoder
             lenMantissa: 10,
             expBias: 15 - 128,
             tiling: tiling,
+            dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
             loadSubBlock: (src, w, h, x0, y0, comp, dst) =>
             {
                 for (var r = 0; r < 4; r++)
@@ -715,6 +756,9 @@ public static class JxrEncoder
         byte lenMantissa,
         int expBias,
         JxrTileLayout? tiling,
+        byte dcQp,
+        byte lpQp,
+        byte hpQp,
         LoadSubBlockUshort loadSubBlock)
     {
         var mbW = (width + 15) >> 4;
@@ -746,6 +790,17 @@ public static class JxrEncoder
             for (var p = 0; p < 16; p++)
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
         }
+
+        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
+        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp);
+        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp);
+        JxrQuant.QuantizeDc(mbDc, dcDiv);
+        JxrQuant.QuantizeLp(mbDcLp, lpDiv);
+        JxrQuant.QuantizeHp(mbHp, hpDiv);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var c = 0; c < numComponents; c++)
+            mbDcLp[mbx, mby, c, 0] = mbDc[mbx, mby, c];
 
         bool[,]? leftMask = null;
         bool[,]? topMask = null;
@@ -799,9 +854,9 @@ public static class JxrEncoder
                 NumComponents = numComponents,
                 LenMantissa = lenMantissa,
                 ExpBias = (sbyte)expBias,
-                DcQuant = 1,
-                LpQuant = 1,
-                HpQuant = 1,
+                DcQuant = dcQp,
+                LpQuant = lpQp,
+                HpQuant = hpQp,
             },
             ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
             Macroblocks = mbs,
