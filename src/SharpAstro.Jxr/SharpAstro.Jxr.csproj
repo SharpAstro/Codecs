@@ -7,9 +7,6 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <!-- Flip to true once Phase 1 (T.833 container round-trip) lands. Until then
-         the project compiles and is exercised by CI tests but does not publish. -->
-    <IsPackable>false</IsPackable>
 
     <VersionPrefix>3.0.0</VersionPrefix>
     <AssemblyVersion>3.0.0.0</AssemblyVersion>
@@ -17,7 +14,7 @@
     <PackageId>SharpAstro.Jxr</PackageId>
     <Product>SharpAstro.Jxr</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed JPEG XR (ITU-T T.832 / ISO/IEC 29199-2) encoder/decoder for .NET. AOT-compatible, clean-room implementation from the T.832 specification. Phase 0: project skeleton only — encoder/decoder not yet implemented.</Description>
+    <Description>Pure-managed JPEG XR (ITU-T T.832 / ISO/IEC 29199-2) encoder/decoder for .NET. AOT-compatible, clean-room implementation from the T.832 specification. Supports BD8/BD16/BD16F/BD32F sample formats, grayscale and RGB, multi-tile codestreams with INDEX_TABLE_TILES (including random-access tile decode), spatial and frequency mode, Photo Overlap Transform (POT), lossy quantization, alpha plane, and full .jxr file container.</Description>
     <PackageTags>jpeg-xr jxr wdp hdp image codec aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
