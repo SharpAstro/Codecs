@@ -53,10 +53,14 @@ public sealed class CodedImage
         var writer = new BitWriter();
         ImageHeader.Write(writer);
         PlaneHeader.Write(writer, ImageHeader.OutputBitDepth);
-        ProfileLevelInfo.Write(writer);
 
         if (!ImageHeader.TilingFlag)
         {
+            if (ImageHeader.IndexTablePresentFlag)
+                throw new NotSupportedException(
+                    "IndexTablePresentFlag = true requires TilingFlag = true (single-tile codestreams don't benefit from a seek table)");
+
+            ProfileLevelInfo.Write(writer);
             TileSpatial.Write(
                 writer,
                 TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
@@ -67,28 +71,55 @@ public sealed class CodedImage
                 WidthInMb,
                 HeightInMb,
                 Macroblocks);
+            return writer.ToArray();
         }
-        else
+
+        // Multi-tile: pre-encode each tile to its own byte buffer so we can
+        // measure tile sizes BEFORE emitting INDEX_TABLE_TILES (which needs the
+        // offsets), then assemble the final codestream in spec order:
+        //   IMAGE_HEADER → IMAGE_PLANE_HEADER → INDEX_TABLE_TILES? →
+        //   PROFILE_LEVEL_INFO → CODED_TILES_DATA
+        var tileBytes = new List<byte[]>();
+        var tileBounds = ComputeTileBounds(ImageHeader, WidthInMb, HeightInMb).ToList();
+        foreach (var (tileX, tileY, tw, th) in tileBounds)
         {
-            // Multi-tile: emit one TILE_SPATIAL per tile in tile-raster order.
-            // Each tile gets its own state-machine reset; per-tile MBs come from
-            // slicing the image-raster Macroblocks grid.
-            var tileBounds = ComputeTileBounds(ImageHeader, WidthInMb, HeightInMb);
-            foreach (var (tileX, tileY, tw, th) in tileBounds)
-            {
-                var tileMbs = SliceTile(Macroblocks, WidthInMb, tileX, tileY, tw, th);
-                TileSpatial.Write(
-                    writer,
-                    TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
-                    PlaneHeader.BandsPresent,
-                    ImageHeader.TrimFlexBitsFlag,
-                    PlaneHeader.InternalClrFmt,
-                    PlaneHeader.NumComponents,
-                    tw,
-                    th,
-                    tileMbs);
-            }
+            var tileMbs = SliceTile(Macroblocks, WidthInMb, tileX, tileY, tw, th);
+            var tileWriter = new BitWriter();
+            TileSpatial.Write(
+                tileWriter,
+                TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
+                PlaneHeader.BandsPresent,
+                ImageHeader.TrimFlexBitsFlag,
+                PlaneHeader.InternalClrFmt,
+                PlaneHeader.NumComponents,
+                tw,
+                th,
+                tileMbs);
+            tileBytes.Add(tileWriter.ToArray());
         }
+
+        if (ImageHeader.IndexTablePresentFlag)
+        {
+            // Offsets are relative to the start of CODED_TILES (i.e. the first tile begins at 0).
+            var offsets = new long[tileBytes.Count];
+            long running = 0;
+            for (var i = 0; i < tileBytes.Count; i++)
+            {
+                offsets[i] = running;
+                running += tileBytes[i].Length;
+            }
+            var indexTable = new IndexTableTiles { Offsets = offsets };
+            indexTable.Write(writer);
+        }
+
+        ProfileLevelInfo.Write(writer);
+
+        // Concatenate the pre-encoded tile data. Each tile already ends on a
+        // byte boundary thanks to TileSpatial's byte_alignment(), so we can
+        // splice without re-bit-aligning.
+        foreach (var tile in tileBytes)
+            for (var i = 0; i < tile.Length; i++)
+                writer.WriteBits(tile[i], 8);
 
         return writer.ToArray();
     }

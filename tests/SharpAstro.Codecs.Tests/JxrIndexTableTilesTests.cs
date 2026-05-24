@@ -107,35 +107,84 @@ public sealed class JxrIndexTableTilesTests
     [Fact]
     public void CodedImage_WithIndexTable_RoundTrips()
     {
-        // Set IndexTablePresentFlag and ensure CodedImage.Decode skips past
-        // the table to read PROFILE_LEVEL_INFO correctly. We can't yet PRODUCE
-        // the offsets at encode time (would need full bytestream measurement),
-        // so we use a hand-crafted codestream below.
-        var w = new BitWriter();
-
-        // Hand-write an IMAGE_HEADER with IndexTablePresentFlag = true, single tile.
-        var img = new ImageHeader
+        // Encoder emits INDEX_TABLE_TILES when IndexTablePresentFlag is set.
+        // Decoder reads it. Verify full round-trip including the table.
+        var img = new CodedImage
         {
-            OutputClrFmt = JxrOutputColorFormat.YOnly,
-            OutputBitDepth = JxrOutputBitDepth.Bd8,
-            ShortHeaderFlag = true,
-            WidthMinus1 = 15,
-            HeightMinus1 = 15,
-            IndexTablePresentFlag = true,
+            ImageHeader = new ImageHeader
+            {
+                OutputClrFmt = JxrOutputColorFormat.YOnly,
+                OutputBitDepth = JxrOutputBitDepth.Bd8,
+                ShortHeaderFlag = true,
+                WidthMinus1 = 31,
+                HeightMinus1 = 31,
+                TilingFlag = true,
+                NumVerTilesMinus1 = 1,
+                NumHorTilesMinus1 = 1,
+                TileWidthInMb = [1],
+                TileHeightInMb = [1],
+                IndexTablePresentFlag = true, // ← the new bit
+            },
+            PlaneHeader = new ImagePlaneHeader
+            {
+                InternalClrFmt = JxrInternalColorFormat.YOnly,
+                BandsPresent = JxrBandsPresent.DcOnly,
+                NumComponents = 1,
+                DcQuant = 1,
+            },
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
+            Macroblocks =
+            [
+                new Macroblock { Dc = [10] },
+                new Macroblock { Dc = [20] },
+                new Macroblock { Dc = [30] },
+                new Macroblock { Dc = [40] },
+            ],
         };
-        // ImageHeader.Write rejects IndexTablePresentFlag — so encode via raw bytes
-        // by toggling the flag after Write. Simpler: build by hand here is overkill,
-        // we just verify the Read path tolerates the flag when the table is present
-        // at the correct codestream position by skipping it.
 
-        // For this round-trip we only verify the table read parses correctly on its
-        // own (the codestream-position test is implicit once we get a real fixture
-        // we can decode end-to-end).
-        var table = new IndexTableTiles { Offsets = [42L, 1234L, 0xCAFEL] };
-        table.Write(w);
+        var bytes = img.Encode();
+        var decoded = CodedImage.Decode(bytes);
 
-        var r = new BitReader(w.AsSpan());
-        var read = IndexTableTiles.Read(ref r, expectedEntries: 3);
-        read.Offsets.ShouldBe(new long[] { 42, 1234, 0xCAFE });
+        decoded.ImageHeader.IndexTablePresentFlag.ShouldBeTrue();
+        decoded.ImageHeader.TilingFlag.ShouldBeTrue();
+        decoded.Macroblocks.Length.ShouldBe(4);
+        decoded.Macroblocks[0].Dc[0].ShouldBe(10);
+        decoded.Macroblocks[1].Dc[0].ShouldBe(20);
+        decoded.Macroblocks[2].Dc[0].ShouldBe(30);
+        decoded.Macroblocks[3].Dc[0].ShouldBe(40);
+    }
+
+    [Fact]
+    public void IndexTable_SingleTile_Throws()
+    {
+        // Single-tile codestreams shouldn't carry an index table (just one tile,
+        // nothing to seek to). Encoder rejects this combination.
+        var img = new CodedImage
+        {
+            ImageHeader = new ImageHeader
+            {
+                OutputClrFmt = JxrOutputColorFormat.YOnly,
+                OutputBitDepth = JxrOutputBitDepth.Bd8,
+                ShortHeaderFlag = true,
+                WidthMinus1 = 15,
+                HeightMinus1 = 15,
+                IndexTablePresentFlag = true,
+                // No TilingFlag = single tile.
+            },
+            PlaneHeader = new ImagePlaneHeader
+            {
+                InternalClrFmt = JxrInternalColorFormat.YOnly,
+                BandsPresent = JxrBandsPresent.DcOnly,
+                NumComponents = 1,
+                DcQuant = 1,
+            },
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
+            Macroblocks = [new Macroblock { Dc = [0] }],
+        };
+
+        var threw = false;
+        try { img.Encode(); }
+        catch (NotSupportedException) { threw = true; }
+        threw.ShouldBeTrue();
     }
 }

@@ -75,8 +75,6 @@ public sealed class ImageHeader
     {
         if (WindowingFlag)
             throw new NotSupportedException("WINDOWING_FLAG=true not yet supported in ImageHeader.Write");
-        if (IndexTablePresentFlag)
-            throw new NotSupportedException("INDEX_TABLE_PRESENT_FLAG=true not yet supported");
         if (TilingFlag)
         {
             if (TileWidthInMb.Length != NumVerTilesMinus1)
