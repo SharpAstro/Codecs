@@ -10,27 +10,25 @@ exactly the formats they need.
 | Package | Decode | Encode | What it actually is |
 |---|:---:|:---:|---|
 | [`SharpAstro.StbImage`](src/StbImageSharp/) | PNG · JPG · BMP · TGA · PSD · GIF · HDR | — | Auto-generated C# port of Sean Barrett's `stb_image.h`. Decode-only, **8-bit precision through the managed API** (the internal 16-bit pipeline isn't exposed by `ImageResult`/`ImageResultFloat`). **Strips ancillary metadata** — iCCP / sRGB / gAMA / cHRM / eXIf / tEXt are all discarded. Use for "best-effort decode an arbitrary still image"; not for HDR or color-managed workflows. |
-| [`SharpAstro.Png`](src/SharpAstro.Png/) | — | PNG | Pure-managed writer with libpng-style adaptive per-row filtering, 8/16-bit RGBA/Gray, iCCP/eXIf/sRGB chunks. Also exports `PngPredictor` as a reusable row-unfilter building block (TIFF Predictor=2, PDF FlateDecode). |
+| [`SharpAstro.Png`](src/SharpAstro.Png/) | PNG | PNG | Pure-managed encoder + decoder. Writer: libpng-style adaptive per-row filtering, 8/16-bit RGBA/Gray, iCCP/eXIf/sRGB chunks. Reader: chunk parsing with CRC validation, color types 0/2/4/6 at 8/16-bit, preserves iCCP/sRGB/gAMA/cHRM/eXIf metadata (StbImage discards these). Also exports `PngPredictor` as a reusable row-unfilter building block (TIFF Predictor=2, PDF FlateDecode). Sub-byte bit depths (1/2/4), indexed-color (PLTE), and Adam7 interlacing are not yet supported. |
 | [`SharpAstro.Jpeg.IccInjector`](src/SharpAstro.Jpeg.IccInjector/) | — | — | `JpegIccInjector` — splices an APP2 ICC segment into an already-encoded JPEG byte stream. Not a JPEG codec; the `SharpAstro.Jpeg` PackageId is held in reserve for a future full encoder/decoder. |
 | [`SharpAstro.Tiff`](src/SharpAstro.Tiff/) | TIFF | TIFF | Full pure-managed TIFF reader/writer. Multi-page, 8/16/32-bit uint + IEEE-Float, Uncompressed / Deflate / Zlib, II + MM byte order, SampleFormat/SMin/SMax/ICC round-trip. |
 | [`SharpAstro.Jxr`](src/SharpAstro.Jxr/) | JXR | JXR | Clean-room T.832 JPEG XR codec from the spec PDF. BD8/BD16/BD16F/BD32F × grayscale/RGB × spatial/frequency mode × multi-tile × INDEX_TABLE_TILES (with random-access tile decode) × POT × lossy quantization × alpha plane × full `.jxr` file container. |
 | [`SharpAstro.Color.Icc`](src/SharpAstro.Color.Icc/) | — | — | Bundled sRGB v4 ICC blob (588 bytes, lazily loaded) for embedding into TIFF/PNG/JPEG via the codec packages above. Not a codec. |
 | [`SharpAstro.Exif`](src/SharpAstro.Exif/) | EXIF | — | Pure-managed EXIF metadata reader. Parses EXIF blobs from JPEG (APP1), TIFF (sub-IFD), and PNG (eXIf chunk). |
 
-## PNG decode/encode asymmetry — known caveat
+## PNG decode path — recommendation
 
-If you encode a PNG with `SharpAstro.Png` and embed an ICC profile (iCCP
-chunk), EXIF (eXIf), or sRGB declaration, then read it back through
-`SharpAstro.StbImage`, the metadata silently disappears — stb_image only
-keeps pixel data. Same for 16-bit-per-sample PNGs: encoder writes them
-faithfully, decoder downsamples to 8-bit.
+For a round-trippable PNG workflow, use **`SharpAstro.Png`** on both
+sides — `PngWriter` to encode, `PngReader` to decode. The reader
+preserves iCCP / sRGB / gAMA / cHRM / eXIf metadata and decodes 16-bit
+samples faithfully (returned in PNG's big-endian byte order; use
+`PngImage.AsUInt16Samples()` for a host-endian view).
 
-For a fully round-trippable PNG workflow today: encode with
-`SharpAstro.Png`, decode with **`SharpAstro.Tiff`** instead (TIFF is
-strictly more capable than PNG for color-managed 16-bit imagery and is
-fully symmetric in this repo). Adding a clean-room PNG decoder to
-`SharpAstro.Png` is the proper fix — see "Naming-convention status"
-below.
+`SharpAstro.StbImage` is still the right tool for "best-effort decode an
+arbitrary still image" (BMP/TGA/PSD/GIF/HDR have no clean-room sibling
+yet), but for PNG specifically it discards all metadata and downsamples
+16-bit to 8-bit through the managed API — prefer `SharpAstro.Png`.
 
 ## Picking what to consume
 
@@ -72,7 +70,7 @@ The package names follow three inconsistent patterns today:
 This is tracked but not yet acted on. Likely future moves:
 
 - ✅ **`SharpAstro.Jpeg` renamed to `SharpAstro.Jpeg.IccInjector`** — the `Jpeg` PackageId is now reserved for a future full codec.
-- **Add a pure-managed PNG decoder to `SharpAstro.Png`** so it matches the `Tiff` / `Jxr` shape — at which point the PNG path can retire from `SharpAstro.StbImage`.
+- ✅ **Pure-managed PNG decoder added to `SharpAstro.Png`** (`PngReader.Decode`) — now symmetric with `Tiff` / `Jxr`. Sub-byte depths / indexed-color / Adam7 are deferred follow-ups.
 - **Shrink `SharpAstro.StbImage`** as each format gets a clean-room sibling, eventually leaving it as "the holdouts" (TGA / PSD / GIF / HDR / BMP).
 
 None of this is urgent — the packages coexist fine and ship from the same CI.
