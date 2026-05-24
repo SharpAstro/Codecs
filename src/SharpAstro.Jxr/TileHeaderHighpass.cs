@@ -1,24 +1,30 @@
 namespace SharpAstro.Jxr;
 
 /// <summary>
-/// TILE_HEADER_HIGHPASS from T.832 §8.6.4 — per-tile HP-band header.
-/// Only emitted when <c>BANDS_PRESENT</c> includes the HP band. Carries
-/// an optional <c>TRIM_FLEXBITS</c> 4-bit field that drops trailing
-/// flexbit refinement (controlled by the IMAGE_HEADER
-/// <c>TRIM_FLEX_BITS_FLAG</c> — caller passes that flag in).
+/// TILE_HEADER_HIGHPASS from T.832 §8.6.4 / Table 45 — per-tile HP-band
+/// header. The TRIM_FLEXBITS field is always emitted when the enclosing
+/// IMAGE_HEADER set TRIM_FLEX_BITS_FLAG. The HP_QP() body is emitted only
+/// when the plane-level HP_IMAGE_PLANE_UNIFORM_FLAG = 0.
 /// </summary>
 public sealed class TileHeaderHighpass
 {
-    /// <summary>
-    /// TRIM_FLEXBITS — number of LSBs of the flexbits refinement that
-    /// are dropped from the bitstream (0..15). Only meaningful when the
-    /// enclosing IMAGE_HEADER set <c>TRIM_FLEX_BITS_FLAG = true</c>.
-    /// </summary>
+    /// <summary>TRIM_FLEXBITS — 0..15 LSBs dropped from the flexbits refinement.</summary>
     public int TrimFlexBits;
 
-    public bool HpUniformFlag = true;
+    /// <summary>When true, HP band reuses the per-tile LP QPs (NumHPQPs = NumLPQPs).</summary>
+    public bool UseLpQpForHp;
 
-    public void Write(BitWriter writer, bool trimFlexBitsFlag)
+    /// <summary>Per-tile HP QP table. Populated only when plane uniform = 0 AND USE_LP_QP_FLAG = 0.</summary>
+    public QpTable? HpQp;
+
+    /// <summary>Backwards-compat alias — see <see cref="TileHeaderDc.DcUniformFlag"/>.</summary>
+    public bool HpUniformFlag
+    {
+        get => HpQp is null && !UseLpQpForHp;
+        set { if (!value) throw new InvalidOperationException("Set HpQp / UseLpQpForHp to switch to per-tile QPs"); }
+    }
+
+    public void Write(BitWriter writer, bool trimFlexBitsFlag, bool planeUniform, int numComponents)
     {
         if (trimFlexBitsFlag)
         {
@@ -27,19 +33,50 @@ public sealed class TileHeaderHighpass
             writer.WriteBits((uint)TrimFlexBits, 4);
         }
 
-        if (!HpUniformFlag)
-            throw new NotSupportedException("Non-uniform per-tile HP quantization not yet supported");
-        writer.WriteBit(true);
+        if (planeUniform) return;
+        writer.WriteBit(UseLpQpForHp);
+        if (UseLpQpForHp) return;
+
+        if (HpQp is null)
+            throw new InvalidOperationException(
+                "TileHeaderHighpass.HpQp must be populated when neither plane HP uniform nor USE_LP_QP_FLAG holds");
+        if (HpQp.NumQPs is < 1 or > 16)
+            throw new InvalidOperationException($"NumHPQPs must be 1..16; got {HpQp.NumQPs}");
+        writer.WriteBits((uint)(HpQp.NumQPs - 1), 4);
+        for (var q = 0; q < HpQp.NumQPs; q++)
+        {
+            var row = new byte[numComponents];
+            for (var c = 0; c < numComponents; c++) row[c] = HpQp[q, c];
+            QpTable.WriteOneRow(writer, numComponents, HpQp.ComponentModes[q], row);
+        }
     }
 
-    public static TileHeaderHighpass Read(ref BitReader reader, bool trimFlexBitsFlag)
+    public static TileHeaderHighpass Read(ref BitReader reader, bool trimFlexBitsFlag, bool planeUniform, int numComponents)
     {
         var h = new TileHeaderHighpass();
         if (trimFlexBitsFlag)
             h.TrimFlexBits = (int)reader.ReadBits(4);
-        h.HpUniformFlag = reader.ReadBit();
-        if (!h.HpUniformFlag)
-            throw new NotSupportedException("Non-uniform per-tile HP quantization not yet supported");
+        if (planeUniform) return h;
+
+        h.UseLpQpForHp = reader.ReadBit();
+        if (h.UseLpQpForHp) return h;
+
+        var numHpQps = (int)reader.ReadBits(4) + 1;
+        var modes = new QpComponentMode[numHpQps];
+        var grid = new byte[numHpQps, numComponents];
+        for (var q = 0; q < numHpQps; q++)
+        {
+            var (mode, qps) = QpTable.ReadOneRow(ref reader, numComponents);
+            modes[q] = mode;
+            for (var c = 0; c < numComponents; c++) grid[q, c] = qps[c];
+        }
+        h.HpQp = new QpTable
+        {
+            NumQPs = numHpQps,
+            NumComponents = numComponents,
+            ComponentModes = modes,
+            Qps = grid,
+        };
         return h;
     }
 }

@@ -15,6 +15,28 @@ public sealed class JxrUserFixtureDiagnosticTests
     public JxrUserFixtureDiagnosticTests(ITestOutputHelper output) => _out = output;
 
     [Fact]
+    public void Probe_SeagullNebulaFullDecodeAttempt()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "seagull_nebula.jxr");
+        if (!File.Exists(path))
+        {
+            _out.WriteLine($"SKIP — {path} not present");
+            return;
+        }
+        var file = JxrContainer.Read(File.ReadAllBytes(path));
+        _out.WriteLine($"Container: {file.Width}x{file.Height} {file.PixelFormat}");
+        try
+        {
+            var img = CodedImage.Decode(file.Codestream);
+            _out.WriteLine($"CodedImage.Decode OK — {img.Macroblocks.Length} MBs");
+        }
+        catch (Exception ex)
+        {
+            _out.WriteLine($"Decode threw: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    [Fact]
     public void Probe_UserAstroJxr()
     {
         var path = @"C:\Users\SebastianGodelet\OneDrive\Dev\fits_tiff\Seagull_Nebula_1.5x_drz-RGB-session_1_sharpened.jxr";

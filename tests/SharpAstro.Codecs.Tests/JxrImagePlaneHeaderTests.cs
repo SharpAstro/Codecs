@@ -84,12 +84,12 @@ public sealed class JxrImagePlaneHeaderTests
             read.HpQuant.ShouldBe((byte)6);
     }
 
-    [Fact]
+    [Fact(Skip = "Phase 20: USE_DC_QP_FLAG / USE_LP_QP_FLAG moved from plane level to tile level (T.832 §8.6.3 / §8.6.4 spec-correct).")]
     public void UseDcQpForLp_OmitsLpQuant()
     {
-        // When the LP band reuses DC quantization, the LP_QUANT field is
-        // absent from the bitstream — verify both the round-trip and the
-        // bit-savings (compare against a header that writes a distinct LP_QUANT).
+        // Pre-Phase-20 we incorrectly emitted USE_DC_QP_FLAG at the plane
+        // level. The spec keeps that flag at the tile level only — see
+        // TileHeaderLowpass.UseDcQpForLp. Test retained as documentation.
         var aliased = new ImagePlaneHeader
         {
             InternalClrFmt = JxrInternalColorFormat.YOnly,
@@ -116,7 +116,7 @@ public sealed class JxrImagePlaneHeaderTests
         read.UseDcQpForLp.ShouldBeTrue();
     }
 
-    [Fact]
+    [Fact(Skip = "Phase 20: USE_LP_QP_FLAG moved from plane to tile level — see TileHeaderHighpass.UseLpQpForHp.")]
     public void UseLpQpForHp_OmitsHpQuant()
     {
         var h = new ImagePlaneHeader

@@ -52,12 +52,13 @@ public static class TileFrequency
         TileBandHeaders headers,
         JxrBandsPresent bands,
         bool trimFlexBitsFlag,
-        JxrInternalColorFormat format,
-        int numComponents,
+        ImagePlaneHeader plane,
         int widthInMb,
         int heightInMb,
         Macroblock[] mbs)
     {
+        var format = plane.InternalClrFmt;
+        var numComponents = plane.NumComponents;
         ValidateBandsAndMbs(bands, widthInMb, heightInMb, mbs, numComponents);
 
         var bandCount = BandCount(bands);
@@ -66,7 +67,7 @@ public static class TileFrequency
 
         // --- DC sub-stream ---
         var dcW = new BitWriter();
-        headers.Dc.Write(dcW);
+        headers.Dc.Write(dcW, plane.DcImagePlaneUniformFlag, numComponents);
         var dcState = new MbDcState();
         for (var i = 0; i < mbCount; i++)
             MbDc.EncodeMb(dcW, dcState, format, numComponents, mbs[i].Dc);
@@ -77,7 +78,8 @@ public static class TileFrequency
 
         // --- LP sub-stream ---
         var lpW = new BitWriter();
-        headers.Lowpass!.Write(lpW);
+        var lpPlaneUniform = plane.LpImagePlaneUniformFlag;
+        headers.Lowpass!.Write(lpW, lpPlaneUniform, numComponents);
         var lpState = new MbLpState();
         for (var i = 0; i < mbCount; i++)
             MbLp.EncodeMb(lpW, lpState, format, numComponents, mbs[i].Lp);
@@ -88,7 +90,8 @@ public static class TileFrequency
 
         // --- HP sub-stream (CBPHP + HP interleaved per MB) ---
         var hpW = new BitWriter();
-        headers.Highpass!.Write(hpW, trimFlexBitsFlag);
+        var hpPlaneUniform = plane.HpImagePlaneUniformFlag;
+        headers.Highpass!.Write(hpW, trimFlexBitsFlag, hpPlaneUniform, numComponents);
         var cbphpState = new MbCbphpState();
         var hpState = new MbHpState();
         var cbphpBuf = new int[numComponents];
@@ -116,13 +119,12 @@ public static class TileFrequency
         TileBandHeaders headers,
         JxrBandsPresent bands,
         bool trimFlexBitsFlag,
-        JxrInternalColorFormat format,
-        int numComponents,
+        ImagePlaneHeader plane,
         int widthInMb,
         int heightInMb,
         Macroblock[] mbs)
     {
-        var bandBytes = WriteBands(headers, bands, trimFlexBitsFlag, format, numComponents, widthInMb, heightInMb, mbs);
+        var bandBytes = WriteBands(headers, bands, trimFlexBitsFlag, plane, widthInMb, heightInMb, mbs);
         // Writer state must be byte-aligned for splicing pre-encoded sub-streams;
         // the callers (CodedImage.Encode tile loops) hold this invariant.
         if ((writer.BitPosition & 7) != 0)
@@ -138,8 +140,7 @@ public static class TileFrequency
         ref BitReader reader,
         JxrBandsPresent bands,
         bool trimFlexBitsFlag,
-        JxrInternalColorFormat format,
-        int numComponents,
+        ImagePlaneHeader plane,
         int widthInMb,
         int heightInMb,
         out TileBandHeaders headers)
@@ -147,13 +148,15 @@ public static class TileFrequency
         if (bands == JxrBandsPresent.AllBands)
             throw new NotSupportedException("TILE_FREQUENCY.Read AllBands (with FlexBits refinement) not yet supported");
 
+        var format = plane.InternalClrFmt;
+        var numComponents = plane.NumComponents;
         var mbCount = widthInMb * heightInMb;
         var mbs = new Macroblock[mbCount];
         for (var i = 0; i < mbCount; i++)
             mbs[i] = new Macroblock { Dc = new int[numComponents] };
 
         // --- DC sub-stream ---
-        var dcHdr = TileHeaderDc.Read(ref reader);
+        var dcHdr = TileHeaderDc.Read(ref reader, plane.DcImagePlaneUniformFlag, numComponents);
         var dcState = new MbDcState();
         for (var i = 0; i < mbCount; i++)
             MbDc.DecodeMb(ref reader, dcState, format, numComponents, mbs[i].Dc);
@@ -165,7 +168,8 @@ public static class TileFrequency
         if (bands != JxrBandsPresent.DcOnly)
         {
             // --- LP sub-stream ---
-            lpHdr = TileHeaderLowpass.Read(ref reader);
+            var lpPlaneUniform = plane.LpImagePlaneUniformFlag;
+            lpHdr = TileHeaderLowpass.Read(ref reader, lpPlaneUniform, numComponents);
             var lpState = new MbLpState();
             for (var i = 0; i < mbCount; i++)
             {
@@ -178,7 +182,8 @@ public static class TileFrequency
         if (bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass)
         {
             // --- HP sub-stream (CBPHP + HP interleaved per MB) ---
-            hpHdr = TileHeaderHighpass.Read(ref reader, trimFlexBitsFlag);
+            var hpPlaneUniform = plane.HpImagePlaneUniformFlag;
+            hpHdr = TileHeaderHighpass.Read(ref reader, trimFlexBitsFlag, hpPlaneUniform, numComponents);
             var cbphpState = new MbCbphpState();
             var hpState = new MbHpState();
             var cbphpBuf = new int[numComponents];

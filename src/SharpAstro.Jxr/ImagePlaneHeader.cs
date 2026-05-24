@@ -54,6 +54,33 @@ public sealed class ImagePlaneHeader
     public bool UseLpQpForHp;
 
     /// <summary>
+    /// DC_IMAGE_PLANE_UNIFORM_FLAG (T.832 §8.4.16). When true (default),
+    /// <see cref="DcQuant"/> applies image-wide. When false, the DC QP table
+    /// is emitted per-tile inside each <see cref="TileHeaderDc"/>.
+    /// </summary>
+    public bool DcImagePlaneUniformFlag = true;
+
+    /// <summary>LP_IMAGE_PLANE_UNIFORM_FLAG (T.832 §8.4.18). Default true.</summary>
+    public bool LpImagePlaneUniformFlag = true;
+
+    /// <summary>HP_IMAGE_PLANE_UNIFORM_FLAG (T.832 §8.4.20). Default true.</summary>
+    public bool HpImagePlaneUniformFlag = true;
+
+    /// <summary>
+    /// Plane-level DC QP vector. Populated when <see cref="DcImagePlaneUniformFlag"/> is true
+    /// AND the plane is multi-component. <c>null</c> in single-component or non-uniform-at-plane
+    /// configurations — the simpler <see cref="DcQuant"/> still mirrors the luma value for
+    /// backwards compat in the single-component case.
+    /// </summary>
+    public QpTable? PlaneDcQp;
+
+    /// <summary>Plane-level LP QP vector. See <see cref="PlaneDcQp"/>.</summary>
+    public QpTable? PlaneLpQp;
+
+    /// <summary>Plane-level HP QP vector. See <see cref="PlaneDcQp"/>.</summary>
+    public QpTable? PlaneHpQp;
+
+    /// <summary>
     /// Write this header to <paramref name="writer"/>. Caller supplies the
     /// <paramref name="outputBitDepth"/> from the enclosing IMAGE_HEADER —
     /// the bitstream layout of SHIFT_BITS / LEN_MANTISSA / EXP_BIAS depends on it.
@@ -67,11 +94,14 @@ public sealed class ImagePlaneHeader
         writer.WriteBit(ScaledFlag);
         writer.WriteBits((uint)BandsPresent, 4);
 
+        // T.832 Table 27: the YUV / NComponent chroma block is always 8 bits.
+        // YUV444: RESERVED_F u(4) + RESERVED_H u(4).
+        // NComponent (non-extended): NUM_COMPONENTS_MINUS1 u(4) + RESERVED_H u(4).
         // CHROMA_CENTERING_{X,Y} blocks for YUV420/422 elided (rejected above).
         if (InternalClrFmt == JxrInternalColorFormat.YUV444)
         {
-            // RESERVED_F u(4) per T.832 8.4 syntax for YUV444 padding.
-            writer.WriteBits(0, 4);
+            writer.WriteBits(0, 4); // RESERVED_F
+            writer.WriteBits(0, 4); // RESERVED_H
         }
 
         if (InternalClrFmt == JxrInternalColorFormat.NComponent)
@@ -79,6 +109,7 @@ public sealed class ImagePlaneHeader
             if (NumComponents is < 1 or > 16)
                 throw new NotSupportedException($"NComponent NumComponents must be 1..16 (extension path not yet supported), got {NumComponents}");
             writer.WriteBits((uint)(NumComponents - 1), 4);
+            writer.WriteBits(0, 4); // RESERVED_H (non-extended path)
         }
 
         switch (outputBitDepth)
@@ -95,30 +126,34 @@ public sealed class ImagePlaneHeader
                 break;
         }
 
-        // DC band — uniform-quant only for this cut.
-        writer.WriteBit(true);             // DC_IMAGE_PLANE_UNIFORM_FLAG
-        writer.WriteBits(DcQuant, 8);      // DC_QUANT
+        // For named formats NumComponents is implied by InternalClrFmt — caller
+        // doesn't need to set it. We mirror Read here so the round-trip works
+        // even if the caller leaves NumComponents at its default.
+        var effectiveComponents = InternalClrFmt == JxrInternalColorFormat.NComponent
+            ? NumComponents
+            : ComponentCountFor(InternalClrFmt);
 
+        // DC band.
+        writer.WriteBit(DcImagePlaneUniformFlag);
+        if (DcImagePlaneUniformFlag)
+            WritePlaneQpRow(writer, effectiveComponents, DcQuant);
+
+        // T.832 §8.4: plane-level header for LP is RESERVED_I_BIT + LP_IMAGE_PLANE_UNIFORM_FLAG.
+        // USE_DC_QP_FLAG lives at TILE level (TileHeaderLowpass), NOT here.
         if (BandsPresent != JxrBandsPresent.DcOnly)
         {
             writer.WriteBit(false);        // RESERVED_I_BIT
-            writer.WriteBit(UseDcQpForLp); // USE_DC_QP_FLAG
-            if (!UseDcQpForLp)
-            {
-                writer.WriteBit(true);     // LP_IMAGE_PLANE_UNIFORM_FLAG
-                writer.WriteBits(LpQuant, 8);
-            }
+            writer.WriteBit(LpImagePlaneUniformFlag);
+            if (LpImagePlaneUniformFlag)
+                WritePlaneQpRow(writer, effectiveComponents, LpQuant);
         }
 
         if (BandsPresent != JxrBandsPresent.DcOnly && BandsPresent != JxrBandsPresent.NoHighpass)
         {
             writer.WriteBit(false);        // RESERVED_J_BIT
-            writer.WriteBit(UseLpQpForHp); // USE_LP_QP_FLAG
-            if (!UseLpQpForHp)
-            {
-                writer.WriteBit(true);     // HP_IMAGE_PLANE_UNIFORM_FLAG
-                writer.WriteBits(HpQuant, 8);
-            }
+            writer.WriteBit(HpImagePlaneUniformFlag);
+            if (HpImagePlaneUniformFlag)
+                WritePlaneQpRow(writer, effectiveComponents, HpQuant);
         }
 
         // byte_alignment() — pad to byte boundary (T.832 5.3.3).
@@ -140,6 +175,7 @@ public sealed class ImagePlaneHeader
         if (h.InternalClrFmt == JxrInternalColorFormat.YUV444)
         {
             reader.SkipBits(4); // RESERVED_F
+            reader.SkipBits(4); // RESERVED_H
         }
 
         // NumComponents is bitstream-encoded only for NComponent; for the named
@@ -153,6 +189,7 @@ public sealed class ImagePlaneHeader
             if (numMinus1 == 0xF)
                 throw new NotSupportedException("NComponent extension (>=17 components) not yet supported");
             h.NumComponents = numMinus1 + 1;
+            reader.SkipBits(4); // RESERVED_H (non-extended path)
         }
 
         switch (outputBitDepth)
@@ -169,40 +206,70 @@ public sealed class ImagePlaneHeader
                 break;
         }
 
-        // DC band — only the uniform path is supported in this cut.
-        var dcUniform = reader.ReadBit();
-        if (!dcUniform)
-            throw new NotSupportedException("Non-uniform per-MB DC quantization not yet supported");
-        h.DcQuant = (byte)reader.ReadBits(8);
+        // DC band. When DC_IMAGE_PLANE_UNIFORM_FLAG = 0, the DC_QP() block is
+        // emitted per-tile in TILE_HEADER_DC, not here.
+        h.DcImagePlaneUniformFlag = reader.ReadBit();
+        if (h.DcImagePlaneUniformFlag)
+        {
+            var (mode, qps) = QpTable.ReadOneRow(ref reader, h.NumComponents);
+            h.PlaneDcQp = BuildQpTable(mode, qps, h.NumComponents);
+            h.DcQuant = qps[0];
+        }
 
         if (h.BandsPresent != JxrBandsPresent.DcOnly)
         {
             reader.ReadBit(); // RESERVED_I_BIT — decoder ignores
-            h.UseDcQpForLp = reader.ReadBit();
-            if (!h.UseDcQpForLp)
+            h.LpImagePlaneUniformFlag = reader.ReadBit();
+            if (h.LpImagePlaneUniformFlag)
             {
-                var lpUniform = reader.ReadBit();
-                if (!lpUniform)
-                    throw new NotSupportedException("Non-uniform per-MB LP quantization not yet supported");
-                h.LpQuant = (byte)reader.ReadBits(8);
+                var (mode, qps) = QpTable.ReadOneRow(ref reader, h.NumComponents);
+                h.PlaneLpQp = BuildQpTable(mode, qps, h.NumComponents);
+                h.LpQuant = qps[0];
             }
+            // else: LP_QP() emitted per-tile.
         }
 
         if (h.BandsPresent != JxrBandsPresent.DcOnly && h.BandsPresent != JxrBandsPresent.NoHighpass)
         {
             reader.ReadBit(); // RESERVED_J_BIT
-            h.UseLpQpForHp = reader.ReadBit();
-            if (!h.UseLpQpForHp)
+            h.HpImagePlaneUniformFlag = reader.ReadBit();
+            if (h.HpImagePlaneUniformFlag)
             {
-                var hpUniform = reader.ReadBit();
-                if (!hpUniform)
-                    throw new NotSupportedException("Non-uniform per-MB HP quantization not yet supported");
-                h.HpQuant = (byte)reader.ReadBits(8);
+                var (mode, qps) = QpTable.ReadOneRow(ref reader, h.NumComponents);
+                h.PlaneHpQp = BuildQpTable(mode, qps, h.NumComponents);
+                h.HpQuant = qps[0];
             }
+            // else: HP_QP() emitted per-tile.
         }
 
         AlignToByte(ref reader);
         return h;
+    }
+
+    /// <summary>
+    /// Write one plane-level QP row at the encoder's convention (uniform mode
+    /// when multi-component — we don't currently emit Separate / Independent
+    /// at the plane level since our encoder always wants one QP for the whole
+    /// image regardless of component).
+    /// </summary>
+    private static void WritePlaneQpRow(BitWriter writer, int numComponents, byte qp)
+    {
+        var row = new byte[numComponents];
+        for (var c = 0; c < numComponents; c++) row[c] = qp;
+        QpTable.WriteOneRow(writer, numComponents, QpComponentMode.Uniform, row);
+    }
+
+    private static QpTable BuildQpTable(QpComponentMode mode, byte[] perComp, int numComponents)
+    {
+        var grid = new byte[1, numComponents];
+        for (var c = 0; c < numComponents; c++) grid[0, c] = perComp[c];
+        return new QpTable
+        {
+            NumQPs = 1,
+            NumComponents = numComponents,
+            ComponentModes = [mode],
+            Qps = grid,
+        };
     }
 
     private static void WriteByteAlignment(BitWriter writer)

@@ -86,8 +86,7 @@ public sealed class CodedImage
                         TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
                         PlaneHeader.BandsPresent,
                         ImageHeader.TrimFlexBitsFlag,
-                        PlaneHeader.InternalClrFmt,
-                        PlaneHeader.NumComponents,
+                        PlaneHeader,
                         WidthInMb,
                         HeightInMb,
                         Macroblocks);
@@ -100,8 +99,7 @@ public sealed class CodedImage
                         TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
                         PlaneHeader.BandsPresent,
                         ImageHeader.TrimFlexBitsFlag,
-                        PlaneHeader.InternalClrFmt,
-                        PlaneHeader.NumComponents,
+                        PlaneHeader,
                         WidthInMb,
                         HeightInMb,
                         Macroblocks);
@@ -134,8 +132,7 @@ public sealed class CodedImage
                     TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
                     PlaneHeader.BandsPresent,
                     ImageHeader.TrimFlexBitsFlag,
-                    PlaneHeader.InternalClrFmt,
-                    PlaneHeader.NumComponents,
+                    PlaneHeader,
                     WidthInMb,
                     HeightInMb,
                     Macroblocks);
@@ -147,8 +144,7 @@ public sealed class CodedImage
                     TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
                     PlaneHeader.BandsPresent,
                     ImageHeader.TrimFlexBitsFlag,
-                    PlaneHeader.InternalClrFmt,
-                    PlaneHeader.NumComponents,
+                    PlaneHeader,
                     WidthInMb,
                     HeightInMb,
                     Macroblocks);
@@ -175,8 +171,7 @@ public sealed class CodedImage
                     TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
                     PlaneHeader.BandsPresent,
                     ImageHeader.TrimFlexBitsFlag,
-                    PlaneHeader.InternalClrFmt,
-                    PlaneHeader.NumComponents,
+                    PlaneHeader,
                     tw,
                     th,
                     tileMbs);
@@ -190,8 +185,7 @@ public sealed class CodedImage
                     TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
                     PlaneHeader.BandsPresent,
                     ImageHeader.TrimFlexBitsFlag,
-                    PlaneHeader.InternalClrFmt,
-                    PlaneHeader.NumComponents,
+                    PlaneHeader,
                     tw,
                     th,
                     tileMbs);
@@ -270,8 +264,7 @@ public sealed class CodedImage
                     ref reader,
                     plane.BandsPresent,
                     img.TrimFlexBitsFlag,
-                    plane.InternalClrFmt,
-                    plane.NumComponents,
+                    plane,
                     widthInMb,
                     heightInMb,
                     out _)
@@ -279,8 +272,7 @@ public sealed class CodedImage
                     ref reader,
                     plane.BandsPresent,
                     img.TrimFlexBitsFlag,
-                    plane.InternalClrFmt,
-                    plane.NumComponents,
+                    plane,
                     widthInMb,
                     heightInMb,
                     out _);
@@ -296,8 +288,7 @@ public sealed class CodedImage
                         ref reader,
                         plane.BandsPresent,
                         img.TrimFlexBitsFlag,
-                        plane.InternalClrFmt,
-                        plane.NumComponents,
+                        plane,
                         tw,
                         th,
                         out _)
@@ -305,8 +296,7 @@ public sealed class CodedImage
                         ref reader,
                         plane.BandsPresent,
                         img.TrimFlexBitsFlag,
-                        plane.InternalClrFmt,
-                        plane.NumComponents,
+                        plane,
                         tw,
                         th,
                         out _);
@@ -392,8 +382,7 @@ public sealed class CodedImage
             ref reader,
             plane.BandsPresent,
             img.TrimFlexBitsFlag,
-            plane.InternalClrFmt,
-            plane.NumComponents,
+            plane,
             tw,
             th,
             out _);

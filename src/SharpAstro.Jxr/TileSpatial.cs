@@ -28,20 +28,35 @@ public static class TileSpatial
     /// data in raster order, terminated by byte-alignment.
     /// </summary>
     /// <param name="mbs"><c>widthInMb × heightInMb</c> macroblocks in row-major order.</param>
+    /// <summary>Compat overload — constructs a default plane header from (format, numComponents) for legacy callers.</summary>
+    public static void Write(BitWriter writer, TileBandHeaders headers,
+        JxrBandsPresent bands, bool trimFlexBitsFlag,
+        JxrInternalColorFormat format, int numComponents,
+        int widthInMb, int heightInMb, Macroblock[] mbs)
+        => Write(writer, headers, bands, trimFlexBitsFlag,
+            new ImagePlaneHeader
+            {
+                InternalClrFmt = format,
+                NumComponents = numComponents,
+                BandsPresent = bands,
+            },
+            widthInMb, heightInMb, mbs);
+
     public static void Write(
         BitWriter writer,
         TileBandHeaders headers,
         JxrBandsPresent bands,
         bool trimFlexBitsFlag,
-        JxrInternalColorFormat format,
-        int numComponents,
+        ImagePlaneHeader plane,
         int widthInMb,
         int heightInMb,
         Macroblock[] mbs)
     {
+        var format = plane.InternalClrFmt;
+        var numComponents = plane.NumComponents;
         ValidateBandsAndMbs(bands, widthInMb, heightInMb, mbs, numComponents);
 
-        headers.Write(writer, bands, trimFlexBitsFlag);
+        headers.Write(writer, bands, trimFlexBitsFlag, plane);
 
         var dcState = new MbDcState();
         var lpState = bands != JxrBandsPresent.DcOnly ? new MbLpState() : null;
@@ -74,12 +89,25 @@ public static class TileSpatial
     }
 
     /// <summary>Read a complete TILE_SPATIAL block; mirror of <see cref="Write"/>.</summary>
+    /// <summary>Compat overload — see <see cref="Write(BitWriter, TileBandHeaders, JxrBandsPresent, bool, JxrInternalColorFormat, int, int, int, Macroblock[])"/>.</summary>
+    public static Macroblock[] Read(ref BitReader reader,
+        JxrBandsPresent bands, bool trimFlexBitsFlag,
+        JxrInternalColorFormat format, int numComponents,
+        int widthInMb, int heightInMb, out TileBandHeaders headers)
+        => Read(ref reader, bands, trimFlexBitsFlag,
+            new ImagePlaneHeader
+            {
+                InternalClrFmt = format,
+                NumComponents = numComponents,
+                BandsPresent = bands,
+            },
+            widthInMb, heightInMb, out headers);
+
     public static Macroblock[] Read(
         ref BitReader reader,
         JxrBandsPresent bands,
         bool trimFlexBitsFlag,
-        JxrInternalColorFormat format,
-        int numComponents,
+        ImagePlaneHeader plane,
         int widthInMb,
         int heightInMb,
         out TileBandHeaders headers)
@@ -87,7 +115,9 @@ public static class TileSpatial
         if (bands == JxrBandsPresent.AllBands)
             throw new NotSupportedException("TILE_SPATIAL.Read AllBands (with FlexBits refinement) not yet supported");
 
-        headers = TileBandHeaders.Read(ref reader, bands, trimFlexBitsFlag);
+        var format = plane.InternalClrFmt;
+        var numComponents = plane.NumComponents;
+        headers = TileBandHeaders.Read(ref reader, bands, trimFlexBitsFlag, plane);
 
         var dcState = new MbDcState();
         var lpState = bands != JxrBandsPresent.DcOnly ? new MbLpState() : null;
