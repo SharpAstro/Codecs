@@ -54,9 +54,12 @@ public sealed class JxrContainerRoundTripTests
         read.AlphaCodestream.ShouldBeNull();
         read.IccProfile.ShouldBeNull();
         read.XmpMetadata.ShouldBeNull();
-        read.SpatialXfrmPrimary.ShouldBeNull();
-        read.WidthResolution.ShouldBeNull();
-        read.HeightResolution.ShouldBeNull();
+        // Writer now emits SpatialXfrmPrimary / Resolution X/Y as defaults
+        // (0 / 96 dpi) so WIC's WMPhoto decoder accepts the file. Round-trip
+        // surfaces those defaults rather than null.
+        read.SpatialXfrmPrimary.ShouldBe(0u);
+        read.WidthResolution.ShouldBe(96.0f);
+        read.HeightResolution.ShouldBe(96.0f);
     }
 
     [Fact]

@@ -68,8 +68,63 @@ public sealed class CodedImage
         if (!ImageHeader.TilingFlag)
         {
             if (ImageHeader.IndexTablePresentFlag)
-                throw new NotSupportedException(
-                    "IndexTablePresentFlag = true requires TilingFlag = true (single-tile codestreams don't benefit from a seek table)");
+            {
+                // Single-tile + IndexTable: a degenerate table with one entry per
+                // band. WIC's own encoder uses this combination; Windows Photo /
+                // WIC's WMPhoto decoder appears to require the table to be
+                // present in order to instantiate a frame, even when it carries
+                // no useful seek information.
+                var perTile = freq ? TileFrequency.BandCount(PlaneHeader.BandsPresent) : 1;
+
+                // Encode the lone tile to a byte buffer first so we can compute
+                // the band offsets (always 0 for the first band; subsequent
+                // bands offset by the size of the previous band's bytes).
+                byte[][] perBandBytes;
+                if (freq)
+                {
+                    perBandBytes = TileFrequency.WriteBands(
+                        TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
+                        PlaneHeader.BandsPresent,
+                        ImageHeader.TrimFlexBitsFlag,
+                        PlaneHeader.InternalClrFmt,
+                        PlaneHeader.NumComponents,
+                        WidthInMb,
+                        HeightInMb,
+                        Macroblocks);
+                }
+                else
+                {
+                    var tileWriter = new BitWriter();
+                    TileSpatial.Write(
+                        tileWriter,
+                        TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
+                        PlaneHeader.BandsPresent,
+                        ImageHeader.TrimFlexBitsFlag,
+                        PlaneHeader.InternalClrFmt,
+                        PlaneHeader.NumComponents,
+                        WidthInMb,
+                        HeightInMb,
+                        Macroblocks);
+                    perBandBytes = [tileWriter.ToArray()];
+                }
+
+                var offsets = new long[perBandBytes.Length];
+                long running = 0;
+                for (var i = 0; i < perBandBytes.Length; i++)
+                {
+                    offsets[i] = running;
+                    running += perBandBytes[i].Length;
+                }
+                new IndexTableTiles { Offsets = offsets }.Write(writer);
+
+                ProfileLevelInfo.Write(writer);
+
+                foreach (var band in perBandBytes)
+                    for (var i = 0; i < band.Length; i++)
+                        writer.WriteBits(band[i], 8);
+
+                return writer.ToArray();
+            }
 
             ProfileLevelInfo.Write(writer);
             if (freq)

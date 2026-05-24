@@ -155,10 +155,12 @@ public sealed class JxrIndexTableTilesTests
     }
 
     [Fact]
-    public void IndexTable_SingleTile_Throws()
+    public void IndexTable_SingleTile_RoundTrips()
     {
-        // Single-tile codestreams shouldn't carry an index table (just one tile,
-        // nothing to seek to). Encoder rejects this combination.
+        // Microsoft's WIC WMPhoto encoder writes IndexTable=true even for
+        // single-tile images (and Windows Photo / WIC requires it to expose
+        // a frame). Encoder now supports the combination; the table carries
+        // one entry per band (1 for spatial DcOnly).
         var img = new CodedImage
         {
             ImageHeader = new ImageHeader
@@ -179,12 +181,13 @@ public sealed class JxrIndexTableTilesTests
                 DcQuant = 1,
             },
             ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
-            Macroblocks = [new Macroblock { Dc = [0] }],
+            Macroblocks = [new Macroblock { Dc = [42] }],
         };
 
-        var threw = false;
-        try { img.Encode(); }
-        catch (NotSupportedException) { threw = true; }
-        threw.ShouldBeTrue();
+        var decoded = CodedImage.Decode(img.Encode());
+        decoded.ImageHeader.IndexTablePresentFlag.ShouldBeTrue();
+        decoded.TileOffsets.ShouldNotBeNull();
+        decoded.TileOffsets!.Length.ShouldBe(1, "single tile + spatial mode = 1 index entry");
+        decoded.Macroblocks[0].Dc[0].ShouldBe(42);
     }
 }

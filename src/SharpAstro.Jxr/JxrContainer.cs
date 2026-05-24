@@ -128,19 +128,29 @@ public static class JxrContainer
         var pixelFormatBytes = file.PixelFormat.ToArray();
         entries.Add(PlannedEntry.OutOfLine(JxrTag.PixelFormat, TiffFieldType.Byte, 16, pixelFormatBytes));
 
-        // 0xBC02 SpatialXfrmPrimary (inline ULONG, range 0..7)
-        if (file.SpatialXfrmPrimary is uint sx)
-            entries.Add(PlannedEntry.InlineUInt32(JxrTag.SpatialXfrmPrimary, sx));
+        // 0xBC02 SpatialXfrmPrimary (inline ULONG, range 0..7). Emit 0 by
+        // default — Microsoft's WIC WMPhoto decoder treats this tag as
+        // required for frame instantiation; without it BitmapDecoder.Frames
+        // returns an empty collection even though the file otherwise parses.
+        entries.Add(PlannedEntry.InlineUInt32(JxrTag.SpatialXfrmPrimary, file.SpatialXfrmPrimary ?? 0u));
+
+        // 0xBC04 ImageType (inline ULONG). Per T.832 §A.7.4 the bit layout is
+        // 0=normal/1=preview in bit 0 and profile/level info in higher bits;
+        // value 0 means "normal full image". WIC's own JXR encoder writes
+        // this tag with value 0 and the decoder appears to refuse to expose
+        // a frame if it's missing.
+        entries.Add(PlannedEntry.InlineUInt32(JxrTag.ImageType, 0u));
 
         // 0xBC80 ImageWidth, 0xBC81 ImageHeight (inline ULONG)
         entries.Add(PlannedEntry.InlineUInt32(JxrTag.ImageWidth, file.Width));
         entries.Add(PlannedEntry.InlineUInt32(JxrTag.ImageHeight, file.Height));
 
-        // 0xBC82 / 0xBC83 resolution (inline FLOAT)
-        if (file.WidthResolution is float wr)
-            entries.Add(PlannedEntry.InlineFloat(JxrTag.WidthResolution, wr));
-        if (file.HeightResolution is float hr)
-            entries.Add(PlannedEntry.InlineFloat(JxrTag.HeightResolution, hr));
+        // 0xBC82 / 0xBC83 resolution (inline FLOAT). Default to 96 dpi
+        // (Windows convention) when not supplied — WIC reportedly fails to
+        // instantiate a frame without these. Callers can override via
+        // JxrFile.WidthResolution / HeightResolution.
+        entries.Add(PlannedEntry.InlineFloat(JxrTag.WidthResolution,  file.WidthResolution  ?? 96f));
+        entries.Add(PlannedEntry.InlineFloat(JxrTag.HeightResolution, file.HeightResolution ?? 96f));
 
         // 0xBCC0 IMAGE_OFFSET, 0xBCC1 IMAGE_BYTE_COUNT — offset patched after layout
         var imageOffsetEntryIndex = entries.Count;

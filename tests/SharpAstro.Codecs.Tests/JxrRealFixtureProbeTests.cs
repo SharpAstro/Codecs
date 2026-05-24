@@ -46,6 +46,23 @@ public sealed class JxrRealFixtureProbeTests
         // Sanity: dimensions in IMAGE_HEADER match the container metadata.
         ((uint)(img.WidthMinus1 + 1)).ShouldBe(file.Width);
         ((uint)(img.HeightMinus1 + 1)).ShouldBe(file.Height);
+
+        // ImagePlaneHeader tells us the actual InternalClrFmt + BandsPresent — needed
+        // to know which feature gap blocks full decode. Wrap in try/catch: pre-Phase-20
+        // YUV plane headers throw NotSupportedException; we want the diagnostic output
+        // regardless.
+        try
+        {
+            var plane = ImagePlaneHeader.Read(ref reader, img.OutputBitDepth);
+            _out.WriteLine($"  PlaneHeader:");
+            _out.WriteLine($"    InternalClrFmt:     {plane.InternalClrFmt}");
+            _out.WriteLine($"    BandsPresent:       {plane.BandsPresent}");
+            _out.WriteLine($"    NumComponents:      {plane.NumComponents}");
+        }
+        catch (Exception ex)
+        {
+            _out.WriteLine($"  PlaneHeader.Read failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     [Fact]
@@ -76,5 +93,18 @@ public sealed class JxrRealFixtureProbeTests
 
         ((uint)(img.WidthMinus1 + 1)).ShouldBe(file.Width);
         ((uint)(img.HeightMinus1 + 1)).ShouldBe(file.Height);
+
+        try
+        {
+            var plane = ImagePlaneHeader.Read(ref reader, img.OutputBitDepth);
+            _out.WriteLine($"  PlaneHeader:");
+            _out.WriteLine($"    InternalClrFmt:     {plane.InternalClrFmt}");
+            _out.WriteLine($"    BandsPresent:       {plane.BandsPresent}");
+            _out.WriteLine($"    NumComponents:      {plane.NumComponents}");
+        }
+        catch (Exception ex)
+        {
+            _out.WriteLine($"  PlaneHeader.Read failed: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 }
