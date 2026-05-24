@@ -100,4 +100,18 @@ public ref struct BitReader
         if ((uint)length > 32) throw new ArgumentOutOfRangeException(nameof(length));
         for (var i = 0; i < length; i++) ReadBit();
     }
+
+    /// <summary>
+    /// Reposition the reader at a byte-aligned offset from the start of the
+    /// underlying buffer. Used by random-access tile decode where
+    /// INDEX_TABLE_TILES gives byte offsets to jump to.
+    /// </summary>
+    public void SeekToByte(int byteOffset)
+    {
+        if ((uint)byteOffset > (uint)_buffer.Length)
+            throw new ArgumentOutOfRangeException(nameof(byteOffset),
+                $"byte offset {byteOffset} is past buffer length {_buffer.Length}");
+        _byteOffset = byteOffset;
+        _bitOffset = 0;
+    }
 }

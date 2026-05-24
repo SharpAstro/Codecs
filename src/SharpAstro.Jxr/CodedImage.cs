@@ -29,6 +29,15 @@ public sealed class CodedImage
     public required ProfileLevelInfo ProfileLevelInfo { get; init; }
     public required Macroblock[] Macroblocks { get; init; }
 
+    /// <summary>
+    /// INDEX_TABLE_TILES offsets when the codestream carries one, otherwise
+    /// null. Spatial mode: one entry per tile. Frequency mode: one entry per
+    /// (tile, band) pair, flattened tile-major. Offsets are byte positions
+    /// relative to the start of CODED_TILES (i.e. the byte immediately after
+    /// PROFILE_LEVEL_INFO).
+    /// </summary>
+    public long[]? TileOffsets { get; init; }
+
     /// <summary>Pixel width (= <c>ImageHeader.WidthMinus1 + 1</c>).</summary>
     public int Width => (int)(ImageHeader.WidthMinus1 + 1);
 
@@ -177,6 +186,7 @@ public sealed class CodedImage
         // one entry per (tile × band-sub-stream). We don't currently use the
         // offsets for random access — sequential decode works either way —
         // but we must read past the table or the next structure parses garbage.
+        long[]? tileOffsets = null;
         if (img.IndexTablePresentFlag)
         {
             var numVerTiles = img.TilingFlag ? img.NumVerTilesMinus1 + 1 : 1;
@@ -185,7 +195,7 @@ public sealed class CodedImage
             var perTile = img.FrequencyModeCodestreamFlag
                 ? TileFrequency.BandCount(plane.BandsPresent)
                 : 1;
-            _ = IndexTableTiles.Read(ref reader, tilesCount * perTile);
+            tileOffsets = IndexTableTiles.Read(ref reader, tilesCount * perTile).Offsets;
         }
 
         var profile = ProfileLevelInfo.Read(ref reader);
@@ -255,7 +265,83 @@ public sealed class CodedImage
             PlaneHeader = plane,
             ProfileLevelInfo = profile,
             Macroblocks = mbs,
+            TileOffsets = tileOffsets,
         };
+    }
+
+    /// <summary>
+    /// Random-access decode of a single tile via INDEX_TABLE_TILES. The
+    /// codestream prologue (IMAGE_HEADER + IMAGE_PLANE_HEADER +
+    /// INDEX_TABLE_TILES + PROFILE_LEVEL_INFO) is parsed unconditionally; the
+    /// chosen tile is then seeked-to using the index table's byte offset and
+    /// decoded in isolation.
+    /// </summary>
+    /// <param name="bytes">Full JXR codestream bytes.</param>
+    /// <param name="tileX">Tile column index in <c>0..NumVerTilesMinus1</c>.</param>
+    /// <param name="tileY">Tile row index in <c>0..NumHorTilesMinus1</c>.</param>
+    /// <returns>The macroblocks for the requested tile in tile-raster order;
+    /// length is <c>tileWidthInMb × tileHeightInMb</c>.</returns>
+    /// <remarks>
+    /// Requires <c>TILING_FLAG=true</c> AND <c>INDEX_TABLE_PRESENT_FLAG=true</c>.
+    /// Currently spatial-mode only; frequency-mode random access requires
+    /// per-band seeking which lands later.
+    /// </remarks>
+    public static Macroblock[] DecodeTile(ReadOnlySpan<byte> bytes, int tileX, int tileY)
+    {
+        var reader = new BitReader(bytes);
+        var img = ImageHeader.Read(ref reader);
+        if (!img.TilingFlag)
+            throw new InvalidOperationException(
+                "CodedImage.DecodeTile requires TilingFlag = true (no tiles to random-access)");
+        if (!img.IndexTablePresentFlag)
+            throw new InvalidOperationException(
+                "CodedImage.DecodeTile requires IndexTablePresentFlag = true (no seek table)");
+        if (img.AlphaImagePlaneFlag)
+            throw new NotSupportedException("CodedImage.DecodeTile: alpha plane not yet supported");
+        if (img.FrequencyModeCodestreamFlag)
+            throw new NotSupportedException(
+                "CodedImage.DecodeTile: frequency-mode random access not yet supported " +
+                "(needs per-band seeking — use CodedImage.Decode for the full codestream)");
+
+        var numVerTiles = img.NumVerTilesMinus1 + 1;
+        var numHorTiles = img.NumHorTilesMinus1 + 1;
+        if ((uint)tileX >= (uint)numVerTiles)
+            throw new ArgumentOutOfRangeException(nameof(tileX), $"tileX {tileX} out of range [0, {numVerTiles})");
+        if ((uint)tileY >= (uint)numHorTiles)
+            throw new ArgumentOutOfRangeException(nameof(tileY), $"tileY {tileY} out of range [0, {numHorTiles})");
+
+        var plane = ImagePlaneHeader.Read(ref reader, img.OutputBitDepth);
+        var tilesCount = numVerTiles * numHorTiles;
+        var indexTable = IndexTableTiles.Read(ref reader, tilesCount);
+        _ = ProfileLevelInfo.Read(ref reader);
+
+        // After ProfileLevelInfo, BitReader's position IS the start of
+        // CODED_TILES — offsets in the index table are relative to here. The
+        // T.832 spec guarantees this junction is byte-aligned.
+        if ((reader.BitPosition & 7) != 0)
+            throw new InvalidDataException("CODED_TILES does not start on a byte boundary");
+        var codedTilesByteStart = reader.BitPosition >> 3;
+
+        var tileIdx = tileY * numVerTiles + tileX;
+        var tileByteOffset = codedTilesByteStart + (int)indexTable.Offsets[tileIdx];
+
+        // Resolve tile dimensions in MB-grid coords — TileSpatial.Read needs them.
+        var widthInMb = ((int)(img.WidthMinus1 + 1) + 15) >> 4;
+        var heightInMb = ((int)(img.HeightMinus1 + 1) + 15) >> 4;
+        var bounds = ComputeTileBounds(img, widthInMb, heightInMb).ToList();
+        var (_, _, tw, th) = bounds[tileIdx];
+
+        // Seek and decode just this tile.
+        reader.SeekToByte(tileByteOffset);
+        return TileSpatial.Read(
+            ref reader,
+            plane.BandsPresent,
+            img.TrimFlexBitsFlag,
+            plane.InternalClrFmt,
+            plane.NumComponents,
+            tw,
+            th,
+            out _);
     }
 
     /// <summary>
