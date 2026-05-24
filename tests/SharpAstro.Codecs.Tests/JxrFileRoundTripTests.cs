@@ -226,6 +226,52 @@ public sealed class JxrFileRoundTripTests
     // Realistic-size stress test — closest to actual astro file shape.
     // ----------------------------------------------------------------------
 
+    // ----------------------------------------------------------------------
+    // Tiled file-level round-trip — multi-tile JXR files with the tile grid
+    // exposed at the JxrFileFormatter API.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Tiled_Bd16Rgb_FileRoundTrip()
+    {
+        // 64×64 BD16 RGB random content into a 2×2 tile grid, wrapped in a real
+        // .jxr container. Other JXR-aware tools should be able to decode this.
+        var rng = new Random(unchecked((int)0xDEFA17ED));
+        var src = new ushort[64 * 64 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var layout = JxrTileLayout.Uniform(totalWidthInMb: 4, totalHeightInMb: 4, cols: 2, rows: 2);
+        var fileBytes = JxrFileFormatter.SaveBd16RgbNoFlexbits(src, 64, 64, tiling: layout);
+        var decoded = JxrFileFormatter.LoadBd16RgbNoFlexbits(fileBytes, out var w, out var h, out var container);
+
+        w.ShouldBe(64);
+        h.ShouldBe(64);
+        container.PixelFormat.ShouldBe(JxrPixelFormat.Rgb48Bpp);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Tiled_Bd16FRgb_HalfApi_FileRoundTrip()
+    {
+        // Closest end-to-end shape to the user's HDR-master pipeline:
+        // Half[] in, multi-tile half-float JXR file out, Half[] back.
+        var rng = new Random(unchecked((int)0xCAFED00D));
+        var src = new Half[64 * 64 * 3];
+        for (var i = 0; i < src.Length; i++)
+            src[i] = (Half)((rng.NextSingle() - 0.5f) * 50f);
+
+        var layout = JxrTileLayout.Uniform(4, 4, cols: 2, rows: 2);
+        var fileBytes = JxrFileFormatter.SaveBd16FRgbNoFlexbits(src, 64, 64, tiling: layout);
+        var decoded = JxrFileFormatter.LoadBd16FRgbNoFlexbitsAsHalf(fileBytes, out var w, out var h, out var container);
+
+        w.ShouldBe(64);
+        h.ShouldBe(64);
+        container.PixelFormat.ShouldBe(JxrPixelFormat.RgbHalf48Bpp);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
     [Fact]
     public void LargeBd16Rgb_512x512_RoundTrips()
     {
