@@ -50,6 +50,9 @@ public static class PngReader
         byte srgbRenderingIntent = 0;
         uint? gamma100k = null;
         ChromaticityChunk? chrm = null;
+        CicpChunk? cicp = null;
+        MdcvChunk? mdcv = null;
+        ClliChunk? clli = null;
 
         while (pos < data.Length)
         {
@@ -150,6 +153,18 @@ public static class PngReader
             {
                 rawExif = chunkData.ToArray();
             }
+            else if (typeBytes.SequenceEqual("cICP"u8))
+            {
+                cicp = CicpChunk.Read(chunkData);
+            }
+            else if (typeBytes.SequenceEqual("mDCv"u8))
+            {
+                mdcv = MdcvChunk.Read(chunkData);
+            }
+            else if (typeBytes.SequenceEqual("cLLI"u8))
+            {
+                clli = ClliChunk.Read(chunkData);
+            }
             // Any other chunk — silently skip. PNG is forwards-compatible by design:
             // ancillary unknown chunks are explicitly permitted, and critical unknown
             // chunks have a leading uppercase letter we'd need to reject. We defer the
@@ -181,6 +196,9 @@ public static class PngReader
             Gamma = gamma100k.HasValue ? gamma100k.Value / 100_000.0 : null,
             Chromaticity = chrm,
             Exif = rawExif,
+            Cicp = cicp,
+            Mdcv = mdcv,
+            Clli = clli,
         };
     }
 
@@ -349,6 +367,18 @@ public sealed record PngImage
     /// <summary>Raw EXIF blob from the <c>eXIf</c> chunk, or null if absent.</summary>
     public byte[]? Exif { get; init; }
 
+    /// <summary>PNG-3 <c>cICP</c> Coding-Independent Code Points (HDR color signaling), or null if absent.</summary>
+    public CicpChunk? Cicp { get; init; }
+
+    /// <summary>PNG-3 <c>mDCv</c> Mastering Display Color Volume, or null if absent.</summary>
+    public MdcvChunk? Mdcv { get; init; }
+
+    /// <summary>PNG-3 <c>cLLI</c> Content Light Level Information, or null if absent.</summary>
+    public ClliChunk? Clli { get; init; }
+
+    /// <summary>True if any PNG-3 HDR signaling chunk (cICP / mDCv / cLLI) is present.</summary>
+    public bool HasHdrSignaling => Cicp is not null || Mdcv is not null || Clli is not null;
+
     /// <summary>
     /// Sample count per row (<see cref="Width"/> × samples-per-pixel for the color type).
     /// Useful for unpacking <see cref="Pixels"/> without re-deriving the layout.
@@ -393,5 +423,137 @@ public sealed record ChromaticityChunk(
         var bx = BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(24, 4)) / 100_000.0;
         var by = BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(28, 4)) / 100_000.0;
         return new ChromaticityChunk(wx, wy, rx, ry, gx, gy, bx, by);
+    }
+
+    internal void Write(Span<byte> dst)
+    {
+        // dst must be exactly 32 bytes; caller writes the chunk wrapper.
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(0, 4),  (uint)Math.Round(WhiteX * 100_000.0));
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(4, 4),  (uint)Math.Round(WhiteY * 100_000.0));
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(8, 4),  (uint)Math.Round(RedX   * 100_000.0));
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(12, 4), (uint)Math.Round(RedY   * 100_000.0));
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(16, 4), (uint)Math.Round(GreenX * 100_000.0));
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(20, 4), (uint)Math.Round(GreenY * 100_000.0));
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(24, 4), (uint)Math.Round(BlueX  * 100_000.0));
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(28, 4), (uint)Math.Round(BlueY  * 100_000.0));
+    }
+}
+
+/// <summary>
+/// PNG-3 <c>cICP</c> chunk — Coding-Independent Code Points (4 bytes).
+/// Identifies the color space + transfer function of the image's sample
+/// values using H.273 / ITU CICP numbering. This is how PNG-3 declares
+/// HDR — pixel data stays 16-bit integer, but cICP says e.g. "BT.2020
+/// primaries + PQ transfer function" to flag it as HDR10.
+/// </summary>
+/// <param name="ColorPrimaries">H.273 §8.1: 1=BT.709/sRGB, 9=BT.2020, 12=DCI-P3, 11=Display-P3.</param>
+/// <param name="TransferFunction">H.273 §8.2: 1=BT.709, 13=sRGB IEC 61966-2-1, 16=SMPTE 2084 (PQ), 18=ARIB STD-B67 (HLG).</param>
+/// <param name="MatrixCoefficients">H.273 §8.3: PNG-3 requires 0 (Identity / RGB) — PNG doesn't carry YCbCr.</param>
+/// <param name="VideoFullRangeFlag">PNG-3 requires <c>true</c> (full range 0..2^N-1).</param>
+public sealed record CicpChunk(
+    byte ColorPrimaries,
+    byte TransferFunction,
+    byte MatrixCoefficients,
+    bool VideoFullRangeFlag)
+{
+    internal static CicpChunk Read(ReadOnlySpan<byte> chunkData)
+    {
+        if (chunkData.Length != 4)
+            throw new InvalidDataException($"cICP chunk length must be 4, got {chunkData.Length}");
+        return new CicpChunk(
+            ColorPrimaries:       chunkData[0],
+            TransferFunction:     chunkData[1],
+            MatrixCoefficients:   chunkData[2],
+            VideoFullRangeFlag:   chunkData[3] != 0);
+    }
+
+    internal void Write(Span<byte> dst)
+    {
+        dst[0] = ColorPrimaries;
+        dst[1] = TransferFunction;
+        dst[2] = MatrixCoefficients;
+        dst[3] = (byte)(VideoFullRangeFlag ? 1 : 0);
+    }
+
+    /// <summary>BT.2020 + PQ (SMPTE 2084) — the standard "HDR10" signaling.</summary>
+    public static CicpChunk Hdr10Pq => new(9, 16, 0, true);
+
+    /// <summary>BT.2020 + HLG (ARIB STD-B67) — broadcast HDR.</summary>
+    public static CicpChunk Bt2020Hlg => new(9, 18, 0, true);
+
+    /// <summary>sRGB primaries + sRGB transfer — explicit signal of SDR sRGB.</summary>
+    public static CicpChunk Srgb => new(1, 13, 0, true);
+}
+
+/// <summary>
+/// PNG-3 <c>mDCv</c> chunk — Mastering Display Color Volume (24 bytes).
+/// Tells the renderer what reference display the content was mastered on,
+/// so playback can tone-map appropriately. Mirrors the SMPTE ST 2086 /
+/// HEVC SEI "mastering display color volume" payload.
+/// </summary>
+/// <param name="RedX">Raw u16; primaries are in units of 0.00002 (so 35400 ≈ 0.708).</param>
+/// <param name="MaxLuminanceUnits">Raw u32; units of 0.0001 cd/m² (10000000 = 1000 cd/m²).</param>
+public sealed record MdcvChunk(
+    ushort RedX, ushort RedY,
+    ushort GreenX, ushort GreenY,
+    ushort BlueX, ushort BlueY,
+    ushort WhitePointX, ushort WhitePointY,
+    uint MaxLuminanceUnits,
+    uint MinLuminanceUnits)
+{
+    internal static MdcvChunk Read(ReadOnlySpan<byte> chunkData)
+    {
+        if (chunkData.Length != 24)
+            throw new InvalidDataException($"mDCv chunk length must be 24, got {chunkData.Length}");
+        return new MdcvChunk(
+            RedX:        BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(0, 2)),
+            RedY:        BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(2, 2)),
+            GreenX:      BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(4, 2)),
+            GreenY:      BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(6, 2)),
+            BlueX:       BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(8, 2)),
+            BlueY:       BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(10, 2)),
+            WhitePointX: BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(12, 2)),
+            WhitePointY: BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(14, 2)),
+            MaxLuminanceUnits: BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(16, 4)),
+            MinLuminanceUnits: BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(20, 4)));
+    }
+
+    internal void Write(Span<byte> dst)
+    {
+        BinaryPrimitives.WriteUInt16BigEndian(dst.Slice(0, 2),  RedX);
+        BinaryPrimitives.WriteUInt16BigEndian(dst.Slice(2, 2),  RedY);
+        BinaryPrimitives.WriteUInt16BigEndian(dst.Slice(4, 2),  GreenX);
+        BinaryPrimitives.WriteUInt16BigEndian(dst.Slice(6, 2),  GreenY);
+        BinaryPrimitives.WriteUInt16BigEndian(dst.Slice(8, 2),  BlueX);
+        BinaryPrimitives.WriteUInt16BigEndian(dst.Slice(10, 2), BlueY);
+        BinaryPrimitives.WriteUInt16BigEndian(dst.Slice(12, 2), WhitePointX);
+        BinaryPrimitives.WriteUInt16BigEndian(dst.Slice(14, 2), WhitePointY);
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(16, 4), MaxLuminanceUnits);
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(20, 4), MinLuminanceUnits);
+    }
+}
+
+/// <summary>
+/// PNG-3 <c>cLLI</c> chunk — Content Light Level Information (8 bytes).
+/// Describes the brightest pixel (<c>MaxCll</c>) and brightest average frame
+/// (<c>MaxFall</c>) the content actually contains, so the renderer can
+/// pre-allocate tone-mapping headroom. Both values are raw u32 in units of
+/// 0.0001 cd/m² (i.e., divide by 10000 to get nits).
+/// </summary>
+public sealed record ClliChunk(uint MaxCllUnits, uint MaxFallUnits)
+{
+    internal static ClliChunk Read(ReadOnlySpan<byte> chunkData)
+    {
+        if (chunkData.Length != 8)
+            throw new InvalidDataException($"cLLI chunk length must be 8, got {chunkData.Length}");
+        return new ClliChunk(
+            MaxCllUnits:  BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(0, 4)),
+            MaxFallUnits: BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(4, 4)));
+    }
+
+    internal void Write(Span<byte> dst)
+    {
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(0, 4), MaxCllUnits);
+        BinaryPrimitives.WriteUInt32BigEndian(dst.Slice(4, 4), MaxFallUnits);
     }
 }

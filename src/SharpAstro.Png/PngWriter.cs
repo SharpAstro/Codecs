@@ -44,7 +44,21 @@ public static class PngWriter
     public static byte[] Encode(ReadOnlySpan<byte> rgba, int width, int height, ReadOnlySpan<byte> iccProfile)
     {
         ValidateSize(rgba.Length, width, height, bytesPerPixel: 4);
-        return EncodeCore(rgba, width, height, bitDepth: 8, colorType: 6, bytesPerPixel: 4, iccProfile);
+        return EncodeCore(rgba, width, height, bitDepth: 8, colorType: 6, bytesPerPixel: 4,
+            new PngWriteOptions { IccProfile = iccProfile.IsEmpty ? null : iccProfile.ToArray() });
+    }
+
+    /// <summary>
+    /// Encode an 8-bit RGBA buffer with the full <see cref="PngWriteOptions"/>
+    /// metadata set — iCCP / sRGB / gAMA / cHRM / eXIf plus the PNG-3 HDR
+    /// signaling chunks (cICP / mDCv / cLLI). Use this overload for color-
+    /// managed or HDR PNG output; the simpler overloads above are
+    /// convenience wrappers.
+    /// </summary>
+    public static byte[] Encode(ReadOnlySpan<byte> rgba, int width, int height, PngWriteOptions options)
+    {
+        ValidateSize(rgba.Length, width, height, bytesPerPixel: 4);
+        return EncodeCore(rgba, width, height, bitDepth: 8, colorType: 6, bytesPerPixel: 4, options);
     }
 
     /// <summary>
@@ -56,7 +70,15 @@ public static class PngWriter
     public static byte[] EncodeGray8(ReadOnlySpan<byte> gray, int width, int height, ReadOnlySpan<byte> iccProfile = default)
     {
         ValidateSize(gray.Length, width, height, bytesPerPixel: 1);
-        return EncodeCore(gray, width, height, bitDepth: 8, colorType: 0, bytesPerPixel: 1, iccProfile);
+        return EncodeCore(gray, width, height, bitDepth: 8, colorType: 0, bytesPerPixel: 1,
+            new PngWriteOptions { IccProfile = iccProfile.IsEmpty ? null : iccProfile.ToArray() });
+    }
+
+    /// <summary>EncodeGray8 with full <see cref="PngWriteOptions"/>.</summary>
+    public static byte[] EncodeGray8(ReadOnlySpan<byte> gray, int width, int height, PngWriteOptions options)
+    {
+        ValidateSize(gray.Length, width, height, bytesPerPixel: 1);
+        return EncodeCore(gray, width, height, bitDepth: 8, colorType: 0, bytesPerPixel: 1, options);
     }
 
     /// <summary>
@@ -72,7 +94,17 @@ public static class PngWriter
         if (gray.Length != width * height)
             throw new ArgumentException("gray length must equal width*height");
         var beBytes = ToBigEndianBytes(gray);
-        return EncodeCore(beBytes, width, height, bitDepth: 16, colorType: 0, bytesPerPixel: 2, iccProfile);
+        return EncodeCore(beBytes, width, height, bitDepth: 16, colorType: 0, bytesPerPixel: 2,
+            new PngWriteOptions { IccProfile = iccProfile.IsEmpty ? null : iccProfile.ToArray() });
+    }
+
+    /// <summary>EncodeGray16 with full <see cref="PngWriteOptions"/>.</summary>
+    public static byte[] EncodeGray16(ReadOnlySpan<ushort> gray, int width, int height, PngWriteOptions options)
+    {
+        if (gray.Length != width * height)
+            throw new ArgumentException("gray length must equal width*height");
+        var beBytes = ToBigEndianBytes(gray);
+        return EncodeCore(beBytes, width, height, bitDepth: 16, colorType: 0, bytesPerPixel: 2, options);
     }
 
     /// <summary>
@@ -87,7 +119,17 @@ public static class PngWriter
         if (rgba.Length != width * height * 4)
             throw new ArgumentException("rgba length must equal width*height*4");
         var beBytes = ToBigEndianBytes(rgba);
-        return EncodeCore(beBytes, width, height, bitDepth: 16, colorType: 6, bytesPerPixel: 8, iccProfile);
+        return EncodeCore(beBytes, width, height, bitDepth: 16, colorType: 6, bytesPerPixel: 8,
+            new PngWriteOptions { IccProfile = iccProfile.IsEmpty ? null : iccProfile.ToArray() });
+    }
+
+    /// <summary>EncodeRgba16 with full <see cref="PngWriteOptions"/> — the HDR PNG entry point.</summary>
+    public static byte[] EncodeRgba16(ReadOnlySpan<ushort> rgba, int width, int height, PngWriteOptions options)
+    {
+        if (rgba.Length != width * height * 4)
+            throw new ArgumentException("rgba length must equal width*height*4");
+        var beBytes = ToBigEndianBytes(rgba);
+        return EncodeCore(beBytes, width, height, bitDepth: 16, colorType: 6, bytesPerPixel: 8, options);
     }
 
     /// <summary>
@@ -127,7 +169,7 @@ public static class PngWriter
     /// entry points do this swap automatically).
     /// </summary>
     private static byte[] EncodeCore(ReadOnlySpan<byte> samples, int width, int height,
-        byte bitDepth, byte colorType, int bytesPerPixel, ReadOnlySpan<byte> iccProfile)
+        byte bitDepth, byte colorType, int bytesPerPixel, PngWriteOptions options)
     {
         using var ms = new MemoryStream();
         ms.Write(Signature);
@@ -144,16 +186,63 @@ public static class PngWriter
         ihdr[12] = 0;
         WriteChunk(ms, "IHDR"u8, ihdr);
 
-        // iCCP must come after IHDR and before the first IDAT (PNG spec
-        // §11.3.3.3). Format: keyword (Latin-1, 1..79 bytes) + NUL +
-        // compression method (always 0 = zlib) + zlib-deflated profile.
-        // We emit the keyword "ICC profile" — what libpng, Adobe, and every
-        // major encoder use; the PNG spec lets it be anything, but matching
-        // the wild norm avoids surprises in pedantic readers.
-        if (!iccProfile.IsEmpty)
-            WriteIccpChunk(ms, "ICC profile"u8, iccProfile);
+        // --- Ancillary chunks — all must precede IDAT per PNG spec §5.6 -------
+        // PNG-3 HDR signaling (cICP / mDCv / cLLI) goes first because some
+        // pedantic readers expect them very early; their order among each
+        // other isn't constrained.
+        if (options.Cicp is not null)
+        {
+            Span<byte> buf = stackalloc byte[4];
+            options.Cicp.Write(buf);
+            WriteChunk(ms, "cICP"u8, buf);
+        }
+        if (options.Mdcv is not null)
+        {
+            Span<byte> buf = stackalloc byte[24];
+            options.Mdcv.Write(buf);
+            WriteChunk(ms, "mDCv"u8, buf);
+        }
+        if (options.Clli is not null)
+        {
+            Span<byte> buf = stackalloc byte[8];
+            options.Clli.Write(buf);
+            WriteChunk(ms, "cLLI"u8, buf);
+        }
+
+        // iCCP and sRGB are mutually exclusive (PNG spec §11.3.3.3); when both
+        // are populated, prefer iCCP — the actual profile carries more info.
+        if (options.IccProfile is { Length: > 0 } icc)
+        {
+            // Keyword from options (Latin-1, 1..79 bytes); defaults to "ICC profile".
+            WriteIccpChunk(ms, System.Text.Encoding.Latin1.GetBytes(options.IccProfileName), icc);
+        }
+        else if (options.SrgbRenderingIntent is { } intent)
+        {
+            Span<byte> buf = stackalloc byte[1] { intent };
+            WriteChunk(ms, "sRGB"u8, buf);
+        }
+
+        if (options.Gamma is { } gamma)
+        {
+            Span<byte> buf = stackalloc byte[4];
+            WriteBE(buf, (uint)Math.Round(gamma * 100_000.0));
+            WriteChunk(ms, "gAMA"u8, buf);
+        }
+        if (options.Chromaticity is not null)
+        {
+            Span<byte> buf = stackalloc byte[32];
+            options.Chromaticity.Write(buf);
+            WriteChunk(ms, "cHRM"u8, buf);
+        }
 
         WriteIdatChunk(ms, samples, width, height, bytesPerPixel);
+
+        // eXIf is allowed before OR after IDAT per the PNG extensions; we put
+        // it after so the pixel-critical chunks aren't pushed further from
+        // the header. Mirror chunk consumers expect either order.
+        if (options.Exif is { Length: > 0 } exif)
+            WriteChunk(ms, "eXIf"u8, exif);
+
         WriteChunk(ms, "IEND"u8, ReadOnlySpan<byte>.Empty);
         return ms.ToArray();
     }
