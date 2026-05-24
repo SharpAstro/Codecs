@@ -61,13 +61,6 @@ astrophotography workflow.
   turns out to be YUV) or BD32F at non-default LEN_MANTISSA. Worth running
   a full-decode attempt and recording what blows up first.
 
-## Packaging
-
-- **Flip `<IsPackable>false</IsPackable>` to `true`.** The csproj has a
-  comment "Flip to true once Phase 1 (T.833 container round-trip) lands."
-  We're well past that — full container + codestream + tiling + alpha is
-  in. The package is ready to ship.
-
 ## Known-completed (for reference — these were the major gaps before)
 
 Spatial mode, frequency mode, multi-tile, INDEX_TABLE_TILES read+write,
