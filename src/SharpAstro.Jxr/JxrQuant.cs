@@ -139,4 +139,60 @@ public static class JxrQuant
         for (var p = 1; p < 16; p++)
             mbHp[mbx, mby, c, blk, p] *= divisor;
     }
+
+    // -----------------------------------------------------------------------
+    // Per-MB dequantization paths (Phase 20). Used when the codestream
+    // carries non-uniform QPs — the caller passes a `divisors[mbX,mbY,comp]`
+    // grid built by QpResolver from the per-tile band headers.
+    // -----------------------------------------------------------------------
+
+    /// <summary>Dequantize DC values using a per-MB-per-component divisor grid.</summary>
+    public static void DequantizeDc(int[,,] mbDc, int[,,] divisors)
+    {
+        var mbW = mbDc.GetLength(0);
+        var mbH = mbDc.GetLength(1);
+        var nc = mbDc.GetLength(2);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var c = 0; c < nc; c++)
+        {
+            var d = divisors[mbx, mby, c];
+            if (d > 1) mbDc[mbx, mby, c] *= d;
+        }
+    }
+
+    /// <summary>Dequantize LP coefficients using a per-MB-per-component divisor grid.</summary>
+    public static void DequantizeLp(int[,,,] mbDcLp, int[,,] divisors)
+    {
+        var mbW = mbDcLp.GetLength(0);
+        var mbH = mbDcLp.GetLength(1);
+        var nc = mbDcLp.GetLength(2);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var c = 0; c < nc; c++)
+        {
+            var d = divisors[mbx, mby, c];
+            if (d > 1)
+                for (var p = 1; p < 16; p++)
+                    mbDcLp[mbx, mby, c, p] *= d;
+        }
+    }
+
+    /// <summary>Dequantize HP coefficients using a per-MB-per-component divisor grid.</summary>
+    public static void DequantizeHp(int[,,,,] mbHp, int[,,] divisors)
+    {
+        var mbW = mbHp.GetLength(0);
+        var mbH = mbHp.GetLength(1);
+        var nc = mbHp.GetLength(2);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var c = 0; c < nc; c++)
+        {
+            var d = divisors[mbx, mby, c];
+            if (d > 1)
+                for (var blk = 0; blk < 16; blk++)
+                for (var p = 1; p < 16; p++)
+                    mbHp[mbx, mby, c, blk, p] *= d;
+        }
+    }
 }

@@ -38,6 +38,22 @@ public sealed class CodedImage
     /// </summary>
     public long[]? TileOffsets { get; init; }
 
+    /// <summary>
+    /// Per-tile band-header trio (one entry per tile, in tile-raster order).
+    /// Populated by <see cref="Decode"/>; needed by the decoder pipeline to
+    /// apply per-MB QPs (Phase 20). For single-tile codestreams this is a
+    /// one-element array.
+    /// </summary>
+    public TileBandHeaders[]? PerTileBandHeaders { get; init; }
+
+    /// <summary>
+    /// MB-grid coordinates of each tile <c>(tileX, tileY, widthInMb, heightInMb)</c>
+    /// in tile-raster order. Populated by <see cref="Decode"/>; parallel to
+    /// <see cref="PerTileBandHeaders"/>. Single-tile codestreams have a single
+    /// entry <c>(0, 0, WidthInMb, HeightInMb)</c>.
+    /// </summary>
+    public (int tileX, int tileY, int widthInMb, int heightInMb)[]? TileGridBounds { get; init; }
+
     /// <summary>Pixel width (= <c>ImageHeader.WidthMinus1 + 1</c>).</summary>
     public int Width => (int)(ImageHeader.WidthMinus1 + 1);
 
@@ -257,8 +273,11 @@ public sealed class CodedImage
         var freq = img.FrequencyModeCodestreamFlag;
 
         Macroblock[] mbs;
+        var perTileHeaders = new List<TileBandHeaders>();
+        var tileGridBounds = new List<(int tileX, int tileY, int widthInMb, int heightInMb)>();
         if (!img.TilingFlag)
         {
+            TileBandHeaders soloHeaders;
             mbs = freq
                 ? TileFrequency.Read(
                     ref reader,
@@ -267,7 +286,7 @@ public sealed class CodedImage
                     plane,
                     widthInMb,
                     heightInMb,
-                    out _)
+                    out soloHeaders)
                 : TileSpatial.Read(
                     ref reader,
                     plane.BandsPresent,
@@ -275,7 +294,9 @@ public sealed class CodedImage
                     plane,
                     widthInMb,
                     heightInMb,
-                    out _);
+                    out soloHeaders);
+            perTileHeaders.Add(soloHeaders);
+            tileGridBounds.Add((0, 0, widthInMb, heightInMb));
         }
         else
         {
@@ -283,6 +304,7 @@ public sealed class CodedImage
             var tileBounds = ComputeTileBounds(img, widthInMb, heightInMb);
             foreach (var (tileX, tileY, tw, th) in tileBounds)
             {
+                TileBandHeaders tileHeaders;
                 var tileMbs = freq
                     ? TileFrequency.Read(
                         ref reader,
@@ -291,7 +313,7 @@ public sealed class CodedImage
                         plane,
                         tw,
                         th,
-                        out _)
+                        out tileHeaders)
                     : TileSpatial.Read(
                         ref reader,
                         plane.BandsPresent,
@@ -299,8 +321,10 @@ public sealed class CodedImage
                         plane,
                         tw,
                         th,
-                        out _);
+                        out tileHeaders);
                 Splat(tileMbs, mbs, widthInMb, tileX, tileY, tw, th);
+                perTileHeaders.Add(tileHeaders);
+                tileGridBounds.Add((tileX, tileY, tw, th));
             }
         }
 
@@ -311,6 +335,8 @@ public sealed class CodedImage
             ProfileLevelInfo = profile,
             Macroblocks = mbs,
             TileOffsets = tileOffsets,
+            PerTileBandHeaders = perTileHeaders.ToArray(),
+            TileGridBounds = tileGridBounds.ToArray(),
         };
     }
 

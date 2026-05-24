@@ -141,13 +141,16 @@ var mbW = img.WidthInMb;
         for (var mbx = 0; mbx < mbW; mbx++)
             mbDcLp[mbx, mby, 0, 0] = mbDc[mbx, mby, 0];
 
-        // Dequantize using the per-band QP from the plane header. QP=1 is a no-op.
-        var dcDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.DcQuant);
-        var lpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.LpQuant);
-        var hpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.HpQuant);
-        JxrQuant.DequantizeDc(mbDc, dcDiv);
-        JxrQuant.DequantizeLp(mbDcLp, lpDiv);
-        JxrQuant.DequantizeHp(mbHp, hpDiv);
+        // Dequantize using per-MB QP grids built from the resolved plane +
+        // tile-header QP chain (T.832 §8.4 / §8.6). For uniform-QP files
+        // every MB shares the plane-level divisor — degenerate to the
+        // legacy single-divisor path.
+        var dcDivisors = QpResolver.BuildBandDivisors(img, QpBand.Dc);
+        var lpDivisors = QpResolver.BuildBandDivisors(img, QpBand.Lp);
+        var hpDivisors = QpResolver.BuildBandDivisors(img, QpBand.Hp);
+        JxrQuant.DequantizeDc(mbDc, dcDivisors);
+        JxrQuant.DequantizeLp(mbDcLp, lpDivisors);
+        JxrQuant.DequantizeHp(mbHp, hpDivisors);
         for (var mby = 0; mby < mbH; mby++)
         for (var mbx = 0; mbx < mbW; mbx++)
             mbDcLp[mbx, mby, 0, 0] = mbDc[mbx, mby, 0];

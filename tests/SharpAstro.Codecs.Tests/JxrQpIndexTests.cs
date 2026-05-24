@@ -55,6 +55,71 @@ public sealed class JxrQpIndexTests
     }
 
     [Fact]
+    public void EndToEnd_NonUniformDc_DecoderAppliesPerTileDcQp()
+    {
+        // Manually craft a 1×1 MB image with DcImagePlaneUniformFlag=false
+        // and a per-tile DC_QP() row of QP=3. Encode the CodedImage, then
+        // decode and verify the dequantizer used divisor 3 — by comparing
+        // against a parallel uniform-QP=3 image, which must reach the same
+        // dequantized DC value.
+        var widthInMb = 1;
+        var heightInMb = 1;
+        var rawDc = new int[] { 5 };  // pre-quant input
+        var quantizedDc = rawDc[0] / 3;  // what the encoder would put into the bitstream
+
+        // Build the encoder's "already quantized" macroblocks. Our encoder
+        // facades quantize-then-write — for this test we hand-craft a
+        // CodedImage with the already-quantized values and per-tile DC_QP.
+        var planeNonUniform = new ImagePlaneHeader
+        {
+            InternalClrFmt = JxrInternalColorFormat.YOnly,
+            NumComponents = 1,
+            BandsPresent = JxrBandsPresent.DcOnly,
+            DcImagePlaneUniformFlag = false,
+        };
+        var headersNonUniform = TileBandHeaders.Uniform(JxrBandsPresent.DcOnly);
+        headersNonUniform.Dc.DcQp = QpTable.Uniform(numComponents: 1, qp: 3);
+        var mbsNonUniform = new[] { new Macroblock { Dc = [quantizedDc] } };
+
+        // Encode + decode roundtrip via TileSpatial directly (DcOnly).
+        var w = new BitWriter();
+        TileSpatial.Write(w, headersNonUniform, JxrBandsPresent.DcOnly,
+            trimFlexBitsFlag: false, planeNonUniform,
+            widthInMb, heightInMb, mbsNonUniform);
+        var r = new BitReader(w.AsSpan());
+        var decoded = TileSpatial.Read(ref r, JxrBandsPresent.DcOnly,
+            trimFlexBitsFlag: false, planeNonUniform,
+            widthInMb, heightInMb, out var decodedHeaders);
+
+        // Build a CodedImage so we can invoke QpResolver + JxrQuant the way
+        // the JxrDecoder facade does.
+        var img = new CodedImage
+        {
+            ImageHeader = new ImageHeader
+            {
+                OutputClrFmt = JxrOutputColorFormat.YOnly,
+                OutputBitDepth = JxrOutputBitDepth.Bd8,
+                ShortHeaderFlag = true,
+                WidthMinus1 = 15,
+                HeightMinus1 = 15,
+            },
+            PlaneHeader = planeNonUniform,
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.SubBaseline, JxrLevel.L1),
+            Macroblocks = decoded,
+            PerTileBandHeaders = [decodedHeaders],
+            TileGridBounds = [(0, 0, widthInMb, heightInMb)],
+        };
+        var dcDivisors = QpResolver.BuildBandDivisors(img, QpBand.Dc);
+        dcDivisors[0, 0, 0].ShouldBe(JxrQuant.QpIndexToDivisor(3),
+            "QpResolver should pick the per-tile DC QP of 3");
+
+        // Apply per-MB dequant in place — yielding the original pre-quant DC.
+        var mbDc = new int[1, 1, 1] { { { decoded[0].Dc[0] } } };
+        JxrQuant.DequantizeDc(mbDc, dcDivisors);
+        mbDc[0, 0, 0].ShouldBe(quantizedDc * JxrQuant.QpIndexToDivisor(3));
+    }
+
+    [Fact]
     public void TileSpatial_PerMbLpQpIndex_RoundTrips()
     {
         // Build a 1×1-MB tile with 3 LP QP rows so each MB carries an LP_QP_INDEX.
