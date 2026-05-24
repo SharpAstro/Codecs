@@ -246,7 +246,8 @@ public static class JxrEncoder
     /// <param name="pixels">
     /// <c>width × height × 3</c> bytes, interleaved as <c>R, G, B, R, G, B, …</c>.
     /// </param>
-    public static byte[] EncodeBd8RgbNoFlexbits(byte[] pixels, int width, int height)
+    public static byte[] EncodeBd8RgbNoFlexbits(byte[] pixels, int width, int height,
+        JxrTileLayout? tiling = null)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -286,10 +287,16 @@ public static class JxrEncoder
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
         }
 
+        // Tile-aware DC prediction.
+        bool[,]? leftMask = null;
+        bool[,]? topMask = null;
+        if (tiling is not null)
+            (leftMask, topMask) = tiling.BuildMasks(mbW, mbH);
+
         // Prediction cascade — DC, LP, HP.
         var predDc = new int[mbW, mbH, numComponents];
         var mbDcMode = new int[mbW, mbH];
-        DcPrediction.Encode(mbDc, predDc, format, mbDcMode: mbDcMode);
+        DcPrediction.Encode(mbDc, predDc, format, leftMask, topMask, mbDcMode);
 
         var predDcLp = new int[mbW, mbH, numComponents, 16];
         LpPrediction.Encode(mbDcLp, predDcLp, mbDcMode, format);
@@ -328,14 +335,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = new ImageHeader
-            {
-                OutputClrFmt = JxrOutputColorFormat.Rgb,
-                OutputBitDepth = JxrOutputBitDepth.Bd8,
-                ShortHeaderFlag = true,
-                WidthMinus1 = (uint)(width - 1),
-                HeightMinus1 = (uint)(height - 1),
-            },
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd8, tiling),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -356,7 +356,8 @@ public static class JxrEncoder
     /// Lossless for arbitrary content at OverlapMode = 0. This is the HDR-master
     /// target path for monochrome.
     /// </summary>
-    public static byte[] EncodeBd16GrayscaleNoFlexbits(ushort[] pixels, int width, int height)
+    public static byte[] EncodeBd16GrayscaleNoFlexbits(ushort[] pixels, int width, int height,
+        JxrTileLayout? tiling = null)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -393,9 +394,13 @@ public static class JxrEncoder
         }
 
         const JxrInternalColorFormat format = JxrInternalColorFormat.YOnly;
+        bool[,]? leftMask = null;
+        bool[,]? topMask = null;
+        if (tiling is not null) (leftMask, topMask) = tiling.BuildMasks(mbW, mbH);
+
         var predDc = new int[mbW, mbH, 1];
         var mbDcMode = new int[mbW, mbH];
-        DcPrediction.Encode(mbDc, predDc, format, mbDcMode: mbDcMode);
+        DcPrediction.Encode(mbDc, predDc, format, leftMask, topMask, mbDcMode);
 
         var predDcLp = new int[mbW, mbH, 1, 16];
         LpPrediction.Encode(mbDcLp, predDcLp, mbDcMode, format);
@@ -427,20 +432,13 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = new ImageHeader
-            {
-                OutputClrFmt = JxrOutputColorFormat.YOnly,
-                OutputBitDepth = JxrOutputBitDepth.Bd16,
-                ShortHeaderFlag = true,
-                WidthMinus1 = (uint)(width - 1),
-                HeightMinus1 = (uint)(height - 1),
-            },
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd16, tiling),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
                 BandsPresent = JxrBandsPresent.NoFlexbits,
                 NumComponents = 1,
-                ShiftBits = 0, // no extra bit-depth shift for plain 16-bit unsigned
+                ShiftBits = 0,
                 DcQuant = 1,
                 LpQuant = 1,
                 HpQuant = 1,
@@ -455,7 +453,8 @@ public static class JxrEncoder
     /// Encode a 16-bit RGB image (interleaved R, G, B in row-major order) — the
     /// primary HDR-master deliverable shape for the SharpAstro pipeline.
     /// </summary>
-    public static byte[] EncodeBd16RgbNoFlexbits(ushort[] pixels, int width, int height)
+    public static byte[] EncodeBd16RgbNoFlexbits(ushort[] pixels, int width, int height,
+        JxrTileLayout? tiling = null)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -495,9 +494,13 @@ public static class JxrEncoder
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
         }
 
+        bool[,]? leftMask = null;
+        bool[,]? topMask = null;
+        if (tiling is not null) (leftMask, topMask) = tiling.BuildMasks(mbW, mbH);
+
         var predDc = new int[mbW, mbH, numComponents];
         var mbDcMode = new int[mbW, mbH];
-        DcPrediction.Encode(mbDc, predDc, format, mbDcMode: mbDcMode);
+        DcPrediction.Encode(mbDc, predDc, format, leftMask, topMask, mbDcMode);
 
         var predDcLp = new int[mbW, mbH, numComponents, 16];
         LpPrediction.Encode(mbDcLp, predDcLp, mbDcMode, format);
@@ -535,14 +538,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = new ImageHeader
-            {
-                OutputClrFmt = JxrOutputColorFormat.Rgb,
-                OutputBitDepth = JxrOutputBitDepth.Bd16,
-                ShortHeaderFlag = true,
-                WidthMinus1 = (uint)(width - 1),
-                HeightMinus1 = (uint)(height - 1),
-            },
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd16, tiling),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -622,7 +618,8 @@ public static class JxrEncoder
     /// LEN_MANTISSA / EXP_BIAS in the plane header. Lossless because the integer
     /// FCT pipeline preserves bit patterns exactly.
     /// </remarks>
-    public static byte[] EncodeBd16FGrayscaleNoFlexbits(ushort[] halfBits, int width, int height)
+    public static byte[] EncodeBd16FGrayscaleNoFlexbits(ushort[] halfBits, int width, int height,
+        JxrTileLayout? tiling = null)
     {
         ValidateBd16F(halfBits, width, height, expectedComponents: 1);
 
@@ -636,6 +633,7 @@ public static class JxrEncoder
             outputBitDepth: JxrOutputBitDepth.Bd16F,
             lenMantissa: 10,
             expBias: 15 - 128,
+            tiling: tiling,
             loadSubBlock: (src, w, h, x0, y0, _, dst) =>
             {
                 for (var r = 0; r < 4; r++)
@@ -653,7 +651,8 @@ public static class JxrEncoder
     /// Encode a 16-bit half-float RGB image. The full HDR-master deliverable: float
     /// dynamic range in a JPEG XR codestream.
     /// </summary>
-    public static byte[] EncodeBd16FRgbNoFlexbits(ushort[] halfBits, int width, int height)
+    public static byte[] EncodeBd16FRgbNoFlexbits(ushort[] halfBits, int width, int height,
+        JxrTileLayout? tiling = null)
     {
         ValidateBd16F(halfBits, width, height, expectedComponents: 3);
 
@@ -667,6 +666,7 @@ public static class JxrEncoder
             outputBitDepth: JxrOutputBitDepth.Bd16F,
             lenMantissa: 10,
             expBias: 15 - 128,
+            tiling: tiling,
             loadSubBlock: (src, w, h, x0, y0, comp, dst) =>
             {
                 for (var r = 0; r < 4; r++)
@@ -699,6 +699,7 @@ public static class JxrEncoder
         JxrOutputBitDepth outputBitDepth,
         byte lenMantissa,
         int expBias,
+        JxrTileLayout? tiling,
         LoadSubBlockUshort loadSubBlock)
     {
         var mbW = (width + 15) >> 4;
@@ -731,9 +732,13 @@ public static class JxrEncoder
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
         }
 
+        bool[,]? leftMask = null;
+        bool[,]? topMask = null;
+        if (tiling is not null) (leftMask, topMask) = tiling.BuildMasks(mbW, mbH);
+
         var predDc = new int[mbW, mbH, numComponents];
         var mbDcMode = new int[mbW, mbH];
-        DcPrediction.Encode(mbDc, predDc, format, mbDcMode: mbDcMode);
+        DcPrediction.Encode(mbDc, predDc, format, leftMask, topMask, mbDcMode);
 
         var predDcLp = new int[mbW, mbH, numComponents, 16];
         LpPrediction.Encode(mbDcLp, predDcLp, mbDcMode, format);
@@ -771,14 +776,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = new ImageHeader
-            {
-                OutputClrFmt = outputClrFmt,
-                OutputBitDepth = outputBitDepth,
-                ShortHeaderFlag = true,
-                WidthMinus1 = (uint)(width - 1),
-                HeightMinus1 = (uint)(height - 1),
-            },
+            ImageHeader = BuildImageHeader(width, height, outputClrFmt, outputBitDepth, tiling),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,

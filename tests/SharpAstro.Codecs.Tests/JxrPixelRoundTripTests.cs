@@ -769,6 +769,67 @@ public sealed class JxrPixelRoundTripTests
     }
 
     [Fact]
+    public void Tiled_2x2_Bd8Rgb_Random_RoundTrips()
+    {
+        var rng = new Random(unchecked((int)0xAA88AA88));
+        var src = new byte[64 * 64 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var layout = JxrTileLayout.Uniform(4, 4, cols: 2, rows: 2);
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 64, 64, layout);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void Tiled_2x2_Bd16Grayscale_Random_RoundTrips()
+    {
+        var rng = new Random(unchecked((int)0xBBCC1122));
+        var src = new ushort[64 * 64];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var layout = JxrTileLayout.Uniform(4, 4, cols: 2, rows: 2);
+        var bytes = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(src, 64, 64, layout);
+        var decoded = JxrDecoder.DecodeBd16GrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Tiled_2x2_Bd16Rgb_Random_RoundTrips_HdrTarget()
+    {
+        // The full HDR-master path tiled: BD16 RGB random content split into 4 tiles.
+        var rng = new Random(unchecked((int)0x4F4F4F4F));
+        var src = new ushort[64 * 64 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var layout = JxrTileLayout.Uniform(4, 4, cols: 2, rows: 2);
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 64, 64, layout);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Tiled_2x2_Bd16FRgb_Random_RoundTrips_HdrFloatTarget()
+    {
+        var rng = new Random(unchecked((int)0xC0C0FFEE));
+        var src = new ushort[64 * 64 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var layout = JxrTileLayout.Uniform(4, 4, cols: 2, rows: 2);
+        var bytes = JxrEncoder.EncodeBd16FRgbNoFlexbits(src, 64, 64, layout);
+        var decoded = JxrDecoder.DecodeBd16FRgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
     public void JxrTileLayout_BuildMasks_MarksTileBoundaries()
     {
         // 4-MB-wide image, tile widths [2] → 2 tile columns at MB cols {0, 2}.
