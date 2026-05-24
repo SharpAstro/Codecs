@@ -711,6 +711,78 @@ public sealed class JxrPixelRoundTripTests
         img.PlaneHeader.ExpBias.ShouldBe((sbyte)(15 - 128));
     }
 
+    // ----------------------------------------------------------------------
+    // Multi-tile pixel round-trip — JxrTileLayout enables tile-isolated
+    // prediction in encoder + decoder.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Tiled_2x2_Bd8Grayscale_Random_RoundTrips()
+    {
+        // 64×64 image (4×4 MB grid) split into 2×2 tiles of 2×2 MBs each.
+        // Each tile gets its own DC/LP prediction context — masks suppress
+        // prediction across the tile boundary so encoder and decoder agree.
+        var rng = new Random(unchecked((int)0xBADBADBAD));
+        var src = new byte[64 * 64];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var layout = JxrTileLayout.Uniform(totalWidthInMb: 4, totalHeightInMb: 4, cols: 2, rows: 2);
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 64, 64, layout);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out var w, out var h);
+
+        w.ShouldBe(64);
+        h.ShouldBe(64);
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Tiled_2x2_VerifiedInHeader()
+    {
+        var src = new byte[64 * 64];
+        var layout = JxrTileLayout.Uniform(4, 4, cols: 2, rows: 2);
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 64, 64, layout);
+
+        var img = CodedImage.Decode(bytes);
+        img.ImageHeader.TilingFlag.ShouldBeTrue();
+        img.ImageHeader.NumVerTilesMinus1.ShouldBe(1);
+        img.ImageHeader.NumHorTilesMinus1.ShouldBe(1);
+        img.ImageHeader.TileWidthInMb.ShouldBe(new[] { 2 });
+        img.ImageHeader.TileHeightInMb.ShouldBe(new[] { 2 });
+    }
+
+    [Fact]
+    public void Tiled_NonUniformTiles_RoundTrips()
+    {
+        // 64×64 (4×4 MB grid) with asymmetric tile sizes: column widths [1, 2, 1],
+        // row heights [3, 1]. Stresses the mask plumbing.
+        var rng = new Random(unchecked((int)0xAA55AA55));
+        var src = new byte[64 * 64];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var layout = new JxrTileLayout([1, 2], [3]);
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 64, 64, layout);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++)
+            decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void JxrTileLayout_BuildMasks_MarksTileBoundaries()
+    {
+        // 4-MB-wide image, tile widths [2] → 2 tile columns at MB cols {0, 2}.
+        var layout = new JxrTileLayout([2], []);
+        var (left, top) = layout.BuildMasks(widthInMb: 4, heightInMb: 1);
+
+        left[0, 0].ShouldBeTrue("MB col 0 always tile-left");
+        left[1, 0].ShouldBeFalse();
+        left[2, 0].ShouldBeTrue("MB col 2 is tile-left for the second tile column");
+        left[3, 0].ShouldBeFalse();
+
+        top[0, 0].ShouldBeTrue("MB row 0 always tile-top");
+    }
+
     [Fact]
     public void HpPredictionAlone_HorizontalGradient_RoundTrips()
     {

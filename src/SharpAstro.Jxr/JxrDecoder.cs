@@ -42,8 +42,9 @@ var mbW = img.WidthInMb;
         for (var mbx = 0; mbx < mbW; mbx++)
             mbDc[mbx, mby, 0] = img.Macroblocks[mby * mbW + mbx].Dc[0];
 
+        var (leftMaskDcOnly, topMaskDcOnly) = MaybeBuildTileMasks(img.ImageHeader, mbW, mbH);
         var predDc = new int[mbW, mbH, 1];
-        DcPrediction.Decode(mbDc, predDc, JxrInternalColorFormat.YOnly);
+        DcPrediction.Decode(mbDc, predDc, JxrInternalColorFormat.YOnly, leftMaskDcOnly, topMaskDcOnly);
 
         var pixels = new byte[width * height];
         Span<int> subBlock = stackalloc int[16];
@@ -126,9 +127,10 @@ var mbW = img.WidthInMb;
             mbHpMode[mbx, mby] = HpPrediction.CalcMode(mbDcLp, mbx, mby, JxrInternalColorFormat.YOnly, numComponents: 1);
         HpPrediction.Decode(mbHp, mbHpMode, JxrInternalColorFormat.YOnly);
 
+        var (leftMask, topMask) = MaybeBuildTileMasks(img.ImageHeader, mbW, mbH);
         var predDc = new int[mbW, mbH, 1];
         var mbDcMode = new int[mbW, mbH];
-        DcPrediction.Decode(mbDc, predDc, JxrInternalColorFormat.YOnly, mbDcMode: mbDcMode);
+        DcPrediction.Decode(mbDc, predDc, JxrInternalColorFormat.YOnly, leftMask, topMask, mbDcMode);
 
         var predDcLp = new int[mbW, mbH, 1, 16];
         LpPrediction.Decode(mbDcLp, predDcLp, mbDcMode, JxrInternalColorFormat.YOnly);
@@ -218,9 +220,10 @@ const int numComponents = 3;
             mbHpMode[mbx, mby] = HpPrediction.CalcMode(mbDcLp, mbx, mby, format, numComponents);
         HpPrediction.Decode(mbHp, mbHpMode, format);
 
+        var (leftMaskRgb, topMaskRgb) = MaybeBuildTileMasks(img.ImageHeader, mbW, mbH);
         var predDc = new int[mbW, mbH, numComponents];
         var mbDcMode = new int[mbW, mbH];
-        DcPrediction.Decode(mbDc, predDc, format, mbDcMode: mbDcMode);
+        DcPrediction.Decode(mbDc, predDc, format, leftMaskRgb, topMaskRgb, mbDcMode);
 
         var predDcLp = new int[mbW, mbH, numComponents, 16];
         LpPrediction.Decode(mbDcLp, predDcLp, mbDcMode, format);
@@ -428,9 +431,10 @@ const int numComponents = 3;
             mbHpMode[mbx, mby] = HpPrediction.CalcMode(mbDcLp, mbx, mby, format, numComponents);
         HpPrediction.Decode(mbHp, mbHpMode, format);
 
+        var (leftMask, topMask) = MaybeBuildTileMasks(img.ImageHeader, mbW, mbH);
         var predDc = new int[mbW, mbH, numComponents];
         var mbDcMode = new int[mbW, mbH];
-        DcPrediction.Decode(mbDc, predDc, format, mbDcMode: mbDcMode);
+        DcPrediction.Decode(mbDc, predDc, format, leftMask, topMask, mbDcMode);
 
         var predDcLp = new int[mbW, mbH, numComponents, 16];
         LpPrediction.Decode(mbDcLp, predDcLp, mbDcMode, format);
@@ -441,6 +445,21 @@ const int numComponents = 3;
             mbDcLp[mbx, mby, comp, 0] = mbDc[mbx, mby, comp];
 
         return (mbDc, mbDcLp, mbHp);
+    }
+
+    /// <summary>
+    /// Build tile-boundary edge masks from a tiled <see cref="ImageHeader"/>,
+    /// or return nulls for the untiled case (single tile = whole image). The
+    /// masks let <see cref="DcPrediction.Decode"/> match the encoder's
+    /// tile-isolated prediction context.
+    /// </summary>
+    internal static (bool[,]?, bool[,]?) MaybeBuildTileMasks(
+        ImageHeader header, int widthInMb, int heightInMb)
+    {
+        if (!header.TilingFlag) return (null, null);
+        var layout = new JxrTileLayout(header.TileWidthInMb, header.TileHeightInMb);
+        var (left, top) = layout.BuildMasks(widthInMb, heightInMb);
+        return (left, top);
     }
 
     private static void StoreSubBlock16(ushort[] pixels, int width, int height, int x0, int y0, ReadOnlySpan<int> src)

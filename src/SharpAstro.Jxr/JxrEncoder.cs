@@ -108,7 +108,8 @@ public static class JxrEncoder
     /// (DC + LP + HP, no flexbits refinement). Lossless for arbitrary pixel
     /// content at OverlapMode = 0.
     /// </summary>
-    public static byte[] EncodeBd8GrayscaleNoFlexbits(byte[] pixels, int width, int height)
+    public static byte[] EncodeBd8GrayscaleNoFlexbits(byte[] pixels, int width, int height,
+        JxrTileLayout? tiling = null)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -148,10 +149,17 @@ public static class JxrEncoder
                 mbDcLp[mbx, mby, 0, p] = dcGrid[p];
         }
 
+        // Tile-aware DC prediction: masks force "no prediction" across tile
+        // boundaries so encoder and decoder agree on neighbour availability.
+        bool[,]? leftMask = null;
+        bool[,]? topMask = null;
+        if (tiling is not null)
+            (leftMask, topMask) = tiling.BuildMasks(mbW, mbH);
+
         // Prediction cascade in spec order: DC → LP → HP.
         var predDc = new int[mbW, mbH, 1];
         var mbDcMode = new int[mbW, mbH];
-        DcPrediction.Encode(mbDc, predDc, JxrInternalColorFormat.YOnly, mbDcMode: mbDcMode);
+        DcPrediction.Encode(mbDc, predDc, JxrInternalColorFormat.YOnly, leftMask, topMask, mbDcMode);
 
         var predDcLp = new int[mbW, mbH, 1, 16];
         LpPrediction.Encode(mbDcLp, predDcLp, mbDcMode, JxrInternalColorFormat.YOnly);
@@ -188,14 +196,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = new ImageHeader
-            {
-                OutputClrFmt = JxrOutputColorFormat.YOnly,
-                OutputBitDepth = JxrOutputBitDepth.Bd8,
-                ShortHeaderFlag = true,
-                WidthMinus1 = (uint)(width - 1),
-                HeightMinus1 = (uint)(height - 1),
-            },
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd8, tiling),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = JxrInternalColorFormat.YOnly,
@@ -209,6 +210,32 @@ public static class JxrEncoder
             Macroblocks = mbs,
         };
         return img.Encode();
+    }
+
+    /// <summary>
+    /// Build an ImageHeader prefilled from the common per-encoder parameters,
+    /// optionally populating the tile-grid fields if a layout is supplied.
+    /// </summary>
+    internal static ImageHeader BuildImageHeader(int width, int height,
+        JxrOutputColorFormat outFmt, JxrOutputBitDepth outBd, JxrTileLayout? tiling)
+    {
+        var h = new ImageHeader
+        {
+            OutputClrFmt = outFmt,
+            OutputBitDepth = outBd,
+            ShortHeaderFlag = true,
+            WidthMinus1 = (uint)(width - 1),
+            HeightMinus1 = (uint)(height - 1),
+        };
+        if (tiling is not null)
+        {
+            h.TilingFlag = true;
+            h.NumVerTilesMinus1 = tiling.NumVerTiles - 1;
+            h.NumHorTilesMinus1 = tiling.NumHorTiles - 1;
+            h.TileWidthInMb = tiling.TileWidthInMb;
+            h.TileHeightInMb = tiling.TileHeightInMb;
+        }
+        return h;
     }
 
     /// <summary>
