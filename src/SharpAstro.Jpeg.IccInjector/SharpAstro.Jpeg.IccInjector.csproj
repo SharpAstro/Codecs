@@ -10,10 +10,10 @@
     <VersionPrefix>3.0.0</VersionPrefix>
     <AssemblyVersion>3.0.0.0</AssemblyVersion>
 
-    <PackageId>SharpAstro.Jpeg</PackageId>
-    <Product>SharpAstro.Jpeg</Product>
+    <PackageId>SharpAstro.Jpeg.IccInjector</PackageId>
+    <Product>SharpAstro.Jpeg.IccInjector</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed JPEG helpers for .NET. Currently exposes JpegIccInjector — inject an ICC profile (APP2 segment) into an existing JPEG byte stream produced by any encoder. AOT-compatible, single-segment ICC only (up to 65519-byte profiles).</Description>
+    <Description>Splice an ICC profile (APP2 segment) into an existing JPEG byte stream produced by any encoder. Pure-managed, AOT-compatible, single-segment ICC only (up to 65519-byte profiles). Note: this is NOT a JPEG codec — the SharpAstro.Jpeg PackageId is reserved for a future full encoder/decoder.</Description>
     <PackageTags>jpeg icc color profile aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

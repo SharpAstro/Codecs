@@ -25,7 +25,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Exif", "src\Shar
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Color.Icc", "src\SharpAstro.Color.Icc\SharpAstro.Color.Icc.csproj", "{5D9D9363-769A-4310-BAC7-5456424A1648}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Jpeg", "src\SharpAstro.Jpeg\SharpAstro.Jpeg.csproj", "{03F99AD1-3B17-49B7-B3DE-F82B58470263}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Jpeg.IccInjector", "src\SharpAstro.Jpeg.IccInjector\SharpAstro.Jpeg.IccInjector.csproj", "{03F99AD1-3B17-49B7-B3DE-F82B58470263}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Jxr", "src\SharpAstro.Jxr\SharpAstro.Jxr.csproj", "{35BC0B94-E06B-49B3-8723-D75A56839DB8}"
 EndProject

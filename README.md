@@ -5,6 +5,8 @@
 
 SharpAstro fork of [StbSharp/StbImageSharp](https://github.com/StbSharp/StbImageSharp) — a pure-managed C# port of Sean Barrett's [`stb_image.h`](https://github.com/nothings/stb). Decodes **JPG (baseline)**, **PNG**, **BMP**, **TGA**, **PSD**, **GIF**, and **HDR** without any native binaries.
 
+This repository also hosts a family of sibling pure-managed codec packages (`SharpAstro.Png`, `SharpAstro.Tiff`, `SharpAstro.Jxr`, `SharpAstro.Color.Icc`, `SharpAstro.Exif`, `SharpAstro.Jpeg`). See **[CODECS.md](CODECS.md)** for the full matrix of what each package decodes / encodes and how to pick the right one.
+
 Why a fork? The SharpAstro family of libraries (`DIR.Lib`, `Fonts.Lib`, `SdlVulkan.Renderer`, …) targets .NET 10, ships AOT-compatible NuGet packages, and is wired into a CI/CD pipeline. This fork brings StbImageSharp into the same convention: `net10.0`, `<IsAotCompatible>true</IsAotCompatible>`, centrally-managed package versions, SourceLink debugging, and automated publishing.
 
 The C# source is unchanged from upstream — it's still the Hebron-transpiled stb_image port. Only project scaffolding (csproj, CI, packaging metadata) has been modernised.
