@@ -66,6 +66,14 @@ public static class TileSpatial
         var cbphpBuf = hasHp ? new int[numComponents] : null;
         var hpDummyCbphp = hasHp ? new int[numComponents] : null;
 
+        // Determine per-MB QP_INDEX widths based on the band-header dispatch:
+        //   - For LP: NumLPQPs > 1 only when plane is non-uniform AND tile didn't
+        //     opt into USE_DC_QP_FLAG. Otherwise NumLPQPs == 1 and no index emitted.
+        //   - For HP: NumHPQPs > 1 only when plane is non-uniform AND tile didn't
+        //     opt into USE_LP_QP_FLAG.
+        int numLpQPs = headers.Lowpass?.LpQp?.NumQPs ?? 1;
+        int numHpQPs = headers.Highpass?.HpQp?.NumQPs ?? 1;
+
         for (var row = 0; row < heightInMb; row++)
         {
             for (var col = 0; col < widthInMb; col++)
@@ -73,9 +81,13 @@ public static class TileSpatial
                 var mb = mbs[row * widthInMb + col];
                 MbDc.EncodeMb(writer, dcState, format, numComponents, mb.Dc);
                 if (lpState is not null)
+                {
+                    QpIndex.Write(writer, numLpQPs, mb.LpQpIndex);
                     MbLp.EncodeMb(writer, lpState, format, numComponents, mb.Lp);
+                }
                 if (hasHp)
                 {
+                    QpIndex.Write(writer, numHpQPs, mb.HpQpIndex);
                     // CBPHP must appear in the bitstream before HP coefficient data,
                     // so compute it in a pre-pass and feed it to MbCbphp.
                     MbHp.ComputeCbphp(numComponents, mb.Hp, cbphpBuf!);
@@ -125,6 +137,8 @@ public static class TileSpatial
         var cbphpState = hasHp ? new MbCbphpState() : null;
         var hpState = hasHp ? new MbHpState() : null;
         var cbphpBuf = hasHp ? new int[numComponents] : null;
+        int numLpQPs = headers.Lowpass?.LpQp?.NumQPs ?? 1;
+        int numHpQPs = headers.Highpass?.HpQp?.NumQPs ?? 1;
         var mbs = new Macroblock[widthInMb * heightInMb];
         for (var row = 0; row < heightInMb; row++)
         {
@@ -134,11 +148,13 @@ public static class TileSpatial
                 MbDc.DecodeMb(ref reader, dcState, format, numComponents, mb.Dc);
                 if (lpState is not null)
                 {
+                    mb.LpQpIndex = QpIndex.Read(ref reader, numLpQPs);
                     mb.Lp = new int[numComponents * 16];
                     MbLp.DecodeMb(ref reader, lpState, format, numComponents, mb.Lp);
                 }
                 if (hasHp)
                 {
+                    mb.HpQpIndex = QpIndex.Read(ref reader, numHpQPs);
                     MbCbphp.DecodeMb(ref reader, cbphpState!, numComponents, cbphpBuf!);
                     mb.Hp = new int[numComponents * 256];
                     // mbHpMode must match the encoder's choice. T.832 derives it from

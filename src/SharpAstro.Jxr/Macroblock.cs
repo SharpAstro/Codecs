@@ -26,4 +26,18 @@ public sealed class Macroblock
     public int[] Lp = [];
     public int[] Hp = [];
     public int MbHpMode;
+
+    /// <summary>
+    /// LP_QP_INDEX for this MB (T.832 §8.7.10.10). Selects a row of the LP QP
+    /// table (either the per-tile <see cref="TileHeaderLowpass.LpQp"/> or the
+    /// per-tile DC table when USE_DC_QP_FLAG is true). Zero when NumLPQPs == 1
+    /// (no QP_INDEX bit emitted in the codestream).
+    /// </summary>
+    public int LpQpIndex;
+
+    /// <summary>
+    /// HP_QP_INDEX for this MB. Zero when NumHPQPs == 1 or when USE_LP_QP_FLAG
+    /// is true (HP inherits LP's index).
+    /// </summary>
+    public int HpQpIndex;
 }

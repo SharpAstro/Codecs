@@ -81,8 +81,12 @@ public static class TileFrequency
         var lpPlaneUniform = plane.LpImagePlaneUniformFlag;
         headers.Lowpass!.Write(lpW, lpPlaneUniform, numComponents);
         var lpState = new MbLpState();
+        int numLpQPs = headers.Lowpass.LpQp?.NumQPs ?? 1;
         for (var i = 0; i < mbCount; i++)
+        {
+            QpIndex.Write(lpW, numLpQPs, mbs[i].LpQpIndex);
             MbLp.EncodeMb(lpW, lpState, format, numComponents, mbs[i].Lp);
+        }
         ByteAlign(lpW);
         result[1] = lpW.ToArray();
 
@@ -96,8 +100,10 @@ public static class TileFrequency
         var hpState = new MbHpState();
         var cbphpBuf = new int[numComponents];
         var hpDummyCbphp = new int[numComponents];
+        int numHpQPs = headers.Highpass.HpQp?.NumQPs ?? 1;
         for (var i = 0; i < mbCount; i++)
         {
+            QpIndex.Write(hpW, numHpQPs, mbs[i].HpQpIndex);
             MbHp.ComputeCbphp(numComponents, mbs[i].Hp, cbphpBuf);
             MbCbphp.EncodeMb(hpW, cbphpState, numComponents, cbphpBuf);
             MbHp.EncodeMb(hpW, hpState, mbs[i].MbHpMode, format, numComponents, mbs[i].Hp, hpDummyCbphp);
@@ -171,8 +177,10 @@ public static class TileFrequency
             var lpPlaneUniform = plane.LpImagePlaneUniformFlag;
             lpHdr = TileHeaderLowpass.Read(ref reader, lpPlaneUniform, numComponents);
             var lpState = new MbLpState();
+            int numLpQPs = lpHdr.LpQp?.NumQPs ?? 1;
             for (var i = 0; i < mbCount; i++)
             {
+                mbs[i].LpQpIndex = QpIndex.Read(ref reader, numLpQPs);
                 mbs[i].Lp = new int[numComponents * 16];
                 MbLp.DecodeMb(ref reader, lpState, format, numComponents, mbs[i].Lp);
             }
@@ -187,8 +195,10 @@ public static class TileFrequency
             var cbphpState = new MbCbphpState();
             var hpState = new MbHpState();
             var cbphpBuf = new int[numComponents];
+            int numHpQPs = hpHdr.HpQp?.NumQPs ?? 1;
             for (var i = 0; i < mbCount; i++)
             {
+                mbs[i].HpQpIndex = QpIndex.Read(ref reader, numHpQPs);
                 MbCbphp.DecodeMb(ref reader, cbphpState, numComponents, cbphpBuf);
                 mbs[i].Hp = new int[numComponents * 256];
                 // mbHpMode is derived from this MB's LP coefficients (already decoded
