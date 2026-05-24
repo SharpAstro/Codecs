@@ -41,11 +41,25 @@ public sealed class ImageHeader
     public uint WidthMinus1;
     public uint HeightMinus1;
 
-    // Tile fields — only valid when TILING_FLAG is true. Not yet exposed.
-    // public int NumVerTilesMinus1;
-    // public int NumHorTilesMinus1;
-    // public ushort[] TileWidthInMb;
-    // public ushort[] TileHeightInMb;
+    /// <summary>True when the codestream is split into multiple tiles. When
+    /// false, the entire image is one tile and the tile-dimension fields below
+    /// are absent from the bitstream.</summary>
+    public bool TilingFlag;
+
+    /// <summary>NUM_VER_TILES_MINUS1 — one less than the number of tile columns. u(12).</summary>
+    public int NumVerTilesMinus1;
+
+    /// <summary>NUM_HOR_TILES_MINUS1 — one less than the number of tile rows. u(12).</summary>
+    public int NumHorTilesMinus1;
+
+    /// <summary>Width of each tile column in macroblocks, EXCLUDING the last column
+    /// (whose width is derived from the image width minus the sum of the others).
+    /// Length must equal <see cref="NumVerTilesMinus1"/>.</summary>
+    public int[] TileWidthInMb = [];
+
+    /// <summary>Height of each tile row in macroblocks, EXCLUDING the last row.
+    /// Length must equal <see cref="NumHorTilesMinus1"/>.</summary>
+    public int[] TileHeightInMb = [];
 
     // Windowing fields — only valid when WINDOWING_FLAG is true.
     // public int TopMargin, LeftMargin, BottomMargin, RightMargin;
@@ -63,6 +77,15 @@ public sealed class ImageHeader
             throw new NotSupportedException("WINDOWING_FLAG=true not yet supported in ImageHeader.Write");
         if (IndexTablePresentFlag)
             throw new NotSupportedException("INDEX_TABLE_PRESENT_FLAG=true not yet supported");
+        if (TilingFlag)
+        {
+            if (TileWidthInMb.Length != NumVerTilesMinus1)
+                throw new InvalidOperationException(
+                    $"TileWidthInMb has length {TileWidthInMb.Length}, expected {NumVerTilesMinus1} (NumVerTilesMinus1)");
+            if (TileHeightInMb.Length != NumHorTilesMinus1)
+                throw new InvalidOperationException(
+                    $"TileHeightInMb has length {TileHeightInMb.Length}, expected {NumHorTilesMinus1} (NumHorTilesMinus1)");
+        }
 
         // GDI_SIGNATURE 64 bits big-endian (WMPHOTO\0 = 0x574D50484F544F00)
         writer.WriteBits((uint)(GdiSignature >> 32), 32);
@@ -71,7 +94,7 @@ public sealed class ImageHeader
         writer.WriteBits(1, 4); // RESERVED_B == 1 (T.832 8.3.3)
         writer.WriteBit(HardTilingFlag);
         writer.WriteBits(1, 3); // RESERVED_C == 1 (T.832 8.3.5)
-        writer.WriteBit(false); // TILING_FLAG — single tile only for now
+        writer.WriteBit(TilingFlag);
         writer.WriteBit(FrequencyModeCodestreamFlag);
         writer.WriteBits((uint)SpatialXfrmSubordinate, 3);
         writer.WriteBit(IndexTablePresentFlag);
@@ -97,6 +120,17 @@ public sealed class ImageHeader
             writer.WriteBits(WidthMinus1, 32);
             writer.WriteBits(HeightMinus1, 32);
         }
+
+        if (TilingFlag)
+        {
+            writer.WriteBits((uint)NumVerTilesMinus1, 12);
+            writer.WriteBits((uint)NumHorTilesMinus1, 12);
+            var tileBits = ShortHeaderFlag ? 8 : 16;
+            for (var i = 0; i < NumVerTilesMinus1; i++)
+                writer.WriteBits((uint)TileWidthInMb[i], tileBits);
+            for (var i = 0; i < NumHorTilesMinus1; i++)
+                writer.WriteBits((uint)TileHeightInMb[i], tileBits);
+        }
     }
 
     /// <summary>Read an IMAGE_HEADER from <paramref name="reader"/>.</summary>
@@ -118,9 +152,7 @@ public sealed class ImageHeader
             HardTilingFlag = reader.ReadBit(),
         };
         reader.ReadBits(3); // RESERVED_C — decoder must ignore
-        var tilingFlag = reader.ReadBit();
-        if (tilingFlag)
-            throw new NotSupportedException("Tiled codestreams not yet supported (TILING_FLAG=true)");
+        header.TilingFlag = reader.ReadBit();
         header.FrequencyModeCodestreamFlag = reader.ReadBit();
         header.SpatialXfrmSubordinate = (int)reader.ReadBits(3);
         header.IndexTablePresentFlag = reader.ReadBit();
@@ -148,6 +180,20 @@ public sealed class ImageHeader
             header.WidthMinus1 = reader.ReadBits(32);
             header.HeightMinus1 = reader.ReadBits(32);
         }
+
+        if (header.TilingFlag)
+        {
+            header.NumVerTilesMinus1 = (int)reader.ReadBits(12);
+            header.NumHorTilesMinus1 = (int)reader.ReadBits(12);
+            var tileBits = header.ShortHeaderFlag ? 8 : 16;
+            header.TileWidthInMb = new int[header.NumVerTilesMinus1];
+            for (var i = 0; i < header.NumVerTilesMinus1; i++)
+                header.TileWidthInMb[i] = (int)reader.ReadBits(tileBits);
+            header.TileHeightInMb = new int[header.NumHorTilesMinus1];
+            for (var i = 0; i < header.NumHorTilesMinus1; i++)
+                header.TileHeightInMb[i] = (int)reader.ReadBits(tileBits);
+        }
+
         return header;
     }
 }

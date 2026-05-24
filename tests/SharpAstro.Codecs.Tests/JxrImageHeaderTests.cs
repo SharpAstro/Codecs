@@ -167,28 +167,85 @@ public sealed class JxrImageHeaderTests
     }
 
     [Fact]
-    public void TilingFlagInBitstream_Throws_NotSupported()
+    public void Tiled_2x2_RoundTrips()
     {
+        // 2×2 tile grid: 1 explicit width + 1 implicit (last column), same for rows.
+        var h = new ImageHeader
+        {
+            OutputClrFmt = JxrOutputColorFormat.Rgb,
+            OutputBitDepth = JxrOutputBitDepth.Bd8,
+            ShortHeaderFlag = true,
+            WidthMinus1 = 127,
+            HeightMinus1 = 127,
+            TilingFlag = true,
+            NumVerTilesMinus1 = 1,
+            NumHorTilesMinus1 = 1,
+            TileWidthInMb = [4],
+            TileHeightInMb = [4],
+        };
         var w = new BitWriter();
-        w.WriteBits(0x574D5048u, 32);
-        w.WriteBits(0x4F544F00u, 32);
-        w.WriteBits(1, 4);       // RESERVED_B
-        w.WriteBit(false);       // HARD_TILING_FLAG
-        w.WriteBits(1, 3);       // RESERVED_C
-        w.WriteBit(true);        // TILING_FLAG ← unsupported
-        for (var i = 0; i < 200; i++) w.WriteBit(false);
+        h.Write(w);
+        var r = new BitReader(w.AsSpan());
+        var read = ImageHeader.Read(ref r);
 
+        read.TilingFlag.ShouldBeTrue();
+        read.NumVerTilesMinus1.ShouldBe(1);
+        read.NumHorTilesMinus1.ShouldBe(1);
+        read.TileWidthInMb.Length.ShouldBe(1);
+        read.TileWidthInMb[0].ShouldBe(4);
+        read.TileHeightInMb[0].ShouldBe(4);
+    }
+
+    [Fact]
+    public void Tiled_3x4_LongHeader_RoundTrips()
+    {
+        // 3 tile columns × 4 tile rows = 12 tiles, using u(16) tile widths.
+        var h = new ImageHeader
+        {
+            OutputClrFmt = JxrOutputColorFormat.Rgb,
+            OutputBitDepth = JxrOutputBitDepth.Bd16,
+            ShortHeaderFlag = false,
+            LongWordFlag = true,
+            WidthMinus1 = 2962,
+            HeightMinus1 = 2990,
+            TilingFlag = true,
+            NumVerTilesMinus1 = 2,
+            NumHorTilesMinus1 = 3,
+            TileWidthInMb = [64, 64],
+            TileHeightInMb = [48, 48, 48],
+        };
+        var w = new BitWriter();
+        h.Write(w);
+        var r = new BitReader(w.AsSpan());
+        var read = ImageHeader.Read(ref r);
+
+        read.TilingFlag.ShouldBeTrue();
+        read.NumVerTilesMinus1.ShouldBe(2);
+        read.NumHorTilesMinus1.ShouldBe(3);
+        read.TileWidthInMb.ShouldBe(new[] { 64, 64 });
+        read.TileHeightInMb.ShouldBe(new[] { 48, 48, 48 });
+    }
+
+    [Fact]
+    public void Tiled_InconsistentArrays_Throws()
+    {
+        var h = new ImageHeader
+        {
+            OutputClrFmt = JxrOutputColorFormat.YOnly,
+            OutputBitDepth = JxrOutputBitDepth.Bd8,
+            ShortHeaderFlag = true,
+            WidthMinus1 = 63,
+            HeightMinus1 = 63,
+            TilingFlag = true,
+            NumVerTilesMinus1 = 2,
+            NumHorTilesMinus1 = 0,
+            TileWidthInMb = [3], // wrong length — should be 2
+        };
+
+        var w = new BitWriter();
         var threw = false;
-        try
-        {
-            var r = new BitReader(w.AsSpan());
-            ImageHeader.Read(ref r);
-        }
-        catch (NotSupportedException ex)
-        {
-            ex.Message.ShouldContain("Tiled");
-            threw = true;
-        }
+        try { h.Write(w); }
+        catch (InvalidOperationException) { threw = true; }
         threw.ShouldBeTrue();
     }
 }

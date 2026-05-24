@@ -262,6 +262,155 @@ public sealed class JxrCodedImageTests
         threw.ShouldBeTrue();
     }
 
+    // ----------------------------------------------------------------------
+    // Multi-tile codestreams (TILING_FLAG = true)
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Tiled_2x2_RoundTrips()
+    {
+        // 32×32 image (2×2 MB grid) split into 2×2 tiles (each 1×1 MB).
+        // Each tile gets its own state machine, so the DC of each MB is
+        // signalled independently. Distinct DC per MB verifies round-trip.
+        var mbs = new Macroblock[4];
+        for (var i = 0; i < 4; i++)
+            mbs[i] = new Macroblock { Dc = [(i + 1) * 100] };
+
+        var img = new CodedImage
+        {
+            ImageHeader = new ImageHeader
+            {
+                OutputClrFmt = JxrOutputColorFormat.YOnly,
+                OutputBitDepth = JxrOutputBitDepth.Bd8,
+                ShortHeaderFlag = true,
+                WidthMinus1 = 31,
+                HeightMinus1 = 31,
+                TilingFlag = true,
+                NumVerTilesMinus1 = 1,
+                NumHorTilesMinus1 = 1,
+                TileWidthInMb = [1],
+                TileHeightInMb = [1],
+            },
+            PlaneHeader = BuildPlaneHeader(),
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
+            Macroblocks = mbs,
+        };
+
+        var decoded = CodedImage.Decode(img.Encode());
+
+        decoded.ImageHeader.TilingFlag.ShouldBeTrue();
+        decoded.ImageHeader.NumVerTilesMinus1.ShouldBe(1);
+        decoded.ImageHeader.NumHorTilesMinus1.ShouldBe(1);
+        for (var i = 0; i < 4; i++)
+            decoded.Macroblocks[i].Dc[0].ShouldBe((i + 1) * 100, $"mb {i}");
+    }
+
+    [Fact]
+    public void Tiled_3x3_AsymmetricTileSizes_RoundTrips()
+    {
+        // 48×48 image (3×3 MB grid) split into 3×3 tiles: columns of widths
+        // {1, 1, 1} MB; rows of heights {1, 1, 1} MB. Image-raster MB order
+        // must be preserved after slice → encode → decode → splat.
+        var mbs = new Macroblock[9];
+        for (var i = 0; i < 9; i++)
+            mbs[i] = new Macroblock { Dc = [i * 50 - 200] };
+
+        var img = new CodedImage
+        {
+            ImageHeader = new ImageHeader
+            {
+                OutputClrFmt = JxrOutputColorFormat.YOnly,
+                OutputBitDepth = JxrOutputBitDepth.Bd8,
+                ShortHeaderFlag = true,
+                WidthMinus1 = 47,
+                HeightMinus1 = 47,
+                TilingFlag = true,
+                NumVerTilesMinus1 = 2,
+                NumHorTilesMinus1 = 2,
+                TileWidthInMb = [1, 1],
+                TileHeightInMb = [1, 1],
+            },
+            PlaneHeader = BuildPlaneHeader(),
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
+            Macroblocks = mbs,
+        };
+
+        var decoded = CodedImage.Decode(img.Encode());
+
+        for (var i = 0; i < 9; i++)
+            decoded.Macroblocks[i].Dc[0].ShouldBe(i * 50 - 200, $"mb {i}");
+    }
+
+    [Fact]
+    public void Tiled_2x2_LargerTiles_RoundTrips()
+    {
+        // 64×64 image (4×4 MB grid) split into 2×2 tiles of 2×2 MBs each.
+        // Exercises MB-raster ↔ tile-raster reordering with non-trivial slabs.
+        var mbs = new Macroblock[16];
+        for (var i = 0; i < 16; i++)
+            mbs[i] = new Macroblock { Dc = [i * 30] };
+
+        var img = new CodedImage
+        {
+            ImageHeader = new ImageHeader
+            {
+                OutputClrFmt = JxrOutputColorFormat.YOnly,
+                OutputBitDepth = JxrOutputBitDepth.Bd8,
+                ShortHeaderFlag = true,
+                WidthMinus1 = 63,
+                HeightMinus1 = 63,
+                TilingFlag = true,
+                NumVerTilesMinus1 = 1,
+                NumHorTilesMinus1 = 1,
+                TileWidthInMb = [2],
+                TileHeightInMb = [2],
+            },
+            PlaneHeader = BuildPlaneHeader(),
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
+            Macroblocks = mbs,
+        };
+
+        var decoded = CodedImage.Decode(img.Encode());
+        for (var i = 0; i < 16; i++)
+            decoded.Macroblocks[i].Dc[0].ShouldBe(i * 30, $"mb {i}");
+    }
+
+    [Fact]
+    public void ComputeTileBounds_LastColumnDerivedCorrectly()
+    {
+        // Image is 10 MB wide; explicit tile column widths {3, 3} → last column gets 4.
+        var h = new ImageHeader
+        {
+            TilingFlag = true,
+            NumVerTilesMinus1 = 2,
+            NumHorTilesMinus1 = 0,
+            TileWidthInMb = [3, 3],
+            TileHeightInMb = [],
+        };
+        var bounds = CodedImage.ComputeTileBounds(h, totalWidthInMb: 10, totalHeightInMb: 5).ToList();
+        bounds.Count.ShouldBe(3);
+        bounds[0].ShouldBe((0, 0, 3, 5));
+        bounds[1].ShouldBe((3, 0, 3, 5));
+        bounds[2].ShouldBe((6, 0, 4, 5));
+    }
+
+    [Fact]
+    public void ComputeTileBounds_OverflowingWidths_Throws()
+    {
+        var h = new ImageHeader
+        {
+            TilingFlag = true,
+            NumVerTilesMinus1 = 1,
+            NumHorTilesMinus1 = 0,
+            TileWidthInMb = [10],   // sums to ≥ total → last column would be 0 or negative
+            TileHeightInMb = [],
+        };
+        var threw = false;
+        try { _ = CodedImage.ComputeTileBounds(h, totalWidthInMb: 10, totalHeightInMb: 5).ToList(); }
+        catch (InvalidDataException) { threw = true; }
+        threw.ShouldBeTrue();
+    }
+
     [Fact]
     public void DerivedDimensions_ComputeCorrectly()
     {

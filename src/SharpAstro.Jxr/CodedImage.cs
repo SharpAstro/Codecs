@@ -55,16 +55,40 @@ public sealed class CodedImage
         PlaneHeader.Write(writer, ImageHeader.OutputBitDepth);
         ProfileLevelInfo.Write(writer);
 
-        TileSpatial.Write(
-            writer,
-            TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
-            PlaneHeader.BandsPresent,
-            ImageHeader.TrimFlexBitsFlag,
-            PlaneHeader.InternalClrFmt,
-            PlaneHeader.NumComponents,
-            WidthInMb,
-            HeightInMb,
-            Macroblocks);
+        if (!ImageHeader.TilingFlag)
+        {
+            TileSpatial.Write(
+                writer,
+                TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
+                PlaneHeader.BandsPresent,
+                ImageHeader.TrimFlexBitsFlag,
+                PlaneHeader.InternalClrFmt,
+                PlaneHeader.NumComponents,
+                WidthInMb,
+                HeightInMb,
+                Macroblocks);
+        }
+        else
+        {
+            // Multi-tile: emit one TILE_SPATIAL per tile in tile-raster order.
+            // Each tile gets its own state-machine reset; per-tile MBs come from
+            // slicing the image-raster Macroblocks grid.
+            var tileBounds = ComputeTileBounds(ImageHeader, WidthInMb, HeightInMb);
+            foreach (var (tileX, tileY, tw, th) in tileBounds)
+            {
+                var tileMbs = SliceTile(Macroblocks, WidthInMb, tileX, tileY, tw, th);
+                TileSpatial.Write(
+                    writer,
+                    TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
+                    PlaneHeader.BandsPresent,
+                    ImageHeader.TrimFlexBitsFlag,
+                    PlaneHeader.InternalClrFmt,
+                    PlaneHeader.NumComponents,
+                    tw,
+                    th,
+                    tileMbs);
+            }
+        }
 
         return writer.ToArray();
     }
@@ -87,15 +111,37 @@ public sealed class CodedImage
         var widthInMb = (width + 15) >> 4;
         var heightInMb = (height + 15) >> 4;
 
-        var mbs = TileSpatial.Read(
-            ref reader,
-            plane.BandsPresent,
-            img.TrimFlexBitsFlag,
-            plane.InternalClrFmt,
-            plane.NumComponents,
-            widthInMb,
-            heightInMb,
-            out _);
+        Macroblock[] mbs;
+        if (!img.TilingFlag)
+        {
+            mbs = TileSpatial.Read(
+                ref reader,
+                plane.BandsPresent,
+                img.TrimFlexBitsFlag,
+                plane.InternalClrFmt,
+                plane.NumComponents,
+                widthInMb,
+                heightInMb,
+                out _);
+        }
+        else
+        {
+            mbs = new Macroblock[widthInMb * heightInMb];
+            var tileBounds = ComputeTileBounds(img, widthInMb, heightInMb);
+            foreach (var (tileX, tileY, tw, th) in tileBounds)
+            {
+                var tileMbs = TileSpatial.Read(
+                    ref reader,
+                    plane.BandsPresent,
+                    img.TrimFlexBitsFlag,
+                    plane.InternalClrFmt,
+                    plane.NumComponents,
+                    tw,
+                    th,
+                    out _);
+                Splat(tileMbs, mbs, widthInMb, tileX, tileY, tw, th);
+            }
+        }
 
         return new CodedImage
         {
@@ -104,6 +150,77 @@ public sealed class CodedImage
             ProfileLevelInfo = profile,
             Macroblocks = mbs,
         };
+    }
+
+    /// <summary>
+    /// Walk the tile grid declared in <paramref name="header"/> and yield each
+    /// tile's MB-coordinate rectangle <c>(tileX, tileY, widthInMb, heightInMb)</c>
+    /// in tile-raster order. The last tile column / row derives its width / height
+    /// by subtraction (T.832 8.3.X).
+    /// </summary>
+    public static IEnumerable<(int tileX, int tileY, int widthInMb, int heightInMb)> ComputeTileBounds(
+        ImageHeader header, int totalWidthInMb, int totalHeightInMb)
+    {
+        // Resolve every tile column's width (with the last derived).
+        var numVerTiles = header.NumVerTilesMinus1 + 1;
+        var numHorTiles = header.NumHorTilesMinus1 + 1;
+        var widths = new int[numVerTiles];
+        var heights = new int[numHorTiles];
+
+        var widthSoFar = 0;
+        for (var i = 0; i < numVerTiles - 1; i++)
+        {
+            widths[i] = header.TileWidthInMb[i];
+            widthSoFar += widths[i];
+        }
+        widths[numVerTiles - 1] = totalWidthInMb - widthSoFar;
+
+        var heightSoFar = 0;
+        for (var i = 0; i < numHorTiles - 1; i++)
+        {
+            heights[i] = header.TileHeightInMb[i];
+            heightSoFar += heights[i];
+        }
+        heights[numHorTiles - 1] = totalHeightInMb - heightSoFar;
+
+        if (widths[numVerTiles - 1] <= 0)
+            throw new InvalidDataException(
+                $"Last tile column has non-positive width {widths[numVerTiles - 1]} — tile widths sum past image width");
+        if (heights[numHorTiles - 1] <= 0)
+            throw new InvalidDataException(
+                $"Last tile row has non-positive height {heights[numHorTiles - 1]} — tile heights sum past image height");
+
+        var tileY = 0;
+        for (var row = 0; row < numHorTiles; row++)
+        {
+            var tileX = 0;
+            for (var col = 0; col < numVerTiles; col++)
+            {
+                yield return (tileX, tileY, widths[col], heights[row]);
+                tileX += widths[col];
+            }
+            tileY += heights[row];
+        }
+    }
+
+    private static Macroblock[] SliceTile(
+        Macroblock[] imageMbs, int imageWidthInMb,
+        int tileX, int tileY, int tileWidthInMb, int tileHeightInMb)
+    {
+        var tile = new Macroblock[tileWidthInMb * tileHeightInMb];
+        for (var r = 0; r < tileHeightInMb; r++)
+        for (var c = 0; c < tileWidthInMb; c++)
+            tile[r * tileWidthInMb + c] = imageMbs[(tileY + r) * imageWidthInMb + (tileX + c)];
+        return tile;
+    }
+
+    private static void Splat(
+        Macroblock[] tileMbs, Macroblock[] imageMbs, int imageWidthInMb,
+        int tileX, int tileY, int tileWidthInMb, int tileHeightInMb)
+    {
+        for (var r = 0; r < tileHeightInMb; r++)
+        for (var c = 0; c < tileWidthInMb; c++)
+            imageMbs[(tileY + r) * imageWidthInMb + (tileX + c)] = tileMbs[r * tileWidthInMb + c];
     }
 
     private void ValidateForEncode()
