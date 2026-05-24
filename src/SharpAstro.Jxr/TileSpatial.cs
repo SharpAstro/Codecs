@@ -18,8 +18,12 @@ namespace SharpAstro.Jxr;
 ///   <item><see cref="JxrBandsPresent.NoFlexbits"/> — emits MB_DC + MB_LP + MB_CBPHP + MB_HP.
 ///         The CBPHP bitmap is computed via <see cref="MbHp.ComputeCbphp"/> in a pre-pass
 ///         and written before the HP coefficient data, per T.832 §8.7.16.</item>
+///   <item><see cref="JxrBandsPresent.AllBands"/> — adds the per-MB FlexBits refinement
+///         (MB_HP_FLEX inlined) after the HP coefficient data. CBPHP is computed
+///         from the post-iModelBits-split values via
+///         <see cref="MbHp.ComputeCbphpWithSplit"/>. TRIM_FLEXBITS comes from the
+///         per-tile HP band header.</item>
 /// </list>
-/// <para>AllBands path (NoFlexbits + FlexBits refinement) lands in a follow-on commit.</para>
 /// </remarks>
 public static class TileSpatial
 {
@@ -73,6 +77,11 @@ public static class TileSpatial
         //     opt into USE_LP_QP_FLAG.
         int numLpQPs = headers.Lowpass?.LpQp?.NumQPs ?? 1;
         int numHpQPs = headers.Highpass?.HpQp?.NumQPs ?? 1;
+        // TRIM_FLEXBITS (4-bit per-tile field) is meaningful only for AllBands.
+        // When the IMAGE_HEADER's TRIM_FLEX_BITS_FLAG is false, this stays 0.
+        var trimFlexBits = bands == JxrBandsPresent.AllBands
+            ? (trimFlexBitsFlag ? headers.Highpass?.TrimFlexBits ?? 0 : 0)
+            : 0;
 
         for (var row = 0; row < heightInMb; row++)
         {
@@ -89,10 +98,31 @@ public static class TileSpatial
                 {
                     QpIndex.Write(writer, numHpQPs, mb.HpQpIndex);
                     // CBPHP must appear in the bitstream before HP coefficient data,
-                    // so compute it in a pre-pass and feed it to MbCbphp.
-                    MbHp.ComputeCbphp(numComponents, mb.Hp, cbphpBuf!);
+                    // so compute it in a pre-pass and feed it to MbCbphp. For
+                    // AllBands the CBPHP is computed from post-iModelBits-split
+                    // values — snapshot iModelBits from hpState.Model BEFORE the
+                    // MB's encode call (which will update the model at MB-end).
+                    if (bands == JxrBandsPresent.AllBands)
+                    {
+                        MbHp.ComputeCbphpWithSplit(numComponents,
+                            hpState!.Model.MBits0, hpState.Model.MBits1,
+                            mb.Hp, cbphpBuf!);
+                    }
+                    else
+                    {
+                        MbHp.ComputeCbphp(numComponents, mb.Hp, cbphpBuf!);
+                    }
                     MbCbphp.EncodeMb(writer, cbphpState!, numComponents, cbphpBuf!);
-                    MbHp.EncodeMb(writer, hpState!, mb.MbHpMode, format, numComponents, mb.Hp, hpDummyCbphp!);
+                    if (bands == JxrBandsPresent.AllBands)
+                    {
+                        MbHp.EncodeMb(writer, hpState!, mb.MbHpMode, format, numComponents,
+                            trimFlexBits, mb.Hp, hpDummyCbphp!);
+                    }
+                    else
+                    {
+                        MbHp.EncodeMb(writer, hpState!, mb.MbHpMode, format, numComponents,
+                            mb.Hp, hpDummyCbphp!);
+                    }
                 }
             }
         }
@@ -124,9 +154,6 @@ public static class TileSpatial
         int heightInMb,
         out TileBandHeaders headers)
     {
-        if (bands == JxrBandsPresent.AllBands)
-            throw new NotSupportedException("TILE_SPATIAL.Read AllBands (with FlexBits refinement) not yet supported");
-
         var format = plane.InternalClrFmt;
         var numComponents = plane.NumComponents;
         headers = TileBandHeaders.Read(ref reader, bands, trimFlexBitsFlag, plane);
@@ -139,6 +166,9 @@ public static class TileSpatial
         var cbphpBuf = hasHp ? new int[numComponents] : null;
         int numLpQPs = headers.Lowpass?.LpQp?.NumQPs ?? 1;
         int numHpQPs = headers.Highpass?.HpQp?.NumQPs ?? 1;
+        var trimFlexBits = bands == JxrBandsPresent.AllBands
+            ? (trimFlexBitsFlag ? headers.Highpass?.TrimFlexBits ?? 0 : 0)
+            : 0;
         var mbs = new Macroblock[widthInMb * heightInMb];
         for (var row = 0; row < heightInMb; row++)
         {
@@ -161,7 +191,16 @@ public static class TileSpatial
                     // the just-decoded LP coefficients of this MB — same input both
                     // sides see, so the choice matches.
                     mb.MbHpMode = DeriveMbHpMode(mb.Lp, format, numComponents);
-                    MbHp.DecodeMb(ref reader, hpState!, mb.MbHpMode, format, numComponents, cbphpBuf!, mb.Hp);
+                    if (bands == JxrBandsPresent.AllBands)
+                    {
+                        MbHp.DecodeMb(ref reader, hpState!, mb.MbHpMode, format, numComponents,
+                            trimFlexBits, cbphpBuf!, mb.Hp);
+                    }
+                    else
+                    {
+                        MbHp.DecodeMb(ref reader, hpState!, mb.MbHpMode, format, numComponents,
+                            cbphpBuf!, mb.Hp);
+                    }
                 }
                 mbs[row * widthInMb + col] = mb;
             }
@@ -174,8 +213,6 @@ public static class TileSpatial
     private static void ValidateBandsAndMbs(
         JxrBandsPresent bands, int widthInMb, int heightInMb, Macroblock[] mbs, int numComponents)
     {
-        if (bands == JxrBandsPresent.AllBands)
-            throw new NotSupportedException("TILE_SPATIAL.Write AllBands (with FlexBits refinement) not yet supported");
         if (widthInMb < 1 || heightInMb < 1)
             throw new ArgumentOutOfRangeException(nameof(widthInMb), "tile must contain at least one macroblock");
         if (mbs.Length != widthInMb * heightInMb)

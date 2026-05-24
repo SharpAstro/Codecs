@@ -14,10 +14,13 @@ namespace SharpAstro.Jxr;
 /// <para>This is the wire format external producers (PIX dump, jxrlib's
 /// default, the seagull/HDR-float fixtures) use, so frequency-mode read
 /// support unlocks decoding files we didn't author.</para>
-/// <para>Currently supported <c>BANDS_PRESENT</c> values: <c>DcOnly</c>,
-/// <c>NoHighpass</c>, <c>NoFlexbits</c>. <c>AllBands</c> (which adds a
-/// fourth FlexBits sub-stream) is not supported yet — same restriction as
-/// <see cref="TileSpatial"/>.</para>
+/// <para>All four <c>BANDS_PRESENT</c> variants are supported: <c>DcOnly</c>
+/// (DC only), <c>NoHighpass</c> (DC + LP), <c>NoFlexbits</c> (DC + LP + HP),
+/// and <c>AllBands</c> (DC + LP + HP + FlexBits). For <c>AllBands</c> the
+/// FlexBits sub-stream sits behind a separate <see cref="BitWriter"/>; HP
+/// coefficients land in the HP sub-stream while their iModelBits low-bit
+/// refinements land in the FlexBits sub-stream — driven by the dual-writer
+/// overloads on <see cref="MbHp"/>.</para>
 /// <para>The per-band state machines (<see cref="MbDcState"/>,
 /// <see cref="MbLpState"/>, <see cref="MbCbphpState"/>,
 /// <see cref="MbHpState"/>) are independent: DC predictions only look at
@@ -101,15 +104,47 @@ public static class TileFrequency
         var cbphpBuf = new int[numComponents];
         var hpDummyCbphp = new int[numComponents];
         int numHpQPs = headers.Highpass.HpQp?.NumQPs ?? 1;
+
+        // --- FlexBits sub-stream (AllBands only) ---
+        // Lives behind its own BitWriter so HP coefficients and FlexBits
+        // refinements can land in different sub-streams of the tile.
+        var flexW = bands == JxrBandsPresent.AllBands ? new BitWriter() : null;
+        var trimFlexBits = bands == JxrBandsPresent.AllBands
+            ? (trimFlexBitsFlag ? headers.Highpass.TrimFlexBits : 0)
+            : 0;
+
         for (var i = 0; i < mbCount; i++)
         {
             QpIndex.Write(hpW, numHpQPs, mbs[i].HpQpIndex);
-            MbHp.ComputeCbphp(numComponents, mbs[i].Hp, cbphpBuf);
+            if (bands == JxrBandsPresent.AllBands)
+            {
+                MbHp.ComputeCbphpWithSplit(numComponents,
+                    hpState.Model.MBits0, hpState.Model.MBits1,
+                    mbs[i].Hp, cbphpBuf);
+            }
+            else
+            {
+                MbHp.ComputeCbphp(numComponents, mbs[i].Hp, cbphpBuf);
+            }
             MbCbphp.EncodeMb(hpW, cbphpState, numComponents, cbphpBuf);
-            MbHp.EncodeMb(hpW, hpState, mbs[i].MbHpMode, format, numComponents, mbs[i].Hp, hpDummyCbphp);
+            if (bands == JxrBandsPresent.AllBands)
+            {
+                MbHp.EncodeMb(hpW, flexW!, hpState, mbs[i].MbHpMode, format, numComponents,
+                    trimFlexBits, mbs[i].Hp, hpDummyCbphp);
+            }
+            else
+            {
+                MbHp.EncodeMb(hpW, hpState, mbs[i].MbHpMode, format, numComponents, mbs[i].Hp, hpDummyCbphp);
+            }
         }
         ByteAlign(hpW);
         result[2] = hpW.ToArray();
+
+        if (bands == JxrBandsPresent.AllBands)
+        {
+            ByteAlign(flexW!);
+            result[3] = flexW!.ToArray();
+        }
 
         return result;
     }
@@ -151,9 +186,6 @@ public static class TileFrequency
         int heightInMb,
         out TileBandHeaders headers)
     {
-        if (bands == JxrBandsPresent.AllBands)
-            throw new NotSupportedException("TILE_FREQUENCY.Read AllBands (with FlexBits refinement) not yet supported");
-
         var format = plane.InternalClrFmt;
         var numComponents = plane.NumComponents;
         var mbCount = widthInMb * heightInMb;
@@ -187,6 +219,11 @@ public static class TileFrequency
             AlignToByte(ref reader);
         }
 
+        // Per-MB iModelBits snapshots — only populated when AllBands needs a
+        // FlexBits pass after the HP sub-stream.
+        int[]? perMbIModelBitsLum = null;
+        int[]? perMbIModelBitsChr = null;
+
         if (bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass)
         {
             // --- HP sub-stream (CBPHP + HP interleaved per MB) ---
@@ -196,6 +233,12 @@ public static class TileFrequency
             var hpState = new MbHpState();
             var cbphpBuf = new int[numComponents];
             int numHpQPs = hpHdr.HpQp?.NumQPs ?? 1;
+            var allBands = bands == JxrBandsPresent.AllBands;
+            if (allBands)
+            {
+                perMbIModelBitsLum = new int[mbCount];
+                perMbIModelBitsChr = new int[mbCount];
+            }
             for (var i = 0; i < mbCount; i++)
             {
                 mbs[i].HpQpIndex = QpIndex.Read(ref reader, numHpQPs);
@@ -205,9 +248,33 @@ public static class TileFrequency
                 // in the LP pass above), matching what the encoder saw — same input
                 // both sides agree on.
                 mbs[i].MbHpMode = DeriveMbHpMode(mbs[i].Lp, format, numComponents);
+                if (allBands)
+                {
+                    // Snapshot iModelBits BEFORE the call (the call updates the model
+                    // at MB-end, so reading after would give us the next MB's start).
+                    perMbIModelBitsLum![i] = hpState.Model.MBits0;
+                    perMbIModelBitsChr![i] = hpState.Model.MBits1;
+                }
+                // For AllBands, this is a VLC-only decode (iModelBits=0 in the
+                // call → no FlexBits consumed). mbs[i].Hp temporarily holds VLC
+                // values until the FlexBits pass below reconstructs them.
                 MbHp.DecodeMb(ref reader, hpState, mbs[i].MbHpMode, format, numComponents, cbphpBuf, mbs[i].Hp);
             }
             AlignToByte(ref reader);
+
+            // --- FlexBits sub-stream (AllBands only) ---
+            if (allBands)
+            {
+                var trimFlexBits = trimFlexBitsFlag ? hpHdr.TrimFlexBits : 0;
+                for (var i = 0; i < mbCount; i++)
+                {
+                    MbHp.ReadFlexBitsAndReconstruct(ref reader,
+                        format, numComponents,
+                        perMbIModelBitsLum![i], perMbIModelBitsChr![i], trimFlexBits,
+                        mbs[i].Hp);
+                }
+                AlignToByte(ref reader);
+            }
         }
 
         headers = new TileBandHeaders { Dc = dcHdr, Lowpass = lpHdr, Highpass = hpHdr };
@@ -217,8 +284,6 @@ public static class TileFrequency
     private static void ValidateBandsAndMbs(
         JxrBandsPresent bands, int widthInMb, int heightInMb, Macroblock[] mbs, int numComponents)
     {
-        if (bands == JxrBandsPresent.AllBands)
-            throw new NotSupportedException("TILE_FREQUENCY.Write AllBands (with FlexBits refinement) not yet supported");
         if (widthInMb < 1 || heightInMb < 1)
             throw new ArgumentOutOfRangeException(nameof(widthInMb), "tile must contain at least one macroblock");
         if (mbs.Length != widthInMb * heightInMb)

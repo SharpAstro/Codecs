@@ -369,6 +369,20 @@ public static class MbHp
         int mbhpMode,
         int trimFlexBits,
         ReadOnlySpan<int> blocks)
+        => EncodeLumaMb(writer, writer, state, mbhpMode, trimFlexBits, blocks);
+
+    /// <summary>
+    /// FREQUENCY-mode variant: VLC bits go to <paramref name="vlcWriter"/>,
+    /// FlexBits refinement bits go to <paramref name="flexWriter"/>. Pass the
+    /// same writer twice for SPATIAL inline layout.
+    /// </summary>
+    public static int EncodeLumaMb(
+        BitWriter vlcWriter,
+        BitWriter flexWriter,
+        MbHpState state,
+        int mbhpMode,
+        int trimFlexBits,
+        ReadOnlySpan<int> blocks)
     {
         if (blocks.Length < 256)
             throw new ArgumentException("blocks must hold 16 blocks * 16 positions = 256 ints", nameof(blocks));
@@ -407,7 +421,7 @@ public static class MbHp
         {
             if ((cbphp & (1 << i)) == 0) continue;
             var iBlockMap = (int)HierScanOrder[i];
-            totalNonZero += EncodeBlock(writer, state, scan, bChroma: false,
+            totalNonZero += EncodeBlock(vlcWriter, state, scan, bChroma: false,
                 vlc.AsSpan(iBlockMap * 16, 16));
         }
 
@@ -417,7 +431,7 @@ public static class MbHp
             for (var i = 0; i < 16; i++)
             {
                 var iBlockMap = (int)HierScanOrder[i];
-                BlockFlexBits.EncodeBlock(writer,
+                BlockFlexBits.EncodeBlock(flexWriter,
                     vlcBlock: vlc.AsSpan(iBlockMap * 16 + 1, 15),
                     refBlock: refs.AsSpan(iBlockMap * 15, 15),
                     iFlexBitsLeft);
@@ -516,6 +530,23 @@ public static class MbHp
         int trimFlexBits,
         ReadOnlySpan<int> blocks,
         Span<int> cbphpOut)
+        => EncodeMb(writer, writer, state, mbhpMode, format, numComponents, trimFlexBits, blocks, cbphpOut);
+
+    /// <summary>
+    /// FREQUENCY-mode multi-component encode: VLC bits go to
+    /// <paramref name="vlcWriter"/>, FlexBits to <paramref name="flexWriter"/>.
+    /// Pass the same writer twice for SPATIAL inline layout.
+    /// </summary>
+    public static void EncodeMb(
+        BitWriter vlcWriter,
+        BitWriter flexWriter,
+        MbHpState state,
+        int mbhpMode,
+        JxrInternalColorFormat format,
+        int numComponents,
+        int trimFlexBits,
+        ReadOnlySpan<int> blocks,
+        Span<int> cbphpOut)
     {
         EnsureFullSizeChroma(format);
         if (blocks.Length < numComponents * 256)
@@ -571,7 +602,7 @@ public static class MbHp
             {
                 if ((componentCbphp & (1 << i)) == 0) continue;
                 var iBlockMap = (int)HierScanOrder[i];
-                var n = EncodeBlock(writer, state, scan, bChroma,
+                var n = EncodeBlock(vlcWriter, state, scan, bChroma,
                     vlc.AsSpan(c * 256 + iBlockMap * 16, 16));
                 if (bChroma) iLapMeanChr += n;
                 else iLapMeanLum += n;
@@ -588,7 +619,7 @@ public static class MbHp
             for (var i = 0; i < 16; i++)
             {
                 var iBlockMap = (int)HierScanOrder[i];
-                BlockFlexBits.EncodeBlock(writer,
+                BlockFlexBits.EncodeBlock(flexWriter,
                     vlcBlock: vlc.AsSpan(c * 256 + iBlockMap * 16 + 1, 15),
                     refBlock: refs.AsSpan(c * 240 + iBlockMap * 15, 15),
                     iFlexBitsLeft);
@@ -694,6 +725,160 @@ public static class MbHp
     }
 
     /// <summary>
+    /// FREQUENCY-mode DecodeLumaMb variant: VLC bits come from
+    /// <paramref name="vlcReader"/>, FlexBits bits come from
+    /// <paramref name="flexReader"/>. The SPATIAL inline variant lives
+    /// alongside (single reader); these two cannot be expressed in terms
+    /// of each other because <see cref="BitReader"/> is a ref struct and
+    /// passing the same ref twice would alias.
+    /// </summary>
+    public static void DecodeLumaMb(
+        ref BitReader vlcReader,
+        ref BitReader flexReader,
+        MbHpState state,
+        int mbhpMode,
+        int trimFlexBits,
+        int cbphp,
+        Span<int> blocks)
+    {
+        if (blocks.Length < 256)
+            throw new ArgumentException("blocks must hold 16 blocks * 16 positions = 256 ints", nameof(blocks));
+
+        var iModelBits = state.Model.MBits0;
+        var iFlexBitsLeft = Math.Max(0, iModelBits - trimFlexBits);
+        var scan = mbhpMode == 1 ? state.ScanVertical : state.ScanHorizontal;
+
+        var vlc = new int[256];
+        var refs = new int[240];
+
+        var totalNonZero = 0;
+        for (var i = 0; i < 16; i++)
+        {
+            if ((cbphp & (1 << i)) == 0) continue;
+            var iBlockMap = (int)HierScanOrder[i];
+            totalNonZero += DecodeBlock(ref vlcReader, state, scan, bChroma: false,
+                vlc.AsSpan(iBlockMap * 16, 16));
+        }
+
+        if (iModelBits > 0)
+        {
+            for (var i = 0; i < 16; i++)
+            {
+                var iBlockMap = (int)HierScanOrder[i];
+                BlockFlexBits.DecodeBlock(ref flexReader,
+                    vlcBlock: vlc.AsSpan(iBlockMap * 16 + 1, 15),
+                    refBlock: refs.AsSpan(iBlockMap * 15, 15),
+                    iFlexBitsLeft);
+            }
+        }
+
+        for (var iBlockMap = 0; iBlockMap < 16; iBlockMap++)
+        {
+            for (var p = 1; p < 16; p++)
+            {
+                var vlcV = vlc[iBlockMap * 16 + p];
+                var refV = refs[iBlockMap * 15 + (p - 1)];
+                blocks[iBlockMap * 16 + p] = ReconstructCoefficient(vlcV, refV, iModelBits, trimFlexBits);
+            }
+        }
+
+        CoefficientModel.Update(
+            ref state.Model,
+            iLapMean0: totalNonZero,
+            iLapMean1: 0,
+            CoefficientModel.Band.Hp,
+            JxrInternalColorFormat.YOnly,
+            numComponents: 1);
+    }
+
+    /// <summary>
+    /// FREQUENCY-mode multi-component DecodeMb variant — see
+    /// <see cref="DecodeLumaMb(ref BitReader, ref BitReader, MbHpState, int, int, int, Span{int})"/>.
+    /// </summary>
+    public static void DecodeMb(
+        ref BitReader vlcReader,
+        ref BitReader flexReader,
+        MbHpState state,
+        int mbhpMode,
+        JxrInternalColorFormat format,
+        int numComponents,
+        int trimFlexBits,
+        ReadOnlySpan<int> cbphpPerComponent,
+        Span<int> blocks)
+    {
+        EnsureFullSizeChroma(format);
+        if (blocks.Length < numComponents * 256)
+            throw new ArgumentException($"blocks must hold {numComponents} components × 256 ints", nameof(blocks));
+        if (cbphpPerComponent.Length < numComponents)
+            throw new ArgumentException($"cbphpPerComponent must hold {numComponents} ints", nameof(cbphpPerComponent));
+
+        var iModelBitsLum = state.Model.MBits0;
+        var iModelBitsChr = state.Model.MBits1;
+        var iFlexBitsLeftLum = Math.Max(0, iModelBitsLum - trimFlexBits);
+        var iFlexBitsLeftChr = Math.Max(0, iModelBitsChr - trimFlexBits);
+        var scan = mbhpMode == 1 ? state.ScanVertical : state.ScanHorizontal;
+
+        var vlc = new int[numComponents * 256];
+        var refs = new int[numComponents * 240];
+
+        var iLapMeanLum = 0;
+        var iLapMeanChr = 0;
+        for (var c = 0; c < numComponents; c++)
+        {
+            var bChroma = c > 0;
+            var componentCbphp = cbphpPerComponent[c];
+            for (var i = 0; i < 16; i++)
+            {
+                if ((componentCbphp & (1 << i)) == 0) continue;
+                var iBlockMap = (int)HierScanOrder[i];
+                var n = DecodeBlock(ref vlcReader, state, scan, bChroma,
+                    vlc.AsSpan(c * 256 + iBlockMap * 16, 16));
+                if (bChroma) iLapMeanChr += n;
+                else iLapMeanLum += n;
+            }
+        }
+
+        for (var c = 0; c < numComponents; c++)
+        {
+            var bChroma = c > 0;
+            var iModelBits = bChroma ? iModelBitsChr : iModelBitsLum;
+            if (iModelBits == 0) continue;
+            var iFlexBitsLeft = bChroma ? iFlexBitsLeftChr : iFlexBitsLeftLum;
+            for (var i = 0; i < 16; i++)
+            {
+                var iBlockMap = (int)HierScanOrder[i];
+                BlockFlexBits.DecodeBlock(ref flexReader,
+                    vlcBlock: vlc.AsSpan(c * 256 + iBlockMap * 16 + 1, 15),
+                    refBlock: refs.AsSpan(c * 240 + iBlockMap * 15, 15),
+                    iFlexBitsLeft);
+            }
+        }
+
+        for (var c = 0; c < numComponents; c++)
+        {
+            var bChroma = c > 0;
+            var iModelBits = bChroma ? iModelBitsChr : iModelBitsLum;
+            for (var iBlockMap = 0; iBlockMap < 16; iBlockMap++)
+            {
+                for (var p = 1; p < 16; p++)
+                {
+                    var vlcV = vlc[c * 256 + iBlockMap * 16 + p];
+                    var refV = refs[c * 240 + iBlockMap * 15 + (p - 1)];
+                    blocks[c * 256 + iBlockMap * 16 + p] = ReconstructCoefficient(vlcV, refV, iModelBits, trimFlexBits);
+                }
+            }
+        }
+
+        CoefficientModel.Update(
+            ref state.Model,
+            iLapMean0: iLapMeanLum,
+            iLapMean1: iLapMeanChr,
+            CoefficientModel.Band.Hp,
+            format,
+            numComponents);
+    }
+
+    /// <summary>
     /// iModelBits-aware CBPHP computation — bit <c>i</c> set when block
     /// <c>HierScanOrder[i]</c> has any coefficient whose VLC value (after
     /// the <paramref name="iModelBits"/> split) is non-zero.
@@ -729,6 +914,73 @@ public static class MbHp
                 }
             }
             cbphpOut[c] = componentCbphp;
+        }
+    }
+
+    /// <summary>
+    /// Two-pass FREQUENCY-mode helper: given an MB whose <paramref name="hpInPlace"/>
+    /// already holds the VLC values (from a prior no-flex pass), read this MB's
+    /// FlexBits refinements from <paramref name="reader"/> and overwrite
+    /// <paramref name="hpInPlace"/> with the fully reconstructed coefficients.
+    /// </summary>
+    /// <remarks>
+    /// iModelBits is supplied explicitly (per MB) rather than read from state,
+    /// because the caller has already advanced the <see cref="MbHpState.Model"/>
+    /// through all MBs by the time the FlexBits pass runs. The caller is
+    /// expected to snapshot per-MB iModelBits during the VLC pass and replay
+    /// them here.
+    /// </remarks>
+    public static void ReadFlexBitsAndReconstruct(
+        ref BitReader reader,
+        JxrInternalColorFormat format, int numComponents,
+        int iModelBitsLum, int iModelBitsChr, int trimFlexBits,
+        Span<int> hpInPlace)
+    {
+        EnsureFullSizeChroma(format);
+        if (hpInPlace.Length < numComponents * 256)
+            throw new ArgumentException($"hpInPlace must hold {numComponents} × 256 ints", nameof(hpInPlace));
+
+        var iFlexBitsLeftLum = Math.Max(0, iModelBitsLum - trimFlexBits);
+        var iFlexBitsLeftChr = Math.Max(0, iModelBitsChr - trimFlexBits);
+
+        // Snapshot the VLC values before they get overwritten — the
+        // reconstruction formula needs (vlcSign, vlcAbs) per position.
+        var vlc = new int[numComponents * 256];
+        for (var i = 0; i < vlc.Length; i++) vlc[i] = hpInPlace[i];
+        var refs = new int[numComponents * 240];
+
+        // FlexBits sub-stream layout matches the encoder's pass-3 order: per
+        // component (luma then chroma), 16 blocks in HierScanOrder, 15 AC
+        // positions in Transpose444 order (handled inside BlockFlexBits).
+        for (var c = 0; c < numComponents; c++)
+        {
+            var bChroma = c > 0;
+            var iModelBits = bChroma ? iModelBitsChr : iModelBitsLum;
+            if (iModelBits == 0) continue;
+            var iFlexBitsLeft = bChroma ? iFlexBitsLeftChr : iFlexBitsLeftLum;
+            for (var i = 0; i < 16; i++)
+            {
+                var iBlockMap = (int)HierScanOrder[i];
+                BlockFlexBits.DecodeBlock(ref reader,
+                    vlcBlock: vlc.AsSpan(c * 256 + iBlockMap * 16 + 1, 15),
+                    refBlock: refs.AsSpan(c * 240 + iBlockMap * 15, 15),
+                    iFlexBitsLeft);
+            }
+        }
+
+        for (var c = 0; c < numComponents; c++)
+        {
+            var bChroma = c > 0;
+            var iModelBits = bChroma ? iModelBitsChr : iModelBitsLum;
+            for (var iBlockMap = 0; iBlockMap < 16; iBlockMap++)
+            {
+                for (var p = 1; p < 16; p++)
+                {
+                    var vlcV = vlc[c * 256 + iBlockMap * 16 + p];
+                    var refV = refs[c * 240 + iBlockMap * 15 + (p - 1)];
+                    hpInPlace[c * 256 + iBlockMap * 16 + p] = ReconstructCoefficient(vlcV, refV, iModelBits, trimFlexBits);
+                }
+            }
         }
     }
 

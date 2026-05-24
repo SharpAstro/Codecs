@@ -206,21 +206,41 @@ public sealed class JxrTileSpatialTests
     }
 
     [Fact]
-    public void UnsupportedBandsPresent_Throws_AllBands()
+    public void AllBands_YOnly_RoundTrips_LosslessAtIModelBitsZero()
     {
-        // AllBands requires the FlexBits refinement layer — not yet wired.
+        // AllBands with iModelBits = 0 (initial model state) emits no
+        // FlexBits — identical bitstream content to NoFlexbits, but the
+        // BandsPresent dispatch path is exercised.
         var headers = TileBandHeaders.Uniform(JxrBandsPresent.AllBands);
-        var w = new BitWriter();
-        var threw = false;
-        try
+        var plane = new ImagePlaneHeader
         {
-            TileSpatial.Write(w, headers, JxrBandsPresent.AllBands,
-                trimFlexBitsFlag: false,
-                JxrInternalColorFormat.YOnly, 1, 1, 1,
-                new[] { new Macroblock { Dc = [0] } });
-        }
-        catch (NotSupportedException) { threw = true; }
-        threw.ShouldBeTrue();
+            InternalClrFmt = JxrInternalColorFormat.YOnly,
+            NumComponents = 1,
+            BandsPresent = JxrBandsPresent.AllBands,
+        };
+        var mb = new Macroblock
+        {
+            Dc = [42],
+            Lp = new int[16],
+            Hp = new int[256],
+            MbHpMode = 2,
+        };
+        // Populate a couple of HP positions to exercise the VLC pass.
+        mb.Hp[1 * 16 + 3] = 7;
+        mb.Hp[5 * 16 + 9] = -11;
+
+        var w = new BitWriter();
+        TileSpatial.Write(w, headers, JxrBandsPresent.AllBands,
+            trimFlexBitsFlag: false, plane, 1, 1, new[] { mb });
+
+        var r = new BitReader(w.AsSpan());
+        var decoded = TileSpatial.Read(ref r, JxrBandsPresent.AllBands,
+            trimFlexBitsFlag: false, plane, 1, 1, out var _);
+
+        decoded.Length.ShouldBe(1);
+        decoded[0].Dc[0].ShouldBe(42);
+        for (var p = 0; p < 256; p++)
+            decoded[0].Hp[p].ShouldBe(mb.Hp[p], $"pos {p}");
     }
 
     // ----------------------------------------------------------------------
