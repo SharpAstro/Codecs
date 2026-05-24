@@ -1116,6 +1116,93 @@ public sealed class JxrPixelRoundTripTests
         for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"pixel {i}");
     }
 
+    // ----------------------------------------------------------------------
+    // Frequency-mode (TileFrequency) — re-organises per-band streams in the
+    // codestream. Lossless round-trip across every facade in spec-valid mode.
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Frequency_Bd8Grayscale_Random_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0xF8F8F8F8));
+        var src = new byte[32 * 32];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 32, 32, frequencyMode: true);
+        var decoded = JxrDecoder.DecodeBd8GrayscaleNoFlexbits(bytes, out var w, out var h);
+
+        w.ShouldBe(32); h.ShouldBe(32);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"pixel {i}");
+    }
+
+    [Fact]
+    public void Frequency_Bd8Rgb_Random_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0xF8F8F8F9));
+        var src = new byte[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (byte)rng.Next(0, 256);
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 32, 32, frequencyMode: true);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void Frequency_Bd16Rgb_Random_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0x16F16F00));
+        var src = new ushort[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 32, 32, frequencyMode: true);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Frequency_Bd16FRgb_Random_IsLossless()
+    {
+        var rng = new Random(unchecked((int)0x16F16F01));
+        var src = new ushort[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var bytes = JxrEncoder.EncodeBd16FRgbNoFlexbits(src, 32, 32, frequencyMode: true);
+        var decoded = JxrDecoder.DecodeBd16FRgbNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Frequency_Tiled_Bd16Rgb_WithPot_AllFeaturesCombine()
+    {
+        // The kitchen-sink HDR-master configuration: BD16 RGB + multi-tile +
+        // POT + frequency mode + lossless. This is the wire-format external
+        // tools tend to produce; round-trip proves we both write and read it.
+        var rng = new Random(unchecked((int)0xC0FFEE));
+        var src = new ushort[64 * 64 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var tiling = JxrTileLayout.Uniform(2, 2, cols: 2, rows: 2);
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 64, 64,
+            tiling: tiling, overlapMode: 1, frequencyMode: true);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out _, out _);
+
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Frequency_HeaderRecordsFlag()
+    {
+        // Sanity: the bitstream flag round-trips faithfully (no transparent fallback).
+        var src = new byte[16 * 16];
+        var bytes = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 16, 16, frequencyMode: true);
+        var img = CodedImage.Decode(bytes);
+        img.ImageHeader.FrequencyModeCodestreamFlag.ShouldBeTrue();
+
+        var bytes2 = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(src, 16, 16, frequencyMode: false);
+        var img2 = CodedImage.Decode(bytes2);
+        img2.ImageHeader.FrequencyModeCodestreamFlag.ShouldBeFalse();
+    }
+
     [Fact]
     public void HpPredictionAlone_HorizontalGradient_RoundTrips()
     {

@@ -19,9 +19,10 @@ public static class JxrFileFormatter
 
     public static byte[] SaveBd8GrayscaleNoFlexbits(byte[] pixels, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
+        bool frequencyMode = false)
     {
-        var codestream = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode);
+        var codestream = JxrEncoder.EncodeBd8GrayscaleNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.Gray8Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -38,9 +39,10 @@ public static class JxrFileFormatter
 
     public static byte[] SaveBd8RgbNoFlexbits(byte[] pixels, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
+        bool frequencyMode = false)
     {
-        var codestream = JxrEncoder.EncodeBd8RgbNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode);
+        var codestream = JxrEncoder.EncodeBd8RgbNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.Rgb24Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -57,9 +59,10 @@ public static class JxrFileFormatter
 
     public static byte[] SaveBd16GrayscaleNoFlexbits(ushort[] pixels, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
+        bool frequencyMode = false)
     {
-        var codestream = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode);
+        var codestream = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.Gray16Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -76,9 +79,10 @@ public static class JxrFileFormatter
 
     public static byte[] SaveBd16RgbNoFlexbits(ushort[] pixels, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
+        bool frequencyMode = false)
     {
-        var codestream = JxrEncoder.EncodeBd16RgbNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode);
+        var codestream = JxrEncoder.EncodeBd16RgbNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.Rgb48Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -95,9 +99,10 @@ public static class JxrFileFormatter
 
     public static byte[] SaveBd16FGrayscaleNoFlexbits(ushort[] halfBits, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
+        bool frequencyMode = false)
     {
-        var codestream = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(halfBits, width, height, tiling, dcQp, lpQp, hpQp, overlapMode);
+        var codestream = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(halfBits, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.GrayHalf16Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -114,9 +119,10 @@ public static class JxrFileFormatter
 
     public static byte[] SaveBd16FRgbNoFlexbits(ushort[] halfBits, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
+        bool frequencyMode = false)
     {
-        var codestream = JxrEncoder.EncodeBd16FRgbNoFlexbits(halfBits, width, height, tiling, dcQp, lpQp, hpQp, overlapMode);
+        var codestream = JxrEncoder.EncodeBd16FRgbNoFlexbits(halfBits, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
         return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.RgbHalf48Bpp, codestream, iccProfile, xmpMetadata);
     }
 
@@ -139,8 +145,9 @@ public static class JxrFileFormatter
     /// </summary>
     public static byte[] SaveBd16FGrayscaleNoFlexbits(Half[] pixels, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0)
-        => SaveBd16FGrayscaleNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp, overlapMode);
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
+        bool frequencyMode = false)
+        => SaveBd16FGrayscaleNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
 
     /// <summary>
     /// Decode a BD16F grayscale codestream and return the samples as
@@ -160,8 +167,9 @@ public static class JxrFileFormatter
     /// </summary>
     public static byte[] SaveBd16FRgbNoFlexbits(Half[] pixels, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0)
-        => SaveBd16FRgbNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp, overlapMode);
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
+        bool frequencyMode = false)
+        => SaveBd16FRgbNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
 
     /// <summary>
     /// Decode a BD16F RGB codestream and return interleaved <see cref="Half"/>
@@ -191,10 +199,12 @@ public static class JxrFileFormatter
     public static byte[] SaveBd16RgbWithAlphaNoFlexbits(
         ushort[] rgbPixels, ushort[] alphaPixels, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
-        var primary = JxrEncoder.EncodeBd16RgbNoFlexbits(rgbPixels, width, height, tiling, dcQp, lpQp, hpQp);
-        var alpha = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(alphaPixels, width, height, tiling, dcQp, lpQp, hpQp);
+        var primary = JxrEncoder.EncodeBd16RgbNoFlexbits(rgbPixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
+        var alpha = JxrEncoder.EncodeBd16GrayscaleNoFlexbits(alphaPixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
         return WrapWithAlpha((uint)width, (uint)height, JxrPixelFormat.Rgba64Bpp, primary, alpha, iccProfile, xmpMetadata);
     }
 
@@ -219,10 +229,12 @@ public static class JxrFileFormatter
     public static byte[] SaveBd16FRgbWithAlphaNoFlexbits(
         ushort[] rgbHalfBits, ushort[] alphaHalfBits, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
-        var primary = JxrEncoder.EncodeBd16FRgbNoFlexbits(rgbHalfBits, width, height, tiling, dcQp, lpQp, hpQp);
-        var alpha = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(alphaHalfBits, width, height, tiling, dcQp, lpQp, hpQp);
+        var primary = JxrEncoder.EncodeBd16FRgbNoFlexbits(rgbHalfBits, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
+        var alpha = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(alphaHalfBits, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
         return WrapWithAlpha((uint)width, (uint)height, JxrPixelFormat.RgbaHalf64Bpp, primary, alpha, iccProfile, xmpMetadata);
     }
 
@@ -244,10 +256,12 @@ public static class JxrFileFormatter
     public static byte[] SaveBd16FRgbWithAlphaNoFlexbits(
         Half[] rgbPixels, Half[] alphaPixels, int width, int height,
         byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
-        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1)
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0,
+        bool frequencyMode = false)
         => SaveBd16FRgbWithAlphaNoFlexbits(
             HalfArrayToUshort(rgbPixels), HalfArrayToUshort(alphaPixels),
-            width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp);
+            width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
 
     /// <summary>Half-typed decode pair for BD16F RGBA.</summary>
     public static (Half[] rgb, Half[] alpha) LoadBd16FRgbWithAlphaNoFlexbitsAsHalf(

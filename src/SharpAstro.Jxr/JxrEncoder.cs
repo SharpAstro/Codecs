@@ -111,7 +111,8 @@ public static class JxrEncoder
     public static byte[] EncodeBd8GrayscaleNoFlexbits(byte[] pixels, int width, int height,
         JxrTileLayout? tiling = null,
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
-        int overlapMode = 0)
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -224,7 +225,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd8, tiling, overlapMode),
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd8, tiling, overlapMode, frequencyMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = JxrInternalColorFormat.YOnly,
@@ -246,7 +247,8 @@ public static class JxrEncoder
     /// </summary>
     internal static ImageHeader BuildImageHeader(int width, int height,
         JxrOutputColorFormat outFmt, JxrOutputBitDepth outBd, JxrTileLayout? tiling,
-        int overlapMode = 0)
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
         var h = new ImageHeader
         {
@@ -256,6 +258,7 @@ public static class JxrEncoder
             WidthMinus1 = (uint)(width - 1),
             HeightMinus1 = (uint)(height - 1),
             OverlapMode = overlapMode,
+            FrequencyModeCodestreamFlag = frequencyMode,
         };
         if (tiling is not null)
         {
@@ -388,7 +391,8 @@ public static class JxrEncoder
     public static byte[] EncodeBd8RgbNoFlexbits(byte[] pixels, int width, int height,
         JxrTileLayout? tiling = null,
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
-        int overlapMode = 0)
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -495,7 +499,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd8, tiling, overlapMode),
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd8, tiling, overlapMode, frequencyMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -519,7 +523,8 @@ public static class JxrEncoder
     public static byte[] EncodeBd16GrayscaleNoFlexbits(ushort[] pixels, int width, int height,
         JxrTileLayout? tiling = null,
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
-        int overlapMode = 0)
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -611,7 +616,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd16, tiling, overlapMode),
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd16, tiling, overlapMode, frequencyMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -635,7 +640,8 @@ public static class JxrEncoder
     public static byte[] EncodeBd16RgbNoFlexbits(ushort[] pixels, int width, int height,
         JxrTileLayout? tiling = null,
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
-        int overlapMode = 0)
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -736,7 +742,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd16, tiling, overlapMode),
+            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd16, tiling, overlapMode, frequencyMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -819,7 +825,8 @@ public static class JxrEncoder
     public static byte[] EncodeBd16FGrayscaleNoFlexbits(ushort[] halfBits, int width, int height,
         JxrTileLayout? tiling = null,
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
-        int overlapMode = 0)
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
         ValidateBd16F(halfBits, width, height, expectedComponents: 1);
 
@@ -835,7 +842,8 @@ public static class JxrEncoder
             expBias: 15 - 128,
             tiling: tiling,
             dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
-            overlapMode: overlapMode);
+            overlapMode: overlapMode,
+            frequencyMode: frequencyMode);
         return bytes;
     }
 
@@ -846,7 +854,8 @@ public static class JxrEncoder
     public static byte[] EncodeBd16FRgbNoFlexbits(ushort[] halfBits, int width, int height,
         JxrTileLayout? tiling = null,
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
-        int overlapMode = 0)
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
         ValidateBd16F(halfBits, width, height, expectedComponents: 3);
 
@@ -862,7 +871,8 @@ public static class JxrEncoder
             expBias: 15 - 128,
             tiling: tiling,
             dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
-            overlapMode: overlapMode);
+            overlapMode: overlapMode,
+            frequencyMode: frequencyMode);
     }
 
     private static void ValidateBd16F(ushort[] halfBits, int width, int height, int expectedComponents)
@@ -887,7 +897,8 @@ public static class JxrEncoder
         byte dcQp,
         byte lpQp,
         byte hpQp,
-        int overlapMode = 0)
+        int overlapMode = 0,
+        bool frequencyMode = false)
     {
         if (overlapMode is < 0 or > 1)
             throw new ArgumentOutOfRangeException(nameof(overlapMode), "supported values are 0 and 1");
@@ -992,7 +1003,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, outputClrFmt, outputBitDepth, tiling, overlapMode),
+            ImageHeader = BuildImageHeader(width, height, outputClrFmt, outputBitDepth, tiling, overlapMode, frequencyMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,

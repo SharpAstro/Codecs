@@ -54,6 +54,8 @@ public sealed class CodedImage
         ImageHeader.Write(writer);
         PlaneHeader.Write(writer, ImageHeader.OutputBitDepth);
 
+        var freq = ImageHeader.FrequencyModeCodestreamFlag;
+
         if (!ImageHeader.TilingFlag)
         {
             if (ImageHeader.IndexTablePresentFlag)
@@ -61,46 +63,81 @@ public sealed class CodedImage
                     "IndexTablePresentFlag = true requires TilingFlag = true (single-tile codestreams don't benefit from a seek table)");
 
             ProfileLevelInfo.Write(writer);
-            TileSpatial.Write(
-                writer,
-                TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
-                PlaneHeader.BandsPresent,
-                ImageHeader.TrimFlexBitsFlag,
-                PlaneHeader.InternalClrFmt,
-                PlaneHeader.NumComponents,
-                WidthInMb,
-                HeightInMb,
-                Macroblocks);
+            if (freq)
+            {
+                TileFrequency.Write(
+                    writer,
+                    TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
+                    PlaneHeader.BandsPresent,
+                    ImageHeader.TrimFlexBitsFlag,
+                    PlaneHeader.InternalClrFmt,
+                    PlaneHeader.NumComponents,
+                    WidthInMb,
+                    HeightInMb,
+                    Macroblocks);
+            }
+            else
+            {
+                TileSpatial.Write(
+                    writer,
+                    TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
+                    PlaneHeader.BandsPresent,
+                    ImageHeader.TrimFlexBitsFlag,
+                    PlaneHeader.InternalClrFmt,
+                    PlaneHeader.NumComponents,
+                    WidthInMb,
+                    HeightInMb,
+                    Macroblocks);
+            }
             return writer.ToArray();
         }
 
         // Multi-tile: pre-encode each tile to its own byte buffer so we can
-        // measure tile sizes BEFORE emitting INDEX_TABLE_TILES (which needs the
+        // measure sizes BEFORE emitting INDEX_TABLE_TILES (which needs the
         // offsets), then assemble the final codestream in spec order:
         //   IMAGE_HEADER → IMAGE_PLANE_HEADER → INDEX_TABLE_TILES? →
         //   PROFILE_LEVEL_INFO → CODED_TILES_DATA
-        var tileBytes = new List<byte[]>();
+        // In frequency mode each tile contributes BandCount byte arrays
+        // (one per band sub-stream) — they're flattened tile-major into the
+        // index table per T.832 §8.7.1.3.
+        var tileBytes = new List<byte[]>();   // spatial: one entry per tile; freq: bandCount per tile
         var tileBounds = ComputeTileBounds(ImageHeader, WidthInMb, HeightInMb).ToList();
         foreach (var (tileX, tileY, tw, th) in tileBounds)
         {
             var tileMbs = SliceTile(Macroblocks, WidthInMb, tileX, tileY, tw, th);
-            var tileWriter = new BitWriter();
-            TileSpatial.Write(
-                tileWriter,
-                TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
-                PlaneHeader.BandsPresent,
-                ImageHeader.TrimFlexBitsFlag,
-                PlaneHeader.InternalClrFmt,
-                PlaneHeader.NumComponents,
-                tw,
-                th,
-                tileMbs);
-            tileBytes.Add(tileWriter.ToArray());
+            if (freq)
+            {
+                var bandBytes = TileFrequency.WriteBands(
+                    TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
+                    PlaneHeader.BandsPresent,
+                    ImageHeader.TrimFlexBitsFlag,
+                    PlaneHeader.InternalClrFmt,
+                    PlaneHeader.NumComponents,
+                    tw,
+                    th,
+                    tileMbs);
+                foreach (var b in bandBytes) tileBytes.Add(b);
+            }
+            else
+            {
+                var tileWriter = new BitWriter();
+                TileSpatial.Write(
+                    tileWriter,
+                    TileBandHeaders.Uniform(PlaneHeader.BandsPresent),
+                    PlaneHeader.BandsPresent,
+                    ImageHeader.TrimFlexBitsFlag,
+                    PlaneHeader.InternalClrFmt,
+                    PlaneHeader.NumComponents,
+                    tw,
+                    th,
+                    tileMbs);
+                tileBytes.Add(tileWriter.ToArray());
+            }
         }
 
         if (ImageHeader.IndexTablePresentFlag)
         {
-            // Offsets are relative to the start of CODED_TILES (i.e. the first tile begins at 0).
+            // Offsets are relative to the start of CODED_TILES (i.e. the first entry is 0).
             var offsets = new long[tileBytes.Count];
             long running = 0;
             for (var i = 0; i < tileBytes.Count; i++)
@@ -114,9 +151,9 @@ public sealed class CodedImage
 
         ProfileLevelInfo.Write(writer);
 
-        // Concatenate the pre-encoded tile data. Each tile already ends on a
-        // byte boundary thanks to TileSpatial's byte_alignment(), so we can
-        // splice without re-bit-aligning.
+        // Concatenate the pre-encoded tile data. Each sub-stream already ends
+        // on a byte boundary thanks to byte-alignment in TileSpatial /
+        // TileFrequency, so we can splice without re-bit-aligning.
         foreach (var tile in tileBytes)
             for (var i = 0; i < tile.Length; i++)
                 writer.WriteBits(tile[i], 8);
@@ -131,24 +168,24 @@ public sealed class CodedImage
         var img = ImageHeader.Read(ref reader);
         if (img.AlphaImagePlaneFlag)
             throw new NotSupportedException("CodedImage.Decode: alpha plane not yet supported");
-        if (img.FrequencyModeCodestreamFlag)
-            throw new NotSupportedException("CodedImage.Decode: frequency-mode codestream not yet supported");
 
         var plane = ImagePlaneHeader.Read(ref reader, img.OutputBitDepth);
 
         // INDEX_TABLE_TILES (T.832 §8.7.1.3) sits between IMAGE_PLANE_HEADER and
-        // PROFILE_LEVEL_INFO when IndexTablePresentFlag is set. We don't yet
-        // exploit the seek offsets — sequential decode works either way — but
-        // we must read past the table or the next structure parses garbage.
+        // PROFILE_LEVEL_INFO when IndexTablePresentFlag is set. In spatial
+        // mode there's one entry per tile; in frequency mode the table has
+        // one entry per (tile × band-sub-stream). We don't currently use the
+        // offsets for random access — sequential decode works either way —
+        // but we must read past the table or the next structure parses garbage.
         if (img.IndexTablePresentFlag)
         {
             var numVerTiles = img.TilingFlag ? img.NumVerTilesMinus1 + 1 : 1;
             var numHorTiles = img.TilingFlag ? img.NumHorTilesMinus1 + 1 : 1;
             var tilesCount = numVerTiles * numHorTiles;
-            // Spatial mode: one entry per tile. Frequency mode would multiply
-            // by the number of present bands — when we add frequency-mode
-            // decode this expectation widens.
-            _ = IndexTableTiles.Read(ref reader, tilesCount);
+            var perTile = img.FrequencyModeCodestreamFlag
+                ? TileFrequency.BandCount(plane.BandsPresent)
+                : 1;
+            _ = IndexTableTiles.Read(ref reader, tilesCount * perTile);
         }
 
         var profile = ProfileLevelInfo.Read(ref reader);
@@ -158,18 +195,30 @@ public sealed class CodedImage
         var widthInMb = (width + 15) >> 4;
         var heightInMb = (height + 15) >> 4;
 
+        var freq = img.FrequencyModeCodestreamFlag;
+
         Macroblock[] mbs;
         if (!img.TilingFlag)
         {
-            mbs = TileSpatial.Read(
-                ref reader,
-                plane.BandsPresent,
-                img.TrimFlexBitsFlag,
-                plane.InternalClrFmt,
-                plane.NumComponents,
-                widthInMb,
-                heightInMb,
-                out _);
+            mbs = freq
+                ? TileFrequency.Read(
+                    ref reader,
+                    plane.BandsPresent,
+                    img.TrimFlexBitsFlag,
+                    plane.InternalClrFmt,
+                    plane.NumComponents,
+                    widthInMb,
+                    heightInMb,
+                    out _)
+                : TileSpatial.Read(
+                    ref reader,
+                    plane.BandsPresent,
+                    img.TrimFlexBitsFlag,
+                    plane.InternalClrFmt,
+                    plane.NumComponents,
+                    widthInMb,
+                    heightInMb,
+                    out _);
         }
         else
         {
@@ -177,15 +226,25 @@ public sealed class CodedImage
             var tileBounds = ComputeTileBounds(img, widthInMb, heightInMb);
             foreach (var (tileX, tileY, tw, th) in tileBounds)
             {
-                var tileMbs = TileSpatial.Read(
-                    ref reader,
-                    plane.BandsPresent,
-                    img.TrimFlexBitsFlag,
-                    plane.InternalClrFmt,
-                    plane.NumComponents,
-                    tw,
-                    th,
-                    out _);
+                var tileMbs = freq
+                    ? TileFrequency.Read(
+                        ref reader,
+                        plane.BandsPresent,
+                        img.TrimFlexBitsFlag,
+                        plane.InternalClrFmt,
+                        plane.NumComponents,
+                        tw,
+                        th,
+                        out _)
+                    : TileSpatial.Read(
+                        ref reader,
+                        plane.BandsPresent,
+                        img.TrimFlexBitsFlag,
+                        plane.InternalClrFmt,
+                        plane.NumComponents,
+                        tw,
+                        th,
+                        out _);
                 Splat(tileMbs, mbs, widthInMb, tileX, tileY, tw, th);
             }
         }
@@ -274,8 +333,6 @@ public sealed class CodedImage
     {
         if (ImageHeader.AlphaImagePlaneFlag)
             throw new NotSupportedException("CodedImage.Encode: alpha plane not yet supported (set AlphaImagePlaneFlag = false)");
-        if (ImageHeader.FrequencyModeCodestreamFlag)
-            throw new NotSupportedException("CodedImage.Encode: frequency-mode codestream not yet supported");
         if (Macroblocks.Length != WidthInMb * HeightInMb)
             throw new InvalidOperationException(
                 $"Macroblocks has length {Macroblocks.Length}, expected {WidthInMb * HeightInMb} " +
