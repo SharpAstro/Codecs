@@ -1020,4 +1020,254 @@ public static class JxrEncoder
         };
         return img.Encode();
     }
+
+    // -------------------------------------------------------------------------
+    // BD32F (32-bit float) — full single-precision floating point
+    // -------------------------------------------------------------------------
+    //
+    // Float pixels can't ride the simple "ushort bias = 2^bitdepth-1" trick
+    // BD16/BD16F use, because uint32 doesn't fit in int32 and the FCT cascade
+    // amplifies a 31-bit input by ~6–8 bits, overflowing the signed pipeline.
+    // T.832 D.2.5 instead reshapes each float into a finite-precision
+    // sign-magnitude integer: (1 sign + 8 exp + LEN_MANTISSA mantissa bits).
+    // With <c>lenMantissa = 8</c> (default), the encoded magnitude tops out
+    // around ±2^16, so the FCT pyramid stays comfortably within int32. Larger
+    // <c>lenMantissa</c> preserves more mantissa precision; <c>23</c>
+    // preserves the full float mantissa but only round-trips losslessly for
+    // small-magnitude floats where the FCT cascade doesn't push past int32.
+
+    /// <summary>
+    /// Encode a 32-bit float grayscale image. The float bit patterns are
+    /// reshaped via T.832 D.2.5 into a sign-magnitude integer with
+    /// <paramref name="lenMantissa"/> mantissa bits before the FCT pipeline.
+    /// </summary>
+    /// <param name="lenMantissa">Mantissa bits preserved in the encoded
+    /// representation; 1..23. Defaults to 8 — keeps the FCT cascade safely
+    /// inside int32 for any input float. At 23 the original 23-bit mantissa
+    /// is preserved bit-exact, but only floats with modest dynamic range
+    /// avoid FCT overflow.</param>
+    public static byte[] EncodeBd32FGrayscaleNoFlexbits(float[] pixels, int width, int height,
+        JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0,
+        bool frequencyMode = false,
+        byte lenMantissa = 8)
+    {
+        ValidateBd32F(pixels, width, height, expectedComponents: 1, lenMantissa);
+        var asInts = Bd32FToIntArray(pixels, lenMantissa, numComponents: 1, width, height);
+        return EncodeBd32FPipelineCore(asInts, width, height, numComponents: 1,
+            format: JxrInternalColorFormat.YOnly, outputClrFmt: JxrOutputColorFormat.YOnly,
+            lenMantissa: lenMantissa, tiling: tiling,
+            dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
+            overlapMode: overlapMode, frequencyMode: frequencyMode);
+    }
+
+    /// <summary>
+    /// Encode a 32-bit float RGB image — single-precision HDR linear-light.
+    /// </summary>
+    public static byte[] EncodeBd32FRgbNoFlexbits(float[] pixels, int width, int height,
+        JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
+        int overlapMode = 0,
+        bool frequencyMode = false,
+        byte lenMantissa = 8)
+    {
+        ValidateBd32F(pixels, width, height, expectedComponents: 3, lenMantissa);
+        var asInts = Bd32FToIntArray(pixels, lenMantissa, numComponents: 3, width, height);
+        return EncodeBd32FPipelineCore(asInts, width, height, numComponents: 3,
+            format: JxrInternalColorFormat.Rgb, outputClrFmt: JxrOutputColorFormat.Rgb,
+            lenMantissa: lenMantissa, tiling: tiling,
+            dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
+            overlapMode: overlapMode, frequencyMode: frequencyMode);
+    }
+
+    private static void ValidateBd32F(float[] pixels, int width, int height, int expectedComponents, byte lenMantissa)
+    {
+        if (width <= 0 || height <= 0)
+            throw new ArgumentOutOfRangeException(nameof(width));
+        if (pixels.Length < width * height * expectedComponents)
+            throw new ArgumentException($"pixels has length {pixels.Length}, expected ≥ {width * height * expectedComponents}");
+        if (lenMantissa is < 1 or > 23)
+            throw new ArgumentOutOfRangeException(nameof(lenMantissa), "BD32F LEN_MANTISSA must be in 1..23");
+    }
+
+    /// <summary>
+    /// T.832 D.2.5 float → sign-magnitude integer conversion. Each float is
+    /// decomposed into (sign, biased-exp, mantissa) and packed as
+    /// <c>±((exp &lt;&lt; lenMantissa) | (mantissa &gt;&gt; (23 - lenMantissa)))</c>.
+    /// EXP_BIAS in the plane header is set to <c>0 - 128 = -128</c> so the
+    /// decoder reads back the same encoded exponent we wrote.
+    /// </summary>
+    internal static int[] Bd32FToIntArray(float[] pixels, byte lenMantissa, int numComponents, int width, int height)
+    {
+        var n = width * height * numComponents;
+        var result = new int[n];
+        var mantissaShift = 23 - lenMantissa;
+        for (var i = 0; i < n; i++)
+        {
+            var raw = BitConverter.SingleToUInt32Bits(pixels[i]);
+            var sign = (raw >> 31) != 0;
+            var exp = (int)((raw >> 23) & 0xFF);
+            var mant = (int)(raw & 0x7FFFFF);
+            // Sign-magnitude packing per D.2.5: (exp << lenMantissa) | (mant >> shift).
+            // ±zero (exp == 0 && mant == 0) maps to 0; otherwise to ±(mag).
+            var mag = (exp << lenMantissa) | (mant >> mantissaShift);
+            result[i] = sign ? -mag : mag;
+        }
+        return result;
+    }
+
+    /// <summary>Inverse of <see cref="Bd32FToIntArray"/> — reconstruct float bit patterns from sign-magnitude ints.</summary>
+    internal static float[] IntArrayToBd32F(int[] encoded, byte lenMantissa)
+    {
+        var result = new float[encoded.Length];
+        var mantissaShift = 23 - lenMantissa;
+        var mantissaMask = (1 << lenMantissa) - 1;
+        for (var i = 0; i < encoded.Length; i++)
+        {
+            var v = encoded[i];
+            var sign = v < 0;
+            var mag = sign ? -v : v;
+            var exp = (uint)((mag >> lenMantissa) & 0xFF);
+            var mant = (uint)((mag & mantissaMask) << mantissaShift);
+            var raw = (sign ? 0x80000000u : 0u) | (exp << 23) | mant;
+            result[i] = BitConverter.UInt32BitsToSingle(raw);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// BD32F variant of <see cref="EncodeBd16PipelineCore"/>. Input is a flat
+    /// <c>width × height × numComponents</c> array of sign-magnitude ints
+    /// produced by <see cref="Bd32FToIntArray"/>. EXP_BIAS is hard-coded to
+    /// <c>-128</c> (= 0 in the codestream raw byte) so the decoder reads back
+    /// the encoded exponent unmodified.
+    /// </summary>
+    private static byte[] EncodeBd32FPipelineCore(
+        int[] src, int width, int height, int numComponents,
+        JxrInternalColorFormat format, JxrOutputColorFormat outputClrFmt,
+        byte lenMantissa, JxrTileLayout? tiling,
+        byte dcQp, byte lpQp, byte hpQp,
+        int overlapMode, bool frequencyMode)
+    {
+        if (overlapMode is < 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(overlapMode), "supported values are 0 and 1");
+
+        var mbW = (width + 15) >> 4;
+        var mbH = (height + 15) >> 4;
+
+        // Pre-converted signed-int working buffer. No further biasing needed —
+        // the float→int conversion already produces sign-magnitude values.
+        var working = new int[width * height * numComponents];
+        Array.Copy(src, working, src.Length);
+        if (overlapMode == 1)
+        {
+            if (numComponents == 1) ApplyPreFilterPot(working, width, height);
+            else ApplyPreFilterPotRgb(working, width, height, numComponents);
+        }
+
+        var mbDc = new int[mbW, mbH, numComponents];
+        var mbDcLp = new int[mbW, mbH, numComponents, 16];
+        var mbHp = new int[mbW, mbH, numComponents, 16, 16];
+
+        Span<int> subBlock = stackalloc int[16];
+        Span<int> dcGrid = stackalloc int[16];
+
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var comp = 0; comp < numComponents; comp++)
+        {
+            for (var sbRow = 0; sbRow < 4; sbRow++)
+            for (var sbCol = 0; sbCol < 4; sbCol++)
+            {
+                var x0 = mbx * 16 + sbCol * 4;
+                var y0 = mby * 16 + sbRow * 4;
+                if (numComponents == 1)
+                    LoadSubBlockFromWorking(working, width, height, x0, y0, subBlock);
+                else
+                    LoadSubBlockFromWorkingRgb(working, width, height, x0, y0, comp, numComponents, subBlock);
+                Transforms.FCT4x4(subBlock);
+                var blkIdx = sbRow * 4 + sbCol;
+                dcGrid[blkIdx] = subBlock[0];
+                for (var p = 1; p < 16; p++)
+                    mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
+            }
+            Transforms.FCT4x4(dcGrid);
+            mbDc[mbx, mby, comp] = dcGrid[0];
+            for (var p = 0; p < 16; p++)
+                mbDcLp[mbx, mby, comp, p] = dcGrid[p];
+        }
+
+        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
+        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp);
+        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp);
+        JxrQuant.QuantizeDc(mbDc, dcDiv);
+        JxrQuant.QuantizeLp(mbDcLp, lpDiv);
+        JxrQuant.QuantizeHp(mbHp, hpDiv);
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var c = 0; c < numComponents; c++)
+            mbDcLp[mbx, mby, c, 0] = mbDc[mbx, mby, c];
+
+        bool[,]? leftMask = null;
+        bool[,]? topMask = null;
+        if (tiling is not null) (leftMask, topMask) = tiling.BuildMasks(mbW, mbH);
+
+        var predDc = new int[mbW, mbH, numComponents];
+        var mbDcMode = new int[mbW, mbH];
+        DcPrediction.Encode(mbDc, predDc, format, leftMask, topMask, mbDcMode);
+
+        var predDcLp = new int[mbW, mbH, numComponents, 16];
+        LpPrediction.Encode(mbDcLp, predDcLp, mbDcMode, format);
+
+        var mbHpMode = new int[mbW, mbH];
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+            mbHpMode[mbx, mby] = HpPrediction.CalcMode(mbDcLp, mbx, mby, format, numComponents);
+        HpPrediction.Encode(mbHp, mbHpMode, format);
+
+        var mbs = new Macroblock[mbW * mbH];
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        {
+            var dc = new int[numComponents];
+            var lp = new int[numComponents * 16];
+            var hp = new int[numComponents * 256];
+            for (var comp = 0; comp < numComponents; comp++)
+            {
+                dc[comp] = mbDc[mbx, mby, comp];
+                for (var p = 0; p < 16; p++)
+                    lp[comp * 16 + p] = mbDcLp[mbx, mby, comp, p];
+                for (var blk = 0; blk < 16; blk++)
+                for (var p = 1; p < 16; p++)
+                    hp[comp * 256 + blk * 16 + p] = mbHp[mbx, mby, comp, blk, p];
+            }
+            mbs[mby * mbW + mbx] = new Macroblock
+            {
+                Dc = dc,
+                Lp = lp,
+                Hp = hp,
+                MbHpMode = mbHpMode[mbx, mby],
+            };
+        }
+
+        var img = new CodedImage
+        {
+            ImageHeader = BuildImageHeader(width, height, outputClrFmt, JxrOutputBitDepth.Bd32F, tiling, overlapMode, frequencyMode),
+            PlaneHeader = new ImagePlaneHeader
+            {
+                InternalClrFmt = format,
+                BandsPresent = JxrBandsPresent.NoFlexbits,
+                NumComponents = numComponents,
+                LenMantissa = lenMantissa,
+                ExpBias = unchecked((sbyte)-128), // T.832 stores as raw u(8); -128 = "no exponent adjustment".
+                DcQuant = dcQp,
+                LpQuant = lpQp,
+                HpQuant = hpQp,
+            },
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
+            Macroblocks = mbs,
+        };
+        return img.Encode();
+    }
 }

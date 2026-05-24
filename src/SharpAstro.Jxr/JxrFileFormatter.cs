@@ -182,6 +182,36 @@ public static class JxrFileFormatter
         return UshortArrayToHalf(bits);
     }
 
+    // ---- BD32F (single-precision float) ------------------------------------
+
+    /// <summary>
+    /// Save a 32-bit float grayscale image as a real <c>.jxr</c> file.
+    /// See <see cref="JxrEncoder.EncodeBd32FGrayscaleNoFlexbits"/> for the
+    /// LEN_MANTISSA precision tradeoff.
+    /// </summary>
+    public static byte[] SaveBd32FGrayscaleNoFlexbits(float[] pixels, int width, int height,
+        byte[]? iccProfile = null, byte[]? xmpMetadata = null, JxrTileLayout? tiling = null,
+        byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
+        bool frequencyMode = false, byte lenMantissa = 8)
+    {
+        var codestream = JxrEncoder.EncodeBd32FGrayscaleNoFlexbits(pixels, width, height, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode, lenMantissa);
+        return WrapInContainer((uint)width, (uint)height, JxrPixelFormat.GrayFloat32Bpp, codestream, iccProfile, xmpMetadata);
+    }
+
+    public static float[] LoadBd32FGrayscaleNoFlexbits(ReadOnlySpan<byte> fileBytes,
+        out int width, out int height, out JxrFile container)
+    {
+        container = JxrContainer.Read(fileBytes);
+        EnsurePixelFormat(container, JxrPixelFormat.GrayFloat32Bpp);
+        return JxrDecoder.DecodeBd32FGrayscaleNoFlexbits(container.Codestream, out width, out height);
+    }
+
+    // BD32F RGB has no T.832 Table A.6 pixel format GUID for 3-channel float32
+    // (only 4-channel RgbFloat128Bpp / RgbaFloat128Bpp / PrgbaFloat128Bpp), so
+    // we don't expose an Rgb file-level wrapper here. Callers that want
+    // BD32F RGB can use JxrEncoder.EncodeBd32FRgbNoFlexbits directly to get a
+    // raw codestream and pick their own container pixel format.
+
     // ---- Alpha-plane support: RGB + separate alpha codestream ----------------
     //
     // The JXR convention for "RGBA" pixel formats (Rgba64Bpp / RgbaHalf64Bpp /

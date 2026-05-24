@@ -21,7 +21,7 @@ namespace SharpAstro.Jxr;
 /// tests in <c>JxrTransformTests</c> verify this for a range of random and
 /// edge-case inputs.
 /// </remarks>
-internal static class Transforms
+public static class Transforms
 {
     /// <summary>
     /// Forward Core Transform on a 4×4 block. T.832 D.4.5.1 / Table D.13.
@@ -233,6 +233,175 @@ internal static class Transforms
     public static void InvPermute(Span<int> a)
     {
         Span<int> tmp = stackalloc int[16];
+        for (var i = 0; i < 16; i++) tmp[InvPermArr[i]] = a[i];
+        tmp.CopyTo(a);
+    }
+
+    // -----------------------------------------------------------------------
+    // int64 variants — exact duals of the int32 path above, only the working
+    // type widens. Used for BD32F where the FCT cascade can amplify a 31-bit
+    // input by ~6–8 bits, putting intermediate values past int32 range. The
+    // integer FCT/ICT are bit-exact inverses in long arithmetic just as they
+    // are in int — we just need wider headroom.
+    // -----------------------------------------------------------------------
+
+    public static void FCT4x4(Span<long> c)
+    {
+        Stage_T2x2h(c, 0, 3, 12, 15, 0);
+        Stage_T2x2h(c, 5, 6, 9, 10, 0);
+        Stage_T2x2h(c, 1, 2, 13, 14, 0);
+        Stage_T2x2h(c, 4, 7, 8, 11, 0);
+
+        Stage_T2x2h(c, 0, 1, 4, 5, 1);
+        Stage_TOdd(c, 2, 3, 6, 7);
+        Stage_TOdd(c, 8, 12, 9, 13);
+        Stage_TOddOdd(c, 10, 11, 14, 15);
+
+        FwdPermute(c);
+    }
+
+    public static void ICT4x4(Span<long> c)
+    {
+        InvPermute(c);
+
+        Stage_T2x2h(c, 0, 1, 4, 5, 1);
+        Stage_InvTodd(c, 2, 3, 6, 7);
+        Stage_InvTodd(c, 8, 12, 9, 13);
+        Stage_InvToddodd(c, 10, 11, 14, 15);
+
+        Stage_T2x2h(c, 0, 3, 12, 15, 0);
+        Stage_T2x2h(c, 5, 6, 9, 10, 0);
+        Stage_T2x2h(c, 1, 2, 13, 14, 0);
+        Stage_T2x2h(c, 4, 7, 8, 11, 0);
+    }
+
+    private static void Stage_T2x2h(Span<long> c, int a, int b, int d, int e, int valRound)
+    {
+        Span<long> local = [c[a], c[b], c[d], c[e]];
+        T2x2h(local, valRound);
+        c[a] = local[0]; c[b] = local[1]; c[d] = local[2]; c[e] = local[3];
+    }
+
+    private static void Stage_TOdd(Span<long> c, int a, int b, int d, int e)
+    {
+        Span<long> local = [c[a], c[b], c[d], c[e]];
+        TOdd(local);
+        c[a] = local[0]; c[b] = local[1]; c[d] = local[2]; c[e] = local[3];
+    }
+
+    private static void Stage_InvTodd(Span<long> c, int a, int b, int d, int e)
+    {
+        Span<long> local = [c[a], c[b], c[d], c[e]];
+        InvTodd(local);
+        c[a] = local[0]; c[b] = local[1]; c[d] = local[2]; c[e] = local[3];
+    }
+
+    private static void Stage_TOddOdd(Span<long> c, int a, int b, int d, int e)
+    {
+        Span<long> local = [c[a], c[b], c[d], c[e]];
+        TOddOdd(local);
+        c[a] = local[0]; c[b] = local[1]; c[d] = local[2]; c[e] = local[3];
+    }
+
+    private static void Stage_InvToddodd(Span<long> c, int a, int b, int d, int e)
+    {
+        Span<long> local = [c[a], c[b], c[d], c[e]];
+        InvToddodd(local);
+        c[a] = local[0]; c[b] = local[1]; c[d] = local[2]; c[e] = local[3];
+    }
+
+    public static void T2x2h(Span<long> ic, int valRound)
+    {
+        ic[0] += ic[3];
+        ic[1] -= ic[2];
+        var valT1 = (ic[0] - ic[1] + valRound) >> 1;
+        var valT2 = ic[2];
+        ic[2] = valT1 - ic[3];
+        ic[3] = valT1 - valT2;
+        ic[0] -= ic[3];
+        ic[1] += ic[2];
+    }
+
+    public static void TOdd(Span<long> ic)
+    {
+        ic[1] -= ic[2];
+        ic[0] += ic[3];
+        ic[2] += (ic[1] + 1) >> 1;
+        ic[3] = ((ic[0] + 1) >> 1) - ic[3];
+        ic[1] -= (3 * ic[0] + 4) >> 3;
+        ic[0] += (3 * ic[1] + 4) >> 3;
+        ic[3] -= (3 * ic[2] + 4) >> 3;
+        ic[2] += (3 * ic[3] + 4) >> 3;
+        ic[3] += ic[1] >> 1;
+        ic[2] -= (ic[0] + 1) >> 1;
+        ic[1] -= ic[3];
+        ic[0] += ic[2];
+    }
+
+    public static void InvTodd(Span<long> ic)
+    {
+        ic[1] += ic[3];
+        ic[0] -= ic[2];
+        ic[3] -= ic[1] >> 1;
+        ic[2] += (ic[0] + 1) >> 1;
+        ic[0] -= (3 * ic[1] + 4) >> 3;
+        ic[1] += (3 * ic[0] + 4) >> 3;
+        ic[2] -= (3 * ic[3] + 4) >> 3;
+        ic[3] += (3 * ic[2] + 4) >> 3;
+        ic[2] -= (ic[1] + 1) >> 1;
+        ic[3] = ((ic[0] + 1) >> 1) - ic[3];
+        ic[1] += ic[2];
+        ic[0] -= ic[3];
+    }
+
+    public static void TOddOdd(Span<long> ic)
+    {
+        ic[1] = -ic[1];
+        ic[2] = -ic[2];
+        ic[3] += ic[0];
+        ic[2] -= ic[1];
+        var valT1 = ic[3] >> 1;
+        ic[0] -= valT1;
+        var valT2 = ic[2] >> 1;
+        ic[1] += valT2;
+        ic[0] += (ic[1] * 3 + 4) >> 3;
+        ic[1] -= (ic[0] * 3 + 3) >> 2;
+        ic[0] += (ic[1] * 3 + 3) >> 3;
+        ic[1] -= valT2;
+        ic[0] += valT1;
+        ic[2] += ic[1];
+        ic[3] -= ic[0];
+    }
+
+    public static void InvToddodd(Span<long> ic)
+    {
+        ic[3] += ic[0];
+        ic[2] -= ic[1];
+        var valT1 = ic[3] >> 1;
+        var valT2 = ic[2] >> 1;
+        ic[0] -= valT1;
+        ic[1] += valT2;
+        ic[0] -= (ic[1] * 3 + 3) >> 3;
+        ic[1] += (ic[0] * 3 + 3) >> 2;
+        ic[0] -= (ic[1] * 3 + 4) >> 3;
+        ic[1] -= valT2;
+        ic[0] += valT1;
+        ic[2] += ic[1];
+        ic[3] -= ic[0];
+        ic[1] = -ic[1];
+        ic[2] = -ic[2];
+    }
+
+    public static void FwdPermute(Span<long> a)
+    {
+        Span<long> tmp = stackalloc long[16];
+        for (var i = 0; i < 16; i++) tmp[FwdPermArr[i]] = a[i];
+        tmp.CopyTo(a);
+    }
+
+    public static void InvPermute(Span<long> a)
+    {
+        Span<long> tmp = stackalloc long[16];
         for (var i = 0; i < 16; i++) tmp[InvPermArr[i]] = a[i];
         tmp.CopyTo(a);
     }

@@ -643,4 +643,99 @@ const int numComponents = 3;
         }
     }
 
+    // ------------------------------------------------------------------------
+    // BD32F (single-precision float) — paired with JxrEncoder.EncodeBd32F*.
+    // ------------------------------------------------------------------------
+
+    /// <summary>Decode a BD32F + YOnly + NoFlexbits codestream — single-precision grayscale.</summary>
+    public static float[] DecodeBd32FGrayscaleNoFlexbits(
+        ReadOnlySpan<byte> codestream, out int width, out int height)
+    {
+        var img = CodedImage.Decode(codestream);
+        ValidateBd32F(img, JxrOutputColorFormat.YOnly, JxrInternalColorFormat.YOnly);
+        width = img.Width;
+        height = img.Height;
+        return DecodeBd32FCore(img, numComponents: 1);
+    }
+
+    /// <summary>Decode a BD32F + Rgb + NoFlexbits codestream — single-precision float RGB.</summary>
+    public static float[] DecodeBd32FRgbNoFlexbits(
+        ReadOnlySpan<byte> codestream, out int width, out int height)
+    {
+        var img = CodedImage.Decode(codestream);
+        ValidateBd32F(img, JxrOutputColorFormat.Rgb, JxrInternalColorFormat.Rgb);
+        width = img.Width;
+        height = img.Height;
+        return DecodeBd32FCore(img, numComponents: 3);
+    }
+
+    private static void ValidateBd32F(CodedImage img,
+        JxrOutputColorFormat expectedOut, JxrInternalColorFormat expectedInternal)
+    {
+        if (img.ImageHeader.OutputClrFmt != expectedOut ||
+            img.ImageHeader.OutputBitDepth != JxrOutputBitDepth.Bd32F ||
+            img.PlaneHeader.InternalClrFmt != expectedInternal ||
+            img.PlaneHeader.BandsPresent != JxrBandsPresent.NoFlexbits)
+        {
+            throw new NotSupportedException(
+                $"BD32F decode expects {expectedOut}/Bd32F/{expectedInternal}/NoFlexbits; got " +
+                $"{img.ImageHeader.OutputClrFmt}/{img.ImageHeader.OutputBitDepth}/" +
+                $"{img.PlaneHeader.InternalClrFmt}/{img.PlaneHeader.BandsPresent}");
+        }
+    }
+
+    private static float[] DecodeBd32FCore(CodedImage img, int numComponents)
+    {
+        var format = numComponents == 1 ? JxrInternalColorFormat.YOnly : JxrInternalColorFormat.Rgb;
+        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, format, numComponents);
+
+        var width = img.Width;
+        var height = img.Height;
+        var mbW = img.WidthInMb;
+        var mbH = img.HeightInMb;
+
+        // Inverse FCT into a signed-int working buffer (no bias — the sign-magnitude
+        // representation already centres on 0).
+        var working = new int[width * height * numComponents];
+        Span<int> subBlock = stackalloc int[16];
+        Span<int> dcGrid = stackalloc int[16];
+
+        for (var mby = 0; mby < mbH; mby++)
+        for (var mbx = 0; mbx < mbW; mbx++)
+        for (var comp = 0; comp < numComponents; comp++)
+        {
+            for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, comp, p];
+            Transforms.ICT4x4(dcGrid);
+
+            for (var sbRow = 0; sbRow < 4; sbRow++)
+            for (var sbCol = 0; sbCol < 4; sbCol++)
+            {
+                var blkIdx = sbRow * 4 + sbCol;
+                subBlock[0] = dcGrid[blkIdx];
+                for (var p = 1; p < 16; p++)
+                    subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
+                Transforms.ICT4x4(subBlock);
+                var x0 = mbx * 16 + sbCol * 4;
+                var y0 = mby * 16 + sbRow * 4;
+                if (numComponents == 1)
+                    StoreSubBlockToWorking(working, width, height, x0, y0, subBlock);
+                else
+                    StoreSubBlockToWorkingRgb(working, width, height, x0, y0, comp, numComponents, subBlock);
+            }
+        }
+
+        if (img.ImageHeader.OverlapMode == 1)
+        {
+            if (numComponents == 1) JxrEncoder.ApplyPostFilterPot(working, width, height);
+            else JxrEncoder.ApplyPostFilterPotRgb(working, width, height, numComponents);
+        }
+        else if (img.ImageHeader.OverlapMode != 0)
+            throw new NotSupportedException($"OverlapMode {img.ImageHeader.OverlapMode} not yet supported");
+
+        // Sign-magnitude int → IEEE 754 single-precision float, using the
+        // LEN_MANTISSA stored in the plane header.
+        var pixels = new int[width * height * numComponents];
+        Array.Copy(working, pixels, pixels.Length);
+        return JxrEncoder.IntArrayToBd32F(pixels, img.PlaneHeader.LenMantissa);
+    }
 }

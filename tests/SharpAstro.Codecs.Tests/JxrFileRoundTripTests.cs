@@ -113,6 +113,30 @@ public sealed class JxrFileRoundTripTests
     }
 
     [Fact]
+    public void Bd32FGrayscale_FileRoundTrip()
+    {
+        // BD32F grayscale via the file-level wrapper. LEN_MANTISSA = 8 default
+        // round-trips bit-exact for floats with ≤ 8 bits of mantissa precision.
+        var src = new float[16 * 16];
+        var rng = new Random(unchecked((int)0xB32FF11E));
+        for (var i = 0; i < src.Length; i++)
+        {
+            var sign = rng.Next(0, 2);
+            var exp = rng.Next(120, 131);
+            var mant8 = rng.Next(0, 256);
+            var raw = (uint)((sign << 31) | (exp << 23) | (mant8 << 15));
+            src[i] = BitConverter.UInt32BitsToSingle(raw);
+        }
+
+        var fileBytes = JxrFileFormatter.SaveBd32FGrayscaleNoFlexbits(src, 16, 16);
+        var decoded = JxrFileFormatter.LoadBd32FGrayscaleNoFlexbits(fileBytes, out var w, out var h, out var container);
+        w.ShouldBe(16);
+        h.ShouldBe(16);
+        container.PixelFormat.ShouldBe(JxrPixelFormat.GrayFloat32Bpp);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"i={i}");
+    }
+
+    [Fact]
     public void IccProfile_RoundTrip()
     {
         // ICC blob attached at save time must survive the round-trip.
