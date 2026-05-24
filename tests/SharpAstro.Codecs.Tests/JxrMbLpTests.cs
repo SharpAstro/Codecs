@@ -77,14 +77,53 @@ public sealed class JxrMbLpTests
     }
 
     [Fact]
-    public void YUV420And422And444_NotYetSupported_Throws()
+    public void YUV420And422_NotYetSupported_Throws()
     {
+        // Phase 22 wired YUV444's CBPLP_YUV1/YUV2 joint VLC path. YUV420/422
+        // still throw because they additionally need chroma-subsampled block
+        // counts in the HP layer + Table 56 (2-bit CBPLP_YUV1) instead of
+        // Table 55. YUV444 is sufficient for the WIC RGB-interop use case.
         var state = new MbLpState();
         var w = new BitWriter();
-        foreach (var fmt in new[] { JxrInternalColorFormat.YUV420, JxrInternalColorFormat.YUV422, JxrInternalColorFormat.YUV444 })
+        foreach (var fmt in new[] { JxrInternalColorFormat.YUV420, JxrInternalColorFormat.YUV422 })
         {
             Should.Throw<NotSupportedException>(() =>
                 MbLp.EncodeMb(w, state, fmt, 3, new int[48]));
+        }
+    }
+
+    [Fact]
+    public void YUV444_RoundTrips_ViaJointCbplpVlc()
+    {
+        // YUV444 MB_LP encode/decode through the CBPLP_YUV1/2 dispatch.
+        var enc = new MbLpState();
+        var dec = new MbLpState();
+        var rng = new Random(unchecked((int)0x59C0C603));
+        var w = new BitWriter();
+        // Vary content to exercise both the YUV2 fixed-width and YUV1 VLC paths
+        // (the latter kicks in only after CountZero/Max drift past their
+        // thresholds, which doesn't happen at MB 0 — so this primarily tests
+        // YUV2). Multiple MBs would walk into YUV1 but the state-sync between
+        // encoder and decoder is the critical invariant — verify it.
+        for (var mb = 0; mb < 8; mb++)
+        {
+            var lp = new int[48];
+            for (var i = 0; i < lp.Length; i++) lp[i] = i % 16 == 0 ? 0 : rng.Next(-8, 8);
+            MbLp.EncodeMb(w, enc, JxrInternalColorFormat.YUV444, 3, lp);
+        }
+
+        var bytes = w.ToArray();
+        var r = new BitReader(bytes);
+        var decRng = new Random(unchecked((int)0x59C0C603));
+        for (var mb = 0; mb < 8; mb++)
+        {
+            var srcLp = new int[48];
+            for (var i = 0; i < srcLp.Length; i++) srcLp[i] = i % 16 == 0 ? 0 : decRng.Next(-8, 8);
+            var got = new int[48];
+            MbLp.DecodeMb(ref r, dec, JxrInternalColorFormat.YUV444, 3, got);
+            for (var i = 0; i < 48; i++)
+                if (i % 16 != 0) // position 0 is super-DC, untouched by MbLp
+                    got[i].ShouldBe(srcLp[i], $"mb {mb} pos {i}");
         }
     }
 

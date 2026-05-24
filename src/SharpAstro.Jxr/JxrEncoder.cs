@@ -392,7 +392,8 @@ public static class JxrEncoder
         JxrTileLayout? tiling = null,
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
         int overlapMode = 0,
-        bool frequencyMode = false)
+        bool frequencyMode = false,
+        bool useYUV444 = false)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -402,7 +403,15 @@ public static class JxrEncoder
             throw new ArgumentOutOfRangeException(nameof(overlapMode), "supported values are 0 and 1");
 
         const int numComponents = 3;
-        const JxrInternalColorFormat format = JxrInternalColorFormat.Rgb;
+        // useYUV444=true: apply YCoCg-R color transform pre-FCT and tag the codestream
+        // as InternalClrFmt=YUV444. WIC's WMPhoto decoder rejects InternalClrFmt=Rgb,
+        // so this mode is required for Windows Photo interop. Note: OutputClrFmt is
+        // set to NComponent (not YUV444) — Microsoft's WIC writes it that way and
+        // WIC's decoder rejects OutputClrFmt=YUV444 even when InternalClrFmt=YUV444
+        // is allowed. The container's PixelFormat GUID (Rgb24Bpp) tells consumers
+        // the logical interpretation.
+        var format = useYUV444 ? JxrInternalColorFormat.YUV444 : JxrInternalColorFormat.Rgb;
+        var outputClrFmt = useYUV444 ? JxrOutputColorFormat.NComponent : JxrOutputColorFormat.Rgb;
 
         var mbW = (width + 15) >> 4;
         var mbH = (height + 15) >> 4;
@@ -410,6 +419,7 @@ public static class JxrEncoder
         // Pre-scaled interleaved RGB working buffer.
         var working = new int[width * height * 3];
         for (var i = 0; i < width * height * 3; i++) working[i] = pixels[i] - Bd8Bias;
+        if (useYUV444) YCoCgTransform.ForwardInPlace(working);
         if (overlapMode == 1) ApplyPreFilterPotRgb(working, width, height, numComponents);
 
         var mbDc = new int[mbW, mbH, numComponents];
@@ -499,7 +509,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd8, tiling, overlapMode, frequencyMode),
+            ImageHeader = BuildImageHeader(width, height, outputClrFmt, JxrOutputBitDepth.Bd8, tiling, overlapMode, frequencyMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -641,7 +651,8 @@ public static class JxrEncoder
         JxrTileLayout? tiling = null,
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
         int overlapMode = 0,
-        bool frequencyMode = false)
+        bool frequencyMode = false,
+        bool useYUV444 = false)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -651,13 +662,16 @@ public static class JxrEncoder
             throw new ArgumentOutOfRangeException(nameof(overlapMode), "supported values are 0 and 1");
 
         const int numComponents = 3;
-        const JxrInternalColorFormat format = JxrInternalColorFormat.Rgb;
+        // See EncodeBd8RgbNoFlexbits for why YUV444 pairs with OutputClrFmt=NComponent.
+        var format = useYUV444 ? JxrInternalColorFormat.YUV444 : JxrInternalColorFormat.Rgb;
+        var outputClrFmt = useYUV444 ? JxrOutputColorFormat.NComponent : JxrOutputColorFormat.Rgb;
 
         var mbW = (width + 15) >> 4;
         var mbH = (height + 15) >> 4;
 
         var working = new int[width * height * 3];
         for (var i = 0; i < width * height * 3; i++) working[i] = pixels[i] - Bd16Bias;
+        if (useYUV444) YCoCgTransform.ForwardInPlace(working);
         if (overlapMode == 1) ApplyPreFilterPotRgb(working, width, height, numComponents);
 
         var mbDc = new int[mbW, mbH, numComponents];
@@ -742,7 +756,7 @@ public static class JxrEncoder
 
         var img = new CodedImage
         {
-            ImageHeader = BuildImageHeader(width, height, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd16, tiling, overlapMode, frequencyMode),
+            ImageHeader = BuildImageHeader(width, height, outputClrFmt, JxrOutputBitDepth.Bd16, tiling, overlapMode, frequencyMode),
             PlaneHeader = new ImagePlaneHeader
             {
                 InternalClrFmt = format,
@@ -855,7 +869,8 @@ public static class JxrEncoder
         JxrTileLayout? tiling = null,
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
         int overlapMode = 0,
-        bool frequencyMode = false)
+        bool frequencyMode = false,
+        bool useYUV444 = false)
     {
         ValidateBd16F(halfBits, width, height, expectedComponents: 3);
 
@@ -864,8 +879,8 @@ public static class JxrEncoder
             width,
             height,
             numComponents: 3,
-            format: JxrInternalColorFormat.Rgb,
-            outputClrFmt: JxrOutputColorFormat.Rgb,
+            format: useYUV444 ? JxrInternalColorFormat.YUV444 : JxrInternalColorFormat.Rgb,
+            outputClrFmt: useYUV444 ? JxrOutputColorFormat.NComponent : JxrOutputColorFormat.Rgb,
             outputBitDepth: JxrOutputBitDepth.Bd16F,
             lenMantissa: 10,
             expBias: 15 - 128,
@@ -910,6 +925,12 @@ public static class JxrEncoder
         // interleaved (single-component case degenerates to a flat ints buffer).
         var working = new int[width * height * numComponents];
         for (var i = 0; i < width * height * numComponents; i++) working[i] = src[i] - Bd16Bias;
+        // YCoCg-R lifting when the caller asks for InternalClrFmt=YUV444 with
+        // 3 components. See Phase 22 — encodes RGB samples as Y/Co/Cg so the
+        // codestream can claim YUV444 (the only 3-component internal format
+        // WIC's WMPhoto decoder accepts).
+        if (format == JxrInternalColorFormat.YUV444 && numComponents == 3)
+            YCoCgTransform.ForwardInPlace(working);
         if (overlapMode == 1)
         {
             if (numComponents == 1) ApplyPreFilterPot(working, width, height);
@@ -1070,12 +1091,14 @@ public static class JxrEncoder
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1,
         int overlapMode = 0,
         bool frequencyMode = false,
-        byte lenMantissa = 8)
+        byte lenMantissa = 8,
+        bool useYUV444 = false)
     {
         ValidateBd32F(pixels, width, height, expectedComponents: 3, lenMantissa);
         var asInts = Bd32FToIntArray(pixels, lenMantissa, numComponents: 3, width, height);
         return EncodeBd32FPipelineCore(asInts, width, height, numComponents: 3,
-            format: JxrInternalColorFormat.Rgb, outputClrFmt: JxrOutputColorFormat.Rgb,
+            format: useYUV444 ? JxrInternalColorFormat.YUV444 : JxrInternalColorFormat.Rgb,
+            outputClrFmt: useYUV444 ? JxrOutputColorFormat.NComponent : JxrOutputColorFormat.Rgb,
             lenMantissa: lenMantissa, tiling: tiling,
             dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
             overlapMode: overlapMode, frequencyMode: frequencyMode);
@@ -1160,6 +1183,9 @@ public static class JxrEncoder
         // the float→int conversion already produces sign-magnitude values.
         var working = new int[width * height * numComponents];
         Array.Copy(src, working, src.Length);
+        // YCoCg-R for the WIC-interop YUV444 path — same logic as BD16Core.
+        if (format == JxrInternalColorFormat.YUV444 && numComponents == 3)
+            YCoCgTransform.ForwardInPlace(working);
         if (overlapMode == 1)
         {
             if (numComponents == 1) ApplyPreFilterPot(working, width, height);

@@ -218,21 +218,28 @@ var mbW = img.WidthInMb;
     {
         var img = CodedImage.Decode(codestream);
 
-        if (img.ImageHeader.OutputClrFmt != JxrOutputColorFormat.Rgb ||
+        // Two accepted shapes:
+        //   1. OutputClrFmt=Rgb / InternalClrFmt=Rgb        (our native path)
+        //   2. OutputClrFmt=NComponent / InternalClrFmt=YUV444   (WIC-interop path, Phase 22)
+        var isRgbDirect = img.ImageHeader.OutputClrFmt == JxrOutputColorFormat.Rgb
+                          && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.Rgb;
+        var isYuv444Interop = img.ImageHeader.OutputClrFmt == JxrOutputColorFormat.NComponent
+                              && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.YUV444
+                              && img.PlaneHeader.NumComponents == 3;
+        if ((!isRgbDirect && !isYuv444Interop) ||
             img.ImageHeader.OutputBitDepth != JxrOutputBitDepth.Bd8 ||
-            img.PlaneHeader.InternalClrFmt != JxrInternalColorFormat.Rgb ||
             img.PlaneHeader.BandsPresent != JxrBandsPresent.NoFlexbits)
         {
             throw new NotSupportedException(
-                $"JxrDecoder.DecodeBd8RgbNoFlexbits expects Rgb/BD8/NoFlexbits; " +
+                $"JxrDecoder.DecodeBd8RgbNoFlexbits expects Rgb+Rgb or NComponent+YUV444 / BD8 / NoFlexbits; " +
                 $"got {img.ImageHeader.OutputClrFmt}/{img.ImageHeader.OutputBitDepth}/" +
                 $"{img.PlaneHeader.InternalClrFmt}/{img.PlaneHeader.BandsPresent}");
         }
 
         width = img.Width;
         height = img.Height;
-const int numComponents = 3;
-        const JxrInternalColorFormat format = JxrInternalColorFormat.Rgb;
+        const int numComponents = 3;
+        var format = isYuv444Interop ? JxrInternalColorFormat.YUV444 : JxrInternalColorFormat.Rgb;
 
         var mbW = img.WidthInMb;
         var mbH = img.HeightInMb;
@@ -315,6 +322,12 @@ const int numComponents = 3;
             JxrEncoder.ApplyPostFilterPotRgb(working, width, height, numComponents);
         else if (img.ImageHeader.OverlapMode != 0)
             throw new NotSupportedException($"OverlapMode {img.ImageHeader.OverlapMode} not yet supported");
+
+        // YUV444 interop: encoder applied YCoCg-R lifting on the RGB samples
+        // before the FCT cascade. Reverse it now so output bytes are R, G, B
+        // again — same API as the direct-Rgb path.
+        if (isYuv444Interop)
+            YCoCgTransform.InverseInPlace(working);
 
         var pixels = new byte[width * height * 3];
         for (var i = 0; i < pixels.Length; i++)
@@ -408,13 +421,17 @@ const int numComponents = 3;
     {
         var img = CodedImage.Decode(codestream);
 
-        if (img.ImageHeader.OutputClrFmt != JxrOutputColorFormat.Rgb ||
+        var isRgbDirect = img.ImageHeader.OutputClrFmt == JxrOutputColorFormat.Rgb
+                          && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.Rgb;
+        var isYuv444Interop = img.ImageHeader.OutputClrFmt == JxrOutputColorFormat.NComponent
+                              && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.YUV444
+                              && img.PlaneHeader.NumComponents == 3;
+        if ((!isRgbDirect && !isYuv444Interop) ||
             img.ImageHeader.OutputBitDepth != JxrOutputBitDepth.Bd16 ||
-            img.PlaneHeader.InternalClrFmt != JxrInternalColorFormat.Rgb ||
             img.PlaneHeader.BandsPresent != JxrBandsPresent.NoFlexbits)
         {
             throw new NotSupportedException(
-                $"JxrDecoder.DecodeBd16RgbNoFlexbits expects Rgb/BD16/NoFlexbits; " +
+                $"JxrDecoder.DecodeBd16RgbNoFlexbits expects Rgb+Rgb or NComponent+YUV444 / BD16 / NoFlexbits; " +
                 $"got {img.ImageHeader.OutputClrFmt}/{img.ImageHeader.OutputBitDepth}/" +
                 $"{img.PlaneHeader.InternalClrFmt}/{img.PlaneHeader.BandsPresent}");
         }
@@ -422,7 +439,8 @@ const int numComponents = 3;
         width = img.Width;
         height = img.Height;
         const int numComponents = 3;
-        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, JxrInternalColorFormat.Rgb, numComponents);
+        var format = isYuv444Interop ? JxrInternalColorFormat.YUV444 : JxrInternalColorFormat.Rgb;
+        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, format, numComponents);
         return InverseFctToUshort(img, mbDcLp, mbHp, numComponents, JxrEncoder.Bd16Bias);
     }
 
@@ -475,6 +493,13 @@ const int numComponents = 3;
         }
         else if (img.ImageHeader.OverlapMode != 0)
             throw new NotSupportedException($"OverlapMode {img.ImageHeader.OverlapMode} not yet supported");
+
+        // Phase 22: undo the encoder-side YCoCg-R lifting when the codestream
+        // claims YUV444 internally — the working buffer holds (Y, Co, Cg)
+        // triples; we restore (R, G, B) so the byte-equivalent ushort output
+        // matches the original input.
+        if (numComponents == 3 && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.YUV444)
+            YCoCgTransform.InverseInPlace(working);
 
         var pixels = new ushort[width * height * numComponents];
         for (var i = 0; i < pixels.Length; i++)
@@ -620,11 +645,27 @@ const int numComponents = 3;
         ReadOnlySpan<byte> codestream, out int width, out int height)
     {
         var img = CodedImage.Decode(codestream);
-        ValidateBd16F(img, JxrOutputColorFormat.Rgb, JxrInternalColorFormat.Rgb);
+
+        // Two accepted shapes — see DecodeBd8RgbNoFlexbits for the same dispatch.
+        var isRgbDirect = img.ImageHeader.OutputClrFmt == JxrOutputColorFormat.Rgb
+                          && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.Rgb;
+        var isYuv444Interop = img.ImageHeader.OutputClrFmt == JxrOutputColorFormat.NComponent
+                              && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.YUV444
+                              && img.PlaneHeader.NumComponents == 3;
+        if ((!isRgbDirect && !isYuv444Interop) ||
+            img.ImageHeader.OutputBitDepth != JxrOutputBitDepth.Bd16F ||
+            img.PlaneHeader.BandsPresent != JxrBandsPresent.NoFlexbits)
+        {
+            throw new NotSupportedException(
+                $"BD16F RGB decode expects Rgb+Rgb or NComponent+YUV444 / Bd16F / NoFlexbits; got " +
+                $"{img.ImageHeader.OutputClrFmt}/{img.ImageHeader.OutputBitDepth}/" +
+                $"{img.PlaneHeader.InternalClrFmt}/{img.PlaneHeader.BandsPresent}");
+        }
 
         width = img.Width;
         height = img.Height;
-        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, JxrInternalColorFormat.Rgb, 3);
+        var format = isYuv444Interop ? JxrInternalColorFormat.YUV444 : JxrInternalColorFormat.Rgb;
+        var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, format, 3);
         return InverseFctToUshort(img, mbDcLp, mbHp, numComponents: 3, JxrEncoder.Bd16Bias);
     }
 
@@ -663,7 +704,21 @@ const int numComponents = 3;
         ReadOnlySpan<byte> codestream, out int width, out int height)
     {
         var img = CodedImage.Decode(codestream);
-        ValidateBd32F(img, JxrOutputColorFormat.Rgb, JxrInternalColorFormat.Rgb);
+
+        var isRgbDirect = img.ImageHeader.OutputClrFmt == JxrOutputColorFormat.Rgb
+                          && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.Rgb;
+        var isYuv444Interop = img.ImageHeader.OutputClrFmt == JxrOutputColorFormat.NComponent
+                              && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.YUV444
+                              && img.PlaneHeader.NumComponents == 3;
+        if ((!isRgbDirect && !isYuv444Interop) ||
+            img.ImageHeader.OutputBitDepth != JxrOutputBitDepth.Bd32F ||
+            img.PlaneHeader.BandsPresent != JxrBandsPresent.NoFlexbits)
+        {
+            throw new NotSupportedException(
+                $"BD32F RGB decode expects Rgb+Rgb or NComponent+YUV444 / Bd32F / NoFlexbits; got " +
+                $"{img.ImageHeader.OutputClrFmt}/{img.ImageHeader.OutputBitDepth}/" +
+                $"{img.PlaneHeader.InternalClrFmt}/{img.PlaneHeader.BandsPresent}");
+        }
         width = img.Width;
         height = img.Height;
         return DecodeBd32FCore(img, numComponents: 3);
@@ -686,7 +741,12 @@ const int numComponents = 3;
 
     private static float[] DecodeBd32FCore(CodedImage img, int numComponents)
     {
-        var format = numComponents == 1 ? JxrInternalColorFormat.YOnly : JxrInternalColorFormat.Rgb;
+        // Read the actual InternalClrFmt from the plane header — we may be
+        // looking at a YUV444-encoded RGB image (Phase 22 interop) which
+        // requires inverse YCoCg after the ICT cascade.
+        var format = numComponents == 1
+            ? JxrInternalColorFormat.YOnly
+            : img.PlaneHeader.InternalClrFmt;
         var (_, mbDcLp, mbHp) = UnpackAndInversePredict(img, format, numComponents);
 
         var width = img.Width;
@@ -731,6 +791,10 @@ const int numComponents = 3;
         }
         else if (img.ImageHeader.OverlapMode != 0)
             throw new NotSupportedException($"OverlapMode {img.ImageHeader.OverlapMode} not yet supported");
+
+        // Phase 22: undo YCoCg-R if the encoder applied it (BD32F YUV444 path).
+        if (numComponents == 3 && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.YUV444)
+            YCoCgTransform.InverseInPlace(working);
 
         // Sign-magnitude int → IEEE 754 single-precision float, using the
         // LEN_MANTISSA stored in the plane header.

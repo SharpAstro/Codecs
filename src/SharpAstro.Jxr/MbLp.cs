@@ -40,7 +40,11 @@ public static class MbLp
         int numComponents,
         ReadOnlySpan<int> lp)
     {
-        EnsureCbplpChBitFormat(format);
+        if (format == JxrInternalColorFormat.YUV420 || format == JxrInternalColorFormat.YUV422)
+            throw new NotSupportedException(
+                "MbLp.EncodeMb: YUV420 / YUV422 chroma-subsampling LP coding " +
+                "(2-bit CBPLP via Table 56) not yet wired. YUV444 IS supported via " +
+                "the CBPLP_YUV1/2 joint-VLC path below.");
         if (lp.Length < numComponents * 16)
             throw new ArgumentException($"lp must hold {numComponents} × 16 ints", nameof(lp));
 
@@ -49,23 +53,36 @@ public static class MbLp
         var modelBitsChr = state.Model.MBits1;
         var iLapMeanLum = 0;
         var iLapMeanChr = 0;
+        var isYuv444 = format == JxrInternalColorFormat.YUV444;
 
-        // First emit all CBPLP_CH_BIT flags (one bit per component).
+        // First emit all CBPLP flags. CBPLP_CH_BIT (Rgb/NComponent/YOnly/YUVK)
+        // is one raw bit per component. YUV444 uses the joint-VLC dispatch
+        // between CBPLP_YUV1 (Table 55 VLC) and CBPLP_YUV2 (raw u(3)) selected
+        // by the CountZero/CountMax state — see WriteCbplpYuv444.
         Span<int> cbplpFlags = stackalloc int[16]; // generous; numComponents ≤ 16
-        for (var c = 0; c < numComponents; c++)
+        if (isYuv444)
         {
-            var componentLp = lp.Slice(c * 16, 16);
-            var mb = c == 0 ? modelBitsLum : modelBitsChr;
-            // CBPLP_CH_BIT is set if any coefficient has high bits beyond iModelBits.
-            var hasHigh = false;
-            for (var p = 1; p < 16 && !hasHigh; p++)
+            // Compute the 3 component bits first, then emit them jointly.
+            for (var c = 0; c < 3; c++)
             {
-                var abs = componentLp[p] < 0 ? -componentLp[p] : componentLp[p];
-                if (mb > 0 ? (abs >> mb) > 0 : abs > 0)
-                    hasHigh = true;
+                var mb = c == 0 ? modelBitsLum : modelBitsChr;
+                var componentLp = lp.Slice(c * 16, 16);
+                cbplpFlags[c] = HasNonZeroHigh(componentLp, mb) ? 1 : 0;
             }
-            cbplpFlags[c] = hasHigh ? 1 : 0;
-            writer.WriteBit(hasHigh);
+            var iCBPLP = cbplpFlags[0] | (cbplpFlags[1] << 1) | (cbplpFlags[2] << 2);
+            WriteCbplpYuv444(writer, state, iCBPLP);
+            UpdateCbplpCounts(state, iCBPLP, iMax: 7);
+        }
+        else
+        {
+            for (var c = 0; c < numComponents; c++)
+            {
+                var componentLp = lp.Slice(c * 16, 16);
+                var mb = c == 0 ? modelBitsLum : modelBitsChr;
+                var hasHigh = HasNonZeroHigh(componentLp, mb);
+                cbplpFlags[c] = hasHigh ? 1 : 0;
+                writer.WriteBit(hasHigh);
+            }
         }
 
         // Then per-component data: block-encoded high bits + REFINE_LP refinement.
@@ -127,7 +144,11 @@ public static class MbLp
         int numComponents,
         Span<int> lpOut)
     {
-        EnsureCbplpChBitFormat(format);
+        if (format == JxrInternalColorFormat.YUV420 || format == JxrInternalColorFormat.YUV422)
+            throw new NotSupportedException(
+                "MbLp.DecodeMb: YUV420 / YUV422 chroma-subsampling LP decoding " +
+                "(2-bit CBPLP via Table 56) not yet wired. YUV444 IS supported via " +
+                "the CBPLP_YUV1/2 joint-VLC path.");
         if (lpOut.Length < numComponents * 16)
             throw new ArgumentException($"lpOut must hold {numComponents} × 16 ints", nameof(lpOut));
 
@@ -140,11 +161,23 @@ public static class MbLp
         var modelBitsChr = state.Model.MBits1;
         var iLapMeanLum = 0;
         var iLapMeanChr = 0;
+        var isYuv444 = format == JxrInternalColorFormat.YUV444;
 
-        // Read all CBPLP_CH_BIT flags up front.
+        // Read CBPLP flags — joint dispatch for YUV444, per-component bits otherwise.
         Span<int> cbplpFlags = stackalloc int[16];
-        for (var c = 0; c < numComponents; c++)
-            cbplpFlags[c] = reader.ReadBit() ? 1 : 0;
+        if (isYuv444)
+        {
+            var iCBPLP = ReadCbplpYuv444(ref reader, state);
+            cbplpFlags[0] = iCBPLP & 1;
+            cbplpFlags[1] = (iCBPLP >> 1) & 1;
+            cbplpFlags[2] = (iCBPLP >> 2) & 1;
+            UpdateCbplpCounts(state, iCBPLP, iMax: 7);
+        }
+        else
+        {
+            for (var c = 0; c < numComponents; c++)
+                cbplpFlags[c] = reader.ReadBit() ? 1 : 0;
+        }
 
         var highBlockBuf = new int[16];
         for (var c = 0; c < numComponents; c++)
@@ -266,12 +299,116 @@ public static class MbLp
         state.AbsLevel1 = ctx.AbsLevel1;
     }
 
-    private static void EnsureCbplpChBitFormat(JxrInternalColorFormat f)
+    /// <summary>
+    /// True iff any of <paramref name="componentLp"/>'s positions 1..15 has a
+    /// non-zero "high" part when shifted right by <paramref name="iModelBits"/>.
+    /// </summary>
+    private static bool HasNonZeroHigh(ReadOnlySpan<int> componentLp, int iModelBits)
     {
-        if (f == JxrInternalColorFormat.YUV420 || f == JxrInternalColorFormat.YUV422 || f == JxrInternalColorFormat.YUV444)
-            throw new NotSupportedException(
-                "MbLp.EncodeMb / DecodeMb currently handles only CBPLP_CH_BIT formats " +
-                "(YOnly / YUVK / NComponent / Rgb). The CBPLP_YUV1/YUV2 joint VLC path " +
-                "for YUV420/422/444 needs the CountZero/Max CBPLP state and lands separately.");
+        for (var p = 1; p < 16; p++)
+        {
+            var abs = componentLp[p] < 0 ? -componentLp[p] : componentLp[p];
+            if (iModelBits > 0 ? (abs >> iModelBits) > 0 : abs > 0)
+                return true;
+        }
+        return false;
     }
+
+    // -----------------------------------------------------------------------
+    // CBPLP_YUV1 / CBPLP_YUV2 joint dispatch — T.832 §8.7.16.3, Tables 55,
+    // 103, 104. Used by INTERNAL_CLR_FMT = YUV444 (3 components, iMax = 7).
+    //
+    // Per-MB state machine:
+    //   if (CountZeroCBPLP <= 0 || CountMaxCBPLP < 0)
+    //     CBPLP_YUV1: VLC-coded value (Table 55), optionally inverted to
+    //                 favour the most-common extreme
+    //   else
+    //     CBPLP_YUV2: raw u(3) bits
+    //
+    // Counts initialize to (1, 1) at the top-left MB of each tile (= fresh
+    // MbLpState) and clamp to [-8, 7] after each update.
+    // -----------------------------------------------------------------------
+
+    /// <summary>Table 55: CBPLP_YUV1 codes for YUV444 (iMax=7). Indexed by value 0..7.</summary>
+    private static readonly (uint code, int length)[] CbplpYuv1Yuv444 =
+    [
+        (0b0,    1),  // 0
+        (0b100,  3),  // 1
+        (0b1010, 4),  // 2
+        (0b1011, 4),  // 3
+        (0b1100, 4),  // 4
+        (0b1101, 4),  // 5
+        (0b1110, 4),  // 6
+        (0b1111, 4),  // 7
+    ];
+
+    private static void WriteCbplpYuv444(BitWriter writer, MbLpState state, int iCBPLP)
+    {
+        const int iMax = 7;
+        if (state.CountZeroCBPLP <= 0 || state.CountMaxCBPLP < 0)
+        {
+            // VLC path — invert iCBPLP when Max is the more common extreme so
+            // that "max" maps to code 0 (1 bit), zero to a longer code. The
+            // decoder mirrors this dispatch using the same counts.
+            var raw = state.CountMaxCBPLP < state.CountZeroCBPLP ? (iMax - iCBPLP) : iCBPLP;
+            var (code, len) = CbplpYuv1Yuv444[raw];
+            writer.WriteBits(code, len);
+        }
+        else
+        {
+            // Fixed-width 3-bit raw — no inversion on this path.
+            writer.WriteBits((uint)iCBPLP, 3);
+        }
+    }
+
+    private static int ReadCbplpYuv444(ref BitReader reader, MbLpState state)
+    {
+        const int iMax = 7;
+        if (state.CountZeroCBPLP <= 0 || state.CountMaxCBPLP < 0)
+        {
+            var raw = DecodeCbplpYuv1Yuv444(ref reader);
+            return state.CountMaxCBPLP < state.CountZeroCBPLP ? (iMax - raw) : raw;
+        }
+        return (int)reader.ReadBits(3);
+    }
+
+    /// <summary>Prefix-matched VLC decode of Table 55 (YUV444 CBPLP_YUV1).</summary>
+    private static int DecodeCbplpYuv1Yuv444(ref BitReader reader)
+    {
+        // Code lengths are 1, 3, or 4 bits. Peek up to 4 and dispatch.
+        // 0xxx       → 0 (consume 1)
+        // 100x       → 1 (consume 3)
+        // 101x       → 2 or 3 (consume 4) — distinguished by bit 3
+        // 11xx       → 4..7 (consume 4)
+        if (!reader.ReadBit())
+            return 0;                          // code "0"
+
+        var b1 = reader.ReadBit();             // bit 1
+        if (!b1)
+        {
+            // "10" so far — code "100" (value 1) needs the next bit to be 0.
+            var b2 = reader.ReadBit();
+            if (!b2)
+                return 1;                      // "100"
+            // "101x" → value 2 (101 0) or 3 (101 1) — read bit 3
+            var b3 = reader.ReadBit();
+            return b3 ? 3 : 2;
+        }
+        // "11" → 4..7. Read two more bits as low nibble (xx).
+        var hi = reader.ReadBit() ? 1 : 0;
+        var lo = reader.ReadBit() ? 1 : 0;
+        return 4 + (hi << 1) + lo;
+    }
+
+    /// <summary>
+    /// T.832 Table 104 — adapt the CountZero / CountMax CBPLP counters after
+    /// decoding each MB. The counts persist for the whole tile.
+    /// </summary>
+    private static void UpdateCbplpCounts(MbLpState state, int iCBPLP, int iMax)
+    {
+        state.CountZeroCBPLP = Clamp(state.CountZeroCBPLP + 1 - 4 * (iCBPLP == 0 ? 1 : 0), -8, 7);
+        state.CountMaxCBPLP  = Clamp(state.CountMaxCBPLP  + 1 - 4 * (iCBPLP == iMax ? 1 : 0), -8, 7);
+    }
+
+    private static int Clamp(int v, int lo, int hi) => v < lo ? lo : v > hi ? hi : v;
 }

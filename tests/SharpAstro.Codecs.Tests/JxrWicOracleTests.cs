@@ -64,6 +64,92 @@ public sealed class JxrWicOracleTests
     }
 
     [Fact]
+    public void Emit_TinyBd16FRgb_AsYuv444_ViaFileFormatter_ToTemp()
+    {
+        // The user-facing API: file-level Save with useYUV444=true. This is
+        // what a real HDR-master pipeline calls.
+        var halves = new ushort[16 * 16 * 3];
+        for (var i = 0; i < halves.Length; i++)
+            halves[i] = BitConverter.HalfToUInt16Bits((Half)((i % 256) / 256.0));
+        var fileBytes = SharpAstro.Jxr.JxrFileFormatter.SaveBd16FRgbNoFlexbits(
+            halves, 16, 16,
+            useYUV444: true);
+        var path = Path.Combine(Path.GetTempPath(), "sharpastro_tiny_bd16f_rgb_yuv444_file.jxr");
+        File.WriteAllBytes(path, fileBytes);
+        TestContext.Current.TestOutputHelper!.WriteLine($"Wrote {fileBytes.Length} bytes to {path}");
+    }
+
+    [Fact]
+    public void Emit_TinyBd16FRgb_AsYuv444_ToTemp()
+    {
+        // The HDR-master target — half-float RGB through YUV444 / WIC interop.
+        var halves = new ushort[16 * 16 * 3];
+        for (var i = 0; i < halves.Length; i++)
+            halves[i] = BitConverter.HalfToUInt16Bits((Half)((i % 256) / 256.0));
+        var cs = SharpAstro.Jxr.JxrEncoder.EncodeBd16FRgbNoFlexbits(halves, 16, 16, useYUV444: true);
+        var fileBytes = SharpAstro.Jxr.JxrContainer.Write(
+            new SharpAstro.Jxr.JxrFile(16, 16,
+                SharpAstro.Jxr.JxrPixelFormat.RgbHalf48Bpp, cs));
+        var path = Path.Combine(Path.GetTempPath(), "sharpastro_tiny_bd16f_rgb_yuv444.jxr");
+        File.WriteAllBytes(path, fileBytes);
+        TestContext.Current.TestOutputHelper!.WriteLine($"Wrote {fileBytes.Length} bytes to {path}");
+    }
+
+    [Fact]
+    public void Emit_TinyBd8Rgb_AsYuv444_ToTemp()
+    {
+        // Phase 22: YCoCg + InternalClrFmt=YUV444 path. WIC should accept this.
+        var rgb = new byte[16 * 16 * 3];
+        for (var i = 0; i < rgb.Length; i++) rgb[i] = (byte)(i & 0xFF);
+        var bytes = SharpAstro.Jxr.JxrEncoder.EncodeBd8RgbNoFlexbits(
+            rgb, 16, 16, useYUV444: true);
+        var path = Path.Combine(Path.GetTempPath(), "sharpastro_tiny_bd8_rgb_yuv444.jxr");
+        var fileBytes = SharpAstro.Jxr.JxrContainer.Write(
+            new SharpAstro.Jxr.JxrFile(16, 16,
+                SharpAstro.Jxr.JxrPixelFormat.Rgb24Bpp, bytes));
+        File.WriteAllBytes(path, fileBytes);
+        TestContext.Current.TestOutputHelper!.WriteLine($"Wrote {fileBytes.Length} bytes to {path}");
+    }
+
+    [Fact]
+    public void Emit_TinyBd8Rgb_AsYuv444_WithFreqAndIndexTable_ToTemp()
+    {
+        // Add FreqMode + IndexTable to match WIC's reference layout (other than
+        // BandsPresent/ScaledFlag/OutputClrFmt which we control separately).
+        var rgb = new byte[16 * 16 * 3];
+        for (var i = 0; i < rgb.Length; i++) rgb[i] = (byte)(i & 0xFF);
+        var bytes = SharpAstro.Jxr.JxrEncoder.EncodeBd8RgbNoFlexbits(
+            rgb, 16, 16,
+            useYUV444: true,
+            frequencyMode: true);
+        var img = SharpAstro.Jxr.CodedImage.Decode(bytes);
+        // Re-emit with IndexTable=true (CodedImage.Encode now supports single-tile+IndexTable)
+        var rebuilt = new SharpAstro.Jxr.CodedImage
+        {
+            ImageHeader = new SharpAstro.Jxr.ImageHeader
+            {
+                OutputClrFmt = img.ImageHeader.OutputClrFmt,
+                OutputBitDepth = img.ImageHeader.OutputBitDepth,
+                ShortHeaderFlag = img.ImageHeader.ShortHeaderFlag,
+                LongWordFlag = true,
+                WidthMinus1 = img.ImageHeader.WidthMinus1,
+                HeightMinus1 = img.ImageHeader.HeightMinus1,
+                FrequencyModeCodestreamFlag = true,
+                IndexTablePresentFlag = true,
+            },
+            PlaneHeader = img.PlaneHeader,
+            ProfileLevelInfo = img.ProfileLevelInfo,
+            Macroblocks = img.Macroblocks,
+        };
+        var cs = rebuilt.Encode();
+        var fileBytes = SharpAstro.Jxr.JxrContainer.Write(
+            new SharpAstro.Jxr.JxrFile(16, 16, SharpAstro.Jxr.JxrPixelFormat.Rgb24Bpp, cs));
+        var path = Path.Combine(Path.GetTempPath(), "sharpastro_tiny_bd8_rgb_yuv444_freq.jxr");
+        File.WriteAllBytes(path, fileBytes);
+        TestContext.Current.TestOutputHelper!.WriteLine($"Wrote {fileBytes.Length} bytes to {path}");
+    }
+
+    [Fact]
     public void Emit_TinyBd8Rgb_ToTemp()
     {
         var rgb = new byte[16 * 16 * 3];

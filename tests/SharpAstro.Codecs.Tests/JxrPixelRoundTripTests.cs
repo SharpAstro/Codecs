@@ -1203,6 +1203,100 @@ public sealed class JxrPixelRoundTripTests
         img2.ImageHeader.FrequencyModeCodestreamFlag.ShouldBeFalse();
     }
 
+    // ----------------------------------------------------------------------
+    // Phase 22 — YCoCg + InternalClrFmt=YUV444 (Windows Photo / WIC interop)
+    // ----------------------------------------------------------------------
+
+    [Fact]
+    public void Bd8Rgb_UseYUV444_RoundTrips_Lossless()
+    {
+        var rng = new Random(unchecked((int)0x59C0C600));
+        var src = new byte[32 * 32 * 3];
+        rng.NextBytes(src);
+
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 32, 32, useYUV444: true);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out var w, out var h);
+        w.ShouldBe(32); h.ShouldBe(32);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void Bd8Rgb_UseYUV444_WritesYuv444InternalAndNComponentOutput()
+    {
+        // Bitstream-level check that we wrote the right combination.
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(new byte[16 * 16 * 3], 16, 16, useYUV444: true);
+        var img = CodedImage.Decode(bytes);
+        img.ImageHeader.OutputClrFmt.ShouldBe(JxrOutputColorFormat.NComponent);
+        img.PlaneHeader.InternalClrFmt.ShouldBe(JxrInternalColorFormat.YUV444);
+        img.PlaneHeader.NumComponents.ShouldBe(3);
+    }
+
+    [Fact]
+    public void Bd8Rgb_DirectRgb_StillRoundTrips_AfterPhase22()
+    {
+        // Backwards-compat: the default (useYUV444=false) RGB path still works.
+        var rng = new Random(unchecked((int)0x59C0C601));
+        var src = new byte[16 * 16 * 3];
+        rng.NextBytes(src);
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 16, 16); // useYUV444 default false
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void Bd8Rgb_UseYUV444_WithPot_RoundTrips()
+    {
+        var rng = new Random(unchecked((int)0x59C0C602));
+        var src = new byte[32 * 32 * 3];
+        rng.NextBytes(src);
+        var bytes = JxrEncoder.EncodeBd8RgbNoFlexbits(src, 32, 32,
+            overlapMode: 1, useYUV444: true);
+        var decoded = JxrDecoder.DecodeBd8RgbNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"byte {i}");
+    }
+
+    [Fact]
+    public void Bd16Rgb_UseYUV444_RoundTrips_Lossless()
+    {
+        var rng = new Random(unchecked((int)0x59C0C610));
+        var src = new ushort[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+        var bytes = JxrEncoder.EncodeBd16RgbNoFlexbits(src, 32, 32, useYUV444: true);
+        var decoded = JxrDecoder.DecodeBd16RgbNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Bd16FRgb_UseYUV444_RoundTrips_Lossless()
+    {
+        var rng = new Random(unchecked((int)0x59C0C611));
+        var src = new ushort[32 * 32 * 3];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+        var bytes = JxrEncoder.EncodeBd16FRgbNoFlexbits(src, 32, 32, useYUV444: true);
+        var decoded = JxrDecoder.DecodeBd16FRgbNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
+    [Fact]
+    public void Bd32FRgb_UseYUV444_RoundTrips_AtConstrainedPrecision()
+    {
+        var rng = new Random(unchecked((int)0x59C0C612));
+        var src = new float[16 * 16 * 3];
+        for (var i = 0; i < src.Length; i++)
+        {
+            // Same constrained-mantissa pattern as the existing BD32F tests
+            // — LEN_MANTISSA=8 default truncates to 8 mantissa bits.
+            var sign = rng.Next(0, 2);
+            var exp = rng.Next(120, 131);
+            var mant8 = rng.Next(0, 256);
+            var raw = (uint)((sign << 31) | (exp << 23) | (mant8 << 15));
+            src[i] = BitConverter.UInt32BitsToSingle(raw);
+        }
+        var bytes = JxrEncoder.EncodeBd32FRgbNoFlexbits(src, 16, 16, useYUV444: true);
+        var decoded = JxrDecoder.DecodeBd32FRgbNoFlexbits(bytes, out _, out _);
+        for (var i = 0; i < src.Length; i++) decoded[i].ShouldBe(src[i], $"sample {i}");
+    }
+
     [Fact]
     public void HpPredictionAlone_HorizontalGradient_RoundTrips()
     {

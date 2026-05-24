@@ -26,6 +26,22 @@ public sealed class MbLpState
     public readonly AdaptiveScan Scan;
     public CoefficientModelState Model;
 
+    /// <summary>
+    /// CountZeroCBPLP — T.832 Table 103. Tracks how often recent
+    /// macroblocks had iCBPLP == 0; when it drops to ≤ 0 the joint-VLC
+    /// path (CBPLP_YUV1) is favoured because zeros are common enough that
+    /// the 1-bit code pays off. Initialized to 1 at the top-left MB of
+    /// each tile (which corresponds to a fresh <see cref="MbLpState"/>).
+    /// </summary>
+    public int CountZeroCBPLP = 1;
+
+    /// <summary>
+    /// CountMaxCBPLP — T.832 Table 103. Mirror of <see cref="CountZeroCBPLP"/>
+    /// for the "all-bits-set" extreme; when it drops below 0 the VLC
+    /// path's inversion trick is picked.
+    /// </summary>
+    public int CountMaxCBPLP = 1;
+
     public MbLpState()
     {
         FirstIndexLum = AdaptiveVlc.InitializeTable2();
