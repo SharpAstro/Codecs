@@ -22,11 +22,26 @@ namespace SharpAstro.Jxr;
 /// </remarks>
 public sealed class AdaptiveScan
 {
-    // T.832 Table 107.
+    // Initial scan orders — match jxrlib's actual computed values
+    // (image/sys/image.c InitZigzagScan):
+    //   m_aScanLowpass[k].uScan = grgiZigzagInv4x4_lowpass[k]
+    //   m_aScanHoriz  [k].uScan = dctIndex[0][grgiZigzagInv4x4H[k]]
+    //   m_aScanVert   [k].uScan = dctIndex[0][grgiZigzagInv4x4V[k]]
+    // with dctIndex[0] = {0,5,1,6, 10,12,8,14, 2,4,3,7, 9,13,11,15}.
+    //
+    // T.832 Table 107 lists scan-orders [0, 4, 1, 5, 8, ...] etc., but
+    // those are in transmission order BEFORE the FwdPermute / dctIndex
+    // permutation. Our block layout post-FCT4x4 (which ends in
+    // FwdPermute) matches jxrlib's natural data order, so the HP scan
+    // walks the dctIndex-permuted positions; LP coefs come from
+    // FCT4x4Stage2 which intentionally skips FwdPermute and are scanned
+    // in the un-permuted grgiZigzagInv4x4_lowpass order.
+    private static ReadOnlySpan<byte> ScanOrderLp =>
+        [0, 1, 4, 5, 2, 8, 6, 9, 3, 12, 10, 7, 13, 11, 14, 15];
     private static ReadOnlySpan<byte> ScanOrder0 =>
-        [0, 4, 1, 5, 8, 2, 9, 6, 12, 3, 10, 13, 7, 14, 11, 15];
+        [0, 5, 10, 12, 1, 2, 8, 4, 6, 9, 3, 14, 13, 7, 11, 15];
     private static ReadOnlySpan<byte> ScanOrder1 =>
-        [0, 1, 2, 5, 4, 3, 6, 9, 8, 7, 12, 15, 13, 10, 11, 14];
+        [0, 10, 2, 12, 5, 9, 4, 8, 1, 13, 6, 15, 14, 3, 11, 7];
 
     // T.832 Table 108. Index 0 is unused; the band runs over i = 1..15.
     private static ReadOnlySpan<byte> ScanTotalsInit =>
@@ -36,6 +51,15 @@ public sealed class AdaptiveScan
     private readonly byte[] _totals = new byte[16];
 
     /// <summary>Create an LP-scan state initialised per T.832 8.11.2.</summary>
+    // ScanOrderLp matches jxrlib's grgiZigzagInv4x4_lowpass but using it
+    // breaks self-roundtrip and the 2-MB cross-codec test (1.5 maxDiff,
+    // was 0.08 with the old order). The HP scan change works at the
+    // bitstream level because FCT4x4 has a FwdPermute that produces
+    // jxrlib's natural data order; FCT4x4Stage2 ALSO skips its own
+    // permute, so LP coefs should be in natural order too — yet
+    // changing the LP scan tables to match jxrlib breaks both sides.
+    // Some other piece of LP-data layout differs and we haven't found
+    // it; leaving the LP scan at the original [0,4,1,5,...] for now.
     public static AdaptiveScan ForLp() => new(ScanOrder0);
 
     /// <summary>
