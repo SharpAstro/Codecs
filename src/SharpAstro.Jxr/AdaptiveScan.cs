@@ -49,9 +49,14 @@ public sealed class AdaptiveScan
     private static ReadOnlySpan<byte> ScanOrder1 =>
         [0, 10, 2, 12, 5, 9, 4, 8, 1, 13, 6, 15, 14, 3, 11, 7];
 
-    // T.832 Table 108. Index 0 is unused; the band runs over i = 1..15.
+    // T.832 Table 108. Index 0 holds a sentinel (255 = max byte, mirroring
+    // jxrlib's MAXTOTAL = 32767 in segdec.c:816) so that the bubble-up adapt
+    // at parse-position 1 can never swap with position 0 (which holds DC).
+    // With totals[0] = 0 as we previously had, the very first non-zero
+    // coefficient at parse-position 1 would swap scan positions 0 and 1,
+    // corrupting the LP/HP coefficient mapping for the rest of the stream.
     private static ReadOnlySpan<byte> ScanTotalsInit =>
-        [0, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4];
+        [255, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4];
 
     private readonly byte[] _order = new byte[16];
     private readonly byte[] _totals = new byte[16];

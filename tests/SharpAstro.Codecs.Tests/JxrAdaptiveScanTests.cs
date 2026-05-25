@@ -45,7 +45,10 @@ public sealed class JxrAdaptiveScanTests
         Span<byte> totals = stackalloc byte[16];
         scan.CopyTotalsTo(totals);
 
-        byte[] expected = [0, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4];
+        // Position 0 is a sentinel (= 255, mirroring jxrlib's MAXTOTAL) so
+        // the bubble-up adapt at parse position 1 can never swap with
+        // position 0. Positions 1..15 follow T.832 Table 108.
+        byte[] expected = [255, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4];
         for (var i = 0; i < 16; i++) totals[i].ShouldBe(expected[i]);
     }
 
@@ -111,8 +114,8 @@ public sealed class JxrAdaptiveScanTests
 
         Span<byte> totals = stackalloc byte[16];
         scan.CopyTotalsTo(totals);
-        // Totals should be back to initial values.
-        byte[] expected = [0, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4];
+        // Totals should be back to initial values (sentinel-at-0 + Table 108).
+        byte[] expected = [255, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4];
         for (var i = 0; i < 16; i++) totals[i].ShouldBe(expected[i]);
     }
 
