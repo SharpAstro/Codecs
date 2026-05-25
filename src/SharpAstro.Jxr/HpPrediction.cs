@@ -119,23 +119,21 @@ public static class HpPrediction
 
                 if (format == JxrInternalColorFormat.YUV420)
                 {
-                    // Chroma: 2×2 block grid (blocks 0..3). Prediction targets blocks {1,3} (left)
-                    // or {2,3} (top). delta is 1 for left and 2 for top — block indices into a
-                    // 4-block (2×2) chroma layout, not the 16-block (4×4) luma layout.
+                    // Chroma 2x2 col-major. LEFT (col 1) delta 2; TOP (row 1) delta 1.
                     for (var c = 1; c < numComponents; c++)
                         PredictBlocks(mbHp, mbx, mby, c, mode,
                             mode == 0 ? Yuv420LeftBlocks : Yuv420TopBlocks,
-                            mode == 0 ? 1 : 2,
+                            mode == 0 ? 2 : 1,
                             mode == 0 ? LeftPositions : TopPositions,
                             addNotSubtract);
                 }
                 else if (format == JxrInternalColorFormat.YUV422)
                 {
-                    // Chroma: 4×2 block grid (blocks 0..7).
+                    // Chroma 2x4 col-major. LEFT (col 1) delta 4; TOP (rows 1..3) delta 1.
                     for (var c = 1; c < numComponents; c++)
                         PredictBlocks(mbHp, mbx, mby, c, mode,
                             mode == 0 ? Yuv422LeftBlocks : Yuv422TopBlocks,
-                            mode == 0 ? 1 : 2,
+                            mode == 0 ? 4 : 1,
                             mode == 0 ? LeftPositions : TopPositions,
                             addNotSubtract);
                 }
@@ -181,14 +179,20 @@ public static class HpPrediction
         }
     }
 
-    // Block-index lists. These define which blocks WITHIN an MB participate in
-    // HP prediction for each (mode, colour-format) combination.
-    private static readonly int[] LumaLeftBlocks  = [1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15];
-    private static readonly int[] LumaTopBlocks   = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-    private static readonly int[] Yuv420LeftBlocks = [1, 3];
-    private static readonly int[] Yuv420TopBlocks  = [2, 3];
-    private static readonly int[] Yuv422LeftBlocks = [1, 3, 5, 7];
-    private static readonly int[] Yuv422TopBlocks  = [2, 4, 6, 3, 5, 7];
+    // Block-index lists. Column-major (blkIdx = col*4 + row), matching jxrlib's
+    // blkOffset[] storage convention. LEFT prediction touches blocks in
+    // cols 1..3 (= blkIdx 4..15), TOP prediction touches blocks in rows
+    // 1..3 of each column (= blkIdx {1,2,3, 5,6,7, 9,10,11, 13,14,15}).
+    private static readonly int[] LumaLeftBlocks  = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    private static readonly int[] LumaTopBlocks   = [1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15];
+    // YUV420 chroma 2x2 col-major: blocks 0=(0,0), 1=(0,1), 2=(1,0), 3=(1,1).
+    // LEFT (col 1) {2,3} delta 2; TOP (row 1) {1,3} delta 1.
+    private static readonly int[] Yuv420LeftBlocks = [2, 3];
+    private static readonly int[] Yuv420TopBlocks  = [1, 3];
+    // YUV422 chroma 2x4 col-major. LEFT (col 1) {4..7} delta 4;
+    // TOP (rows 1..3) {1,2,3, 5,6,7} delta 1.
+    private static readonly int[] Yuv422LeftBlocks = [4, 5, 6, 7];
+    private static readonly int[] Yuv422TopBlocks  = [1, 2, 3, 5, 6, 7];
 
     // From jxrlib's reference encoder (predMacroblockEnc, AC prediction loops):
     // predict-from-LEFT modifies positions {1, 5, 6}, predict-from-TOP modifies
@@ -199,7 +203,9 @@ public static class HpPrediction
     private static readonly int[] TopPositions  = [2, 9, 10];
 
     private static int[] BlocksFull(int mode) => mode == 0 ? LumaLeftBlocks : LumaTopBlocks;
-    private static int DeltaFull(int mode) => mode == 0 ? 1 : 4;
+    // Column-major deltas: mode 0 (LEFT) steps by 4 (one column),
+    // mode 1 (TOP) steps by 1 (one row).
+    private static int DeltaFull(int mode) => mode == 0 ? 4 : 1;
     private static int[] PositionsFull(int mode) => mode == 0 ? LeftPositions : TopPositions;
 
     private static int Abs(int x) => x < 0 ? -x : x;

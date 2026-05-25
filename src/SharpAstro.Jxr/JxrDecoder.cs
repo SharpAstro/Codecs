@@ -173,7 +173,7 @@ var mbW = img.WidthInMb;
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                var blkIdx = sbRow * 4 + sbCol;
+                var blkIdx = sbCol * 4 + sbRow; // col-major to match jxrlib blkOffset[]
                 subBlock[0] = dcGrid[sbCol * 4 + sbRow];
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, 0, blkIdx, p];
@@ -319,7 +319,7 @@ var mbW = img.WidthInMb;
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                var blkIdx = sbRow * 4 + sbCol;
+                var blkIdx = sbCol * 4 + sbRow; // col-major to match jxrlib blkOffset[]
                 subBlock[0] = dcGrid[sbCol * 4 + sbRow];
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
@@ -489,7 +489,7 @@ var mbW = img.WidthInMb;
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                var blkIdx = sbRow * 4 + sbCol;
+                var blkIdx = sbCol * 4 + sbRow; // col-major to match jxrlib blkOffset[]
                 subBlock[0] = dcGrid[sbCol * 4 + sbRow];
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
@@ -833,7 +833,7 @@ var mbW = img.WidthInMb;
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
-                var blkIdx = sbRow * 4 + sbCol;
+                var blkIdx = sbCol * 4 + sbRow; // col-major to match jxrlib blkOffset[]
                 subBlock[0] = dcGrid[sbCol * 4 + sbRow];
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];

@@ -24,9 +24,15 @@ namespace SharpAstro.Jxr;
 /// </remarks>
 public static class MbHp
 {
-    /// <summary>Hierarchical scan order — T.832 §8.7.18.2.</summary>
+    /// <summary>Hierarchical scan order — T.832 §8.7.18.2 / jxrlib blkOffset[]/16.</summary>
+    // jxrlib's image/sys/strcodec.c blkOffset[]={0,64,16,80,128,192,144,208,
+    // 32,96,48,112,160,224,176,240} divided by 16 gives this iteration order.
+    // Each entry is a column-major sub-block index (blkIdx = col*4+row); the
+    // sequence visits image positions in 2x2-super-block raster order, same
+    // as the previous row-major version, just numbered for the col-major
+    // mbHp[blkIdx] storage convention.
     public static ReadOnlySpan<byte> HierScanOrder =>
-        [0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15];
+        [0, 4, 1, 5, 8, 12, 9, 13, 2, 6, 3, 7, 10, 14, 11, 15];
 
     /// <summary>
     /// Encode the HP-band coefficients of one Luma-only macroblock.
