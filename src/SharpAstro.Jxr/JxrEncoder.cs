@@ -945,7 +945,10 @@ public static class JxrEncoder
         // Pre-scaled signed-int working buffer. Layout: width × height × numComponents
         // interleaved (single-component case degenerates to a flat ints buffer).
         var working = new int[width * height * numComponents];
-        const bool scaledArith = false; // bScaledArith disabled — needs broader port
+        const bool scaledArith = false; // bScaledArith pending — turning on
+                                        // without the matching IDCT-stage
+                                        // bookkeeping makes the bitstream
+                                        // unparseable by JxrDecApp / WIC.
         if (outputBitDepth == JxrOutputBitDepth.Bd16F)
         {
             // Half-float input: sign-magnitude conversion per jxrlib's forwardHalf.

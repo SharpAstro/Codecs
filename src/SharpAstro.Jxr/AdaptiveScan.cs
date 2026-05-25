@@ -36,8 +36,11 @@ public sealed class AdaptiveScan
     // walks the dctIndex-permuted positions; LP coefs come from
     // FCT4x4Stage2 which intentionally skips FwdPermute and are scanned
     // in the un-permuted grgiZigzagInv4x4_lowpass order.
+    // LP scan retains the T.832-Table-107 order. Switching to jxrlib's
+    // grgiZigzagInv4x4_lowpass exposes another LP-layout bug; leaving as-is
+    // until that bug is mapped.
     private static ReadOnlySpan<byte> ScanOrderLp =>
-        [0, 1, 4, 5, 2, 8, 6, 9, 3, 12, 10, 7, 13, 11, 14, 15];
+        [0, 4, 1, 5, 8, 2, 9, 6, 12, 3, 10, 13, 7, 14, 11, 15];
     private static ReadOnlySpan<byte> ScanOrder0 =>
         [0, 5, 10, 12, 1, 2, 8, 4, 6, 9, 3, 14, 13, 7, 11, 15];
     private static ReadOnlySpan<byte> ScanOrder1 =>
@@ -51,16 +54,7 @@ public sealed class AdaptiveScan
     private readonly byte[] _totals = new byte[16];
 
     /// <summary>Create an LP-scan state initialised per T.832 8.11.2.</summary>
-    // ScanOrderLp matches jxrlib's grgiZigzagInv4x4_lowpass but using it
-    // breaks self-roundtrip and the 2-MB cross-codec test (1.5 maxDiff,
-    // was 0.08 with the old order). The HP scan change works at the
-    // bitstream level because FCT4x4 has a FwdPermute that produces
-    // jxrlib's natural data order; FCT4x4Stage2 ALSO skips its own
-    // permute, so LP coefs should be in natural order too — yet
-    // changing the LP scan tables to match jxrlib breaks both sides.
-    // Some other piece of LP-data layout differs and we haven't found
-    // it; leaving the LP scan at the original [0,4,1,5,...] for now.
-    public static AdaptiveScan ForLp() => new(ScanOrder0);
+    public static AdaptiveScan ForLp() => new(ScanOrderLp);
 
     /// <summary>
     /// Create an HP horizontal-scan state (used when MBHPMode = 0 or 2).
