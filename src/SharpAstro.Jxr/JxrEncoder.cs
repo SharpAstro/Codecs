@@ -441,6 +441,9 @@ public static class JxrEncoder
         for (var i = 0; i < width * height * 3; i++) working[i] = pixels[i] - Bd8Bias;
         if (useYUV444) YCoCgTransform.ForwardInPlace(working);
         if (overlapMode == 1) ApplyPreFilterPotRgb(working, width, height, numComponents);
+        // BD8 lossless: jxrlib bScaledArith condition resolves to FALSE
+        // (uQPMode uniform + QPIndex 0/1 + SB_ALL + no UV-resampling).
+        const bool scaledArith = false;
 
         var mbDc = new int[mbW, mbH, numComponents];
         var mbDcLp = new int[mbW, mbH, numComponents, 16];
@@ -463,6 +466,12 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
+            // strNormalizeEnc: jxrlib strFwdTransform.c:724-728 halves the 16
+            // sub-block DC slots for chroma channels before strDCT4x4SecondStage
+            // when bScaledArith. Luma is a no-op. Mirrored on decode after
+            // ICT4x4Stage2.
+            if (scaledArith && comp > 0)
+                for (var k = 0; k < 16; k++) dcGrid[k] >>= 1;
             Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, comp] = dcGrid[0];
             for (var p = 0; p < 16; p++)
@@ -697,6 +706,8 @@ public static class JxrEncoder
         var working = new int[width * height * 3];
         for (var i = 0; i < width * height * 3; i++) working[i] = pixels[i] - Bd16Bias;
         if (useYUV444) YCoCgTransform.ForwardInPlace(working);
+        // BD16 integer lossless: jxrlib bScaledArith condition resolves to FALSE.
+        const bool scaledArith = false;
         if (overlapMode == 1) ApplyPreFilterPotRgb(working, width, height, numComponents);
 
         var mbDc = new int[mbW, mbH, numComponents];
@@ -720,6 +731,12 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
+            // strNormalizeEnc: jxrlib strFwdTransform.c:724-728 halves the 16
+            // sub-block DC slots for chroma channels before strDCT4x4SecondStage
+            // when bScaledArith. Luma is a no-op. Mirrored on decode after
+            // ICT4x4Stage2.
+            if (scaledArith && comp > 0)
+                for (var k = 0; k < 16; k++) dcGrid[k] >>= 1;
             Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, comp] = dcGrid[0];
             for (var p = 0; p < 16; p++)
@@ -1008,6 +1025,12 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
+            // strNormalizeEnc: jxrlib strFwdTransform.c:724-728 halves the 16
+            // sub-block DC slots for chroma channels before strDCT4x4SecondStage
+            // when bScaledArith. Luma is a no-op. Mirrored on decode after
+            // ICT4x4Stage2.
+            if (scaledArith && comp > 0)
+                for (var k = 0; k < 16; k++) dcGrid[k] >>= 1;
             Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, comp] = dcGrid[0];
             for (var p = 0; p < 16; p++)
@@ -1239,6 +1262,9 @@ public static class JxrEncoder
         // the float→int conversion already produces sign-magnitude values.
         var working = new int[width * height * numComponents];
         Array.Copy(src, working, src.Length);
+        // jxrlib forces bScaledArith = FALSE for BD32 family (strenc.c:961-963),
+        // so the BD32F path never applies the strNormalize chroma-DC halving.
+        const bool scaledArith = false;
         // YCoCg-R for the WIC-interop YUV444 path — same logic as BD16Core.
         if (format == JxrInternalColorFormat.YUV444 && numComponents == 3)
             YCoCgTransform.ForwardInPlace(working);
@@ -1274,6 +1300,12 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
+            // strNormalizeEnc: jxrlib strFwdTransform.c:724-728 halves the 16
+            // sub-block DC slots for chroma channels before strDCT4x4SecondStage
+            // when bScaledArith. Luma is a no-op. Mirrored on decode after
+            // ICT4x4Stage2.
+            if (scaledArith && comp > 0)
+                for (var k = 0; k < 16; k++) dcGrid[k] >>= 1;
             Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, comp] = dcGrid[0];
             for (var p = 0; p < 16; p++)

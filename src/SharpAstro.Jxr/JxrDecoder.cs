@@ -480,11 +480,12 @@ var mbW = img.WidthInMb;
         {
             for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, comp, p];
             Transforms.ICT4x4Stage2(dcGrid);
-            // bScaledArith strNormalizeDec disabled for now — adding chroma DC ×2
-            // made the worst-MB error pattern WORSE (1.054 -> 1.258 maxAbsDiff),
-            // suggesting the missing-stage hypothesis is incomplete. Walking
-            // row 0 column-by-column first to localise where the error starts.
-            _ = scaledArith;
+            // strNormalizeDec (jxrlib strInvTransform.c:740-742): for chroma
+            // channels in bScaledArith mode, double the 16 sub-block DC slots
+            // AFTER strIDCT4x4Stage2. Mirrors the strNormalizeEnc halving on
+            // the encode side. Luma no-op.
+            if (scaledArith && comp > 0)
+                for (var k = 0; k < 16; k++) dcGrid[k] <<= 1;
 
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
