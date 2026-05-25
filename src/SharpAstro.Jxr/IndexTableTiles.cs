@@ -22,6 +22,12 @@ public sealed class IndexTableTiles
     /// <summary>Required start code value (T.832 §8.7.1.3).</summary>
     public const ushort IndexTableStartCode = 0x0001;
 
+    // T.832 §8.2.4 VLW_ESC encoding (shared helpers used by CodedImage for the
+    // SubsequentBytes element that sits between INDEX_TABLE_TILES and
+    // PROFILE_LEVEL_INFO).
+    internal static void WriteVlwEscShared(BitWriter writer, long value) => WriteVlwEsc(writer, value);
+    internal static long ReadVlwEscShared(ref BitReader reader) => ReadVlwEsc(ref reader);
+
     /// <summary>Byte offsets (from the start of CODED_TILES) for each entry in
     /// the table, in tile-raster (× band, in frequency mode) order.</summary>
     public required long[] Offsets { get; init; }
@@ -38,21 +44,28 @@ public sealed class IndexTableTiles
             WriteVlwEsc(writer, off);
     }
 
+    // T.832 §8.2.4 VLW_ESC encoding:
+    //   FIRST_BYTE u(8)
+    //     < 0xFB: SECOND_BYTE u(8); value = FIRST * 256 + SECOND   (range 0..0xFAFF)
+    //     == 0xFB: FOUR_BYTES u(32); value = FOUR_BYTES             (32-bit escape)
+    //     == 0xFC: EIGHT_BYTES u(64); value = EIGHT_BYTES           (64-bit escape)
+    //     0xFD/0xFE/0xFF: value = 0 (parser escape)
     private static void WriteVlwEsc(BitWriter writer, long value)
     {
         if (value < 0) throw new ArgumentOutOfRangeException(nameof(value), "vlw_esc value must be non-negative");
-        if (value < 0xFFFC)
+        if (value < 0xFB00)
         {
+            // Two-byte short form (FIRST_BYTE < 0xFB).
             writer.WriteBits((uint)value, 16);
         }
         else if (value <= uint.MaxValue)
         {
-            writer.WriteBits(0xFFFC, 16);
+            writer.WriteBits(0xFB, 8);
             writer.WriteBits((uint)value, 32);
         }
         else
         {
-            writer.WriteBits(0xFFFD, 16);
+            writer.WriteBits(0xFC, 8);
             writer.WriteBits((uint)(value >> 32), 32);
             writer.WriteBits((uint)(value & 0xFFFFFFFF), 32);
         }
@@ -79,27 +92,27 @@ public sealed class IndexTableTiles
     }
 
     /// <summary>
-    /// Decode a <c>vlw_esc</c> value — T.832 §8.7.1.3 variable-length word
-    /// with escape codes. Most values fit in 16 bits; the escape codes
-    /// 0xFFFC / 0xFFFD let larger values use a 32-bit or 64-bit follow-up.
+    /// Decode a <c>vlw_esc</c> value — T.832 §8.2.4. The leading FIRST_BYTE
+    /// determines the encoding: &lt;0xFB → two-byte short form, 0xFB → 32-bit
+    /// follow-up, 0xFC → 64-bit follow-up, 0xFD/0xFE/0xFF → escape (value 0).
     /// </summary>
     private static long ReadVlwEsc(ref BitReader reader)
     {
-        var first = reader.ReadBits(16);
-        if (first < 0xFFFC) return first;
-        if (first == 0xFFFC)
+        var first = reader.ReadBits(8);
+        if (first < 0xFB)
         {
-            // 32-bit follow-up.
-            return reader.ReadBits(32);
+            var second = reader.ReadBits(8);
+            return (first << 8) | second;
         }
-        if (first == 0xFFFD)
+        if (first == 0xFB)
+            return reader.ReadBits(32);
+        if (first == 0xFC)
         {
-            // 64-bit follow-up.
             var hi = reader.ReadBits(32);
             var lo = reader.ReadBits(32);
             return unchecked((long)(((ulong)hi << 32) | lo));
         }
-        throw new InvalidDataException(
-            $"vlw_esc escape code 0x{first:X4} reserved / not yet supported");
+        // 0xFD / 0xFE / 0xFF — parser escape codes; spec says iValue = 0.
+        return 0;
     }
 }

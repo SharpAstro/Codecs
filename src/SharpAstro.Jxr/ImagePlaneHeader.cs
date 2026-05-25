@@ -119,11 +119,17 @@ public sealed class ImagePlaneHeader
             case JxrOutputBitDepth.Bd32S:
                 writer.WriteBits(ShiftBits, 8);
                 break;
-            case JxrOutputBitDepth.Bd16F:
             case JxrOutputBitDepth.Bd32F:
                 writer.WriteBits(LenMantissa, 8);
                 writer.WriteBits((uint)(byte)ExpBias, 8); // EXP_BIAS = i(8); raw 8 bits, two's-complement.
                 break;
+            // Bd16F: nothing — per T.832 §8.4 / Table 28 and jxrlib's reference
+            // encoder, the half-float plane header has no LEN_MANTISSA / EXP_BIAS
+            // fields. Emitting them mis-aligned the rest of the codestream by 16
+            // bits and made WIC's WMPhotoDecoder reject the file with FRAMES=0
+            // (the small-image path tolerated the misalignment well enough to
+            // instantiate a frame with FMT=Default but full pixel decode still
+            // broke). Task #11 in the WIC oracle harness.
         }
 
         // For named formats NumComponents is implied by InternalClrFmt — caller
@@ -199,11 +205,11 @@ public sealed class ImagePlaneHeader
             case JxrOutputBitDepth.Bd32S:
                 h.ShiftBits = (byte)reader.ReadBits(8);
                 break;
-            case JxrOutputBitDepth.Bd16F:
             case JxrOutputBitDepth.Bd32F:
                 h.LenMantissa = (byte)reader.ReadBits(8);
                 h.ExpBias = unchecked((sbyte)reader.ReadBits(8));
                 break;
+            // Bd16F: nothing — see matching comment in Write().
         }
 
         // DC band. When DC_IMAGE_PLANE_UNIFORM_FLAG = 0, the DC_QP() block is

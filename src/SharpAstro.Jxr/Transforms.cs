@@ -24,52 +24,191 @@ namespace SharpAstro.Jxr;
 public static class Transforms
 {
     /// <summary>
-    /// Forward Core Transform on a 4×4 block. T.832 D.4.5.1 / Table D.13.
+    /// Forward Core Transform on a 4×4 sub-block — ported from jxrlib's
+    /// strDCT4x4Stage1 (strFwdTransform.c). Use for the FIRST stage of the
+    /// cascaded PCT (per sub-block). For the super-block stage that
+    /// transforms the 4×4 grid of sub-block DC values, use
+    /// <see cref="FCT4x4Stage2"/> instead — jxrlib's second-stage algorithm
+    /// uses different position orderings than the first stage.
+    /// Task #12.
     /// </summary>
     public static void FCT4x4(Span<int> c)
     {
-        // First stage: T2x2h on the four "corner" 2×2 sub-patterns of a 4×4
-        // block, in the (0,3,12,15) / (5,6,9,10) / (1,2,13,14) / (4,7,8,11)
-        // arrangement specified by Table D.13.
-        Stage_T2x2h(c, 0, 3, 12, 15, 0);
-        Stage_T2x2h(c, 5, 6, 9, 10, 0);
-        Stage_T2x2h(c, 1, 2, 13, 14, 0);
-        Stage_T2x2h(c, 4, 7, 8, 11, 0);
-
-        // Second stage: one T2x2h(round=1) for the low-frequency 2×2 corner,
-        // two TOdd (1D rotates) for the row/column odd bands, one TOddOdd
-        // (2D rotate) for the high-frequency corner.
-        Stage_T2x2h(c, 0, 1, 4, 5, 1);
-        Stage_TOdd(c, 2, 3, 6, 7);
-        Stage_TOdd(c, 8, 12, 9, 13);
-        Stage_TOddOdd(c, 10, 11, 14, 15);
-
-        // Coefficient permutation — interleaves DC, LP and HP into the
-        // standard 4×4 DPCM-friendly order expected downstream.
+        StrDCT2x2dn(c, 0, 4, 8, 12);
+        StrDCT2x2dn(c, 1, 5, 9, 13);
+        StrDCT2x2dn(c, 2, 6, 10, 14);
+        StrDCT2x2dn(c, 3, 7, 11, 15);
+        StrDCT2x2up(c, 0, 1, 2, 3);
+        FwdOddOdd(c, 15, 14, 13, 12);
+        FwdOdd(c, 5, 4, 7, 6);
+        FwdOdd(c, 10, 8, 11, 9);
         FwdPermute(c);
     }
 
-    /// <summary>
-    /// Inverse Core Transform — exact dual of <see cref="FCT4x4"/>.
-    /// T.832 9.9.7.1 / Table 160.
-    /// </summary>
     public static void ICT4x4(Span<int> c)
     {
         InvPermute(c);
+        StrDCT2x2up(c, 0, 1, 2, 3);
+        InvOdd(c, 5, 4, 7, 6);
+        InvOdd(c, 10, 8, 11, 9);
+        InvOddOdd(c, 15, 14, 13, 12);
+        StrDCT2x2dn(c, 0, 4, 8, 12);
+        StrDCT2x2dn(c, 1, 5, 9, 13);
+        StrDCT2x2dn(c, 2, 6, 10, 14);
+        StrDCT2x2dn(c, 3, 7, 11, 15);
+    }
 
-        // ICT first stage matches FCT second stage in reverse: T2x2h(round=1)
-        // is its own inverse with the same valRound, while InvTodd / InvToddodd
-        // are the explicit inverses of TOdd / TOddOdd.
-        Stage_T2x2h(c, 0, 1, 4, 5, 1);
-        Stage_InvTodd(c, 2, 3, 6, 7);
-        Stage_InvTodd(c, 8, 12, 9, 13);
-        Stage_InvToddodd(c, 10, 11, 14, 15);
+    /// <summary>
+    /// Forward super-block PCT — ported from jxrlib's strDCT4x4SecondStage.
+    /// Same primitives as <see cref="FCT4x4"/> but with different index
+    /// orderings (the "corner" arrangement instead of "column" arrangement).
+    /// Both decompositions implement a 4×4 PCT but produce different
+    /// intermediate coefficients; only this one matches jxrlib's super-block
+    /// output. Task #12.
+    /// </summary>
+    public static void FCT4x4Stage2(Span<int> c)
+    {
+        // FOURBUTTERFLY(0,192,48,240, 64,128,112,176, 16,208,32,224, 80,144,96,160)
+        // translated to sequential 16-element indices (offset / 16):
+        StrDCT2x2dn(c, 0, 12, 3, 15);
+        StrDCT2x2dn(c, 4, 8, 7, 11);
+        StrDCT2x2dn(c, 1, 13, 2, 14);
+        StrDCT2x2dn(c, 5, 9, 6, 10);
+        StrDCT2x2up(c, 0, 4, 1, 5);
+        FwdOddOdd(c, 10, 14, 11, 15);
+        FwdOdd(c, 8, 12, 9, 13);
+        FwdOdd(c, 2, 3, 6, 7);
+        // No FwdPermute — natural data order matches what jxrlib's super-block
+        // decoder expects.
+    }
 
-        // ICT second stage matches FCT first stage in reverse.
-        Stage_T2x2h(c, 0, 3, 12, 15, 0);
-        Stage_T2x2h(c, 5, 6, 9, 10, 0);
-        Stage_T2x2h(c, 1, 2, 13, 14, 0);
-        Stage_T2x2h(c, 4, 7, 8, 11, 0);
+    /// <summary>Inverse super-block PCT — jxrlib's strIDCT4x4Stage2.</summary>
+    public static void ICT4x4Stage2(Span<int> c)
+    {
+        InvOdd(c, 2, 3, 6, 7);
+        InvOdd(c, 8, 12, 9, 13);
+        InvOddOdd(c, 10, 14, 11, 15);
+        StrDCT2x2up(c, 0, 4, 1, 5);
+        StrDCT2x2dn(c, 0, 12, 3, 15);
+        StrDCT2x2dn(c, 4, 8, 7, 11);
+        StrDCT2x2dn(c, 1, 13, 2, 14);
+        StrDCT2x2dn(c, 5, 9, 6, 10);
+    }
+
+    // ------------------------------------------------------------------
+    // jxrlib's 2x2 / odd primitives, ported verbatim from strTransform.c
+    // and strFwdTransform.c / strInvTransform.c (4creators/jxrlib).
+    // ------------------------------------------------------------------
+
+    /// <summary>strDCT2x2dn — 2×2 butterfly (round-toward-zero variant).</summary>
+    private static void StrDCT2x2dn(Span<int> p, int ia, int ib, int ic, int id)
+    {
+        int a = p[ia], b = p[ib], C = p[ic], d = p[id], t;
+        a += d;
+        b -= C;
+        t = (a - b) >> 1;
+        var c = t - d;
+        d = t - C;
+        a -= d;
+        b += c;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+
+    /// <summary>strDCT2x2up — same as dn but uses round-half-up via +1 in t.</summary>
+    private static void StrDCT2x2up(Span<int> p, int ia, int ib, int ic, int id)
+    {
+        int a = p[ia], b = p[ib], C = p[ic], d = p[id], t;
+        a += d;
+        b -= C;
+        t = (a - b + 1) >> 1;
+        var c = t - d;
+        d = t - C;
+        a -= d;
+        b += c;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+
+    /// <summary>fwdOdd — Kron(Rotate(pi/8), [1 1; 1 -1]/sqrt(2)). [a b c d] => [D C A B].</summary>
+    private static void FwdOdd(Span<int> p, int ia, int ib, int ic, int id)
+    {
+        int a = p[ia], b = p[ib], c = p[ic], d = p[id];
+        // butterflies
+        b -= c;
+        a += d;
+        c += (b + 1) >> 1;
+        d = ((a + 1) >> 1) - d;
+        // rotate pi/8 — ROTATE2 macro applied twice
+        b -= (a * 3 + 4) >> 3;  a += (b * 3 + 4) >> 3;
+        d -= (c * 3 + 4) >> 3;  c += (d * 3 + 4) >> 3;
+        // butterflies
+        d += b >> 1;
+        c -= (a + 1) >> 1;
+        b -= d;
+        a += c;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+
+    /// <summary>fwdOddOdd — Kron(Rotate(pi/8), Rotate(pi/8)) variant. Sign-flips b and c on entry.</summary>
+    private static void FwdOddOdd(Span<int> p, int ia, int ib, int ic, int id)
+    {
+        int a = p[ia], b = -p[ib], c = -p[ic], d = p[id], t1, t2;
+        // butterflies
+        d += a;
+        c -= b;
+        a -= (t1 = d >> 1);
+        b += (t2 = c >> 1);
+        // rotate pi/4
+        a += (b * 3 + 4) >> 3;
+        b -= (a * 3 + 3) >> 2;
+        a += (b * 3 + 3) >> 3;
+        // butterflies
+        b -= t2;
+        a += t1;
+        c += b;
+        d -= a;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+
+    /// <summary>invOdd — inverse of fwdOdd (rotate -pi/8).</summary>
+    private static void InvOdd(Span<int> p, int ia, int ib, int ic, int id)
+    {
+        int a = p[ia], b = p[ib], c = p[ic], d = p[id];
+        // butterflies
+        b += d;
+        a -= c;
+        d -= b >> 1;
+        c += (a + 1) >> 1;
+        // rotate -pi/8 — IROTATE2: a -= (b*3+4)>>3; b += (a*3+4)>>3;
+        a -= (b * 3 + 4) >> 3;  b += (a * 3 + 4) >> 3;
+        c -= (d * 3 + 4) >> 3;  d += (c * 3 + 4) >> 3;
+        // butterflies
+        c -= (b + 1) >> 1;
+        d = ((a + 1) >> 1) - d;
+        b += c;
+        a -= d;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+
+    /// <summary>invOddOdd — inverse of fwdOddOdd. Sign-flips b and c on output.</summary>
+    private static void InvOddOdd(Span<int> p, int ia, int ib, int ic, int id)
+    {
+        int a = p[ia], b = p[ib], c = p[ic], d = p[id], t1, t2;
+        // butterflies
+        d += a;
+        c -= b;
+        a -= (t1 = d >> 1);
+        b += (t2 = c >> 1);
+        // rotate -pi/4
+        a -= (b * 3 + 3) >> 3;
+        b += (a * 3 + 3) >> 2;
+        a -= (b * 3 + 4) >> 3;
+        // butterflies
+        b -= t2;
+        a += t1;
+        c += b;
+        d -= a;
+        // sign flips
+        p[ia] = a; p[ib] = -b; p[ic] = -c; p[id] = d;
     }
 
     // -----------------------------------------------------------------------
@@ -247,32 +386,78 @@ public static class Transforms
 
     public static void FCT4x4(Span<long> c)
     {
-        Stage_T2x2h(c, 0, 3, 12, 15, 0);
-        Stage_T2x2h(c, 5, 6, 9, 10, 0);
-        Stage_T2x2h(c, 1, 2, 13, 14, 0);
-        Stage_T2x2h(c, 4, 7, 8, 11, 0);
-
-        Stage_T2x2h(c, 0, 1, 4, 5, 1);
-        Stage_TOdd(c, 2, 3, 6, 7);
-        Stage_TOdd(c, 8, 12, 9, 13);
-        Stage_TOddOdd(c, 10, 11, 14, 15);
-
-        FwdPermute(c);
+        // Mirror of the int FCT4x4 — jxrlib's primitives in long arithmetic.
+        StrDCT2x2dn(c, 0, 4, 8, 12);
+        StrDCT2x2dn(c, 1, 5, 9, 13);
+        StrDCT2x2dn(c, 2, 6, 10, 14);
+        StrDCT2x2dn(c, 3, 7, 11, 15);
+        StrDCT2x2up(c, 0, 1, 2, 3);
+        FwdOddOdd(c, 15, 14, 13, 12);
+        FwdOdd(c, 5, 4, 7, 6);
+        FwdOdd(c, 10, 8, 11, 9);
     }
 
     public static void ICT4x4(Span<long> c)
     {
-        InvPermute(c);
+        StrDCT2x2up(c, 0, 1, 2, 3);
+        InvOdd(c, 5, 4, 7, 6);
+        InvOdd(c, 10, 8, 11, 9);
+        InvOddOdd(c, 15, 14, 13, 12);
+        StrDCT2x2dn(c, 0, 4, 8, 12);
+        StrDCT2x2dn(c, 1, 5, 9, 13);
+        StrDCT2x2dn(c, 2, 6, 10, 14);
+        StrDCT2x2dn(c, 3, 7, 11, 15);
+    }
 
-        Stage_T2x2h(c, 0, 1, 4, 5, 1);
-        Stage_InvTodd(c, 2, 3, 6, 7);
-        Stage_InvTodd(c, 8, 12, 9, 13);
-        Stage_InvToddodd(c, 10, 11, 14, 15);
-
-        Stage_T2x2h(c, 0, 3, 12, 15, 0);
-        Stage_T2x2h(c, 5, 6, 9, 10, 0);
-        Stage_T2x2h(c, 1, 2, 13, 14, 0);
-        Stage_T2x2h(c, 4, 7, 8, 11, 0);
+    private static void StrDCT2x2dn(Span<long> p, int ia, int ib, int ic, int id)
+    {
+        long a = p[ia], b = p[ib], C = p[ic], d = p[id], t;
+        a += d; b -= C;
+        t = (a - b) >> 1;
+        var c = t - d; d = t - C; a -= d; b += c;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+    private static void StrDCT2x2up(Span<long> p, int ia, int ib, int ic, int id)
+    {
+        long a = p[ia], b = p[ib], C = p[ic], d = p[id], t;
+        a += d; b -= C;
+        t = (a - b + 1) >> 1;
+        var c = t - d; d = t - C; a -= d; b += c;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+    private static void FwdOdd(Span<long> p, int ia, int ib, int ic, int id)
+    {
+        long a = p[ia], b = p[ib], c = p[ic], d = p[id];
+        b -= c; a += d; c += (b + 1) >> 1; d = ((a + 1) >> 1) - d;
+        b -= (a * 3 + 4) >> 3;  a += (b * 3 + 4) >> 3;
+        d -= (c * 3 + 4) >> 3;  c += (d * 3 + 4) >> 3;
+        d += b >> 1; c -= (a + 1) >> 1; b -= d; a += c;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+    private static void FwdOddOdd(Span<long> p, int ia, int ib, int ic, int id)
+    {
+        long a = p[ia], b = -p[ib], c = -p[ic], d = p[id], t1, t2;
+        d += a; c -= b; a -= (t1 = d >> 1); b += (t2 = c >> 1);
+        a += (b * 3 + 4) >> 3; b -= (a * 3 + 3) >> 2; a += (b * 3 + 3) >> 3;
+        b -= t2; a += t1; c += b; d -= a;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+    private static void InvOdd(Span<long> p, int ia, int ib, int ic, int id)
+    {
+        long a = p[ia], b = p[ib], c = p[ic], d = p[id];
+        b += d; a -= c; d -= b >> 1; c += (a + 1) >> 1;
+        a -= (b * 3 + 4) >> 3;  b += (a * 3 + 4) >> 3;
+        c -= (d * 3 + 4) >> 3;  d += (c * 3 + 4) >> 3;
+        c -= (b + 1) >> 1; d = ((a + 1) >> 1) - d; b += c; a -= d;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+    private static void InvOddOdd(Span<long> p, int ia, int ib, int ic, int id)
+    {
+        long a = p[ia], b = p[ib], c = p[ic], d = p[id], t1, t2;
+        d += a; c -= b; a -= (t1 = d >> 1); b += (t2 = c >> 1);
+        a -= (b * 3 + 3) >> 3; b += (a * 3 + 3) >> 2; a -= (b * 3 + 4) >> 3;
+        b -= t2; a += t1; c += b; d -= a;
+        p[ia] = a; p[ib] = -b; p[ic] = -c; p[id] = d;
     }
 
     private static void Stage_T2x2h(Span<long> c, int a, int b, int d, int e, int valRound)

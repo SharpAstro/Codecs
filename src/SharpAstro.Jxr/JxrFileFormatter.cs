@@ -177,7 +177,7 @@ public static class JxrFileFormatter
         byte dcQp = 1, byte lpQp = 1, byte hpQp = 1, int overlapMode = 0,
         bool frequencyMode = false,
         bool useYUV444 = false)
-        => SaveBd16FRgbNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode);
+        => SaveBd16FRgbNoFlexbits(HalfArrayToUshort(pixels), width, height, iccProfile, xmpMetadata, tiling, dcQp, lpQp, hpQp, overlapMode, frequencyMode, useYUV444);
 
     /// <summary>
     /// Decode a BD16F RGB codestream and return interleaved <see cref="Half"/>

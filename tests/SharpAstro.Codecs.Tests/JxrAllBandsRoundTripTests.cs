@@ -156,7 +156,9 @@ public sealed class JxrAllBandsRoundTripTests
         MbHp.ComputeCbphpWithSplit(numComponents: 1,
             iModelBitsLum: iModelBitsBump, iModelBitsChr: 0, mbs[0].Hp, cbphpBuf);
         var cbphpState = new MbCbphpState();
-        MbCbphp.EncodeMb(w, cbphpState, numComponents: 1, cbphpBuf);
+        cbphpState.InitMbCbphpGrid(1, 1, 1);
+        MbCbphp.EncodeMb(w, cbphpState, JxrInternalColorFormat.YOnly, numComponents: 1,
+            mbX: 0, mbY: 0, isLeftEdge: true, isTopEdge: true, cbphpBuf);
         var hpDummy = new int[1];
         MbHp.EncodeMb(w, encState, mbs[0].MbHpMode,
             JxrInternalColorFormat.YOnly, numComponents: 1,
@@ -167,7 +169,9 @@ public sealed class JxrAllBandsRoundTripTests
         var r = new BitReader(w.AsSpan());
         var decCbphpBuf = new int[1];
         var decCbphpState = new MbCbphpState();
-        MbCbphp.DecodeMb(ref r, decCbphpState, numComponents: 1, decCbphpBuf);
+        decCbphpState.InitMbCbphpGrid(1, 1, 1);
+        MbCbphp.DecodeMb(ref r, decCbphpState, JxrInternalColorFormat.YOnly, numComponents: 1,
+            mbX: 0, mbY: 0, isLeftEdge: true, isTopEdge: true, decCbphpBuf);
         var decoded = new int[256];
         MbHp.DecodeMb(ref r, decState, mbs[0].MbHpMode,
             JxrInternalColorFormat.YOnly, numComponents: 1,

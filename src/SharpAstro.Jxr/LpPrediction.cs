@@ -82,6 +82,7 @@ public static class LpPrediction
                     UpdatePredDcLp(mbDcLp, predDcLp, mbx, mby, format, numComponents);
                     ApplyLpPrediction(mbDcLp, predDcLp, mbx, mby, lpMode, dcMode, format, numComponents, addNotSubtract: false);
                 }
+
             }
         }
     }
@@ -133,19 +134,24 @@ public static class LpPrediction
 
             if (!isYuvChroma)
             {
-                // Luma / Y444 / NComponent / RGB etc. Predict {4, 8, 12} from left
-                // or {1, 2, 3} from top.
+                // Luma / Y444 / NComponent / RGB etc. From jxrlib's reference
+                // encoder (predMacroblockEnc, AD prediction) verified via
+                // instrumented stderr trace on a 2-MB BD16F YUV444 input:
+                //   * predict-from-LEFT (lpMode 0) subtracts at positions {1, 2, 3}
+                //   * predict-from-TOP  (lpMode 1) subtracts at positions {4, 8, 12}
+                // (Confirmed: MB 1 post-DC[1] = 135 + 127 = 262 where 127 = LEFT MB
+                //  position 1, matching {1,2,3}-from-LEFT semantics.)
                 if (lpMode == 0)
                 {
-                    Apply(mbDcLp, mbx, mby, c, 4, predDcLp[mbx - 1, mby, c, 4], addNotSubtract);
-                    Apply(mbDcLp, mbx, mby, c, 8, predDcLp[mbx - 1, mby, c, 5], addNotSubtract);
-                    Apply(mbDcLp, mbx, mby, c, 12, predDcLp[mbx - 1, mby, c, 6], addNotSubtract);
+                    Apply(mbDcLp, mbx, mby, c, 1, predDcLp[mbx - 1, mby, c, 1], addNotSubtract);
+                    Apply(mbDcLp, mbx, mby, c, 2, predDcLp[mbx - 1, mby, c, 2], addNotSubtract);
+                    Apply(mbDcLp, mbx, mby, c, 3, predDcLp[mbx - 1, mby, c, 3], addNotSubtract);
                 }
                 else if (lpMode == 1)
                 {
-                    Apply(mbDcLp, mbx, mby, c, 1, predDcLp[mbx, mby - 1, c, 1], addNotSubtract);
-                    Apply(mbDcLp, mbx, mby, c, 2, predDcLp[mbx, mby - 1, c, 2], addNotSubtract);
-                    Apply(mbDcLp, mbx, mby, c, 3, predDcLp[mbx, mby - 1, c, 3], addNotSubtract);
+                    Apply(mbDcLp, mbx, mby, c, 4, predDcLp[mbx, mby - 1, c, 4], addNotSubtract);
+                    Apply(mbDcLp, mbx, mby, c, 8, predDcLp[mbx, mby - 1, c, 5], addNotSubtract);
+                    Apply(mbDcLp, mbx, mby, c, 12, predDcLp[mbx, mby - 1, c, 6], addNotSubtract);
                 }
             }
             else if (isYuv420)

@@ -23,4 +23,15 @@ public sealed class MbDcState
         AbsLevelChr = AdaptiveVlc.InitializeTable1();
         Model = CoefficientModel.Initialize(CoefficientModel.Band.Dc);
     }
+
+    /// <summary>
+    /// T.832 §8.8.4.1 AdaptDC( ): adapt the DC band's AbsLevel VLC tables.
+    /// Called at MB boundaries where bResetContext fires (last MB column in
+    /// tile, or column at a 16-MB stride start).
+    /// </summary>
+    public void Adapt()
+    {
+        AdaptiveVlc.AdaptTable1(ref AbsLevelLum);
+        AdaptiveVlc.AdaptTable1(ref AbsLevelChr);
+    }
 }

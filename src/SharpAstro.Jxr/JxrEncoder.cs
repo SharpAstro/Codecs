@@ -65,7 +65,7 @@ public static class JxrEncoder
                 Transforms.FCT4x4(subBlock);
                 dcGrid[sbRow * 4 + sbCol] = subBlock[0];
             }
-            Transforms.FCT4x4(dcGrid);
+            Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, 0] = dcGrid[0];
         }
 
@@ -97,7 +97,11 @@ public static class JxrEncoder
                 NumComponents = 1,
                 DcQuant = 1,
             },
-            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.SubBaseline, JxrLevel.L1),
+            // LEVEL_IDC=255 (Unrestricted) — matches jxrlib's reference encoder
+            // and WIC's WMPhotoDecoder. Hard-coding L1 caused WIC to reject any
+            // image larger than 1920×1088 with FRAMES=0 even though JxrDecApp
+            // accepts it. See Task #11 in the WIC oracle harness.
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.SubBaseline, JxrLevel.LUnrestricted),
             Macroblocks = mbs,
         };
         return img.Encode();
@@ -157,7 +161,7 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, 0, blkIdx, p] = subBlock[p];
             }
-            Transforms.FCT4x4(dcGrid);
+            Transforms.FCT4x4Stage2(dcGrid);
             // Position 0 of dcGrid = super-DC; positions 1..15 = LP coefficients.
             mbDc[mbx, mby, 0] = dcGrid[0];
             for (var p = 0; p < 16; p++)
@@ -235,7 +239,7 @@ public static class JxrEncoder
                 LpQuant = lpQp,
                 HpQuant = hpQp,
             },
-            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.LUnrestricted),
             Macroblocks = mbs,
         };
         return img.Encode();
@@ -259,6 +263,18 @@ public static class JxrEncoder
             HeightMinus1 = (uint)(height - 1),
             OverlapMode = overlapMode,
             FrequencyModeCodestreamFlag = frequencyMode,
+            // jxrlib's reference encoder unconditionally writes LONG_WORD_FLAG=1
+            // (strenc.c) and its decoder unconditionally treats it as 1 even
+            // when read as 0 (strdec.c). Matching that here matters because WIC
+            // rejects codestreams with LongWordFlag=false on large images.
+            LongWordFlag = true,
+            // WIC's WMPhotoDecoder also rejects codestreams without an
+            // INDEX_TABLE_TILES on large images, even single-tile ones — the
+            // table is degenerate (one entry, offset 0) but its presence is
+            // load-bearing for WIC. JxrDecApp tolerates its absence, so this
+            // divergence surfaces only through the WIC oracle. See
+            // CodedImage.Encode for the single-tile degenerate-table path.
+            IndexTablePresentFlag = true,
         };
         if (tiling is not null)
         {
@@ -443,7 +459,7 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
-            Transforms.FCT4x4(dcGrid);
+            Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, comp] = dcGrid[0];
             for (var p = 0; p < 16; p++)
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
@@ -467,7 +483,12 @@ public static class JxrEncoder
         if (tiling is not null)
             (leftMask, topMask) = tiling.BuildMasks(mbW, mbH);
 
-        // Prediction cascade — DC, LP, HP.
+        // Spec order DC → LP → HP. HP CalcMode runs on the post-LpPrediction
+        // RESIDUAL LP coefficients, matching the decoder which derives the
+        // same mode from residual LP just read from the bitstream
+        // (TileSpatial.Read → DeriveMbHpMode). Encoder and decoder must agree
+        // bit-exactly on what input feeds CalcMode, otherwise the adaptive HP
+        // scan direction diverges and the bitstream is unreadable.
         var predDc = new int[mbW, mbH, numComponents];
         var mbDcMode = new int[mbW, mbH];
         DcPrediction.Encode(mbDc, predDc, format, leftMask, topMask, mbDcMode);
@@ -519,7 +540,7 @@ public static class JxrEncoder
                 LpQuant = lpQp,
                 HpQuant = hpQp,
             },
-            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.L1),
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Main, JxrLevel.LUnrestricted),
             Macroblocks = mbs,
         };
         return img.Encode();
@@ -570,7 +591,7 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, 0, blkIdx, p] = subBlock[p];
             }
-            Transforms.FCT4x4(dcGrid);
+            Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, 0] = dcGrid[0];
             for (var p = 0; p < 16; p++)
                 mbDcLp[mbx, mby, 0, p] = dcGrid[p];
@@ -637,7 +658,7 @@ public static class JxrEncoder
                 LpQuant = lpQp,
                 HpQuant = hpQp,
             },
-            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.LUnrestricted),
             Macroblocks = mbs,
         };
         return img.Encode();
@@ -695,7 +716,7 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
-            Transforms.FCT4x4(dcGrid);
+            Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, comp] = dcGrid[0];
             for (var p = 0; p < 16; p++)
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
@@ -767,7 +788,7 @@ public static class JxrEncoder
                 LpQuant = lpQp,
                 HpQuant = hpQp,
             },
-            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.LUnrestricted),
             Macroblocks = mbs,
         };
         return img.Encode();
@@ -853,7 +874,7 @@ public static class JxrEncoder
             outputClrFmt: JxrOutputColorFormat.YOnly,
             outputBitDepth: JxrOutputBitDepth.Bd16F,
             lenMantissa: 10,
-            expBias: 15 - 128,
+            expBias: 15,
             tiling: tiling,
             dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
             overlapMode: overlapMode,
@@ -883,7 +904,7 @@ public static class JxrEncoder
             outputClrFmt: useYUV444 ? JxrOutputColorFormat.NComponent : JxrOutputColorFormat.Rgb,
             outputBitDepth: JxrOutputBitDepth.Bd16F,
             lenMantissa: 10,
-            expBias: 15 - 128,
+            expBias: 15,
             tiling: tiling,
             dcQp: dcQp, lpQp: lpQp, hpQp: hpQp,
             overlapMode: overlapMode,
@@ -924,7 +945,22 @@ public static class JxrEncoder
         // Pre-scaled signed-int working buffer. Layout: width × height × numComponents
         // interleaved (single-component case degenerates to a flat ints buffer).
         var working = new int[width * height * numComponents];
-        for (var i = 0; i < width * height * numComponents; i++) working[i] = src[i] - Bd16Bias;
+        const bool scaledArith = false; // bScaledArith disabled — needs broader port
+        if (outputBitDepth == JxrOutputBitDepth.Bd16F)
+        {
+            // Half-float input: sign-magnitude conversion per jxrlib's forwardHalf.
+            for (var i = 0; i < src.Length; i++)
+            {
+                var bits = src[i];
+                var magnitude = bits & 0x7FFF;
+                working[i] = (bits & 0x8000) != 0 ? -magnitude : magnitude;
+            }
+        }
+        else
+        {
+            // Integer path: midpoint-bias subtraction to centre samples around 0.
+            for (var i = 0; i < width * height * numComponents; i++) working[i] = src[i] - Bd16Bias;
+        }
         // YCoCg-R lifting when the caller asks for InternalClrFmt=YUV444 with
         // 3 components. See Phase 22 — encodes RGB samples as Y/Co/Cg so the
         // codestream can claim YUV444 (the only 3-component internal format
@@ -963,10 +999,17 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
-            Transforms.FCT4x4(dcGrid);
+            Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, comp] = dcGrid[0];
             for (var p = 0; p < 16; p++)
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
+
+            if (Environment.GetEnvironmentVariable("DIR_LIB_JXR_TRACE") == "1" && mbx <= 1 && mby == 0 && comp == 0)
+            {
+                System.Console.Error.Write($"OUR PCT mb=({mbx},{mby}) ch={comp} post-PCT DC-block:");
+                for (var p = 0; p < 16; p++) System.Console.Error.Write($" {dcGrid[p]}");
+                System.Console.Error.WriteLine();
+            }
         }
 
         var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
@@ -1035,8 +1078,12 @@ public static class JxrEncoder
                 DcQuant = dcQp,
                 LpQuant = lpQp,
                 HpQuant = hpQp,
+                // ScaledFlag signals the bScaledArith pre-multiplication done
+                // for BD16F (see Bd16FScaleShift above). The decoder pairs this
+                // bit with a matching post-IDCT right-shift.
+                ScaledFlag = scaledArith,
             },
-            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.LUnrestricted),
             Macroblocks = mbs,
         };
         return img.Encode();
@@ -1218,10 +1265,17 @@ public static class JxrEncoder
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
-            Transforms.FCT4x4(dcGrid);
+            Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, comp] = dcGrid[0];
             for (var p = 0; p < 16; p++)
                 mbDcLp[mbx, mby, comp, p] = dcGrid[p];
+
+            if (Environment.GetEnvironmentVariable("DIR_LIB_JXR_TRACE") == "1" && mbx <= 1 && mby == 0 && comp == 0)
+            {
+                System.Console.Error.Write($"OUR PCT mb=({mbx},{mby}) ch={comp} post-PCT DC-block:");
+                for (var p = 0; p < 16; p++) System.Console.Error.Write($" {dcGrid[p]}");
+                System.Console.Error.WriteLine();
+            }
         }
 
         var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
@@ -1291,7 +1345,7 @@ public static class JxrEncoder
                 LpQuant = lpQp,
                 HpQuant = hpQp,
             },
-            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.L1),
+            ProfileLevelInfo = ProfileLevelInfo.Single(JxrProfile.Advanced, JxrLevel.LUnrestricted),
             Macroblocks = mbs,
         };
         return img.Encode();

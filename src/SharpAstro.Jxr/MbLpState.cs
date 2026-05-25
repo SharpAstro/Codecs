@@ -56,4 +56,22 @@ public sealed class MbLpState
         Scan = AdaptiveScan.ForLp();
         Model = CoefficientModel.Initialize(CoefficientModel.Band.Lp);
     }
+
+    /// <summary>
+    /// T.832 §8.8.4.2 AdaptLP( ): adapt the LP band's FIRST_INDEX, INDEX, and
+    /// ABS_LEVEL VLC tables. FIRST_INDEX / INDEX use the 5-/4-table multi-table
+    /// AdaptTable2 (iMaxTableIndex = 4 / 3); ABS_LEVEL uses the 2-table
+    /// AdaptTable1. Called at MB boundaries where bResetContext fires.
+    /// </summary>
+    public void Adapt()
+    {
+        AdaptiveVlc.AdaptTable2(ref FirstIndexLum, iMaxTableIndex: 4);
+        AdaptiveVlc.AdaptTable2(ref IndexLum0, iMaxTableIndex: 3);
+        AdaptiveVlc.AdaptTable2(ref IndexLum1, iMaxTableIndex: 3);
+        AdaptiveVlc.AdaptTable2(ref FirstIndexChr, iMaxTableIndex: 4);
+        AdaptiveVlc.AdaptTable2(ref IndexChr0, iMaxTableIndex: 3);
+        AdaptiveVlc.AdaptTable2(ref IndexChr1, iMaxTableIndex: 3);
+        AdaptiveVlc.AdaptTable1(ref AbsLevel0);
+        AdaptiveVlc.AdaptTable1(ref AbsLevel1);
+    }
 }

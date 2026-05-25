@@ -13,14 +13,19 @@ public sealed class JxrMbCbphpTests
 {
     private static void RoundTrip(int[] cbphp)
     {
+        var fmt = JxrInternalColorFormat.NComponent;
         var encState = new MbCbphpState();
+        encState.InitMbCbphpGrid(1, 1, cbphp.Length);
         var w = new BitWriter();
-        MbCbphp.EncodeMb(w, encState, cbphp.Length, cbphp);
+        MbCbphp.EncodeMb(w, encState, fmt, cbphp.Length,
+            mbX: 0, mbY: 0, isLeftEdge: true, isTopEdge: true, cbphp);
 
         var decState = new MbCbphpState();
+        decState.InitMbCbphpGrid(1, 1, cbphp.Length);
         var r = new BitReader(w.AsSpan());
         var decoded = new int[cbphp.Length];
-        MbCbphp.DecodeMb(ref r, decState, cbphp.Length, decoded);
+        MbCbphp.DecodeMb(ref r, decState, fmt, cbphp.Length,
+            mbX: 0, mbY: 0, isLeftEdge: true, isTopEdge: true, decoded);
 
         for (var c = 0; c < cbphp.Length; c++)
             decoded[c].ShouldBe(cbphp[c], $"component {c}");
@@ -108,17 +113,22 @@ public sealed class JxrMbCbphpTests
             for (var c = 0; c < 3; c++) mbs[i][c] = rng.Next(0, 65536);
         }
 
+        var fmt = JxrInternalColorFormat.NComponent;
         var encState = new MbCbphpState();
+        encState.InitMbCbphpGrid(6, 1, 3);
         var w = new BitWriter();
-        foreach (var mb in mbs)
-            MbCbphp.EncodeMb(w, encState, 3, mb);
+        for (var i = 0; i < mbs.Length; i++)
+            MbCbphp.EncodeMb(w, encState, fmt, 3,
+                mbX: i, mbY: 0, isLeftEdge: i == 0, isTopEdge: true, mbs[i]);
 
         var decState = new MbCbphpState();
+        decState.InitMbCbphpGrid(6, 1, 3);
         var r = new BitReader(w.AsSpan());
         for (var i = 0; i < 6; i++)
         {
             var decoded = new int[3];
-            MbCbphp.DecodeMb(ref r, decState, 3, decoded);
+            MbCbphp.DecodeMb(ref r, decState, fmt, 3,
+                mbX: i, mbY: 0, isLeftEdge: i == 0, isTopEdge: true, decoded);
             for (var c = 0; c < 3; c++)
                 decoded[c].ShouldBe(mbs[i][c], $"MB {i} c={c}");
         }

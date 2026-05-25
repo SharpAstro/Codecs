@@ -1,33 +1,33 @@
 namespace SharpAstro.Jxr;
 
 /// <summary>
-/// Reversible YCoCg-R color transform (T.832 §9.6.2.7 / Table 158).
-/// Lossless lifting that maps integer R/G/B → Y/Co/Cg and back. JXR uses
-/// this when <c>INTERNAL_CLR_FMT = YUV444</c> (and the chroma-subsampled
-/// variants) so the codestream operates on a decorrelated luma + two
-/// chroma channels rather than three equal RGB channels.
+/// Reversible RGB ↔ YUV colour-format conversion as specified by T.832
+/// FwdColorFmtConvert1 (D.3.2 / Table D.6) and InvColorFmtConvert2
+/// (9.10.4.3 / Table 185). Despite the historical class name, this is
+/// NOT classical YCoCg-R — the JXR spec uses its own lifting steps with
+/// (V = B - R) as the chroma seed and an asymmetric Floor/Ceil rounding
+/// scheme. Encoder calls <see cref="ForwardInPlace"/>; decoder calls
+/// <see cref="InverseInPlace"/>.
 /// </summary>
 /// <remarks>
-/// <para>Output range expansion: for n-bit signed input, Co and Cg become
-/// (n+1)-bit signed (their absolute range can reach 2× input range). Y
-/// stays in the input's bit range. The integer-FCT pipeline downstream
-/// has more than enough headroom for this widening.</para>
-/// <para>The transform is order-sensitive — apply <see cref="ForwardInPlace"/>
-/// on the encoder side BEFORE the FCT cascade, and <see cref="InverseInPlace"/>
-/// on the decoder side AFTER the ICT cascade. Both operate on a flat
-/// interleaved <c>RGB RGB ...</c> buffer of signed ints, in place.</para>
+/// <para>Both directions operate on a flat interleaved buffer of signed
+/// ints — the encoder writes <c>{Y, U, V}</c> at the same offsets as the
+/// input <c>{R, G, B}</c>, and the decoder reverses that. The transform
+/// is exact: <c>Inverse(Forward(rgb)) == rgb</c>.</para>
+///
+/// <para>Why this is in a class named YCoCg: the original implementation
+/// followed the YCoCg-R reference (Co = R-B, t = B + Co/2, Cg = G-t, Y = t + Cg/2)
+/// which round-trips symmetrically but does NOT match the JXR wire format —
+/// reference decoders (WIC, jxrlib JxrDecApp) reconstruct wrong RGB on
+/// our output. The lifting steps below are the spec's exact pseudocode.</para>
 /// </remarks>
 public static class YCoCgTransform
 {
     /// <summary>
-    /// Encoder direction: convert each RGB triple in
-    /// <paramref name="rgbInterleaved"/> to the (Y, Co, Cg) representation,
-    /// in place. Layout stays interleaved — what was <c>[R, G, B]</c>
-    /// becomes <c>[Y, Co, Cg]</c> at the same offsets.
+    /// Encoder direction (T.832 D.3.2 / Table D.6): map each interleaved
+    /// <c>{R, G, B}</c> triple to <c>{Y, U, V}</c> in place. Same buffer
+    /// layout in and out — only the per-pixel values change.
     /// </summary>
-    /// <param name="rgbInterleaved">
-    /// Signed-int buffer of length <c>3 × pixelCount</c>, samples in <c>R G B R G B ...</c> order.
-    /// </param>
     public static void ForwardInPlace(Span<int> rgbInterleaved)
     {
         if (rgbInterleaved.Length % 3 != 0)
@@ -35,51 +35,59 @@ public static class YCoCgTransform
 
         for (var i = 0; i < rgbInterleaved.Length; i += 3)
         {
-            // T.832 9.6.2.7 — exact lifting in this order. Each step
-            // overwrites only the variable on the left; >> on negative
-            // values is arithmetic (which the spec assumes).
             int r = rgbInterleaved[i + 0];
             int g = rgbInterleaved[i + 1];
             int b = rgbInterleaved[i + 2];
 
-            int co = r - b;
-            int t  = b + (co >> 1);
-            int cg = g - t;
-            int y  = t + (cg >> 1);
+            // Spec lifting steps (Table D.6, swappedRBflag = 0):
+            //   V = B - R
+            //   t = R - G + Ceil(V/2)
+            //   Y = G + Floor(t/2)
+            //   U = -t
+            int v = b - r;
+            int t = r - g + Ceil2(v);
+            int y = g + (t >> 1);   // Floor(t/2): arithmetic >> rounds toward -inf
+            int u = -t;
 
-            // Write back as (Y, Co, Cg) — same channel order convention as
-            // the JXR YUV444 InternalClrFmt (component 0 = luma, 1 = Co, 2 = Cg).
             rgbInterleaved[i + 0] = y;
-            rgbInterleaved[i + 1] = co;
-            rgbInterleaved[i + 2] = cg;
+            rgbInterleaved[i + 1] = u;
+            rgbInterleaved[i + 2] = v;
         }
     }
 
     /// <summary>
-    /// Decoder direction: exact dual of <see cref="ForwardInPlace"/>.
-    /// Converts <c>[Y, Co, Cg]</c> interleaved triples back to
-    /// <c>[R, G, B]</c>, in place. ICT(FCT(x)) = x and
-    /// Inverse(Forward(rgb)) = rgb, both bit-exact.
+    /// Decoder direction (T.832 9.10.4.3 / Table 185): exact dual of
+    /// <see cref="ForwardInPlace"/>. <c>{Y, U, V}</c> → <c>{R, G, B}</c>,
+    /// in place.
     /// </summary>
-    public static void InverseInPlace(Span<int> yCoCgInterleaved)
+    public static void InverseInPlace(Span<int> yuvInterleaved)
     {
-        if (yCoCgInterleaved.Length % 3 != 0)
-            throw new ArgumentException("buffer length must be divisible by 3", nameof(yCoCgInterleaved));
+        if (yuvInterleaved.Length % 3 != 0)
+            throw new ArgumentException("buffer length must be divisible by 3", nameof(yuvInterleaved));
 
-        for (var i = 0; i < yCoCgInterleaved.Length; i += 3)
+        for (var i = 0; i < yuvInterleaved.Length; i += 3)
         {
-            int y  = yCoCgInterleaved[i + 0];
-            int co = yCoCgInterleaved[i + 1];
-            int cg = yCoCgInterleaved[i + 2];
+            int y = yuvInterleaved[i + 0];
+            int u = yuvInterleaved[i + 1];
+            int v = yuvInterleaved[i + 2];
 
-            int t = y  - (cg >> 1);
-            int g = cg + t;
-            int b = t  - (co >> 1);
-            int r = b  + co;
+            // Spec lifting steps (Table 185):
+            //   t = -U
+            //   G = Y - Floor(t/2)
+            //   R = t + G - Ceil(V/2)
+            //   B = V + R
+            int t = -u;
+            int g = y - (t >> 1);
+            int r = t + g - Ceil2(v);
+            int b = v + r;
 
-            yCoCgInterleaved[i + 0] = r;
-            yCoCgInterleaved[i + 1] = g;
-            yCoCgInterleaved[i + 2] = b;
+            yuvInterleaved[i + 0] = r;
+            yuvInterleaved[i + 1] = g;
+            yuvInterleaved[i + 2] = b;
         }
     }
+
+    /// <summary>Ceiling of <paramref name="x"/>/2 — i.e. <c>(x + 1) &gt;&gt; 1</c>
+    /// where <c>&gt;&gt;</c> is signed arithmetic right shift.</summary>
+    private static int Ceil2(int x) => (x + 1) >> 1;
 }

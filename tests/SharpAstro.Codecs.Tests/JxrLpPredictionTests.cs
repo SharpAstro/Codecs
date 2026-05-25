@@ -142,20 +142,20 @@ public sealed class JxrLpPredictionTests
         var pred = new int[W, H, 1, 16];
         LpPrediction.Encode(grid, pred, dcModes, JxrInternalColorFormat.YOnly);
 
-        // For MB (1,0): DC mode 0 → LP mode 0 (left). Positions {4, 8, 12} get
-        // predicted from left, so they should be zero residual; the rest are
-        // unchanged at 777.
-        grid[1, 0, 0, 4].ShouldBe(0);
-        grid[1, 0, 0, 8].ShouldBe(0);
-        grid[1, 0, 0, 12].ShouldBe(0);
-        grid[1, 0, 0, 1].ShouldBe(777, "position 1 is not predicted by mode 0");
+        // For MB (1,0): DC mode 0 → LP mode 0 (left). Positions {1, 2, 3} get
+        // predicted from left (matches jxrlib's AD-from-LEFT convention), so
+        // they should be zero residual; {4, 8, 12} are unchanged at 777.
+        grid[1, 0, 0, 1].ShouldBe(0);
+        grid[1, 0, 0, 2].ShouldBe(0);
+        grid[1, 0, 0, 3].ShouldBe(0);
+        grid[1, 0, 0, 4].ShouldBe(777, "position 4 is not predicted by mode 0");
         grid[1, 0, 0, 5].ShouldBe(777, "position 5 is not predicted by mode 0");
 
-        // For MB (0,1): DC mode 1 → LP mode 1 (top). Positions {1, 2, 3} get
+        // For MB (0,1): DC mode 1 → LP mode 1 (top). Positions {4, 8, 12} get
         // predicted from top, so they should be zero residual.
-        grid[0, 1, 0, 1].ShouldBe(0);
-        grid[0, 1, 0, 2].ShouldBe(0);
-        grid[0, 1, 0, 3].ShouldBe(0);
-        grid[0, 1, 0, 4].ShouldBe(777, "position 4 is not predicted by mode 1");
+        grid[0, 1, 0, 4].ShouldBe(0);
+        grid[0, 1, 0, 8].ShouldBe(0);
+        grid[0, 1, 0, 12].ShouldBe(0);
+        grid[0, 1, 0, 1].ShouldBe(777, "position 1 is not predicted by mode 1");
     }
 }

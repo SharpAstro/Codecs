@@ -70,10 +70,16 @@ public static class TileFrequency
 
         // --- DC sub-stream ---
         var dcW = new BitWriter();
+        WriteTileStartCode(dcW);
         headers.Dc.Write(dcW, plane.DcImagePlaneUniformFlag, numComponents);
         var dcState = new MbDcState();
         for (var i = 0; i < mbCount; i++)
+        {
             MbDc.EncodeMb(dcW, dcState, format, numComponents, mbs[i].Dc);
+            var col = i % widthInMb;
+            if (col == widthInMb - 1 || col % 16 == 0)
+                dcState.Adapt();
+        }
         ByteAlign(dcW);
         result[0] = dcW.ToArray();
 
@@ -81,14 +87,20 @@ public static class TileFrequency
 
         // --- LP sub-stream ---
         var lpW = new BitWriter();
+        WriteTileStartCode(lpW);
         var lpPlaneUniform = plane.LpImagePlaneUniformFlag;
         headers.Lowpass!.Write(lpW, lpPlaneUniform, numComponents);
         var lpState = new MbLpState();
         int numLpQPs = headers.Lowpass.LpQp?.NumQPs ?? 1;
         for (var i = 0; i < mbCount; i++)
         {
+            var col = i % widthInMb;
+            if (col % 16 == 0)
+                lpState.Scan.ResetTotals();
             QpIndex.Write(lpW, numLpQPs, mbs[i].LpQpIndex);
             MbLp.EncodeMb(lpW, lpState, format, numComponents, mbs[i].Lp);
+            if (col == widthInMb - 1 || col % 16 == 0)
+                lpState.Adapt();
         }
         ByteAlign(lpW);
         result[1] = lpW.ToArray();
@@ -97,9 +109,11 @@ public static class TileFrequency
 
         // --- HP sub-stream (CBPHP + HP interleaved per MB) ---
         var hpW = new BitWriter();
+        WriteTileStartCode(hpW);
         var hpPlaneUniform = plane.HpImagePlaneUniformFlag;
         headers.Highpass!.Write(hpW, trimFlexBitsFlag, hpPlaneUniform, numComponents);
         var cbphpState = new MbCbphpState();
+        cbphpState.InitMbCbphpGrid(widthInMb, heightInMb, numComponents);
         var hpState = new MbHpState();
         var cbphpBuf = new int[numComponents];
         var hpDummyCbphp = new int[numComponents];
@@ -108,13 +122,25 @@ public static class TileFrequency
         // --- FlexBits sub-stream (AllBands only) ---
         // Lives behind its own BitWriter so HP coefficients and FlexBits
         // refinements can land in different sub-streams of the tile.
-        var flexW = bands == JxrBandsPresent.AllBands ? new BitWriter() : null;
+        BitWriter? flexW = null;
+        if (bands == JxrBandsPresent.AllBands)
+        {
+            flexW = new BitWriter();
+            WriteTileStartCode(flexW);
+        }
         var trimFlexBits = bands == JxrBandsPresent.AllBands
             ? (trimFlexBitsFlag ? headers.Highpass.TrimFlexBits : 0)
             : 0;
 
         for (var i = 0; i < mbCount; i++)
         {
+            var col = i % widthInMb;
+            var row = i / widthInMb;
+            if (col % 16 == 0)
+            {
+                hpState.ScanHorizontal.ResetTotals();
+                hpState.ScanVertical.ResetTotals();
+            }
             QpIndex.Write(hpW, numHpQPs, mbs[i].HpQpIndex);
             if (bands == JxrBandsPresent.AllBands)
             {
@@ -126,7 +152,8 @@ public static class TileFrequency
             {
                 MbHp.ComputeCbphp(numComponents, mbs[i].Hp, cbphpBuf);
             }
-            MbCbphp.EncodeMb(hpW, cbphpState, numComponents, cbphpBuf);
+            MbCbphp.EncodeMb(hpW, cbphpState, format, numComponents,
+                mbX: col, mbY: row, isLeftEdge: col == 0, isTopEdge: row == 0, cbphpBuf);
             if (bands == JxrBandsPresent.AllBands)
             {
                 MbHp.EncodeMb(hpW, flexW!, hpState, mbs[i].MbHpMode, format, numComponents,
@@ -135,6 +162,11 @@ public static class TileFrequency
             else
             {
                 MbHp.EncodeMb(hpW, hpState, mbs[i].MbHpMode, format, numComponents, mbs[i].Hp, hpDummyCbphp);
+            }
+            if (col == widthInMb - 1 || col % 16 == 0)
+            {
+                hpState.Adapt();
+                cbphpState.Adapt();
             }
         }
         ByteAlign(hpW);
@@ -194,10 +226,18 @@ public static class TileFrequency
             mbs[i] = new Macroblock { Dc = new int[numComponents] };
 
         // --- DC sub-stream ---
+        ReadTileStartCode(ref reader);
         var dcHdr = TileHeaderDc.Read(ref reader, plane.DcImagePlaneUniformFlag, numComponents);
         var dcState = new MbDcState();
         for (var i = 0; i < mbCount; i++)
+        {
             MbDc.DecodeMb(ref reader, dcState, format, numComponents, mbs[i].Dc);
+            // T.832 8.7.11: AdaptDC fires at end of MB when col is last in tile
+            // or starts a 16-MB stride. See bResetContext in MB_DC( ) pseudocode.
+            var col = i % widthInMb;
+            if (col == widthInMb - 1 || col % 16 == 0)
+                dcState.Adapt();
+        }
         AlignToByte(ref reader);
 
         TileHeaderLowpass? lpHdr = null;
@@ -206,15 +246,23 @@ public static class TileFrequency
         if (bands != JxrBandsPresent.DcOnly)
         {
             // --- LP sub-stream ---
+            ReadTileStartCode(ref reader);
             var lpPlaneUniform = plane.LpImagePlaneUniformFlag;
             lpHdr = TileHeaderLowpass.Read(ref reader, lpPlaneUniform, numComponents);
             var lpState = new MbLpState();
             int numLpQPs = lpHdr.LpQp?.NumQPs ?? 1;
             for (var i = 0; i < mbCount; i++)
             {
+                var col = i % widthInMb;
+                // T.832 8.7.16.1: bResetTotals fires at the start of each 16-MB stride.
+                if (col % 16 == 0)
+                    lpState.Scan.ResetTotals();
                 mbs[i].LpQpIndex = QpIndex.Read(ref reader, numLpQPs);
                 mbs[i].Lp = new int[numComponents * 16];
                 MbLp.DecodeMb(ref reader, lpState, format, numComponents, mbs[i].Lp);
+                // T.832 8.7.16.1: AdaptLP fires at end of MB on the same boundary.
+                if (col == widthInMb - 1 || col % 16 == 0)
+                    lpState.Adapt();
             }
             AlignToByte(ref reader);
         }
@@ -227,9 +275,11 @@ public static class TileFrequency
         if (bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass)
         {
             // --- HP sub-stream (CBPHP + HP interleaved per MB) ---
+            ReadTileStartCode(ref reader);
             var hpPlaneUniform = plane.HpImagePlaneUniformFlag;
             hpHdr = TileHeaderHighpass.Read(ref reader, trimFlexBitsFlag, hpPlaneUniform, numComponents);
             var cbphpState = new MbCbphpState();
+            cbphpState.InitMbCbphpGrid(widthInMb, heightInMb, numComponents);
             var hpState = new MbHpState();
             var cbphpBuf = new int[numComponents];
             int numHpQPs = hpHdr.HpQp?.NumQPs ?? 1;
@@ -241,8 +291,18 @@ public static class TileFrequency
             }
             for (var i = 0; i < mbCount; i++)
             {
+                var col = i % widthInMb;
+                var row = i / widthInMb;
+                // T.832 8.7.18.2: bResetTotals fires at the start of each 16-MB stride
+                // for both horizontal and vertical HP scan totals.
+                if (col % 16 == 0)
+                {
+                    hpState.ScanHorizontal.ResetTotals();
+                    hpState.ScanVertical.ResetTotals();
+                }
                 mbs[i].HpQpIndex = QpIndex.Read(ref reader, numHpQPs);
-                MbCbphp.DecodeMb(ref reader, cbphpState, numComponents, cbphpBuf);
+                MbCbphp.DecodeMb(ref reader, cbphpState, format, numComponents,
+                    mbX: col, mbY: row, isLeftEdge: col == 0, isTopEdge: row == 0, cbphpBuf);
                 mbs[i].Hp = new int[numComponents * 256];
                 // mbHpMode is derived from this MB's LP coefficients (already decoded
                 // in the LP pass above), matching what the encoder saw — same input
@@ -259,12 +319,21 @@ public static class TileFrequency
                 // call → no FlexBits consumed). mbs[i].Hp temporarily holds VLC
                 // values until the FlexBits pass below reconstructs them.
                 MbHp.DecodeMb(ref reader, hpState, mbs[i].MbHpMode, format, numComponents, cbphpBuf, mbs[i].Hp);
+                // T.832 8.7.18.2: AdaptHP fires at end of MB on stride / tile-edge
+                // boundaries — it covers both the HP VLC states and CBPHP's NUM_CBPHP /
+                // NUM_BLKCBPHP states.
+                if (col == widthInMb - 1 || col % 16 == 0)
+                {
+                    hpState.Adapt();
+                    cbphpState.Adapt();
+                }
             }
             AlignToByte(ref reader);
 
             // --- FlexBits sub-stream (AllBands only) ---
             if (allBands)
             {
+                ReadTileStartCode(ref reader);
                 var trimFlexBits = trimFlexBitsFlag ? hpHdr.TrimFlexBits : 0;
                 for (var i = 0; i < mbCount; i++)
                 {
@@ -356,5 +425,27 @@ public static class TileFrequency
     {
         var slack = (8 - (reader.BitPosition & 7)) & 7;
         if (slack > 0) reader.SkipBits(slack);
+    }
+
+    // T.832 §8.7.10.1: TILE_STARTCODE is 24 bits with the constant value 0x000001
+    // at the head of each tile-level sub-structure (TILE_DC / TILE_LOWPASS /
+    // TILE_HIGHPASS / TILE_FLEXBITS / TILE_SPATIAL). §8.7.10.2: ARBITRARY_BYTE
+    // is an 8-bit ignored value that follows.
+    internal static void WriteTileStartCode(BitWriter writer)
+    {
+        writer.WriteBits(0u, 16);
+        writer.WriteBits(1u, 8);
+        writer.WriteBits(0u, 8); // ARBITRARY_BYTE (any value; we emit 0)
+    }
+
+    internal static void ReadTileStartCode(ref BitReader reader)
+    {
+        var b0 = reader.ReadBits(8);
+        var b1 = reader.ReadBits(8);
+        var b2 = reader.ReadBits(8);
+        if (b0 != 0 || b1 != 0 || b2 != 1)
+            throw new InvalidDataException(
+                $"TILE_STARTCODE mismatch at bit {reader.BitPosition - 24}: expected 0x000001, got 0x{b0:X2}{b1:X2}{b2:X2}");
+        reader.SkipBits(8); // ARBITRARY_BYTE — ignored
     }
 }

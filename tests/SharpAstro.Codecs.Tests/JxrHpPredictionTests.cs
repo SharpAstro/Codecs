@@ -88,8 +88,9 @@ public sealed class JxrHpPredictionTests
     public void HpPrediction_ConstantBlocks_ProduceZeroResiduals_ForPredictedPositions()
     {
         // Every block has the same value 100 at every position. With mode 0
-        // (predict from left), positions {4,8,12} of every block except
-        // column 0 should subtract 100 and become 0. Column-0 blocks
+        // (predict from left), positions {1, 5, 6} of every block except
+        // column 0 should subtract 100 and become 0 (matches jxrlib's AC-from-LEFT
+        // convention — verified via instrumented stderr trace). Column-0 blocks
         // (indices 0, 4, 8, 12) stay at 100.
         const int N = 100;
         var grid = new int[1, 1, 1, 16, 16];
@@ -104,7 +105,7 @@ public sealed class JxrHpPredictionTests
         for (var b = 0; b < 16; b++)
         {
             var col = b % 4;
-            foreach (var p in new[] { 4, 8, 12 })
+            foreach (var p in new[] { 1, 5, 6 })
             {
                 var expected = col == 0 ? N : 0;
                 grid[0, 0, 0, b, p].ShouldBe(expected, $"block {b} (col {col}) position {p}");

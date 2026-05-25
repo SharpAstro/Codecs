@@ -190,8 +190,13 @@ public static class HpPrediction
     private static readonly int[] Yuv422LeftBlocks = [1, 3, 5, 7];
     private static readonly int[] Yuv422TopBlocks  = [2, 4, 6, 3, 5, 7];
 
-    private static readonly int[] LeftPositions = [4, 8, 12];
-    private static readonly int[] TopPositions  = [1, 2, 3];
+    // From jxrlib's reference encoder (predMacroblockEnc, AC prediction loops):
+    // predict-from-LEFT modifies positions {1, 5, 6}, predict-from-TOP modifies
+    // {2, 9, 10}. Verified via instrumented stderr trace. These are the
+    // HF-coefficient positions that adjoin the chosen neighbour-block edge
+    // after the PCT permutation.
+    private static readonly int[] LeftPositions = [1, 5, 6];
+    private static readonly int[] TopPositions  = [2, 9, 10];
 
     private static int[] BlocksFull(int mode) => mode == 0 ? LumaLeftBlocks : LumaTopBlocks;
     private static int DeltaFull(int mode) => mode == 0 ? 1 : 4;

@@ -27,7 +27,7 @@ public sealed class JxrIndexTableTilesTests
     [Theory]
     [InlineData(0L)]
     [InlineData(1L)]
-    [InlineData(0xFFFBL)] // last short value
+    [InlineData(0xFAFFL)] // last short value per T.832 §8.2.4 (FIRST_BYTE < 0xFB)
     public void ShortVlw_RoundTrips(long offset)
     {
         var table = new IndexTableTiles { Offsets = [offset] };
@@ -43,7 +43,7 @@ public sealed class JxrIndexTableTilesTests
     }
 
     [Theory]
-    [InlineData(0xFFFCL)]     // first 32-bit value
+    [InlineData(0xFB00L)]     // first 32-bit-escape value (FIRST_BYTE == 0xFB)
     [InlineData(0x1234_5678L)]
     [InlineData(0xFFFF_FFFFL)] // max 32-bit
     public void Escape32_VlwRoundTrips(long offset)
@@ -52,8 +52,8 @@ public sealed class JxrIndexTableTilesTests
         var w = new BitWriter();
         table.Write(w);
 
-        // 2 startcode + 2 escape marker + 4 u32 = 8 bytes.
-        w.ByteCount.ShouldBe(8);
+        // 2 startcode + 1 escape marker (0xFB) + 4 u32 = 7 bytes.
+        w.ByteCount.ShouldBe(7);
 
         var r = new BitReader(w.AsSpan());
         var read = IndexTableTiles.Read(ref r, expectedEntries: 1);
@@ -77,7 +77,7 @@ public sealed class JxrIndexTableTilesTests
     [Fact]
     public void MultipleEntries_MixedSizes_RoundTrip()
     {
-        var offsets = new long[] { 0, 0xFFFB, 0x10000, 0x1_0000_0000L };
+        var offsets = new long[] { 0, 0xFAFF, 0x10000, 0x1_0000_0000L };
         var table = new IndexTableTiles { Offsets = offsets };
         var w = new BitWriter();
         table.Write(w);

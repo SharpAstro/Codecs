@@ -131,7 +131,7 @@ public sealed class CodedImage
                 }
                 new IndexTableTiles { Offsets = offsets }.Write(writer);
 
-                ProfileLevelInfo.Write(writer);
+                WriteSubsequentBytesAndProfile(writer);
 
                 foreach (var band in perBandBytes)
                     for (var i = 0; i < band.Length; i++)
@@ -140,7 +140,7 @@ public sealed class CodedImage
                 return writer.ToArray();
             }
 
-            ProfileLevelInfo.Write(writer);
+            WriteSubsequentBytesAndProfile(writer);
             if (freq)
             {
                 TileFrequency.Write(
@@ -223,7 +223,7 @@ public sealed class CodedImage
             indexTable.Write(writer);
         }
 
-        ProfileLevelInfo.Write(writer);
+        WriteSubsequentBytesAndProfile(writer);
 
         // Concatenate the pre-encoded tile data. Each sub-stream already ends
         // on a byte boundary thanks to byte-alignment in TileSpatial /
@@ -233,6 +233,18 @@ public sealed class CodedImage
                 writer.WriteBits(tile[i], 8);
 
         return writer.ToArray();
+    }
+
+    // T.832 §8.2: SubsequentBytes (VLW_ESC) sits between the optional
+    // INDEX_TABLE_TILES and PROFILE_LEVEL_INFO. It specifies the byte size of
+    // PROFILE_LEVEL_INFO + any trailing RESERVED_A_BYTE padding. We don't
+    // emit RESERVED_A_BYTE, so SubsequentBytes is just the byte size of the
+    // info structure (4 bytes per entry).
+    private void WriteSubsequentBytesAndProfile(BitWriter writer)
+    {
+        long profileBytes = ProfileLevelInfo.Entries.Count * 4;
+        IndexTableTiles.WriteVlwEscShared(writer, profileBytes);
+        ProfileLevelInfo.Write(writer);
     }
 
     /// <summary>Deserialise the codestream produced by <see cref="Encode"/>.</summary>
@@ -263,7 +275,19 @@ public sealed class CodedImage
             tileOffsets = IndexTableTiles.Read(ref reader, tilesCount * perTile).Offsets;
         }
 
-        var profile = ProfileLevelInfo.Read(ref reader);
+        // T.832 §8.2 CODED_IMAGE: SubsequentBytes = VLW_ESC counts the bytes
+        // from PROFILE_LEVEL_INFO to the start of CODED_TILES (PROFILE_LEVEL_INFO
+        // itself plus any trailing RESERVED_A_BYTE padding). When 0, no
+        // PROFILE_LEVEL_INFO is present.
+        var subsequentBytes = IndexTableTiles.ReadVlwEscShared(ref reader);
+        var profile = new ProfileLevelInfo();
+        if (subsequentBytes > 0)
+        {
+            profile = ProfileLevelInfo.Read(ref reader);
+            var profileBytes = profile.Entries.Count * 4; // each entry is 32 bits
+            var reservedBytes = subsequentBytes - profileBytes;
+            if (reservedBytes > 0) reader.SkipBits((int)reservedBytes * 8);
+        }
 
         var width = (int)(img.WidthMinus1 + 1);
         var height = (int)(img.HeightMinus1 + 1);
@@ -301,9 +325,22 @@ public sealed class CodedImage
         else
         {
             mbs = new Macroblock[widthInMb * heightInMb];
-            var tileBounds = ComputeTileBounds(img, widthInMb, heightInMb);
-            foreach (var (tileX, tileY, tw, th) in tileBounds)
+            var tileBounds = ComputeTileBounds(img, widthInMb, heightInMb).ToList();
+            // T.832 §8.7.1 CODED_TILES uses POS_SEEK with INDEX_TABLE_TILES to
+            // navigate between tiles in frequency mode (and to recover from any
+            // RESERVED_A_BYTE padding between sub-streams in spatial mode). Use
+            // the table when available so we don't depend on sub-stream byte
+            // counts matching encoder output exactly.
+            var codedTilesStartByte = (reader.BitPosition + 7) >> 3;
+            var perTile = freq ? TileFrequency.BandCount(plane.BandsPresent) : 1;
+            for (var t = 0; t < tileBounds.Count; t++)
             {
+                var (tileX, tileY, tw, th) = tileBounds[t];
+                if (tileOffsets is not null)
+                {
+                    var firstBandIdx = t * perTile;
+                    reader.SeekToByte(codedTilesStartByte + (int)tileOffsets[firstBandIdx]);
+                }
                 TileBandHeaders tileHeaders;
                 var tileMbs = freq
                     ? TileFrequency.Read(
@@ -384,7 +421,14 @@ public sealed class CodedImage
         var plane = ImagePlaneHeader.Read(ref reader, img.OutputBitDepth);
         var tilesCount = numVerTiles * numHorTiles;
         var indexTable = IndexTableTiles.Read(ref reader, tilesCount);
-        _ = ProfileLevelInfo.Read(ref reader);
+        // T.832 §8.2 SubsequentBytes(VLW_ESC) precedes PROFILE_LEVEL_INFO.
+        var subsequentBytes = IndexTableTiles.ReadVlwEscShared(ref reader);
+        if (subsequentBytes > 0)
+        {
+            var p = ProfileLevelInfo.Read(ref reader);
+            var reserved = subsequentBytes - p.Entries.Count * 4;
+            if (reserved > 0) reader.SkipBits((int)reserved * 8);
+        }
 
         // After ProfileLevelInfo, BitReader's position IS the start of
         // CODED_TILES — offsets in the index table are relative to here. The

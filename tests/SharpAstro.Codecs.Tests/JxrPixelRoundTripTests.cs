@@ -621,20 +621,24 @@ public sealed class JxrPixelRoundTripTests
     }
 
     [Theory]
-    [InlineData((ushort)0x0000)] // +0.0
-    [InlineData((ushort)0x8000)] // -0.0
-    [InlineData((ushort)0x3C00)] // +1.0
-    [InlineData((ushort)0xBC00)] // -1.0
-    [InlineData((ushort)0x7BFF)] // +max normal
-    [InlineData((ushort)0xFBFF)] // -max normal
-    public void Bd16FGrayscale_UniformHalfBits_RoundTrip(ushort halfPattern)
+    [InlineData((ushort)0x0000, (ushort)0x0000)] // +0.0 → +0.0
+    [InlineData((ushort)0x8000, (ushort)0x0000)] // -0.0 → +0.0 (jxrlib's forwardHalf collapses
+                                                  // negative zero to positive zero — the
+                                                  // sign-magnitude conversion drops the sign bit
+                                                  // when magnitude is 0, matching reference
+                                                  // behaviour)
+    [InlineData((ushort)0x3C00, (ushort)0x3C00)] // +1.0
+    [InlineData((ushort)0xBC00, (ushort)0xBC00)] // -1.0
+    [InlineData((ushort)0x7BFF, (ushort)0x7BFF)] // +max normal
+    [InlineData((ushort)0xFBFF, (ushort)0xFBFF)] // -max normal
+    public void Bd16FGrayscale_UniformHalfBits_RoundTrip(ushort halfPattern, ushort expected)
     {
         var src = new ushort[16 * 16];
         Array.Fill(src, halfPattern);
         var bytes = JxrEncoder.EncodeBd16FGrayscaleNoFlexbits(src, 16, 16);
         var decoded = JxrDecoder.DecodeBd16FGrayscaleNoFlexbits(bytes, out _, out _);
         for (var i = 0; i < src.Length; i++)
-            decoded[i].ShouldBe(halfPattern, $"pixel {i}");
+            decoded[i].ShouldBe(expected, $"pixel {i}");
     }
 
     [Fact]
@@ -698,17 +702,24 @@ public sealed class JxrPixelRoundTripTests
     }
 
     [Fact]
-    public void Bd16FRgb_PlaneHeaderCarriesHalfFloatMetadata()
+    public void Bd16FRgb_PlaneHeader_OmitsLenMantissaAndExpBias()
     {
-        // Verify the IMAGE_PLANE_HEADER actually advertises the half-float layout
-        // (LEN_MANTISSA=10, EXP_BIAS=15-128) so downstream tools can interpret.
+        // Per T.832 §8.4 / Table 28 and jxrlib's reference encoder, the BD16F
+        // plane header does NOT carry LEN_MANTISSA or EXP_BIAS — those fields
+        // exist only for BD32F (where the encoder has freedom to truncate the
+        // mantissa or shift the exponent). For BD16F the mapping is fixed
+        // (IEEE 754 half-float, 5-bit exponent biased by 15, 10-bit mantissa)
+        // so no per-stream parameter is needed. Earlier versions of this
+        // encoder were spec-non-compliant and emitted 16 extra bits here,
+        // mis-aligning the rest of the codestream by two bytes and causing
+        // WIC's WMPhotoDecoder to reject large BD16F files. Task #11.
         var src = new ushort[16 * 16 * 3];
         var bytes = JxrEncoder.EncodeBd16FRgbNoFlexbits(src, 16, 16);
 
         var img = CodedImage.Decode(bytes);
         img.ImageHeader.OutputBitDepth.ShouldBe(JxrOutputBitDepth.Bd16F);
-        img.PlaneHeader.LenMantissa.ShouldBe((byte)10);
-        img.PlaneHeader.ExpBias.ShouldBe((sbyte)(15 - 128));
+        img.PlaneHeader.LenMantissa.ShouldBe((byte)0);   // never read from stream for BD16F
+        img.PlaneHeader.ExpBias.ShouldBe((sbyte)0);      // never read from stream for BD16F
     }
 
     // ----------------------------------------------------------------------

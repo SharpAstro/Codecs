@@ -1,3 +1,5 @@
+using System.Linq;
+
 namespace SharpAstro.Jxr;
 
 /// <summary>
@@ -58,7 +60,7 @@ var mbW = img.WidthInMb;
             // DC values as a uniform spread.
             dcGrid.Clear();
             dcGrid[0] = mbDc[mbx, mby, 0];
-            Transforms.ICT4x4(dcGrid);
+            Transforms.ICT4x4Stage2(dcGrid);
 
             // For each sub-block, plant its DC value (positions 1..15 stay zero
             // since we dropped HP) and invert the FCT.
@@ -166,7 +168,7 @@ var mbW = img.WidthInMb;
         for (var mbx = 0; mbx < mbW; mbx++)
         {
             for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, 0, p];
-            Transforms.ICT4x4(dcGrid);
+            Transforms.ICT4x4Stage2(dcGrid);
 
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
@@ -229,12 +231,18 @@ var mbW = img.WidthInMb;
         var isYuv444Interop = img.ImageHeader.OutputClrFmt == JxrOutputColorFormat.NComponent
                               && img.PlaneHeader.InternalClrFmt == JxrInternalColorFormat.YUV444
                               && img.PlaneHeader.NumComponents == 3;
+        // BandsPresent: NoFlexbits and AllBands both work the same here — for
+        // AllBands the FlexBits reconstruction is already applied during
+        // TileFrequency.Read / TileSpatial.Read so mb.Hp holds the full HP
+        // coefficients in either case.
+        var bandsOk = img.PlaneHeader.BandsPresent == JxrBandsPresent.NoFlexbits ||
+                       img.PlaneHeader.BandsPresent == JxrBandsPresent.AllBands;
         if ((!isRgbDirect && !isYuv444Interop) ||
             img.ImageHeader.OutputBitDepth != JxrOutputBitDepth.Bd8 ||
-            img.PlaneHeader.BandsPresent != JxrBandsPresent.NoFlexbits)
+            !bandsOk)
         {
             throw new NotSupportedException(
-                $"JxrDecoder.DecodeBd8RgbNoFlexbits expects Rgb+Rgb or NComponent+YUV444 / BD8 / NoFlexbits; " +
+                $"JxrDecoder.DecodeBd8RgbNoFlexbits expects Rgb+Rgb or NComponent+YUV444 / BD8 / NoFlexbits or AllBands; " +
                 $"got {img.ImageHeader.OutputClrFmt}/{img.ImageHeader.OutputBitDepth}/" +
                 $"{img.PlaneHeader.InternalClrFmt}/{img.PlaneHeader.BandsPresent}");
         }
@@ -306,7 +314,7 @@ var mbW = img.WidthInMb;
         for (var comp = 0; comp < numComponents; comp++)
         {
             for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, comp, p];
-            Transforms.ICT4x4(dcGrid);
+            Transforms.ICT4x4Stage2(dcGrid);
 
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
@@ -465,12 +473,18 @@ var mbW = img.WidthInMb;
         Span<int> subBlock = stackalloc int[16];
         Span<int> dcGrid = stackalloc int[16];
 
+        var scaledArith = img.PlaneHeader.ScaledFlag;
         for (var mby = 0; mby < mbH; mby++)
         for (var mbx = 0; mbx < mbW; mbx++)
         for (var comp = 0; comp < numComponents; comp++)
         {
             for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, comp, p];
-            Transforms.ICT4x4(dcGrid);
+            Transforms.ICT4x4Stage2(dcGrid);
+            // bScaledArith strNormalizeDec disabled for now — adding chroma DC ×2
+            // made the worst-MB error pattern WORSE (1.054 -> 1.258 maxAbsDiff),
+            // suggesting the missing-stage hypothesis is incomplete. Walking
+            // row 0 column-by-column first to localise where the error starts.
+            _ = scaledArith;
 
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)
@@ -505,12 +519,58 @@ var mbW = img.WidthInMb;
             YCoCgTransform.InverseInPlace(working);
 
         var pixels = new ushort[width * height * numComponents];
-        for (var i = 0; i < pixels.Length; i++)
+        if (img.ImageHeader.OutputBitDepth == JxrOutputBitDepth.Bd16F)
         {
-            var v = working[i] + bias;
-            if (v < 0) v = 0;
-            else if (v > 65535) v = 65535;
-            pixels[i] = (ushort)v;
+            // Half-float output: invert jxrlib's forwardHalf — repack the signed
+            // magnitude back into the IEEE binary16 sign(1)+exp(5)+mantissa(10)
+            // bit layout. value >= 0 keeps the magnitude in bits 0..14 with sign
+            // bit clear; value < 0 sets the sign bit and stores |value| as the
+            // magnitude. Saturating to [-32767, 32767] guards against any drift
+            // out of the half-float magnitude range.
+            //
+            // bScaledArith: when the encoder left-shifted samples by 3 before
+            // the FCT (signalled via ScaledFlag), reverse that here.
+            //
+            // jxrlib's strdec.c uses:
+            //   iBias  = (1 << (SHIFTZERO + QPFRACBITS - 1)) - 1 = 3
+            //   iShift = SHIFTZERO + QPFRACBITS                  = 3
+            //   p      = (value + iBias) >> iShift
+            // The +3 is a rounding-toward-zero half-adjust for positive values;
+            // jxrlib applies the same `(value + 3) >> 3` to *both* signs and
+            // relies on two's-complement arithmetic-right-shift semantics. We
+            // mirror exactly to match jxrlib's reconstruction bit-for-bit.
+            const int Bd16FScaleShift = 3;
+            const int Bd16FBias = (1 << (Bd16FScaleShift - 1)) - 1; // = 3
+            var scaled = img.PlaneHeader.ScaledFlag;
+            for (var i = 0; i < pixels.Length; i++)
+            {
+                var v = working[i];
+                if (scaled)
+                {
+                    v = (v + Bd16FBias) >> Bd16FScaleShift;
+                }
+                if (v >= 0)
+                {
+                    if (v > 0x7FFF) v = 0x7FFF;
+                    pixels[i] = (ushort)v;
+                }
+                else
+                {
+                    var mag = -v;
+                    if (mag > 0x7FFF) mag = 0x7FFF;
+                    pixels[i] = (ushort)(0x8000 | mag);
+                }
+            }
+        }
+        else
+        {
+            for (var i = 0; i < pixels.Length; i++)
+            {
+                var v = working[i] + bias;
+                if (v < 0) v = 0;
+                else if (v > 65535) v = 65535;
+                pixels[i] = (ushort)v;
+            }
         }
         return pixels;
     }
@@ -768,7 +828,7 @@ var mbW = img.WidthInMb;
         for (var comp = 0; comp < numComponents; comp++)
         {
             for (var p = 0; p < 16; p++) dcGrid[p] = mbDcLp[mbx, mby, comp, p];
-            Transforms.ICT4x4(dcGrid);
+            Transforms.ICT4x4Stage2(dcGrid);
 
             for (var sbRow = 0; sbRow < 4; sbRow++)
             for (var sbCol = 0; sbCol < 4; sbCol++)

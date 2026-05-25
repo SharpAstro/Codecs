@@ -60,12 +60,20 @@ public static class TileSpatial
         var numComponents = plane.NumComponents;
         ValidateBandsAndMbs(bands, widthInMb, heightInMb, mbs, numComponents);
 
+        // T.832 Table 39 — TILE_SPATIAL starts with TILE_STARTCODE (24 bits =
+        // 0x000001) + ARBITRARY_BYTE (8 bits, ignored). TRIM_FLEXBITS (4 bits)
+        // would follow when TRIM_FLEXBITS_FLAG is set; we currently keep that
+        // in the HP band header which round-trips for our own files, and the
+        // seagull fixture has TRIM_FLEXBITS_FLAG=false so the placement gap
+        // doesn't bite.
+        TileFrequency.WriteTileStartCode(writer);
         headers.Write(writer, bands, trimFlexBitsFlag, plane);
 
         var dcState = new MbDcState();
         var lpState = bands != JxrBandsPresent.DcOnly ? new MbLpState() : null;
         var hasHp = bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass;
         var cbphpState = hasHp ? new MbCbphpState() : null;
+        if (hasHp) cbphpState!.InitMbCbphpGrid(widthInMb, heightInMb, numComponents);
         var hpState = hasHp ? new MbHpState() : null;
         var cbphpBuf = hasHp ? new int[numComponents] : null;
         var hpDummyCbphp = hasHp ? new int[numComponents] : null;
@@ -88,6 +96,17 @@ public static class TileSpatial
             for (var col = 0; col < widthInMb; col++)
             {
                 var mb = mbs[row * widthInMb + col];
+                // T.832 8.7.16.1 / 8.7.18.2: scan totals reset at the start of
+                // each 16-MB column stride.
+                if (col % 16 == 0)
+                {
+                    lpState?.Scan.ResetTotals();
+                    if (hasHp)
+                    {
+                        hpState!.ScanHorizontal.ResetTotals();
+                        hpState.ScanVertical.ResetTotals();
+                    }
+                }
                 MbDc.EncodeMb(writer, dcState, format, numComponents, mb.Dc);
                 if (lpState is not null)
                 {
@@ -112,7 +131,8 @@ public static class TileSpatial
                     {
                         MbHp.ComputeCbphp(numComponents, mb.Hp, cbphpBuf!);
                     }
-                    MbCbphp.EncodeMb(writer, cbphpState!, numComponents, cbphpBuf!);
+                    MbCbphp.EncodeMb(writer, cbphpState!, format, numComponents,
+                        mbX: col, mbY: row, isLeftEdge: col == 0, isTopEdge: row == 0, cbphpBuf!);
                     if (bands == JxrBandsPresent.AllBands)
                     {
                         MbHp.EncodeMb(writer, hpState!, mb.MbHpMode, format, numComponents,
@@ -122,6 +142,18 @@ public static class TileSpatial
                     {
                         MbHp.EncodeMb(writer, hpState!, mb.MbHpMode, format, numComponents,
                             mb.Hp, hpDummyCbphp!);
+                    }
+                }
+                // T.832 8.8.4: AdaptDC/LP/HP fire at end of MB on the bResetContext
+                // boundary (last col in tile, or col at a 16-MB stride start).
+                if (col == widthInMb - 1 || col % 16 == 0)
+                {
+                    dcState.Adapt();
+                    lpState?.Adapt();
+                    if (hasHp)
+                    {
+                        hpState!.Adapt();
+                        cbphpState!.Adapt();
                     }
                 }
             }
@@ -156,12 +188,14 @@ public static class TileSpatial
     {
         var format = plane.InternalClrFmt;
         var numComponents = plane.NumComponents;
+        TileFrequency.ReadTileStartCode(ref reader);
         headers = TileBandHeaders.Read(ref reader, bands, trimFlexBitsFlag, plane);
 
         var dcState = new MbDcState();
         var lpState = bands != JxrBandsPresent.DcOnly ? new MbLpState() : null;
         var hasHp = bands != JxrBandsPresent.DcOnly && bands != JxrBandsPresent.NoHighpass;
         var cbphpState = hasHp ? new MbCbphpState() : null;
+        if (hasHp) cbphpState!.InitMbCbphpGrid(widthInMb, heightInMb, numComponents);
         var hpState = hasHp ? new MbHpState() : null;
         var cbphpBuf = hasHp ? new int[numComponents] : null;
         int numLpQPs = headers.Lowpass?.LpQp?.NumQPs ?? 1;
@@ -174,6 +208,15 @@ public static class TileSpatial
         {
             for (var col = 0; col < widthInMb; col++)
             {
+                if (col % 16 == 0)
+                {
+                    lpState?.Scan.ResetTotals();
+                    if (hasHp)
+                    {
+                        hpState!.ScanHorizontal.ResetTotals();
+                        hpState.ScanVertical.ResetTotals();
+                    }
+                }
                 var mb = new Macroblock { Dc = new int[numComponents] };
                 MbDc.DecodeMb(ref reader, dcState, format, numComponents, mb.Dc);
                 if (lpState is not null)
@@ -185,7 +228,8 @@ public static class TileSpatial
                 if (hasHp)
                 {
                     mb.HpQpIndex = QpIndex.Read(ref reader, numHpQPs);
-                    MbCbphp.DecodeMb(ref reader, cbphpState!, numComponents, cbphpBuf!);
+                    MbCbphp.DecodeMb(ref reader, cbphpState!, format, numComponents,
+                        mbX: col, mbY: row, isLeftEdge: col == 0, isTopEdge: row == 0, cbphpBuf!);
                     mb.Hp = new int[numComponents * 256];
                     // mbHpMode must match the encoder's choice. T.832 derives it from
                     // the just-decoded LP coefficients of this MB — same input both
@@ -203,6 +247,16 @@ public static class TileSpatial
                     }
                 }
                 mbs[row * widthInMb + col] = mb;
+                if (col == widthInMb - 1 || col % 16 == 0)
+                {
+                    dcState.Adapt();
+                    lpState?.Adapt();
+                    if (hasHp)
+                    {
+                        hpState!.Adapt();
+                        cbphpState!.Adapt();
+                    }
+                }
             }
         }
 
