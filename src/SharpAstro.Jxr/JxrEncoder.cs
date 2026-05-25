@@ -945,18 +945,20 @@ public static class JxrEncoder
         // Pre-scaled signed-int working buffer. Layout: width × height × numComponents
         // interleaved (single-component case degenerates to a flat ints buffer).
         var working = new int[width * height * numComponents];
-        const bool scaledArith = false; // bScaledArith pending — turning on
-                                        // without the matching IDCT-stage
-                                        // bookkeeping makes the bitstream
-                                        // unparseable by JxrDecApp / WIC.
+        const int Bd16FScaleShift = 3;
+        var scaledArith = outputBitDepth == JxrOutputBitDepth.Bd16F;
         if (outputBitDepth == JxrOutputBitDepth.Bd16F)
         {
-            // Half-float input: sign-magnitude conversion per jxrlib's forwardHalf.
+            // Half-float input: sign-magnitude conversion per jxrlib's forwardHalf
+            // followed by the bScaledArith pre-shift (cShift = SHIFTZERO +
+            // QPFRACBITS = 3 in jxrlib/common.h). Paired with ScaledFlag=true
+            // in the plane header so the decode side knows to right-shift back.
             for (var i = 0; i < src.Length; i++)
             {
                 var bits = src[i];
                 var magnitude = bits & 0x7FFF;
-                working[i] = (bits & 0x8000) != 0 ? -magnitude : magnitude;
+                var signed = (bits & 0x8000) != 0 ? -magnitude : magnitude;
+                working[i] = signed << Bd16FScaleShift;
             }
         }
         else
