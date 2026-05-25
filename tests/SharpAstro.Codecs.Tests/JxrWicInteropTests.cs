@@ -569,6 +569,16 @@ public sealed class JxrWicInteropTests
                     _out.WriteLine($"    pixel center+{s} R: src={src:F4}, rt={rt:F4}, diff={Math.Abs(src - rt):F4}");
                 }
                 if (File.Exists(refTif)) File.Delete(refTif);
+
+                // FAIL the test until our user-image roundtrips reasonably
+                // through JxrDecApp. A loose threshold so progress shows up:
+                // 50% of pixels within 0.05 of source is the line between
+                // "garbage" and "structurally working", same definition as
+                // the close-count printout above. Tighten as we improve.
+                var closePct = closeCount * 100.0 / halves.Length;
+                closePct.ShouldBeGreaterThan(50.0,
+                    $"user-image roundtrip through JxrDecApp: only {closePct:F1}% pixels within 0.05 of source " +
+                    $"({closeCount}/{halves.Length}). Decoder produced visible garbage — see numbered _v0NN.jxr next to source for inspection.");
             }
         }
     }
