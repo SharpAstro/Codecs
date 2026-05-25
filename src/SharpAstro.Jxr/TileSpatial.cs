@@ -107,15 +107,21 @@ public static class TileSpatial
                         hpState.ScanVertical.ResetTotals();
                     }
                 }
+                // jxrlib (segenc.c:138-142) emits both LP_QP_INDEX and
+                // HP_QP_INDEX in EncodeMacroblockDC BEFORE any DC bits. We
+                // match that order so the resulting bitstream is jxrlib-
+                // compatible.
+                if (lpState is not null)
+                    QpIndex.Write(writer, numLpQPs, mb.LpQpIndex);
+                if (hasHp)
+                    QpIndex.Write(writer, numHpQPs, mb.HpQpIndex);
                 MbDc.EncodeMb(writer, dcState, format, numComponents, mb.Dc);
                 if (lpState is not null)
                 {
-                    QpIndex.Write(writer, numLpQPs, mb.LpQpIndex);
                     MbLp.EncodeMb(writer, lpState, format, numComponents, mb.Lp);
                 }
                 if (hasHp)
                 {
-                    QpIndex.Write(writer, numHpQPs, mb.HpQpIndex);
                     // CBPHP must appear in the bitstream before HP coefficient data,
                     // so compute it in a pre-pass and feed it to MbCbphp. For
                     // AllBands the CBPHP is computed from post-iModelBits-split
@@ -218,16 +224,20 @@ public static class TileSpatial
                     }
                 }
                 var mb = new Macroblock { Dc = new int[numComponents] };
+                // Match jxrlib's bitstream order: both QP indices first,
+                // then DC band data. See encoder side comment.
+                if (lpState is not null)
+                    mb.LpQpIndex = QpIndex.Read(ref reader, numLpQPs);
+                if (hasHp)
+                    mb.HpQpIndex = QpIndex.Read(ref reader, numHpQPs);
                 MbDc.DecodeMb(ref reader, dcState, format, numComponents, mb.Dc);
                 if (lpState is not null)
                 {
-                    mb.LpQpIndex = QpIndex.Read(ref reader, numLpQPs);
                     mb.Lp = new int[numComponents * 16];
                     MbLp.DecodeMb(ref reader, lpState, format, numComponents, mb.Lp);
                 }
                 if (hasHp)
                 {
-                    mb.HpQpIndex = QpIndex.Read(ref reader, numHpQPs);
                     MbCbphp.DecodeMb(ref reader, cbphpState!, format, numComponents,
                         mbX: col, mbY: row, isLeftEdge: col == 0, isTopEdge: row == 0, cbphpBuf!);
                     mb.Hp = new int[numComponents * 256];
