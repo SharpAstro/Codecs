@@ -68,7 +68,7 @@ var mbW = img.WidthInMb;
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
                 subBlock.Clear();
-                subBlock[0] = dcGrid[sbRow * 4 + sbCol];
+                subBlock[0] = dcGrid[sbCol * 4 + sbRow];
                 Transforms.ICT4x4(subBlock);
                 StoreSubBlock(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
             }
@@ -174,7 +174,7 @@ var mbW = img.WidthInMb;
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
                 var blkIdx = sbRow * 4 + sbCol;
-                subBlock[0] = dcGrid[blkIdx];
+                subBlock[0] = dcGrid[sbCol * 4 + sbRow];
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, 0, blkIdx, p];
                 Transforms.ICT4x4(subBlock);
@@ -320,7 +320,7 @@ var mbW = img.WidthInMb;
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
                 var blkIdx = sbRow * 4 + sbCol;
-                subBlock[0] = dcGrid[blkIdx];
+                subBlock[0] = dcGrid[sbCol * 4 + sbRow];
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
                 Transforms.ICT4x4(subBlock);
@@ -490,7 +490,7 @@ var mbW = img.WidthInMb;
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
                 var blkIdx = sbRow * 4 + sbCol;
-                subBlock[0] = dcGrid[blkIdx];
+                subBlock[0] = dcGrid[sbCol * 4 + sbRow];
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
                 Transforms.ICT4x4(subBlock);
@@ -834,7 +834,7 @@ var mbW = img.WidthInMb;
             for (var sbCol = 0; sbCol < 4; sbCol++)
             {
                 var blkIdx = sbRow * 4 + sbCol;
-                subBlock[0] = dcGrid[blkIdx];
+                subBlock[0] = dcGrid[sbCol * 4 + sbRow];
                 for (var p = 1; p < 16; p++)
                     subBlock[p] = mbHp[mbx, mby, comp, blkIdx, p];
                 Transforms.ICT4x4(subBlock);

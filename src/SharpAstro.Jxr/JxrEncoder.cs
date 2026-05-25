@@ -63,7 +63,9 @@ public static class JxrEncoder
                 // Load 4×4 sub-block from the source image with pre-scaling.
                 LoadSubBlock(pixels, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
                 Transforms.FCT4x4(subBlock);
-                dcGrid[sbRow * 4 + sbCol] = subBlock[0];
+                // Column-major sub-block DC loading to match jxrlib's blkOffset
+                // storage convention; see encoder no-flexbits path for details.
+                dcGrid[sbCol * 4 + sbRow] = subBlock[0];
             }
             Transforms.FCT4x4Stage2(dcGrid);
             mbDc[mbx, mby, 0] = dcGrid[0];
@@ -155,8 +157,10 @@ public static class JxrEncoder
             {
                 LoadSubBlockFromWorking(working, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
                 Transforms.FCT4x4(subBlock);
+                // Col-major sub-block DC into the FCT4x4Stage2 grid; HP coefs
+                // stay in row-major mbHp[blkIdx]. See no-flexbits BD16 path.
+                dcGrid[sbCol * 4 + sbRow] = subBlock[0];
                 var blkIdx = sbRow * 4 + sbCol;
-                dcGrid[blkIdx] = subBlock[0];
                 // Stash positions 1..15 of this sub-block as HP coefficients.
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, 0, blkIdx, p] = subBlock[p];
@@ -455,7 +459,7 @@ public static class JxrEncoder
                 LoadSubBlockFromWorkingRgb(working, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, numComponents, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
-                dcGrid[blkIdx] = subBlock[0];
+                dcGrid[sbCol * 4 + sbRow] = subBlock[0];
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
@@ -587,7 +591,7 @@ public static class JxrEncoder
                 LoadSubBlockFromWorking(working, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
-                dcGrid[blkIdx] = subBlock[0];
+                dcGrid[sbCol * 4 + sbRow] = subBlock[0];
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, 0, blkIdx, p] = subBlock[p];
             }
@@ -712,7 +716,7 @@ public static class JxrEncoder
                 LoadSubBlockFromWorkingRgb(working, width, height, mbx * 16 + sbCol * 4, mby * 16 + sbRow * 4, comp, numComponents, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
-                dcGrid[blkIdx] = subBlock[0];
+                dcGrid[sbCol * 4 + sbRow] = subBlock[0];
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
@@ -1000,7 +1004,7 @@ public static class JxrEncoder
                     LoadSubBlockFromWorkingRgb(working, width, height, x0, y0, comp, numComponents, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
-                dcGrid[blkIdx] = subBlock[0];
+                dcGrid[sbCol * 4 + sbRow] = subBlock[0];
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
@@ -1266,7 +1270,7 @@ public static class JxrEncoder
                     LoadSubBlockFromWorkingRgb(working, width, height, x0, y0, comp, numComponents, subBlock);
                 Transforms.FCT4x4(subBlock);
                 var blkIdx = sbRow * 4 + sbCol;
-                dcGrid[blkIdx] = subBlock[0];
+                dcGrid[sbCol * 4 + sbRow] = subBlock[0];
                 for (var p = 1; p < 16; p++)
                     mbHp[mbx, mby, comp, blkIdx, p] = subBlock[p];
             }
