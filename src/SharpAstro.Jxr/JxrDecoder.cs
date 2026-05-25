@@ -627,9 +627,12 @@ var mbW = img.WidthInMb;
             mbDcLp[mbx, mby, comp, 0] = mbDc[mbx, mby, comp];
 
         // Dequantize using the per-band QP from the plane header (QP=1 is no-op).
-        var dcDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.DcQuant);
-        var lpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.LpQuant);
-        var hpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.HpQuant);
+        // ScaledFlag in the plane header drives the bScaledArith-aware path
+        // (multiply by 2^3) in jxrlib's formatQuantizer.
+        var dqScaled = img.PlaneHeader.ScaledFlag;
+        var dcDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.DcQuant, dqScaled);
+        var lpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.LpQuant, dqScaled);
+        var hpDiv = JxrQuant.QpIndexToDivisor(img.PlaneHeader.HpQuant, dqScaled);
         JxrQuant.DequantizeDc(mbDc, dcDiv);
         JxrQuant.DequantizeLp(mbDcLp, lpDiv);
         JxrQuant.DequantizeHp(mbHp, hpDiv);

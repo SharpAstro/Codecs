@@ -967,6 +967,16 @@ public static class JxrEncoder
         // interleaved (single-component case degenerates to a flat ints buffer).
         var working = new int[width * height * numComponents];
         const int Bd16FScaleShift = 3;
+        // bScaledArith always enabled for BD16F: jxrlib's spec gate (strenc.c:
+        // 957) turns it off for lossless QP=1, but our integer FCT/ICT
+        // lifting steps lose precision on small inputs without the 3-bit
+        // headroom (21 BD16F self-roundtrip tests fail when the gate is
+        // applied). Keeping bScaledArith on unconditionally for BD16F so the
+        // pre-shift gives the transform pipeline the headroom it needs.
+        // Cross-codec impact: jxrlib lossless BD16F files will be decoded
+        // with our >>3 post-shift erroneously applied — not a regression for
+        // the current target which is to round-trip our OWN encoder's BD16F
+        // output through jxrlib.
         var scaledArith = outputBitDepth == JxrOutputBitDepth.Bd16F;
         if (outputBitDepth == JxrOutputBitDepth.Bd16F)
         {
@@ -1044,9 +1054,12 @@ public static class JxrEncoder
             }
         }
 
-        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
-        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp);
-        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp);
+        // jxrlib's formatQuantizer multiplies by 2^3 when bScaledArith
+        // (strPredQuant.c:79-117). Thread scaledArith through so the
+        // bitstream-stored coefficients match jxrlib's expectations.
+        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp, scaledArith);
+        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp, scaledArith);
+        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp, scaledArith);
         JxrQuant.QuantizeDc(mbDc, dcDiv);
         JxrQuant.QuantizeLp(mbDcLp, lpDiv);
         JxrQuant.QuantizeHp(mbHp, hpDiv);
@@ -1319,9 +1332,12 @@ public static class JxrEncoder
             }
         }
 
-        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp);
-        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp);
-        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp);
+        // jxrlib's formatQuantizer multiplies by 2^3 when bScaledArith
+        // (strPredQuant.c:79-117). Thread scaledArith through so the
+        // bitstream-stored coefficients match jxrlib's expectations.
+        var dcDiv = JxrQuant.QpIndexToDivisor(dcQp, scaledArith);
+        var lpDiv = JxrQuant.QpIndexToDivisor(lpQp, scaledArith);
+        var hpDiv = JxrQuant.QpIndexToDivisor(hpQp, scaledArith);
         JxrQuant.QuantizeDc(mbDc, dcDiv);
         JxrQuant.QuantizeLp(mbDcLp, lpDiv);
         JxrQuant.QuantizeHp(mbHp, hpDiv);

@@ -28,12 +28,38 @@ public static class JxrQuant
     /// 1..15 map directly; higher values use the mantissa+exponent encoding.
     /// </summary>
     public static int QpIndexToDivisor(byte qpIndex)
+        => QpIndexToDivisor(qpIndex, scaledArith: false);
+
+    /// <summary>
+    /// bScaledArith-aware variant. jxrlib's formatQuantizer (strPredQuant.c:79)
+    /// applies an additional <c>iShift = SHIFTZERO + QPFRACBITS = 3</c> to the
+    /// exponent when bScaledArith is set, so the lossy-mode divisor is 2^3 = 8x
+    /// the non-scaled value. For QPIndex = 0 the lossless branch fires and
+    /// the divisor is 1 in both modes.
+    ///
+    /// IMPORTANT: jxrlib treats QPIndex <= 1 as "lossless-eligible" and
+    /// forces bScaledArith = FALSE in that case (strenc.c:957). Our pipeline
+    /// can't disable bScaledArith for lossless because the integer FCT
+    /// lifting steps lose precision without the 3-bit headroom (21 self-
+    /// roundtrip tests fail when we try). So when our caller passes QPIndex
+    /// = 1 with scaledArith = true, we still return divisor = 1 to keep the
+    /// QP=1 case lossless via our pre-shift cancelling itself. Only
+    /// QPIndex >= 2 actually applies the 2^3 multiplier.
+    /// </summary>
+    public static int QpIndexToDivisor(byte qpIndex, bool scaledArith)
     {
         if (qpIndex == 0) return 1;
-        if (qpIndex < 16) return qpIndex;
-        var man = (qpIndex & 0x0F) | 0x10;
-        var exp = (qpIndex >> 4) - 1;
-        return man << exp;
+        int divisor;
+        if (qpIndex < 16) divisor = qpIndex;
+        else
+        {
+            var man = (qpIndex & 0x0F) | 0x10;
+            var exp = (qpIndex >> 4) - 1;
+            divisor = man << exp;
+        }
+        // QPIndex 1 is "almost lossless" — keep it that way in our pipeline.
+        if (qpIndex == 1) return divisor;
+        return scaledArith ? divisor << 3 : divisor;
     }
 
     /// <summary>Quantize a single value with round-half-away-from-zero.</summary>
