@@ -36,11 +36,14 @@ public sealed class AdaptiveScan
     // walks the dctIndex-permuted positions; LP coefs come from
     // FCT4x4Stage2 which intentionally skips FwdPermute and are scanned
     // in the un-permuted grgiZigzagInv4x4_lowpass order.
-    // LP scan retains the T.832-Table-107 order. Switching to jxrlib's
-    // grgiZigzagInv4x4_lowpass exposes another LP-layout bug; leaving as-is
-    // until that bug is mapped.
+    // LP scan = jxrlib's grgiZigzagInv4x4_lowpass (image/sys/image.c). Now
+    // that the super-DC grid is loaded column-major to match jxrlib's
+    // blkOffset[] layout (so FCT4x4Stage2 produces the same coefficients
+    // jxrlib writes to the bitstream), the LP scan must use jxrlib's
+    // natural-data-position order to read those coefs back in the right
+    // sequence.
     private static ReadOnlySpan<byte> ScanOrderLp =>
-        [0, 4, 1, 5, 8, 2, 9, 6, 12, 3, 10, 13, 7, 14, 11, 15];
+        [0, 1, 4, 5, 2, 8, 6, 9, 3, 12, 10, 7, 13, 11, 14, 15];
     private static ReadOnlySpan<byte> ScanOrder0 =>
         [0, 5, 10, 12, 1, 2, 8, 4, 6, 9, 3, 14, 13, 7, 11, 15];
     private static ReadOnlySpan<byte> ScanOrder1 =>

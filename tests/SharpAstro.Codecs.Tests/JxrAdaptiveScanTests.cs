@@ -18,11 +18,10 @@ public sealed class JxrAdaptiveScanTests
         Span<byte> order = stackalloc byte[16];
         scan.CopyOrderTo(order);
 
-        // LP currently retained the T.832-Table-107 order even after the HP
-        // scan tables were aligned to jxrlib's natural-data-order: changing
-        // LP to grgiZigzagInv4x4_lowpass broke the 2-MB cross-codec roundtrip
-        // (maxDiff 0.08 -> 1.5). See AdaptiveScan.ForLp comment.
-        byte[] expected = [0, 4, 1, 5, 8, 2, 9, 6, 12, 3, 10, 13, 7, 14, 11, 15];
+        // LP scan aligned to jxrlib's grgiZigzagInv4x4_lowpass now that the
+        // super-DC grid loading uses jxrlib's column-major blkOffset[]
+        // convention. See AdaptiveScan.ScanOrderLp comment.
+        byte[] expected = [0, 1, 4, 5, 2, 8, 6, 9, 3, 12, 10, 7, 13, 11, 14, 15];
         for (var i = 0; i < 16; i++) order[i].ShouldBe(expected[i]);
     }
 
