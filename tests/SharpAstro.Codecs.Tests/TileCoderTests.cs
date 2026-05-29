@@ -80,26 +80,28 @@ public sealed class TileCoderTests
         var dc = new BitWriter();
         var lp = new BitWriter();
         var ac = new BitWriter();
+        var fl = new BitWriter();
         for (var r = 0; r < rows; r++)
         {
             for (var c = 0; c < cols; c++)
-                encTile.EncodeMacroblock(encCtx, encoded[r, c], c, r, dc, lp, ac);
+                encTile.EncodeMacroblock(encCtx, encoded[r, c], c, r, dc, lp, ac, fl);
             encTile.AdvanceRow();
         }
-        dc.WriteBits(0, 24); lp.WriteBits(0, 24); ac.WriteBits(0, 24);
+        dc.WriteBits(0, 24); lp.WriteBits(0, 24); ac.WriteBits(0, 24); fl.WriteBits(0, 24);
 
         var decCtx = new CodingContext(ColorFormat.Yuv444, 3);
         var decTile = new TileCoder(cols);
         var rdc = new BitReader(dc.AsSpan());
         var rlp = new BitReader(lp.AsSpan());
         var rac = new BitReader(ac.AsSpan());
+        var rfl = new BitReader(fl.AsSpan());
         var decoded = new Macroblock[rows, cols];
         for (var r = 0; r < rows; r++)
         {
             for (var c = 0; c < cols; c++)
             {
                 decoded[r, c] = new Macroblock(3);
-                decTile.DecodeMacroblock(decCtx, decoded[r, c], c, r, ref rdc, ref rlp, ref rac, HpQp);
+                decTile.DecodeMacroblock(decCtx, decoded[r, c], c, r, ref rdc, ref rlp, ref rac, ref rfl, HpQp);
             }
             decTile.AdvanceRow();
         }

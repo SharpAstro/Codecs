@@ -65,15 +65,17 @@ public sealed class MacroblockCoderTests
         var dc = new BitWriter();
         var lp = new BitWriter();
         var ac = new BitWriter();
-        MacroblockCoder.Encode(encCtx, src, dc, lp, ac);
-        dc.WriteBits(0, 24); lp.WriteBits(0, 24); ac.WriteBits(0, 24); // pad for 5-bit root peeks
+        var fl = new BitWriter();
+        MacroblockCoder.Encode(encCtx, src, dc, lp, ac, fl);
+        dc.WriteBits(0, 24); lp.WriteBits(0, 24); ac.WriteBits(0, 24); fl.WriteBits(0, 24); // pad for 5-bit root peeks
 
         var decCtx = new CodingContext(ColorFormat.Yuv444, 3);
         var dst = new Macroblock(3) { Orientation = orientation };
         var rdc = new BitReader(dc.AsSpan());
         var rlp = new BitReader(lp.AsSpan());
         var rac = new BitReader(ac.AsSpan());
-        MacroblockCoder.Decode(decCtx, dst, ref rdc, ref rlp, ref rac, HpQp);
+        var rfl = new BitReader(fl.AsSpan());
+        MacroblockCoder.Decode(decCtx, dst, ref rdc, ref rlp, ref rac, ref rfl, HpQp);
 
         for (var ch = 0; ch < 3; ch++)
         {

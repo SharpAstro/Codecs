@@ -51,7 +51,7 @@ internal sealed class TileCoder
     // ===================================================================== encode
 
     public void EncodeMacroblock(CodingContext ctx, Macroblock mb, int mbX, int mbY,
-                                 BitWriter dc, BitWriter lp, BitWriter ac)
+                                 BitWriter dc, BitWriter lp, BitWriter ac, BitWriter fl)
     {
         bool ctxLeft = mbX == 0, ctxTop = mbY == 0;
 
@@ -72,7 +72,7 @@ internal sealed class TileCoder
         var (leftCbp, topCbp) = NeighborCbp(mbX);
         MacroblockCoder.EncodeDc(ctx, mb, dc);
         MacroblockCoder.EncodeLowpass(ctx, mb, lp);
-        MacroblockCoder.EncodeHighpass(ctx, mb, ac, ctxLeft, ctxTop, leftCbp, topCbp);
+        MacroblockCoder.EncodeHighpass(ctx, mb, ac, fl, ctxLeft, ctxTop, leftCbp, topCbp);
 
         for (var ch = 0; ch < Channels; ch++) _cur[ch][mbX].Cbp = mb.Cbp[ch]; // predCBPEnc stores the CBP
     }
@@ -80,7 +80,7 @@ internal sealed class TileCoder
     // ===================================================================== decode
 
     public void DecodeMacroblock(CodingContext ctx, Macroblock mb, int mbX, int mbY,
-                                 ref BitReader dc, ref BitReader lp, ref BitReader ac, int hpQp = 1)
+                                 ref BitReader dc, ref BitReader lp, ref BitReader ac, ref BitReader fl, int hpQp = 1)
     {
         bool ctxLeft = mbX == 0, ctxTop = mbY == 0;
 
@@ -95,7 +95,7 @@ internal sealed class TileCoder
         mb.Orientation = 2 - Prediction.GetAcPredMode(mb.BlockDc, Cf);
 
         var (leftCbp, topCbp) = NeighborCbp(mbX);
-        MacroblockCoder.DecodeHighpass(ctx, mb, ref ac, hpQp, ctxLeft, ctxTop, leftCbp, topCbp);
+        MacroblockCoder.DecodeHighpass(ctx, mb, ref ac, ref fl, hpQp, ctxLeft, ctxTop, leftCbp, topCbp);
         for (var ch = 0; ch < Channels; ch++) _cur[ch][mbX].Cbp = mb.Cbp[ch]; // predCBPDec stores the CBP
 
         // predACDec: add AC, then store reconstructed neighbor info.

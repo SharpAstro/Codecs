@@ -27,26 +27,29 @@ internal static class MacroblockCoder
 
     // ----------------------------------------------------------------- public API
 
-    /// <summary>Encode <paramref name="mb"/> (YUV444) into the DC/LP/AC streams (single isolated MB, no neighbors).</summary>
+    /// <summary>
+    /// Encode <paramref name="mb"/> (YUV444) into the DC/LP/AC/FL streams (single isolated MB,
+    /// no neighbors). For a single MB the AC model bits are 0, so the flexbits stream stays empty.
+    /// </summary>
     public static void Encode(CodingContext ctx, Macroblock mb,
-                              BitWriter dc, BitWriter lp, BitWriter ac,
+                              BitWriter dc, BitWriter lp, BitWriter ac, BitWriter fl,
                               bool ctxLeft = true, bool ctxTop = true)
     {
         RequireYuv444(ctx);
         EncodeDc(ctx, mb, dc);
         EncodeLowpass(ctx, mb, lp);
-        EncodeHighpass(ctx, mb, ac, ctxLeft, ctxTop, null, null);
+        EncodeHighpass(ctx, mb, ac, fl, ctxLeft, ctxTop, null, null);
     }
 
-    /// <summary>Decode a YUV444 macroblock from the DC/LP/AC streams into <paramref name="mb"/> (single isolated MB).</summary>
+    /// <summary>Decode a YUV444 macroblock from the DC/LP/AC/FL streams into <paramref name="mb"/> (single isolated MB).</summary>
     public static void Decode(CodingContext ctx, Macroblock mb,
-                              ref BitReader dc, ref BitReader lp, ref BitReader ac,
+                              ref BitReader dc, ref BitReader lp, ref BitReader ac, ref BitReader fl,
                               int hpQp = 1, bool ctxLeft = true, bool ctxTop = true)
     {
         RequireYuv444(ctx);
         DecodeDc(ctx, mb, ref dc);
         DecodeLowpass(ctx, mb, ref lp);
-        DecodeHighpass(ctx, mb, ref ac, hpQp, ctxLeft, ctxTop, null, null);
+        DecodeHighpass(ctx, mb, ref ac, ref fl, hpQp, ctxLeft, ctxTop, null, null);
     }
 
     private static void RequireYuv444(CodingContext ctx)
@@ -135,7 +138,7 @@ internal static class MacroblockCoder
         {
             rl[ch] = new int[32];
             residual[ch] = new int[16];
-            numCoeffs[ch] = ScanLowpass(mb.BlockDc[ch], residual[ch], scan, mbits, rl[ch]);
+            numCoeffs[ch] = ScanCoefficients(mb.BlockDc[ch], 0, residual[ch], scan, mbits, rl[ch]);
             mbits = model.FlcBits[1];
         }
 
@@ -249,14 +252,14 @@ internal static class MacroblockCoder
 
     // ===================================================================== HP band
 
-    internal static void EncodeHighpass(CodingContext ctx, Macroblock mb, BitWriter w,
+    internal static void EncodeHighpass(CodingContext ctx, Macroblock mb, BitWriter w, BitWriter fl,
                                         bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp)
     {
         CodeCbp(ctx, mb, w, ctxLeft, ctxTop, leftCbp, topCbp);
-        CodeCoeffs(ctx, mb, w);
+        CodeCoeffs(ctx, mb, w, fl);
     }
 
-    internal static void DecodeHighpass(CodingContext ctx, Macroblock mb, ref BitReader r, int hpQp,
+    internal static void DecodeHighpass(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp,
                                         bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp)
     {
         DecodeCbp(ctx, mb, ref r);
@@ -264,7 +267,7 @@ internal static class MacroblockCoder
         for (var i = 0; i < 3; i++)
             mb.Cbp[i] = CbpPrediction.PredictDec(mb.DiffCbp[i], ctxLeft, ctxTop,
                 topCbp?[i] ?? 0, leftCbp?[i] ?? 0, i, ctx.Cbp);
-        DecodeCoeffs(ctx, mb, ref r, hpQp);
+        DecodeCoeffs(ctx, mb, ref r, ref fl, hpQp);
     }
 
     // ----------------------------------------------------------- CBP (encode)
@@ -448,12 +451,17 @@ internal static class MacroblockCoder
 
     // ----------------------------------------------------------- HP coefficients
 
-    private static void CodeCoeffs(CodingContext ctx, Macroblock mb, BitWriter w)
+    private static void CodeCoeffs(CodingContext ctx, Macroblock mb, BitWriter w, BitWriter fl)
     {
         var scan = mb.Orientation == 1 ? ctx.ScanVert : ctx.ScanHoriz;
+        var order = MacroblockLayout.DctIndex; // flexbits emit/read order within a block
+        int trim = ctx.TrimFlexBits;           // 0 in the default profile
         int mbits = ctx.ModelAc.FlcBits[0];
+        int flex = mbits >= trim ? mbits - trim : 0;
+        int mask = (1 << flex) - 1;
         var lapMean = new int[2];
         var localCoef = new int[32];
+        var residual = new int[16];
         bool chroma = false;
 
         for (var i = 0; i < 3; i++)
@@ -466,23 +474,51 @@ internal static class MacroblockCoder
                     int iIndex = iBlock * 4 + sub;
                     var coeffs = mb.Plane[i];
                     int off = MacroblockLayout.BlkOffset[iIndex];
-                    if ((pattern & 1) != 0)
+                    if ((pattern & 1) == 0)
                     {
-                        int n = ScanZero(coeffs, off, scan, localCoef);
+                        // not significant: the whole (sub-threshold) coefficients ride the flexbits.
+                        if (flex > 0)
+                            for (var k = 1; k < 16; k++)
+                            {
+                                int data = coeffs[off + order[k]];
+                                int atdata = Math.Abs(data) >> trim;
+                                int word = atdata & mask, len = flex;
+                                if (atdata != 0) { word += word + (data < 0 ? 1 : 0); len++; }
+                                fl.WriteBits((uint)word, len);
+                            }
+                    }
+                    else
+                    {
+                        int n = mbits == 0
+                            ? ScanZero(coeffs, off, scan, localCoef)
+                            : ScanCoefficients(coeffs, off, residual, scan, mbits, localCoef);
                         lapMean[chroma ? 1 : 0] += n;
                         EncodeBlock(chroma, localCoef, n, ctx, CtHp, w, 1);
+                        if (flex > 0)
+                            for (var k = 1; k < 16; k++)
+                            {
+                                int p = order[k];
+                                fl.WriteBits((uint)(residual[p] >> 1), flex + (residual[p] & 1));
+                            }
                     }
                 }
-                if (iBlock == 3) { mbits = ctx.ModelAc.FlcBits[1]; chroma = true; }
+                if (iBlock == 3)
+                {
+                    mbits = ctx.ModelAc.FlcBits[1]; chroma = true;
+                    flex = mbits >= trim ? mbits - trim : 0;
+                    mask = (1 << flex) - 1;
+                }
             }
         }
 
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, ctx.ModelAc);
     }
 
-    private static void DecodeCoeffs(CodingContext ctx, Macroblock mb, ref BitReader r, int hpQp)
+    private static void DecodeCoeffs(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp)
     {
         var scan = mb.Orientation == 1 ? ctx.ScanVert : ctx.ScanHoriz;
+        int trim = ctx.TrimFlexBits;
+        int mbits = ctx.ModelAc.FlcBits[0];
         var lapMean = new int[2];
         bool chroma = false;
         int cbp = mb.Cbp[0];
@@ -496,13 +532,10 @@ internal static class MacroblockCoder
                     int iIndex = iBlock * 4 + sub;
                     var coeffs = mb.Plane[i];
                     int off = MacroblockLayout.BlkOffset[iIndex];
-                    if ((cbp & 1) != 0)
-                    {
-                        int n = DecodeBlockHighpass(chroma, ctx, ref r, hpQp, coeffs, off, scan);
-                        lapMean[chroma ? 1 : 0] += n;
-                    }
+                    int n = DecodeBlockAdaptive((cbp & 1) != 0, chroma, ctx, ref r, ref fl, coeffs, off, scan, mbits, trim, hpQp);
+                    lapMean[chroma ? 1 : 0] += n;
                 }
-                if (iBlock == 3) chroma = true;
+                if (iBlock == 3) { mbits = ctx.ModelAc.FlcBits[1]; chroma = true; }
             }
             cbp = mb.Cbp[(i + 1) % 3];
         }
@@ -510,17 +543,67 @@ internal static class MacroblockCoder
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, ctx.ModelAc);
     }
 
+    // segdec.c DecodeBlockAdaptive — decode the highpass "high" part (run/level, dequantized by
+    // iQP<<mbits) and then fold in the flexbits "low" part. Mirrors CodeCoeffs' significant /
+    // non-significant split.
+    private static int DecodeBlockAdaptive(bool noSkip, bool chroma, CodingContext ctx,
+                                           ref BitReader r, ref BitReader fl, int[] coeffs, int off,
+                                           AdaptiveScan scan, int mbits, int trim, int qp)
+    {
+        int n = 0;
+        int flex = mbits - trim;
+        if (flex < 0) flex = 0;
+
+        if (noSkip)
+            n = DecodeBlockHighpass(chroma, ctx, ref r, qp << mbits, coeffs, off, scan);
+
+        if (flex > 0)
+        {
+            var order = MacroblockLayout.DctIndex;
+            if (qp + trim == 1) // lossless HP (trim == 0, qp == 1)
+            {
+                for (var k = 1; k < 16; k++)
+                {
+                    int pi = off + order[k];
+                    if (coeffs[pi] < 0) coeffs[pi] -= (int)fl.ReadBits(flex);
+                    else if (coeffs[pi] > 0) coeffs[pi] += (int)fl.ReadBits(flex);
+                    else coeffs[pi] = GetBit16s(ref fl, flex);
+                }
+            }
+            else
+            {
+                int qp1 = qp << trim;
+                for (var k = 1; k < 16; k++)
+                {
+                    int pi = off + order[k];
+                    if (coeffs[pi] < 0) coeffs[pi] -= qp1 * (int)fl.ReadBits(flex);
+                    else if (coeffs[pi] > 0) coeffs[pi] += qp1 * (int)fl.ReadBits(flex);
+                    else coeffs[pi] = qp1 * GetBit16s(ref fl, flex);
+                }
+            }
+        }
+        return n;
+    }
+
+    // segdec.c _getBit16s — read cBits+1 bits as a signed value (sign in the LSB); a zero value
+    // consumes only cBits.
+    private static int GetBit16s(ref BitReader r, int cBits)
+    {
+        uint v = r.PeekBits(cBits + 1);
+        int ret = (int)((v >> 1) ^ (uint)-(int)(v & 1)) + (int)(v & 1);
+        r.SkipBits(cBits + (ret != 0 ? 1 : 0));
+        return ret;
+    }
+
     // ----------------------------------------------------------- adaptive scans
 
-    // gRes LUT (segenc.c): residual code for a non-significant coefficient (index = level + 32).
-    private static readonly int[] GRes = BuildGRes();
-
-    private static int[] BuildGRes()
+    // segenc.c AdaptiveScan non-significant residual code (the gRes LUT value, computed for any
+    // model-bits width — the LUT only covers small levels / mbits<6; this matches its formula
+    // with iTrim=0): 0 for level 0, 4*level+1 for level>0, 4*|level|+3 for level<0.
+    private static int Residual(int level)
     {
-        var g = new int[65];
-        for (var level = -32; level <= 32; level++)
-            g[level + 32] = level == 0 ? 0 : level < 0 ? (2 * -level + 1) * 2 + 1 : 2 * level * 2 + 1;
-        return g;
+        int sign = -(level < 0 ? 1 : 0); // 0 or -1
+        return (level ^ sign) * 4 + (6 & sign) + (level != 0 ? 1 : 0);
     }
 
     // segenc.c AdaptiveScanZero — model bits = 0 (the first-MB highpass case): pure run/level, no residual.
@@ -542,14 +625,16 @@ internal static class MacroblockCoder
         return n;
     }
 
-    // segenc.c AdaptiveScan, iTrim==0 && modelBits<6 branch (the lowpass case at modelBits=4):
-    // splits each coefficient into a run/level "high" part and a per-coefficient residual "low" part.
-    private static int ScanLowpass(int[] coeffs, int[] residual, AdaptiveScan scan, int mbits, int[] rl)
+    // segenc.c AdaptiveScan, iTrim==0 branch (any model-bits width): splits each coefficient at
+    // block base <paramref name="off"/> into a run/level "high" part and a per-coefficient
+    // residual "low" part (residual is within-block indexed, 0..15). Used by both LP (off=0,
+    // coeffs=BlockDc) and HP (off=blkOffset, coeffs=plane).
+    private static int ScanCoefficients(int[] coeffs, int off, int[] residual, AdaptiveScan scan, int mbits, int[] rl)
     {
         int thOff = (1 << mbits) - 1, th = thOff * 2 + 1;
         int run = 0, n = 0;
 
-        int s1 = scan.Scan[1], level = coeffs[s1];
+        int s1 = scan.Scan[1], level = coeffs[off + s1];
         if ((uint)(level + thOff) >= (uint)th)
         {
             int abs = Math.Abs(level), hi = abs >> mbits;
@@ -557,12 +642,12 @@ internal static class MacroblockCoder
             scan.Visit(1);
             rl[0] = run; rl[1] = level < 0 ? -hi : hi; n = 1; run = 0;
         }
-        else { run++; residual[s1] = GRes[level + 32]; }
+        else { run++; residual[s1] = Residual(level); }
 
         for (var k = 2; k < 16; k++)
         {
             int sk = scan.Scan[k];
-            level = coeffs[sk];
+            level = coeffs[off + sk];
             if ((uint)(level + thOff) >= (uint)th)
             {
                 int sign = -(level < 0 ? 1 : 0);
@@ -571,7 +656,7 @@ internal static class MacroblockCoder
                 scan.Visit(k);
                 rl[n * 2] = run; rl[n * 2 + 1] = (hi ^ sign) - sign; n++; run = 0;
             }
-            else { run++; residual[sk] = GRes[level + 32]; }
+            else { run++; residual[sk] = Residual(level); }
         }
         return n;
     }
