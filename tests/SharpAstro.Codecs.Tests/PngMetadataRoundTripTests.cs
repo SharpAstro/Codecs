@@ -102,7 +102,11 @@ public sealed class PngMetadataRoundTripTests
     [Fact]
     public void Cicp_CustomValues()
     {
-        var cicp = new CicpChunk(ColorPrimaries: 9, TransferFunction: 16, MatrixCoefficients: 0, VideoFullRangeFlag: true);
+        var cicp = new CicpChunk(
+            ColorPrimaries:     SharpAstro.Color.Icc.ColorPrimaries.BT2020,
+            TransferFunction:   SharpAstro.Color.Icc.TransferFunction.Pq,
+            MatrixCoefficients: SharpAstro.Color.Icc.MatrixCoefficients.Identity,
+            VideoFullRangeFlag: true);
         var png = PngWriter.Encode(TinyRgba, 4, 4, new PngWriteOptions { Cicp = cicp });
         var img = PngReader.Decode(png);
         img.Cicp.ShouldBe(cicp);

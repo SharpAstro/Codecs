@@ -7,13 +7,19 @@
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
-    <VersionPrefix>3.0.0</VersionPrefix>
-    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <!-- 3.1: adds ITU-T H.273 enums (ColorPrimaries / TransferFunction /
+         MatrixCoefficients) plus IccProfiles.WithCicp helper that injects
+         an ICC v4.4 cicp tag into an existing profile (Profile ID MD5
+         recomputed per ICC v4 §7.2.18). Lets callers tag TIFFs / JPEGs
+         with HDR10 / HLG / wide-gamut signalling that's recognised by
+         PixInsight, Affinity Photo, recent Photoshop and ImageMagick. -->
+    <VersionPrefix>3.1.0</VersionPrefix>
+    <AssemblyVersion>3.1.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Color.Icc</PackageId>
     <Product>SharpAstro.Color.Icc</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Bundled ICC profiles (sRGB v4) for .NET image-codec consumers. 588-byte LittleCMS-generated profile loaded lazily, returned as ReadOnlyMemory&lt;byte&gt; suitable for embedding in TIFF/PNG/JPEG via the SharpAstro codec packages.</Description>
+    <Description>ICC v4 colour-management primitives for .NET image-codec consumers. Bundled sRGB v4 profile (588-byte LittleCMS-generated, ReadOnlyMemory&lt;byte&gt; for embedding in TIFF/PNG/JPEG) plus a WithCicp(...) helper that injects an ICC v4.4 cicp tag carrying H.273 colour-primaries / transfer-function codepoints, so HDR10, HLG, wide-gamut, and linear-scene-light signalling can be added on top of any base profile. Ships H.273 ColorPrimaries / TransferFunction / MatrixCoefficients enums shared with SharpAstro.Png's PNG-3 cICP chunk. AOT-compatible.</Description>
     <PackageTags>icc color profile srgb aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

@@ -8,8 +8,15 @@
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
-    <VersionPrefix>3.0.0</VersionPrefix>
-    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <!-- 3.1: CicpChunk record's positional parameters are now H.273 enums
+         from SharpAstro.Color.Icc (ColorPrimaries / TransferFunction /
+         MatrixCoefficients) instead of raw bytes. Binary-breaking for
+         callers that constructed `new CicpChunk(9, 16, 0, true)`; they
+         now write `new CicpChunk(ColorPrimaries.BT2020, TransferFunction.Pq,
+         MatrixCoefficients.Identity, true)`. The static presets
+         (Hdr10Pq / Bt2020Hlg / Srgb) are unchanged source-wise. -->
+    <VersionPrefix>3.1.0</VersionPrefix>
+    <AssemblyVersion>3.1.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Png</PackageId>
     <Product>SharpAstro.Png</Product>
@@ -31,6 +38,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- CicpChunk's H.273 enum codepoint definitions live in SharpAstro.Color.Icc;
+         the same enums drive ICC v4.4 cicp-tag injection via IccProfiles.WithCicp.
+         Centralising the enums means PNG cICP signalling and ICC cicp signalling
+         agree on naming + numbering. -->
+    <ProjectReference Include="..\SharpAstro.Color.Icc\SharpAstro.Color.Icc.csproj" />
     <PackageReference Include="Microsoft.SourceLink.GitHub">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
