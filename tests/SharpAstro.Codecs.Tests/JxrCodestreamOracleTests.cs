@@ -74,6 +74,149 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
+    // Rung 7f.2 — Photo Overlap (OL_ONE, jxrlib's default) encoder conformance: our
+    // overlap-on encode, decoded by the reference JxrDecApp, must come back lossless.
+    [Theory]
+    [InlineData(16, 16, "gradient")]
+    [InlineData(32, 16, "gradient")]
+    [InlineData(48, 32, "gradient")]
+    [InlineData(64, 48, "gradient")]
+    [InlineData(64, 48, "random")]
+    [InlineData(80, 80, "gradient")]
+    [InlineData(272, 16, "gradient")]
+    public void OurEncode_Overlap1_DecodedByJxrDecApp_IsLossless(int w, int h, string kind)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind switch
+        {
+            "random" => Random(w, h, seed: 0x7E5 + w * 31 + h),
+            _ => Gradient(w, h),
+        };
+        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: 1);
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_ol1_{Guid.NewGuid():N}");
+        var jxrPath = tmp + ".jxr";
+        var bmpPath = tmp + ".bmp";
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, stdout, stderr) = Run(decApp, $"-i \"{jxrPath}\" -o \"{bmpPath}\" -c 0");
+            _out.WriteLine($"JxrDecApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrDecApp must decode our OL_ONE file");
+
+            var (dw, dh, dr, dg, db) = ReadBmp24(bmpPath);
+            dw.ShouldBe(w);
+            dh.ShouldBe(h);
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(r[i], $"R[{i}] (OL_ONE {kind} {w}x{h})");
+                dg[i].ShouldBe(g[i], $"G[{i}] (OL_ONE {kind} {w}x{h})");
+                db[i].ShouldBe(b[i], $"B[{i}] (OL_ONE {kind} {w}x{h})");
+            }
+        }
+        finally
+        {
+            File.Delete(jxrPath);
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+        }
+    }
+
+    // Rung 7f.2 — Photo Overlap (OL_ONE) decoder conformance: a lossless spatial OL_ONE
+    // YUV444 file produced by the reference JxrEncApp must decode losslessly through our
+    // container reader + codestream decoder (the inverse overlap _alternate operators).
+    [Theory]
+    [InlineData(16, 16, "gradient")]
+    [InlineData(32, 16, "gradient")]
+    [InlineData(48, 32, "gradient")]
+    [InlineData(64, 48, "gradient")]
+    [InlineData(64, 48, "random")]
+    [InlineData(80, 80, "gradient")]
+    public void JxrlibEncode_Overlap1_DecodedByUs_IsLossless(int w, int h, string kind)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind switch
+        {
+            "random" => Random(w, h, seed: 0x7E5 + w * 31 + h),
+            _ => Gradient(w, h),
+        };
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_dec1_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            // -f spatial, -l 1 one-level overlap, -d 3 YUV444, -q 1 lossless, -c 0 24bppBGR.
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l 1 -f");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the BMP");
+
+            var jxr = File.ReadAllBytes(jxrPath);
+            var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(jxr);
+            dw.ShouldBe(w);
+            dh.ShouldBe(h);
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(r[i], $"R[{i}] (OL_ONE decode {kind} {w}x{h})");
+                dg[i].ShouldBe(g[i], $"G[{i}] (OL_ONE decode {kind} {w}x{h})");
+                db[i].ShouldBe(b[i], $"B[{i}] (OL_ONE decode {kind} {w}x{h})");
+            }
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // Rung 7f.2 — the strongest OL_ONE check: our entire codestream must be byte-for-byte
+    // identical to what the reference JxrEncApp emits for the same image and settings.
+    [Theory]
+    [InlineData(16, 16, "gradient")]
+    [InlineData(32, 16, "gradient")]
+    [InlineData(48, 32, "gradient")]
+    [InlineData(64, 48, "random")]
+    [InlineData(80, 80, "gradient")]
+    public void OurEncode_Overlap1_CodestreamMatchesJxrlib(int w, int h, string kind)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind switch
+        {
+            "random" => Random(w, h, seed: 0x7E5 + w * 31 + h),
+            _ => Gradient(w, h),
+        };
+
+        var ours = JxrCodestream.Encode(r, g, b, w, h, overlap: 1);
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_cmp1_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l 1 -f");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the BMP");
+
+            var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
+            _out.WriteLine($"ours={ours.Length} theirs={theirs.Length}");
+            ours.Length.ShouldBe(theirs.Length, $"codestream length (OL_ONE {kind} {w}x{h})");
+            for (var i = 0; i < ours.Length; i++)
+                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (OL_ONE {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
     /// <summary>
     /// Rung 7e.4 — the Windows-Photo milestone: our encoded <c>.jxr</c> must open in
     /// WIC (<c>System.Windows.Media.Imaging.BitmapDecoder</c>, what Windows Photo /
@@ -139,6 +282,37 @@ public sealed class JxrCodestreamOracleTests
                 b[i] = (x + y * 3) & 0xff;
             }
         return (r, g, b);
+    }
+
+    /// <summary>Write a 24bpp BGR bottom-up BMP (what <c>JxrEncApp -c 0</c> reads).</summary>
+    private static void WriteBmp24(string path, int w, int h, int[] r, int[] g, int[] b)
+    {
+        int stride = (w * 3 + 3) & ~3;
+        int dataSize = stride * h;
+        int fileSize = 54 + dataSize;
+        var bytes = new byte[fileSize];
+        bytes[0] = (byte)'B'; bytes[1] = (byte)'M';
+        BitConverter.GetBytes(fileSize).CopyTo(bytes, 2);
+        BitConverter.GetBytes(54).CopyTo(bytes, 10);     // pixel-data offset
+        BitConverter.GetBytes(40).CopyTo(bytes, 14);     // BITMAPINFOHEADER size
+        BitConverter.GetBytes(w).CopyTo(bytes, 18);
+        BitConverter.GetBytes(h).CopyTo(bytes, 22);      // positive ⇒ bottom-up
+        BitConverter.GetBytes((short)1).CopyTo(bytes, 26);
+        BitConverter.GetBytes((short)24).CopyTo(bytes, 28);
+        BitConverter.GetBytes(dataSize).CopyTo(bytes, 34);
+        for (var row = 0; row < h; row++)
+        {
+            int srcRow = h - 1 - row; // BMP rows run bottom-to-top
+            int dst = 54 + row * stride;
+            for (var x = 0; x < w; x++)
+            {
+                int i = srcRow * w + x;
+                bytes[dst + x * 3 + 0] = (byte)b[i];
+                bytes[dst + x * 3 + 1] = (byte)g[i];
+                bytes[dst + x * 3 + 2] = (byte)r[i];
+            }
+        }
+        File.WriteAllBytes(path, bytes);
     }
 
     /// <summary>Parse a 24bpp BGR bottom-up BMP (what <c>JxrDecApp -c 0</c> writes).</summary>

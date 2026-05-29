@@ -99,8 +99,8 @@ internal static class JxrCodestream
         var ih = ImageHeader.Read(ref reader);
         if (ih.FrequencyModeCodestreamFlag)
             throw new NotSupportedException("JxrCodestream decodes SPATIAL codestreams only.");
-        if (ih.OverlapMode != 0)
-            throw new NotSupportedException($"JxrCodestream decodes OL_NONE only (got overlap mode {ih.OverlapMode}).");
+        if (ih.OverlapMode > 1)
+            throw new NotSupportedException($"JxrCodestream decodes OL_NONE / OL_ONE only (got overlap mode {ih.OverlapMode}).");
         int overlap = ih.OverlapMode;
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;

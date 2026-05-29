@@ -1,3 +1,5 @@
+using static SharpAstro.Jxr.PhotoOverlapTransform;
+
 namespace SharpAstro.Jxr;
 
 /// <summary>
@@ -76,7 +78,9 @@ internal static class OverlapTransform
     {
         var buf = b.AsSpan();
 
-        // ---- first level overlap (OL_ONE / OL_TWO) — wired in Rung 7f.2 ----
+        // ---- first level overlap (OL_ONE / OL_TWO) ----
+        if (overlap != 0)
+            FirstLevelOverlapEnc(buf, p0, p1, left, right, top, bottom);
 
         // ---- first level transform (strDCT4x4Stage1, staggered across the MB window) ----
         if (!top)
@@ -159,6 +163,203 @@ internal static class OverlapTransform
             }
         }
 
-        // ---- first level inverse overlap (OL_ONE / OL_TWO) — wired in Rung 7f.2 ----
+        // ---- first level inverse overlap (OL_ONE / OL_TWO) ----
+        if (overlap != 0)
+            FirstLevelOverlapDec(buf, p0, p1, left, right, top, bottom);
+    }
+
+    // ===================================================================== first-level overlap
+
+    // strFwdTransform.c:556-648 — first-level (block-boundary) forward overlap, 444 branch,
+    // single-tile (all tile-boundary predicates constant FALSE). Operates on the post-color,
+    // pre-transform samples across the 2-MB-row window.
+    private static void FirstLevelOverlapEnc(Span<int> b, int p0, int p1, bool left, bool right, bool top, bool bottom)
+    {
+        int p;
+
+        // Corner operations
+        if (top && left)
+            Pre4(ref b[p1 + 0], ref b[p1 + 1], ref b[p1 + 2], ref b[p1 + 3]);
+        if (top && right)
+            Pre4(ref b[p1 - 59], ref b[p1 - 60], ref b[p1 - 57], ref b[p1 - 58]);
+        if (bottom && left)
+            Pre4(ref b[p0 + 48 + 10], ref b[p0 + 48 + 11], ref b[p0 + 48 + 8], ref b[p0 + 48 + 9]);
+        if (bottom && right)
+            Pre4(ref b[p0 - 1], ref b[p0 - 2], ref b[p0 - 3], ref b[p0 - 4]);
+
+        if (!right && !bottom)
+        {
+            if (top)
+            {
+                for (var j = left ? 0 : -64; j < 192; j += 64)
+                {
+                    p = p1 + j;
+                    Pre4(ref b[p + 5], ref b[p + 4], ref b[p + 64], ref b[p + 65]);
+                    Pre4(ref b[p + 7], ref b[p + 6], ref b[p + 66], ref b[p + 67]);
+                }
+            }
+            else
+            {
+                for (var j = left ? 0 : -64; j < 192; j += 64)
+                    PreStage1Split(b, p0 + 48 + j, p1 + j, 0);
+            }
+
+            if (left)
+            {
+                if (!top)
+                {
+                    Pre4(ref b[p0 + 58], ref b[p0 + 56], ref b[p1 + 0], ref b[p1 + 2]);
+                    Pre4(ref b[p0 + 59], ref b[p0 + 57], ref b[p1 + 1], ref b[p1 + 3]);
+                }
+                for (var j = -64; j < -16; j += 16)
+                {
+                    p = p1 + j;
+                    Pre4(ref b[p + 74], ref b[p + 72], ref b[p + 80], ref b[p + 82]);
+                    Pre4(ref b[p + 75], ref b[p + 73], ref b[p + 81], ref b[p + 83]);
+                }
+            }
+            else
+            {
+                for (var j = -64; j < -16; j += 16)
+                    PreStage1(b, p1 + j, 0);
+            }
+
+            PreStage1(b, p1 + 0, 0);
+            PreStage1(b, p1 + 16, 0);
+            PreStage1(b, p1 + 32, 0);
+            PreStage1(b, p1 + 64, 0);
+            PreStage1(b, p1 + 80, 0);
+            PreStage1(b, p1 + 96, 0);
+            PreStage1(b, p1 + 128, 0);
+            PreStage1(b, p1 + 144, 0);
+            PreStage1(b, p1 + 160, 0);
+        }
+
+        if (bottom)
+        {
+            for (var j = left ? 48 : -16; j < (right ? -16 : 240); j += 64)
+            {
+                p = p0 + j;
+                Pre4(ref b[p + 15], ref b[p + 14], ref b[p + 74], ref b[p + 75]);
+                Pre4(ref b[p + 13], ref b[p + 12], ref b[p + 72], ref b[p + 73]);
+            }
+        }
+
+        if (right && !bottom)
+        {
+            if (!top)
+            {
+                Pre4(ref b[p0 - 1], ref b[p0 - 3], ref b[p1 - 59], ref b[p1 - 57]);
+                Pre4(ref b[p0 - 2], ref b[p0 - 4], ref b[p1 - 60], ref b[p1 - 58]);
+            }
+            for (var j = -64; j < -16; j += 16)
+            {
+                p = p1 + j;
+                Pre4(ref b[p + 15], ref b[p + 13], ref b[p + 21], ref b[p + 23]);
+                Pre4(ref b[p + 14], ref b[p + 12], ref b[p + 20], ref b[p + 22]);
+            }
+        }
+    }
+
+    // strInvTransform.c:1351-1457 — first-level inverse overlap, _alternate operators,
+    // 444 branch, single-tile. Exact inverse of FirstLevelOverlapEnc.
+    private static void FirstLevelOverlapDec(Span<int> b, int p0, int p1, bool left, bool right, bool top, bool bottom)
+    {
+        bool topORbottom = top || bottom;
+        int p;
+
+        if (left || right)
+        {
+            // Corner operations
+            if (top && left)
+                Post4Alt(ref b[p1 + 0], ref b[p1 + 1], ref b[p1 + 2], ref b[p1 + 3]);
+            if (top && right)
+                Post4Alt(ref b[p1 - 59], ref b[p1 - 60], ref b[p1 - 57], ref b[p1 - 58]);
+            if (bottom && left)
+                Post4Alt(ref b[p0 + 48 + 10], ref b[p0 + 48 + 11], ref b[p0 + 48 + 8], ref b[p0 + 48 + 9]);
+            if (bottom && right)
+                Post4Alt(ref b[p0 - 1], ref b[p0 - 2], ref b[p0 - 3], ref b[p0 - 4]);
+
+            if (left)
+            {
+                int j = 0 + 10;
+                if (!top)
+                {
+                    p = p0 + 16 + j;
+                    Post4Alt(ref b[p + 0], ref b[p - 2], ref b[p + 6], ref b[p + 8]);
+                    Post4Alt(ref b[p + 1], ref b[p - 1], ref b[p + 7], ref b[p + 9]);
+                    Post4Alt(ref b[p + 16], ref b[p + 14], ref b[p + 22], ref b[p + 24]);
+                    Post4Alt(ref b[p + 17], ref b[p + 15], ref b[p + 23], ref b[p + 25]);
+                }
+                if (!bottom)
+                {
+                    p = p1 + j;
+                    Post4Alt(ref b[p + 0], ref b[p - 2], ref b[p + 6], ref b[p + 8]);
+                    Post4Alt(ref b[p + 1], ref b[p - 1], ref b[p + 7], ref b[p + 9]);
+                }
+                if (!topORbottom)
+                {
+                    Post4Alt(ref b[p0 + 48 + j + 0], ref b[p0 + 48 + j - 2], ref b[p1 - 10 + j], ref b[p1 - 8 + j]);
+                    Post4Alt(ref b[p0 + 48 + j + 1], ref b[p0 + 48 + j - 1], ref b[p1 - 9 + j], ref b[p1 - 7 + j]);
+                }
+            }
+            if (right)
+            {
+                int j = -64 + 14;
+                if (!top)
+                {
+                    p = p0 + 16 + j;
+                    Post4Alt(ref b[p + 0], ref b[p - 2], ref b[p + 6], ref b[p + 8]);
+                    Post4Alt(ref b[p + 1], ref b[p - 1], ref b[p + 7], ref b[p + 9]);
+                    Post4Alt(ref b[p + 16], ref b[p + 14], ref b[p + 22], ref b[p + 24]);
+                    Post4Alt(ref b[p + 17], ref b[p + 15], ref b[p + 23], ref b[p + 25]);
+                }
+                if (!bottom)
+                {
+                    p = p1 + j;
+                    Post4Alt(ref b[p + 0], ref b[p - 2], ref b[p + 6], ref b[p + 8]);
+                    Post4Alt(ref b[p + 1], ref b[p - 1], ref b[p + 7], ref b[p + 9]);
+                }
+                if (!topORbottom)
+                {
+                    Post4Alt(ref b[p0 + 48 + j + 0], ref b[p0 + 48 + j - 2], ref b[p1 - 10 + j], ref b[p1 - 8 + j]);
+                    Post4Alt(ref b[p0 + 48 + j + 1], ref b[p0 + 48 + j - 1], ref b[p1 - 9 + j], ref b[p1 - 7 + j]);
+                }
+            }
+        }
+
+        if (top)
+        {
+            for (var j = left ? 0 : -192; j < (right ? -64 : 64); j += 64)
+            {
+                p = p1 + j;
+                Post4Alt(ref b[p + 5], ref b[p + 4], ref b[p + 64], ref b[p + 65]);
+                Post4Alt(ref b[p + 7], ref b[p + 6], ref b[p + 66], ref b[p + 67]);
+                PostStage1Alt(b, p1 + j, 0);
+            }
+        }
+
+        if (bottom)
+        {
+            for (var j = left ? 0 : -192; j < (right ? -64 : 64); j += 64)
+            {
+                PostStage1Alt(b, p0 + 16 + j, 0);
+                PostStage1Alt(b, p0 + 32 + j, 0);
+                p = p0 + 48 + j;
+                Post4Alt(ref b[p + 15], ref b[p + 14], ref b[p + 74], ref b[p + 75]);
+                Post4Alt(ref b[p + 13], ref b[p + 12], ref b[p + 72], ref b[p + 73]);
+            }
+        }
+
+        if (!top && !bottom)
+        {
+            for (var j = left ? 0 : -192; j < (right ? -64 : 64); j += 64)
+            {
+                PostStage1Alt(b, p0 + 16 + j, 0);
+                PostStage1Alt(b, p0 + 32 + j, 0);
+                PostStage1SplitAlt(b, p0 + 48 + j, p1 + j, 0);
+                PostStage1Alt(b, p1 + j, 0);
+            }
+        }
     }
 }

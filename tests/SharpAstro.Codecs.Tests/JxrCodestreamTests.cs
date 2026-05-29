@@ -89,6 +89,32 @@ public sealed class JxrCodestreamTests
     }
 
     [Theory]
+    [InlineData(16, 16, 1)]
+    [InlineData(32, 16, 1)]
+    [InlineData(16, 32, 1)]
+    [InlineData(48, 32, 1)]
+    [InlineData(64, 48, 1)]
+    [InlineData(80, 80, 1)]
+    public void Codestream_RoundTrip_Lossless_Overlap(int w, int h, int overlap)
+    {
+        // Self round-trip with the Photo Overlap filter on: the inverse overlap is the
+        // exact structural inverse of the forward (proven in 7f.0), so lossless identity
+        // must hold. (Conformance vs jxrlib is the oracle suite's job.)
+        var (r, g, b) = Gradient(w, h);
+        var cs = JxrCodestream.Encode(r, g, b, w, h, overlap: overlap);
+        var (dw, dh, dr, dg, db) = JxrCodestream.Decode(cs);
+
+        dw.ShouldBe(w);
+        dh.ShouldBe(h);
+        for (var i = 0; i < w * h; i++)
+        {
+            dr[i].ShouldBe(r[i], $"R[{i}] (overlap {overlap}, {w}x{h})");
+            dg[i].ShouldBe(g[i], $"G[{i}] (overlap {overlap}, {w}x{h})");
+            db[i].ShouldBe(b[i], $"B[{i}] (overlap {overlap}, {w}x{h})");
+        }
+    }
+
+    [Theory]
     [InlineData(16, 16)]
     [InlineData(32, 32)]
     public void Container_RoundTrip_Lossless(int w, int h)
