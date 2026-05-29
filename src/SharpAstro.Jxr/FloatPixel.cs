@@ -63,4 +63,26 @@ internal static class FloatPixel
     /// <summary>Quantize a float through the BD32F/BD16F representation (<c>ToFloat∘ToPixel</c>) —
     /// the value a lossless codec round-trip reproduces.</summary>
     public static float Requantize(float f, int c, int lm) => ToFloat(ToPixel(f, c, lm), c, lm);
+
+    // ---------------------------------------------------------------- half (BD16F)
+    // jxrlib forwardHalf (strenc.c:400) / backwardHalf (strdec.c:504): the half-float is kept as
+    // its raw sign-magnitude bit pattern — the 15-bit exponent+mantissa magnitude with the sign
+    // applied as integer negation. No value decoding, so it is EXACTLY lossless (no mantissa
+    // quantization, unlike BD32F): the codec preserves the integer, round-tripping the half bits.
+
+    /// <summary>jxrlib <c>forwardHalf</c> — IEEE half (sign bit 15) → sign-magnitude internal PixelI.</summary>
+    public static int HalfToPixel(Half h)
+    {
+        int v = BitConverter.HalfToInt16Bits(h); // signed: negative when the sign bit is set
+        int s = v >> 31;
+        return ((v & 0x7fff) ^ s) - s;
+    }
+
+    /// <summary>jxrlib <c>backwardHalf</c> — sign-magnitude internal PixelI → IEEE half (exact inverse).</summary>
+    public static Half PixelToHalf(int p)
+    {
+        int s = p >> 31;
+        int bits = ((p & 0x7fff) ^ s) - s;
+        return BitConverter.Int16BitsToHalf((short)bits);
+    }
 }

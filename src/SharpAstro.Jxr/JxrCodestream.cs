@@ -363,6 +363,212 @@ internal static class JxrCodestream
         return (width, height, y);
     }
 
+    /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16F</b> half-float grayscale
+    /// image into a single-tile SPATIAL Y-only JXR codestream. The half is kept as its raw
+    /// sign-magnitude bit pattern (no bias, no float params in the header), so the round-trip is
+    /// bit-exact. Dimensions must be multiples of 16; QP indices are 0 for lossless.
+    /// </summary>
+    public static byte[] EncodeGrayHalf(ReadOnlySpan<Half> y, int width, int height,
+                                        int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+    {
+        RequireMbAligned(width, height);
+        int mbCols = width / 16, mbRows = height / 16;
+        bool scaled = ScaledArith(qpDc, qpLp, qpHp);
+        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+
+        var w = new BitWriter();
+        WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd16F);
+        WritePlaneHeaderGray(w, qpDc, qpLp, qpHp, scaled, JxrOutputBitDepth.Bd16F);
+        WriteProfileLevelInfo(w);
+        WritePacketHeader(w);
+
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
+        var my = new Half[256];
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                ExtractMb1(y, width, mbR, mbC, my);
+                SignalTransform.LoadGrayHalf(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC));
+            }
+
+        OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
+
+        var ctx = new CodingContext(ColorFormat.YOnly, 1);
+        var tile = new TileCoder(mbCols, 1, ColorFormat.YOnly);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(1);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                SignalTransform.QuantizeExtract(planes[0], baseOff, block, 0, qDc, qLp, qHp);
+                tile.EncodeMacroblock(ctx, block, mbC, mbR, w, w, w, w);
+            }
+            tile.AdvanceRow();
+        }
+
+        FillToByte(w);
+        return w.ToArray();
+    }
+
+    /// <summary>Decode a single-tile SPATIAL Y-only BD16F JXR codestream back into a half-float grayscale image.</summary>
+    public static (int width, int height, Half[] y) DecodeGrayHalf(ReadOnlySpan<byte> codestream)
+    {
+        var padded = new byte[codestream.Length + EndPeekSlackBytes];
+        codestream.CopyTo(padded);
+        var reader = new BitReader(padded);
+        var ih = ImageHeader.Read(ref reader);
+        if (ih.FrequencyModeCodestreamFlag)
+            throw new NotSupportedException("JxrCodestream decodes SPATIAL codestreams only.");
+        if (ih.OverlapMode > 2)
+            throw new NotSupportedException($"JxrCodestream decodes OL_NONE / OL_ONE / OL_TWO only (got overlap mode {ih.OverlapMode}).");
+        int overlap = ih.OverlapMode;
+
+        int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
+        RequireMbAligned(width, height);
+        var (qpDc, qpLp, qpHp, scaled, _, _) = ReadPlaneHeaderGray(ref reader, ih.OutputBitDepth);
+        ReadProfileLevelInfo(ref reader);
+        ReadPacketHeader(ref reader);
+
+        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        int mbCols = width / 16, mbRows = height / 16;
+        var y = new Half[width * height];
+
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
+        var ctx = new CodingContext(ColorFormat.YOnly, 1);
+        var tile = new TileCoder(mbCols, 1, ColorFormat.YOnly);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(1);
+                tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                SignalTransform.DequantizeRestore(block, 0, planes[0], baseOff, qDc.Qp, qLp.Qp);
+            }
+            tile.AdvanceRow();
+        }
+
+        OverlapTransform.Inverse(planes, mbCols, mbRows, overlap, scaled);
+
+        var my = new Half[256];
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                SignalTransform.StoreGrayHalf(planes[0], baseOff, my);
+                StoreMb1(y, width, mbR, mbC, my);
+            }
+        return (width, height, y);
+    }
+
+    /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16F</b> half-float RGB image
+    /// (three channels) into a single-tile SPATIAL YUV444 JXR codestream — YCoCg-R on the raw half
+    /// magnitudes, bit-exact round-trip. Dimensions must be multiples of 16; QP indices 0 for lossless.
+    /// </summary>
+    public static byte[] EncodeRgbHalf(ReadOnlySpan<Half> r, ReadOnlySpan<Half> g, ReadOnlySpan<Half> b,
+                                       int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+    {
+        RequireMbAligned(width, height);
+        int mbCols = width / 16, mbRows = height / 16;
+        bool scaled = ScaledArith(qpDc, qpLp, qpHp);
+        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+
+        var w = new BitWriter();
+        WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd16F);
+        WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled, JxrOutputBitDepth.Bd16F);
+        WriteProfileLevelInfo(w);
+        WritePacketHeader(w);
+
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
+        var (mr, mg, mb) = (new Half[256], new Half[256], new Half[256]);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                ExtractMb1(r, width, mbR, mbC, mr);
+                ExtractMb1(g, width, mbR, mbC, mg);
+                ExtractMb1(b, width, mbR, mbC, mb);
+                SignalTransform.LoadColorHalf(mr, mg, mb, planes[0], planes[1], planes[2],
+                                              OverlapTransform.MbBase(mbCols, mbR, mbC));
+            }
+
+        OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
+
+        var ctx = new CodingContext(ColorFormat.Yuv444, 3);
+        var tile = new TileCoder(mbCols);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(3);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                for (var ch = 0; ch < 3; ch++)
+                    SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch, qDc, qLp, qHp);
+                tile.EncodeMacroblock(ctx, block, mbC, mbR, w, w, w, w);
+            }
+            tile.AdvanceRow();
+        }
+
+        FillToByte(w);
+        return w.ToArray();
+    }
+
+    /// <summary>Decode a single-tile SPATIAL YUV444 BD16F JXR codestream back into half-float RGB channels.</summary>
+    public static (int width, int height, Half[] r, Half[] g, Half[] b) DecodeRgbHalf(ReadOnlySpan<byte> codestream)
+    {
+        var padded = new byte[codestream.Length + EndPeekSlackBytes];
+        codestream.CopyTo(padded);
+        var reader = new BitReader(padded);
+        var ih = ImageHeader.Read(ref reader);
+        if (ih.FrequencyModeCodestreamFlag)
+            throw new NotSupportedException("JxrCodestream decodes SPATIAL codestreams only.");
+        if (ih.OverlapMode > 2)
+            throw new NotSupportedException($"JxrCodestream decodes OL_NONE / OL_ONE / OL_TWO only (got overlap mode {ih.OverlapMode}).");
+        int overlap = ih.OverlapMode;
+
+        int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
+        RequireMbAligned(width, height);
+        var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, ih.OutputBitDepth);
+        ReadProfileLevelInfo(ref reader);
+        ReadPacketHeader(ref reader);
+
+        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        int mbCols = width / 16, mbRows = height / 16;
+        var (r, g, b) = (new Half[width * height], new Half[width * height], new Half[width * height]);
+
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
+        var ctx = new CodingContext(ColorFormat.Yuv444, 3);
+        var tile = new TileCoder(mbCols);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(3);
+                tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                for (var ch = 0; ch < 3; ch++)
+                    SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, qDc.Qp, qLp.Qp);
+            }
+            tile.AdvanceRow();
+        }
+
+        OverlapTransform.Inverse(planes, mbCols, mbRows, overlap, scaled);
+
+        var (mr, mg, mb) = (new Half[256], new Half[256], new Half[256]);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                SignalTransform.StoreColorHalf(planes[0], planes[1], planes[2], baseOff, mr, mg, mb);
+                StoreMb1(r, width, mbR, mbC, mr);
+                StoreMb1(g, width, mbR, mbC, mg);
+                StoreMb1(b, width, mbR, mbC, mb);
+            }
+        return (width, height, r, g, b);
+    }
+
     // ---------------------------------------------------------------- headers
 
     private static void WriteImageHeader(BitWriter w, int width, int height, int overlap,
@@ -709,6 +915,29 @@ internal static class JxrCodestream
             int src = row * 16;
             for (var col = 0; col < 16; col++)
                 y[dst + col] = my[src + col];
+        }
+    }
+
+    // Generic single-channel macroblock copy (used by the half-float gray/RGB paths).
+    private static void ExtractMb1<T>(ReadOnlySpan<T> src, int width, int mbR, int mbC, Span<T> mb)
+    {
+        for (var row = 0; row < 16; row++)
+        {
+            int s = (mbR * 16 + row) * width + mbC * 16;
+            int d = row * 16;
+            for (var col = 0; col < 16; col++)
+                mb[d + col] = src[s + col];
+        }
+    }
+
+    private static void StoreMb1<T>(Span<T> dst, int width, int mbR, int mbC, ReadOnlySpan<T> mb)
+    {
+        for (var row = 0; row < 16; row++)
+        {
+            int d = (mbR * 16 + row) * width + mbC * 16;
+            int s = row * 16;
+            for (var col = 0; col < 16; col++)
+                dst[d + col] = mb[s + col];
         }
     }
 }

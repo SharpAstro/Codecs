@@ -144,4 +144,63 @@ public static class JxrImageCodec
         var file = JxrContainer.Read(jxr);
         return JxrCodestream.DecodeGrayF32(file.Codestream);
     }
+
+    /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16F</b> half-float grayscale
+    /// image (<c>width*height</c> halves, raster order) into a <c>.jxr</c> byte stream. The half is
+    /// preserved bit-exact (no mantissa quantization). Dimensions must be multiples of 16; lossless.
+    /// </summary>
+    public static byte[] EncodeGrayF16(ReadOnlySpan<Half> y, int width, int height,
+                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+    {
+        var codestream = JxrCodestream.EncodeGrayHalf(y, width, height, qpDc, qpLp, qpHp, overlap);
+        var file = new JxrFile(
+            Width: (uint)width,
+            Height: (uint)height,
+            PixelFormat: JxrPixelFormat.GrayHalf16Bpp,
+            Codestream: codestream);
+        return JxrContainer.Write(file);
+    }
+
+    /// <summary>Decode a <c>.jxr</c> file produced by <see cref="EncodeGrayF16"/> back into a half-float grayscale channel.</summary>
+    public static (int width, int height, Half[] y) DecodeGrayF16(ReadOnlySpan<byte> jxr)
+    {
+        var file = JxrContainer.Read(jxr);
+        return JxrCodestream.DecodeGrayHalf(file.Codestream);
+    }
+
+    /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16F</b> half-float RGB image
+    /// from an <b>interleaved</b> <c>Half[width*height*3]</c> (RGBRGB…) — the consumer's HDR RGB
+    /// shape — into a <c>.jxr</c> byte stream (YCoCg-R + InternalClrFmt=YUV444, bit-exact). Dimensions
+    /// must be multiples of 16; lossless.
+    /// </summary>
+    public static byte[] EncodeRgbF16(ReadOnlySpan<Half> rgb, int width, int height,
+                                      int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+    {
+        int n = width * height;
+        if (rgb.Length < n * 3) throw new ArgumentException("Interleaved RGB half buffer must hold width*height*3 samples.", nameof(rgb));
+        var (r, g, b) = (new Half[n], new Half[n], new Half[n]);
+        for (var i = 0; i < n; i++) { r[i] = rgb[i * 3]; g[i] = rgb[i * 3 + 1]; b[i] = rgb[i * 3 + 2]; }
+
+        var codestream = JxrCodestream.EncodeRgbHalf(r, g, b, width, height, qpDc, qpLp, qpHp, overlap);
+        var file = new JxrFile(
+            Width: (uint)width,
+            Height: (uint)height,
+            PixelFormat: JxrPixelFormat.RgbHalf48Bpp,
+            Codestream: codestream);
+        return JxrContainer.Write(file);
+    }
+
+    /// <summary>Decode a <c>.jxr</c> file produced by <see cref="EncodeRgbF16"/> into an interleaved
+    /// <c>Half[width*height*3]</c> (RGBRGB…) buffer.</summary>
+    public static (int width, int height, Half[] rgb) DecodeRgbF16(ReadOnlySpan<byte> jxr)
+    {
+        var file = JxrContainer.Read(jxr);
+        var (w, h, r, g, b) = JxrCodestream.DecodeRgbHalf(file.Codestream);
+        int n = w * h;
+        var rgb = new Half[n * 3];
+        for (var i = 0; i < n; i++) { rgb[i * 3] = r[i]; rgb[i * 3 + 1] = g[i]; rgb[i * 3 + 2] = b[i]; }
+        return (w, h, rgb);
+    }
 }

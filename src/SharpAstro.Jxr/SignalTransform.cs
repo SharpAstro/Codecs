@@ -268,4 +268,54 @@ internal static class SignalTransform
         for (var px = 0; px < 256; px++)
             y[px] = FloatPixel.ToFloat(planeY[mbBase + IdxCc[px]], expBias, lenMantissa);
     }
+
+    // ---------------------------------------------------------------- half (BD16F)
+    // jxrlib keeps the half as its raw sign-magnitude bits (forwardHalf/backwardHalf) — no bias,
+    // and for RGB the YCoCg-R color transform runs on those reinterpreted integers (reversibly).
+
+    /// <summary>idxCC load of one BD16F grayscale macroblock (256 halves) into the Y plane via
+    /// <see cref="FloatPixel.HalfToPixel"/>. No color transform, no bias.</summary>
+    public static void LoadGrayHalf(ReadOnlySpan<Half> y, int[] planeY, int mbBase)
+    {
+        for (var px = 0; px < 256; px++)
+            planeY[mbBase + IdxCc[px]] = FloatPixel.HalfToPixel(y[px]);
+    }
+
+    /// <summary>idxCC unload of one MB from the Y plane back into BD16F halves via
+    /// <see cref="FloatPixel.PixelToHalf"/>.</summary>
+    public static void StoreGrayHalf(int[] planeY, int mbBase, Span<Half> y)
+    {
+        for (var px = 0; px < 256; px++)
+            y[px] = FloatPixel.PixelToHalf(planeY[mbBase + IdxCc[px]]);
+    }
+
+    /// <summary>HalfToPixel + color transform (<c>_CC</c>) + idxCC load of one BD16F RGB macroblock
+    /// (256 halves per channel) into the three YUV planes. No bias.</summary>
+    public static void LoadColorHalf(ReadOnlySpan<Half> r, ReadOnlySpan<Half> g, ReadOnlySpan<Half> b,
+                                     int[] planeY, int[] planeU, int[] planeV, int mbBase)
+    {
+        for (var px = 0; px < 256; px++)
+        {
+            int rr = FloatPixel.HalfToPixel(r[px]), gg = FloatPixel.HalfToPixel(g[px]), bb = FloatPixel.HalfToPixel(b[px]);
+            ColorTransform.ForwardRgb(ref rr, ref gg, ref bb);
+            int pos = mbBase + IdxCc[px];
+            planeU[pos] = -rr;
+            planeV[pos] = bb;
+            planeY[pos] = gg;
+        }
+    }
+
+    /// <summary>Inverse color (<c>_ICC</c>) + idxCC unload of one MB into BD16F RGB halves via
+    /// <see cref="FloatPixel.PixelToHalf"/>. No bias, no clamp (the half encoding is bit-exact).</summary>
+    public static void StoreColorHalf(int[] planeY, int[] planeU, int[] planeV, int mbBase,
+                                      Span<Half> r, Span<Half> g, Span<Half> b)
+    {
+        for (var px = 0; px < 256; px++)
+        {
+            int pos = mbBase + IdxCc[px];
+            int gg = planeY[pos], rr = -planeU[pos], bb = planeV[pos];
+            ColorTransform.InverseRgb(ref rr, ref gg, ref bb);
+            r[px] = FloatPixel.PixelToHalf(rr); g[px] = FloatPixel.PixelToHalf(gg); b[px] = FloatPixel.PixelToHalf(bb);
+        }
+    }
 }
