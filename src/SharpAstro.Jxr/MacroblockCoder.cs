@@ -37,8 +37,8 @@ internal static class MacroblockCoder
     {
         RequireYuv444(ctx);
         EncodeDc(ctx, mb, dc);
-        EncodeLowpass(ctx, mb, lp);
-        EncodeHighpass(ctx, mb, ac, fl, ctxLeft, ctxTop, null, null);
+        EncodeLowpass(ctx, mb, lp, resetContext: true, resetTotals: true);
+        EncodeHighpass(ctx, mb, ac, fl, ctxLeft, ctxTop, null, null, resetContext: true, resetTotals: true);
     }
 
     /// <summary>Decode a YUV444 macroblock from the DC/LP/AC/FL streams into <paramref name="mb"/> (single isolated MB).</summary>
@@ -48,8 +48,8 @@ internal static class MacroblockCoder
     {
         RequireYuv444(ctx);
         DecodeDc(ctx, mb, ref dc);
-        DecodeLowpass(ctx, mb, ref lp);
-        DecodeHighpass(ctx, mb, ref ac, ref fl, hpQp, ctxLeft, ctxTop, null, null);
+        DecodeLowpass(ctx, mb, ref lp, resetContext: true, resetTotals: true);
+        DecodeHighpass(ctx, mb, ref ac, ref fl, hpQp, ctxLeft, ctxTop, null, null, resetContext: true, resetTotals: true);
     }
 
     private static void RequireYuv444(CodingContext ctx)
@@ -124,8 +124,9 @@ internal static class MacroblockCoder
 
     // ===================================================================== LP band
 
-    internal static void EncodeLowpass(CodingContext ctx, Macroblock mb, BitWriter w)
+    internal static void EncodeLowpass(CodingContext ctx, Macroblock mb, BitWriter w, bool resetContext, bool resetTotals)
     {
+        if (resetTotals) ctx.ScanLowpass.Reset(); // jxrlib m_bResetRGITotals — at the START of the LP band
         var model = ctx.ModelLp;
         var scan = ctx.ScanLowpass;
         var lapMean = new int[2];
@@ -175,10 +176,12 @@ internal static class MacroblockCoder
         }
 
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, model);
+        if (resetContext) ctx.AdaptLowpass();
     }
 
-    internal static void DecodeLowpass(CodingContext ctx, Macroblock mb, ref BitReader r)
+    internal static void DecodeLowpass(CodingContext ctx, Macroblock mb, ref BitReader r, bool resetContext, bool resetTotals)
     {
+        if (resetTotals) ctx.ScanLowpass.Reset(); // jxrlib m_bResetRGITotals — at the START of the LP band
         var model = ctx.ModelLp;
         var scan = ctx.ScanLowpass;
         var lapMean = new int[2];
@@ -248,26 +251,31 @@ internal static class MacroblockCoder
         }
 
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, model);
+        if (resetContext) ctx.AdaptLowpass();
     }
 
     // ===================================================================== HP band
 
     internal static void EncodeHighpass(CodingContext ctx, Macroblock mb, BitWriter w, BitWriter fl,
-                                        bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp)
+                                        bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp, bool resetContext, bool resetTotals)
     {
+        if (resetTotals) { ctx.ScanHoriz.Reset(); ctx.ScanVert.Reset(); } // jxrlib m_bResetRGITotals — START of HP band
         CodeCbp(ctx, mb, w, ctxLeft, ctxTop, leftCbp, topCbp);
         CodeCoeffs(ctx, mb, w, fl);
+        if (resetContext) ctx.AdaptHighpass();
     }
 
     internal static void DecodeHighpass(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp,
-                                        bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp)
+                                        bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp, bool resetContext, bool resetTotals)
     {
+        if (resetTotals) { ctx.ScanHoriz.Reset(); ctx.ScanVert.Reset(); } // jxrlib m_bResetRGITotals — START of HP band
         DecodeCbp(ctx, mb, ref r);
         // predCBPDec reconstructs the actual CBP from the transmitted residual + neighbors.
         for (var i = 0; i < 3; i++)
             mb.Cbp[i] = CbpPrediction.PredictDec(mb.DiffCbp[i], ctxLeft, ctxTop,
                 topCbp?[i] ?? 0, leftCbp?[i] ?? 0, i, ctx.Cbp);
         DecodeCoeffs(ctx, mb, ref r, ref fl, hpQp);
+        if (resetContext) ctx.AdaptHighpass();
     }
 
     // ----------------------------------------------------------- CBP (encode)

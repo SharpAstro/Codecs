@@ -103,4 +103,30 @@ internal sealed class CodingContext
         m.FlcState[0] = m.FlcState[1] = 0;
         m.FlcBits[0] = m.FlcBits[1] = init;
     }
+
+    /// <summary>
+    /// jxrlib <c>AdaptLowpassEnc</c>/<c>Dec</c> (segenc.c/segdec.c): re-adapt the DC + LP
+    /// VLC tables — contexts <c>[0, CTDC+CONTEXTX)</c>, which includes the shared run
+    /// context, the DC significance/abs contexts, and the LP block contexts. Called at
+    /// the END of the LP band on macroblocks where <c>m_bResetContext</c> holds
+    /// (<c>(mbX - tileX) &amp; 0xf == 0</c>), so the freshly-adapted tables apply to the
+    /// macroblocks that follow within the 16-wide group.
+    /// </summary>
+    public void AdaptLowpass()
+    {
+        for (var k = 0; k < CtDc + ContextX; k++) AHexpt[k].AdaptDiscriminant();
+    }
+
+    /// <summary>
+    /// jxrlib <c>AdaptHighpassEnc</c>/<c>Dec</c>: re-adapt the two CBP contexts and the HP
+    /// block contexts <c>[CTDC+CONTEXTX, NUMVLCTABLES)</c>. Called at the END of the HP
+    /// band on <c>m_bResetContext</c> macroblocks (after <see cref="AdaptLowpass"/> for
+    /// the same MB, so the LP-adapted shared run context is already in place for HP).
+    /// </summary>
+    public void AdaptHighpass()
+    {
+        CbpCy.AdaptDiscriminant();
+        CbpCy1.AdaptDiscriminant();
+        for (var k = 0; k < ContextX; k++) AHexpt[k + CtDc + ContextX].AdaptDiscriminant();
+    }
 }

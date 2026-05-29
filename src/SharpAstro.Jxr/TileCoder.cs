@@ -27,12 +27,22 @@ internal sealed class TileCoder
 
     private PredInfo[][] _cur;   // [ch][mbX] current MB row
     private PredInfo[][] _prev;  // [ch][mbX] previous MB row
+    private readonly int _mbWidth;
 
     public TileCoder(int mbWidth)
     {
+        _mbWidth = mbWidth;
         _cur = NewRow(mbWidth);
         _prev = NewRow(mbWidth);
     }
+
+    // jxrlib m_bResetContext (strcodec.c:163-169): re-adapt the VLC tables (AdaptDiscriminant)
+    // at the start of every 16-wide group AND at the last column of each row (single-tile case).
+    private bool ResetContext(int mbX) => (mbX & 0xf) == 0 || mbX + 1 == _mbWidth;
+
+    // jxrlib m_bResetRGITotals (strcodec.c:163): reset the adaptive-scan totals at the start of
+    // every 16-wide group (each row's first MB) — no last-column override.
+    private static bool ResetTotals(int mbX) => (mbX & 0xf) == 0;
 
     private static PredInfo[][] NewRow(int w)
     {
@@ -63,16 +73,26 @@ internal sealed class TileCoder
 
         UpdatePredInfo(mb, mbX); // pre-prediction DC/AD/QP
 
+        if (Trace.On && mbX < 4 && mbY < 2)
+            Trace.Mb("ENC", mbX, mbY, mode, dcMode, adMode, acMode, mb, pre: true);
+
         for (var ch = 0; ch < Channels; ch++)
         {
             Prediction.DcAdPredictEnc(mb.BlockDc[ch], dcMode, adMode, Left(ch, mbX), _prev[ch][mbX]);
             Prediction.AcPredictEnc(mb.Plane[ch], acMode);
         }
 
+        if (Trace.On && mbX < 4 && mbY < 2)
+            Trace.Mb("ENC", mbX, mbY, mode, dcMode, adMode, acMode, mb, pre: false);
+
         var (leftCbp, topCbp) = NeighborCbp(mbX);
+        bool resetContext = ResetContext(mbX), resetTotals = ResetTotals(mbX);
         MacroblockCoder.EncodeDc(ctx, mb, dc);
-        MacroblockCoder.EncodeLowpass(ctx, mb, lp);
-        MacroblockCoder.EncodeHighpass(ctx, mb, ac, fl, ctxLeft, ctxTop, leftCbp, topCbp);
+        MacroblockCoder.EncodeLowpass(ctx, mb, lp, resetContext, resetTotals);
+        MacroblockCoder.EncodeHighpass(ctx, mb, ac, fl, ctxLeft, ctxTop, leftCbp, topCbp, resetContext, resetTotals);
+
+        if (Trace.On && mbX < 4 && mbY < 2)
+            Trace.Model(mbX, mbY, ctx);
 
         for (var ch = 0; ch < Channels; ch++) _cur[ch][mbX].Cbp = mb.Cbp[ch]; // predCBPEnc stores the CBP
     }
@@ -84,8 +104,9 @@ internal sealed class TileCoder
     {
         bool ctxLeft = mbX == 0, ctxTop = mbY == 0;
 
+        bool resetContext = ResetContext(mbX), resetTotals = ResetTotals(mbX);
         MacroblockCoder.DecodeDc(ctx, mb, ref dc);
-        MacroblockCoder.DecodeLowpass(ctx, mb, ref lp);
+        MacroblockCoder.DecodeLowpass(ctx, mb, ref lp, resetContext, resetTotals);
 
         // predDCACDec: pick modes, add DC/AD, then derive the orientation from reconstructed LP.
         int mode = DcAcMode(mb, mbX, ctxLeft, ctxTop);
@@ -95,7 +116,7 @@ internal sealed class TileCoder
         mb.Orientation = 2 - Prediction.GetAcPredMode(mb.BlockDc, Cf);
 
         var (leftCbp, topCbp) = NeighborCbp(mbX);
-        MacroblockCoder.DecodeHighpass(ctx, mb, ref ac, ref fl, hpQp, ctxLeft, ctxTop, leftCbp, topCbp);
+        MacroblockCoder.DecodeHighpass(ctx, mb, ref ac, ref fl, hpQp, ctxLeft, ctxTop, leftCbp, topCbp, resetContext, resetTotals);
         for (var ch = 0; ch < Channels; ch++) _cur[ch][mbX].Cbp = mb.Cbp[ch]; // predCBPDec stores the CBP
 
         // predACDec: add AC, then store reconstructed neighbor info.

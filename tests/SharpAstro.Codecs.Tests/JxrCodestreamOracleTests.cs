@@ -19,18 +19,32 @@ public sealed class JxrCodestreamOracleTests
     private readonly ITestOutputHelper _out;
     public JxrCodestreamOracleTests(ITestOutputHelper output) => _out = output;
 
-    // Single macroblock: validates container + headers + DC/LP/HP/CBP/flexbits +
-    // signal transform + colour against the reference decoder, bit-exact. Multi-MB
-    // (cross-MB DC/AD/CBP prediction) is the next rung — see MultiMb_FirstMacroblockMatches.
+    // Encodes with our codec and decodes with jxrlib's reference JxrDecApp; a
+    // lossless round-trip that returns pixel-identical proves the whole encode
+    // pipeline — container + codestream headers + per-MB band entropy coding +
+    // cross-MB DC/AD/CBP prediction + the m_bResetContext / m_bResetRGITotals
+    // adaptive-state timing + signal transform + colour — is bit-exact conformant.
     [Theory]
     [InlineData(16, 16, "flat")]
     [InlineData(16, 16, "gradient")]
+    [InlineData(32, 16, "gradient")]
+    [InlineData(48, 32, "gradient")]
+    [InlineData(64, 48, "gradient")]
+    [InlineData(64, 48, "random")]
+    [InlineData(96, 64, "random")]
+    [InlineData(80, 80, "gradient")]
+    [InlineData(272, 16, "gradient")] // spans a 16-MB group boundary (mbX wraps 0..16,17)
     public void OurEncode_DecodedByJxrDecApp_IsLossless(int w, int h, string kind)
     {
         var decApp = FindOracle("JxrDecApp.exe");
         if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
 
-        var (r, g, b) = kind == "flat" ? Flat(w, h, 100, 150, 200) : Gradient(w, h);
+        var (r, g, b) = kind switch
+        {
+            "flat" => Flat(w, h, 100, 150, 200),
+            "random" => Random(w, h, seed: 0x7E5 + w * 31 + h),
+            _ => Gradient(w, h),
+        };
         var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h);
 
         var tmp = Path.Combine(Path.GetTempPath(), $"jxr_oracle_{Guid.NewGuid():N}");
@@ -60,51 +74,15 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
-    /// <summary>
-    /// Characterizes the multi-MB frontier: in a 32×16 image (two horizontal
-    /// macroblocks) the <b>first</b> macroblock — columns 0..15, which has no left
-    /// neighbor and so no cross-MB prediction — still decodes bit-exact via jxrlib.
-    /// The second macroblock currently diverges (cross-MB DC/AD/CBP prediction does
-    /// not yet match the reference); that's the next rung. This test pins where the
-    /// pipeline is already conformant.
-    /// </summary>
-    [Fact]
-    public void MultiMb_FirstMacroblockMatchesOracle()
-    {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
-
-        const int w = 32, h = 16;
-        var (r, g, b) = Gradient(w, h);
-        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h);
-
-        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_oracle_{Guid.NewGuid():N}");
-        var jxrPath = tmp + ".jxr";
-        var bmpPath = tmp + ".bmp";
-        File.WriteAllBytes(jxrPath, jxr);
-        try
-        {
-            var (exit, _, _) = Run(decApp, $"-i \"{jxrPath}\" -o \"{bmpPath}\" -c 0");
-            exit.ShouldBe(0);
-            var (_, _, dr, dg, db) = ReadBmp24(bmpPath);
-
-            for (var y = 0; y < h; y++)
-                for (var x = 0; x < 16; x++) // first macroblock column only
-                {
-                    int i = y * w + x;
-                    dr[i].ShouldBe(r[i], $"R[{i}] (MB0)");
-                    dg[i].ShouldBe(g[i], $"G[{i}] (MB0)");
-                    db[i].ShouldBe(b[i], $"B[{i}] (MB0)");
-                }
-        }
-        finally
-        {
-            File.Delete(jxrPath);
-            if (File.Exists(bmpPath)) File.Delete(bmpPath);
-        }
-    }
-
     // ----------------------------------------------------------------- helpers
+
+    private static (int[] r, int[] g, int[] b) Random(int w, int h, int seed)
+    {
+        var rng = new Random(seed);
+        var r = new int[w * h]; var g = new int[w * h]; var b = new int[w * h];
+        for (var i = 0; i < w * h; i++) { r[i] = rng.Next(256); g[i] = rng.Next(256); b[i] = rng.Next(256); }
+        return (r, g, b);
+    }
 
     private static (int[] r, int[] g, int[] b) Flat(int w, int h, int r, int g, int b)
     {
