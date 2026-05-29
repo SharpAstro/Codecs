@@ -35,7 +35,7 @@ internal static class JxrCodestream
     /// Dimensions must be multiples of 16. QP indices are 0 for lossless.
     /// </summary>
     public static byte[] Encode(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
-                                int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0)
+                                int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
     {
         RequireMbAligned(width, height);
         int mbCols = width / 16, mbRows = height / 16;
@@ -43,22 +43,37 @@ internal static class JxrCodestream
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
 
         var w = new BitWriter();
-        WriteImageHeader(w, width, height);
+        WriteImageHeader(w, width, height, overlap);
         WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled);
         WriteProfileLevelInfo(w);
         WritePacketHeader(w);
 
+        // Color-transform + load every macroblock into the whole-image YUV planes,
+        // then run the overlap + 2-stage PCT across the grid (jxrlib's sliding
+        // 2-MB-row window), then per-MB quantize + entropy code.
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
+        var (mr, mg, mb) = (new int[256], new int[256], new int[256]);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                ExtractMb(r, g, b, width, mbR, mbC, mr, mg, mb);
+                SignalTransform.LoadColor(mr, mg, mb, planes[0], planes[1], planes[2],
+                                          OverlapTransform.MbBase(mbCols, mbR, mbC));
+            }
+
+        OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
+
         // SPATIAL: all four band streams alias one writer (BitWriter is a class).
         var ctx = new CodingContext(ColorFormat.Yuv444, 3);
         var tile = new TileCoder(mbCols);
-        var (mr, mg, mb) = (new int[256], new int[256], new int[256]);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
-                ExtractMb(r, g, b, width, mbR, mbC, mr, mg, mb);
                 var block = new Macroblock(3);
-                SignalTransform.Forward(mr, mg, mb, block, qDc, qLp, qHp);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                for (var ch = 0; ch < 3; ch++)
+                    SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch, qDc, qLp, qHp);
                 tile.EncodeMacroblock(ctx, block, mbC, mbR, w, w, w, w);
             }
             tile.AdvanceRow();
@@ -86,6 +101,7 @@ internal static class JxrCodestream
             throw new NotSupportedException("JxrCodestream decodes SPATIAL codestreams only.");
         if (ih.OverlapMode != 0)
             throw new NotSupportedException($"JxrCodestream decodes OL_NONE only (got overlap mode {ih.OverlapMode}).");
+        int overlap = ih.OverlapMode;
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
         RequireMbAligned(width, height);
@@ -97,9 +113,11 @@ internal static class JxrCodestream
         int mbCols = width / 16, mbRows = height / 16;
         var (r, g, b) = (new int[width * height], new int[width * height], new int[width * height]);
 
+        // Per-MB entropy decode + dequantize into the whole-image YUV planes, then
+        // run the inverse overlap + 2-stage PCT across the grid, then color-store.
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
         var ctx = new CodingContext(ColorFormat.Yuv444, 3);
         var tile = new TileCoder(mbCols);
-        var (mr, mg, mb) = (new int[256], new int[256], new int[256]);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
             for (var mbC = 0; mbC < mbCols; mbC++)
@@ -107,17 +125,29 @@ internal static class JxrCodestream
                 var block = new Macroblock(3);
                 // SPATIAL: alias one reader to all four band slots (BitReader is a ref struct).
                 tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
-                SignalTransform.Inverse(block, mr, mg, mb, qDc.Qp, qLp.Qp);
-                StoreMb(r, g, b, width, mbR, mbC, mr, mg, mb);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                for (var ch = 0; ch < 3; ch++)
+                    SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, qDc.Qp, qLp.Qp);
             }
             tile.AdvanceRow();
         }
+
+        OverlapTransform.Inverse(planes, mbCols, mbRows, overlap, scaled);
+
+        var (mr, mg, mb) = (new int[256], new int[256], new int[256]);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb);
+                StoreMb(r, g, b, width, mbR, mbC, mr, mg, mb);
+            }
         return (width, height, r, g, b);
     }
 
     // ---------------------------------------------------------------- headers
 
-    private static void WriteImageHeader(BitWriter w, int width, int height)
+    private static void WriteImageHeader(BitWriter w, int width, int height, int overlap)
     {
         int mbW = (width + 15) / 16, mbH = (height + 15) / 16;
         var ih = new ImageHeader
@@ -127,7 +157,7 @@ internal static class JxrCodestream
             FrequencyModeCodestreamFlag = false,           // SPATIAL
             SpatialXfrmSubordinate = 0,
             IndexTablePresentFlag = false,
-            OverlapMode = 0,                                // OL_NONE
+            OverlapMode = overlap,                          // OL_NONE / OL_ONE / OL_TWO
             ShortHeaderFlag = mbW <= 255 && mbH <= 255,     // jxrlib bAbbreviatedHeader
             LongWordFlag = true,                            // jxrlib always writes 1 here
             WindowingFlag = false,

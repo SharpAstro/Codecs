@@ -154,4 +154,71 @@ internal static class SignalTransform
             r[px] = rr; g[px] = gg; b[px] = bb;
         }
     }
+
+    // ---------------------------------------------------------------- split path
+    // The whole-image overlap pipeline (OverlapTransform) needs the color/quant
+    // halves of Forward/Inverse split apart from the transform, which it owns and
+    // runs across the MB grid. These four helpers are the same operations, working
+    // on a per-channel whole-image plane buffer at the macroblock base offset.
+
+    /// <summary>Color transform (<c>_CC</c>) + idxCC load of one RGB macroblock into the three
+    /// whole-image YUV planes at <paramref name="mbBase"/> (no transform). Forward half 1.</summary>
+    public static void LoadColor(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
+                                 int[] planeY, int[] planeU, int[] planeV, int mbBase)
+    {
+        for (var px = 0; px < 256; px++)
+        {
+            int rr = r[px], gg = g[px], bb = b[px];
+            ColorTransform.ForwardRgb(ref rr, ref gg, ref bb);
+            int pos = mbBase + IdxCc[px];
+            planeU[pos] = -rr;
+            planeV[pos] = bb;
+            planeY[pos] = gg - Bias;
+        }
+    }
+
+    /// <summary>Quantize the already-transformed coefficients of one MB (read from
+    /// <paramref name="plane"/> at <paramref name="mbBase"/>) into <see cref="Macroblock.Plane"/>
+    /// and extract the DC block. Forward half 2.</summary>
+    public static void QuantizeExtract(ReadOnlySpan<int> plane, int mbBase, Macroblock mb, int ch,
+                                       in JxrQuantizer qDc, in JxrQuantizer qLp, in JxrQuantizer qHp)
+    {
+        var p = mb.Plane[ch];
+        plane.Slice(mbBase, 256).CopyTo(p);
+        for (var j = 0; j < 16; j++)
+        {
+            int off = MacroblockLayout.BlkOffset[j];
+            p[off] = Quantization.Quantize(p[off], j == 0 ? qDc : qLp);
+            for (var i = 1; i < 16; i++)
+                p[off + i] = Quantization.Quantize(p[off + i], qHp);
+        }
+        for (var i = 0; i < 16; i++)
+            mb.BlockDc[ch][i] = p[DcIndex[i]];
+    }
+
+    /// <summary>Write one decoded MB's dequantized coefficients (HP from
+    /// <see cref="Macroblock.Plane"/>, DC/LP dequantized from <see cref="Macroblock.BlockDc"/>)
+    /// into <paramref name="plane"/> at <paramref name="mbBase"/>. Inverse half 1.</summary>
+    public static void DequantizeRestore(Macroblock mb, int ch, int[] plane, int mbBase, int dcQp, int lpQp)
+    {
+        // HP is already dequantized by the entropy decoder and sits in mb.Plane[ch].
+        mb.Plane[ch].AsSpan(0, 256).CopyTo(plane.AsSpan(mbBase, 256));
+        plane[mbBase + DcIndex[0]] = Quantization.Dequantize(mb.BlockDc[ch][0], dcQp);
+        for (var i = 1; i < 16; i++)
+            plane[mbBase + DcIndex[i]] = Quantization.Dequantize(mb.BlockDc[ch][i], lpQp);
+    }
+
+    /// <summary>Inverse color (<c>_ICC</c>) + idxCC unload of one MB from the three whole-image
+    /// YUV planes at <paramref name="mbBase"/> into BD8 RGB. Inverse half 2.</summary>
+    public static void StoreColor(int[] planeY, int[] planeU, int[] planeV, int mbBase,
+                                  Span<int> r, Span<int> g, Span<int> b)
+    {
+        for (var px = 0; px < 256; px++)
+        {
+            int pos = mbBase + IdxCc[px];
+            int gg = planeY[pos] + Bias, rr = -planeU[pos], bb = planeV[pos];
+            ColorTransform.InverseRgb(ref rr, ref gg, ref bb);
+            r[px] = rr; g[px] = gg; b[px] = bb;
+        }
+    }
 }
