@@ -62,4 +62,56 @@ public static class JxrImageCodec
         var file = JxrContainer.Read(jxr);
         return JxrCodestream.DecodeGray(file.Codestream);
     }
+
+    /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16</b> grayscale image
+    /// (<c>width*height</c> samples in raster order, values 0..65535) into a <c>.jxr</c> byte
+    /// stream — a single-channel Y-only codestream, full-precision lossless (SHIFT_BITS 0).
+    /// Dimensions must be multiples of 16; QP indices default to 0 (lossless).
+    /// </summary>
+    public static byte[] EncodeGray16(ReadOnlySpan<int> y, int width, int height,
+                                      int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+    {
+        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16);
+        var file = new JxrFile(
+            Width: (uint)width,
+            Height: (uint)height,
+            PixelFormat: JxrPixelFormat.Gray16Bpp,
+            Codestream: codestream);
+        return JxrContainer.Write(file);
+    }
+
+    /// <summary>Decode a <c>.jxr</c> file produced by <see cref="EncodeGray16"/> (or jxrlib in the
+    /// matching SPATIAL Y-only BD16 configuration) back into a BD16 grayscale channel (0..65535).</summary>
+    public static (int width, int height, int[] y) DecodeGray16(ReadOnlySpan<byte> jxr)
+    {
+        var file = JxrContainer.Read(jxr);
+        return JxrCodestream.DecodeGray(file.Codestream);
+    }
+
+    /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16</b> RGB image (each
+    /// channel <c>width*height</c> samples, raster order, values 0..65535) into a <c>.jxr</c> byte
+    /// stream — YCoCg-R + InternalClrFmt=YUV444, full-precision lossless (SHIFT_BITS 0). Dimensions
+    /// must be multiples of 16; QP indices default to 0 (lossless).
+    /// </summary>
+    public static byte[] EncodeRgb48(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
+                                     int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+    {
+        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16);
+        var file = new JxrFile(
+            Width: (uint)width,
+            Height: (uint)height,
+            PixelFormat: JxrPixelFormat.Rgb48Bpp,
+            Codestream: codestream);
+        return JxrContainer.Write(file);
+    }
+
+    /// <summary>Decode a <c>.jxr</c> file produced by <see cref="EncodeRgb48"/> (or jxrlib in the
+    /// matching SPATIAL YUV444 BD16 configuration) back into BD16 RGB channels (0..65535).</summary>
+    public static (int width, int height, int[] r, int[] g, int[] b) DecodeRgb48(ReadOnlySpan<byte> jxr)
+    {
+        var file = JxrContainer.Read(jxr);
+        return JxrCodestream.Decode(file.Codestream);
+    }
 }

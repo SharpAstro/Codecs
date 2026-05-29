@@ -162,9 +162,10 @@ internal static class SignalTransform
     // on a per-channel whole-image plane buffer at the macroblock base offset.
 
     /// <summary>Color transform (<c>_CC</c>) + idxCC load of one RGB macroblock into the three
-    /// whole-image YUV planes at <paramref name="mbBase"/> (no transform). Forward half 1.</summary>
+    /// whole-image YUV planes at <paramref name="mbBase"/> (no transform). Forward half 1.
+    /// <paramref name="bias"/> is the luma level shift (128 for BD8, 32768 for BD16).</summary>
     public static void LoadColor(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
-                                 int[] planeY, int[] planeU, int[] planeV, int mbBase)
+                                 int[] planeY, int[] planeU, int[] planeV, int mbBase, int bias = Bias)
     {
         for (var px = 0; px < 256; px++)
         {
@@ -173,7 +174,7 @@ internal static class SignalTransform
             int pos = mbBase + IdxCc[px];
             planeU[pos] = -rr;
             planeV[pos] = bb;
-            planeY[pos] = gg - Bias;
+            planeY[pos] = gg - bias;
         }
     }
 
@@ -209,37 +210,42 @@ internal static class SignalTransform
     }
 
     /// <summary>Inverse color (<c>_ICC</c>) + idxCC unload of one MB from the three whole-image
-    /// YUV planes at <paramref name="mbBase"/> into BD8 RGB. Inverse half 2.</summary>
+    /// YUV planes at <paramref name="mbBase"/> into RGB samples, clamped to <c>[0, <paramref name="max"/>]</c>
+    /// (jxrlib's output _CLIP). <paramref name="bias"/> = 128/32768 for BD8/BD16. Inverse half 2.</summary>
     public static void StoreColor(int[] planeY, int[] planeU, int[] planeV, int mbBase,
-                                  Span<int> r, Span<int> g, Span<int> b)
+                                  Span<int> r, Span<int> g, Span<int> b, int bias = Bias, int max = 255)
     {
         for (var px = 0; px < 256; px++)
         {
             int pos = mbBase + IdxCc[px];
-            int gg = planeY[pos] + Bias, rr = -planeU[pos], bb = planeV[pos];
+            int gg = planeY[pos] + bias, rr = -planeU[pos], bb = planeV[pos];
             ColorTransform.InverseRgb(ref rr, ref gg, ref bb);
-            r[px] = rr; g[px] = gg; b[px] = bb;
+            r[px] = Clip(rr, max); g[px] = Clip(gg, max); b[px] = Clip(bb, max);
         }
     }
+
+    private static int Clip(int v, int max) => v < 0 ? 0 : v > max ? max : v;
 
     // ---------------------------------------------------------------- grayscale (Y-only)
     // jxrlib BD8 Y_ONLY input does NO color transform (strenc.c:1921-1938): the single
     // channel becomes the Y plane via idxCC with the level shift `pY = src - (128 << cShift)`
     // (cShift = 0 for BD8). Inverse adds the bias back.
 
-    /// <summary>idxCC load of one BD8 grayscale macroblock (256 samples, raster order) into the
-    /// whole-image Y plane at <paramref name="mbBase"/> with the level shift. No color transform.</summary>
-    public static void LoadGray(ReadOnlySpan<int> y, int[] planeY, int mbBase)
+    /// <summary>idxCC load of one grayscale macroblock (256 samples, raster order) into the
+    /// whole-image Y plane at <paramref name="mbBase"/> with the level shift. No color transform.
+    /// <paramref name="bias"/> = 128/32768 for BD8/BD16.</summary>
+    public static void LoadGray(ReadOnlySpan<int> y, int[] planeY, int mbBase, int bias = Bias)
     {
         for (var px = 0; px < 256; px++)
-            planeY[mbBase + IdxCc[px]] = y[px] - Bias;
+            planeY[mbBase + IdxCc[px]] = y[px] - bias;
     }
 
     /// <summary>idxCC unload of one MB from the whole-image Y plane at <paramref name="mbBase"/>
-    /// back into BD8 grayscale samples, adding the bias. No color transform.</summary>
-    public static void StoreGray(int[] planeY, int mbBase, Span<int> y)
+    /// back into grayscale samples, adding the bias and clamping to <c>[0, <paramref name="max"/>]</c>.
+    /// No color transform. <paramref name="bias"/> = 128/32768 for BD8/BD16.</summary>
+    public static void StoreGray(int[] planeY, int mbBase, Span<int> y, int bias = Bias, int max = 255)
     {
         for (var px = 0; px < 256; px++)
-            y[px] = planeY[mbBase + IdxCc[px]] + Bias;
+            y[px] = Clip(planeY[mbBase + IdxCc[px]] + bias, max);
     }
 }

@@ -35,16 +35,18 @@ internal static class JxrCodestream
     /// Dimensions must be multiples of 16. QP indices are 0 for lossless.
     /// </summary>
     public static byte[] Encode(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
-                                int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8)
     {
         RequireMbAligned(width, height);
         int mbCols = width / 16, mbRows = height / 16;
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        int bias = LumaBias(bd);
 
         var w = new BitWriter();
-        WriteImageHeader(w, width, height, overlap);
-        WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled);
+        WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.Rgb, bd);
+        WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled, bd);
         WriteProfileLevelInfo(w);
         WritePacketHeader(w);
 
@@ -58,7 +60,7 @@ internal static class JxrCodestream
             {
                 ExtractMb(r, g, b, width, mbR, mbC, mr, mg, mb);
                 SignalTransform.LoadColor(mr, mg, mb, planes[0], planes[1], planes[2],
-                                          OverlapTransform.MbBase(mbCols, mbR, mbC));
+                                          OverlapTransform.MbBase(mbCols, mbR, mbC), bias);
             }
 
         OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
@@ -90,16 +92,18 @@ internal static class JxrCodestream
     /// the Y plane. Dimensions must be multiples of 16; QP indices are 0 for lossless.
     /// </summary>
     public static byte[] EncodeGray(ReadOnlySpan<int> y, int width, int height,
-                                    int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                    int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                    JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8)
     {
         RequireMbAligned(width, height);
         int mbCols = width / 16, mbRows = height / 16;
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        int bias = LumaBias(bd);
 
         var w = new BitWriter();
-        WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd8);
-        WritePlaneHeaderGray(w, qpDc, qpLp, qpHp, scaled);
+        WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.YOnly, bd);
+        WritePlaneHeaderGray(w, qpDc, qpLp, qpHp, scaled, bd);
         WriteProfileLevelInfo(w);
         WritePacketHeader(w);
 
@@ -109,7 +113,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 ExtractMbGray(y, width, mbR, mbC, my);
-                SignalTransform.LoadGray(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC));
+                SignalTransform.LoadGray(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC), bias);
             }
 
         OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
@@ -154,7 +158,9 @@ internal static class JxrCodestream
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
         RequireMbAligned(width, height);
-        var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader);
+        var bd = ih.OutputBitDepth;
+        int bias = LumaBias(bd), max = SampleMax(bd);
+        var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, bd);
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
@@ -188,7 +194,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb);
+                SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb, bias, max);
                 StoreMb(r, g, b, width, mbR, mbC, mr, mg, mb);
             }
         return (width, height, r, g, b);
@@ -212,7 +218,9 @@ internal static class JxrCodestream
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
         RequireMbAligned(width, height);
-        var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeaderGray(ref reader);
+        var bd = ih.OutputBitDepth;
+        int bias = LumaBias(bd), max = SampleMax(bd);
+        var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeaderGray(ref reader, bd);
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
@@ -242,7 +250,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreGray(planes[0], baseOff, my);
+                SignalTransform.StoreGray(planes[0], baseOff, my, bias, max);
                 StoreMbGray(y, width, mbR, mbC, my);
             }
         return (width, height, y);
@@ -281,13 +289,13 @@ internal static class JxrCodestream
     // Faithful port of jxrlib WriteImagePlaneHeader (strenc.c:748) for the
     // YUV444 / BD8 / all-bands / uQPMode==0x750 case: every band carries its own
     // plane-uniform quantizer in channel-mode INDEPENDENT (2), three equal QP indices.
-    private static void WritePlaneHeader(BitWriter w, int qpDc, int qpLp, int qpHp, bool scaled)
+    private static void WritePlaneHeader(BitWriter w, int qpDc, int qpLp, int qpHp, bool scaled, JxrOutputBitDepth bd)
     {
         w.WriteBits((uint)JxrInternalColorFormat.YUV444, 3); // internal color format
         w.WriteBit(scaled);                                  // bScaledArith
         w.WriteBits((uint)JxrBandsPresent.AllBands, 4);      // SB_ALL
         w.WriteBits(0, 4); w.WriteBits(0, 4);                // YUV: RESERVED_F, RESERVED_H
-        // BD8 → no SHIFT_BITS / LEN_MANTISSA.
+        WriteBitDepthParams(w, bd);                          // SHIFT_BITS for BD16 (none for BD8)
 
         // DC: uniform flag = 1, then quantizer (chMode INDEPENDENT, 3 equal indices).
         w.WriteBit(true);
@@ -306,7 +314,7 @@ internal static class JxrCodestream
         FillToByte(w);
     }
 
-    private static (int qpDc, int qpLp, int qpHp, bool scaled) ReadPlaneHeader(ref BitReader r)
+    private static (int qpDc, int qpLp, int qpHp, bool scaled) ReadPlaneHeader(ref BitReader r, JxrOutputBitDepth bd)
     {
         var clrFmt = (JxrInternalColorFormat)r.ReadBits(3);
         if (clrFmt != JxrInternalColorFormat.YUV444)
@@ -316,6 +324,7 @@ internal static class JxrCodestream
         if (bands != JxrBandsPresent.AllBands)
             throw new NotSupportedException($"JxrCodestream decodes all-bands codestreams only (got {bands}).");
         r.SkipBits(8); // RESERVED_F + RESERVED_H
+        SkipBitDepthParams(ref r, bd); // SHIFT_BITS for BD16
 
         if (!r.ReadBit()) throw new NotSupportedException("Non-uniform DC quantization not supported.");
         int qpDc = ReadQuantizer(ref r);
@@ -330,6 +339,19 @@ internal static class JxrCodestream
 
         AlignToByte(ref r);
         return (qpDc, qpLp, qpHp, scaled);
+    }
+
+    // jxrlib WriteImagePlaneHeader bit-depth params (strenc.c:777): BD16/BD16S write an 8-bit
+    // SHIFT_BITS (nLenMantissaOrShift); 0 ⇒ full-precision integer (lossless). BD8 writes nothing.
+    // (BD16F/BD32F mantissa/exp-bias fields are added by the float rungs.)
+    private static void WriteBitDepthParams(BitWriter w, JxrOutputBitDepth bd)
+    {
+        if (bd == JxrOutputBitDepth.Bd16) w.WriteBits(0, 8); // SHIFT_BITS = 0
+    }
+
+    private static void SkipBitDepthParams(ref BitReader r, JxrOutputBitDepth bd)
+    {
+        if (bd == JxrOutputBitDepth.Bd16) r.SkipBits(8); // SHIFT_BITS
     }
 
     // jxrlib writeQuantizer (strenc.c:59) for 3 channels in channel-mode INDEPENDENT (2):
@@ -356,13 +378,13 @@ internal static class JxrCodestream
     // case. Differs from the YUV444 writer in two ways (strenc.c:772 default + writeQuantizer
     // cChannel==1): no RESERVED_F/RESERVED_H bytes, and each band's quantizer is just the 8-bit
     // Y index (writeQuantizer forces cChMode 0 and writes no channel-mode bits for one channel).
-    private static void WritePlaneHeaderGray(BitWriter w, int qpDc, int qpLp, int qpHp, bool scaled)
+    private static void WritePlaneHeaderGray(BitWriter w, int qpDc, int qpLp, int qpHp, bool scaled, JxrOutputBitDepth bd)
     {
         w.WriteBits((uint)JxrInternalColorFormat.YOnly, 3); // internal color format = 0
         w.WriteBit(scaled);                                 // bScaledArith
         w.WriteBits((uint)JxrBandsPresent.AllBands, 4);     // SB_ALL
         // YONLY: color-params switch hits default — no RESERVED_F / RESERVED_H.
-        // BD8 → no SHIFT_BITS / LEN_MANTISSA.
+        WriteBitDepthParams(w, bd);                         // SHIFT_BITS for BD16 (none for BD8)
 
         w.WriteBit(true);                 // DC uniform
         w.WriteBits((uint)qpDc, 8);       // single-channel quantizer (Y index only)
@@ -378,7 +400,7 @@ internal static class JxrCodestream
         FillToByte(w);
     }
 
-    private static (int qpDc, int qpLp, int qpHp, bool scaled) ReadPlaneHeaderGray(ref BitReader r)
+    private static (int qpDc, int qpLp, int qpHp, bool scaled) ReadPlaneHeaderGray(ref BitReader r, JxrOutputBitDepth bd)
     {
         var clrFmt = (JxrInternalColorFormat)r.ReadBits(3);
         if (clrFmt != JxrInternalColorFormat.YOnly)
@@ -388,6 +410,7 @@ internal static class JxrCodestream
         if (bands != JxrBandsPresent.AllBands)
             throw new NotSupportedException($"JxrCodestream.DecodeGray expects all-bands codestreams (got {bands}).");
         // YONLY: no RESERVED bytes to skip.
+        SkipBitDepthParams(ref r, bd); // SHIFT_BITS for BD16
 
         if (!r.ReadBit()) throw new NotSupportedException("Non-uniform DC quantization not supported.");
         int qpDc = (int)r.ReadBits(8);
@@ -458,6 +481,14 @@ internal static class JxrCodestream
 
     // jxrlib StrEncInit: lossless (all bands QP index ≤ 1) ⇒ bScaledArith == FALSE.
     private static bool ScaledArith(int qpDc, int qpLp, int qpHp) => qpDc > 1 || qpLp > 1 || qpHp > 1;
+
+    // Luma/sample level shift: jxrlib `iOffset = (1 << (bits-1)) << cShift`, with cShift = 0 in
+    // the lossless (non-scaled-arith) path — 128 for BD8, 32768 for BD16. (SHIFT_BITS nLen = 0:
+    // full-precision integer, lossless. Lossy precision reduction is a future extension.)
+    private static int LumaBias(JxrOutputBitDepth bd) => bd == JxrOutputBitDepth.Bd16 ? 32768 : 128;
+
+    // Output clamp ceiling (jxrlib _CLIP8 / _CLIPU16).
+    private static int SampleMax(JxrOutputBitDepth bd) => bd == JxrOutputBitDepth.Bd16 ? 65535 : 255;
 
     private static void FillToByte(BitWriter w)
     {
