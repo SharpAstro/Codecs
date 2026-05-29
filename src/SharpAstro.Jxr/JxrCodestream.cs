@@ -145,7 +145,7 @@ internal static class JxrCodestream
     /// of 16; QP indices are 0 for lossless (the codec is lossless on the float-pixel values).
     /// </summary>
     public static byte[] EncodeGrayF32(ReadOnlySpan<float> y, int width, int height,
-                                       int lenMantissa = 13, int expBias = 0,
+                                       int lenMantissa = 13, int expBias = 4,
                                        int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
     {
         RequireMbAligned(width, height);

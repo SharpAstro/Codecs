@@ -120,12 +120,12 @@ public static class JxrImageCodec
     /// image — the HDR headline. Floats are written <b>verbatim, not normalized</b> (post-stretch
     /// star cores may overshoot 1.0; raw FITS data spans tens of thousands). <paramref name="lenMantissa"/>
     /// is the stored mantissa-bit count (jxrlib default 13; astrophotography commonly uses 8 to trade
-    /// precision for size) and <paramref name="expBias"/> the exponent bias (default 0). BD32F is
-    /// mono-only by design (T.832 has no Table A.6 GUID for BD32F RGB). Dimensions must be multiples
+    /// precision for size) and <paramref name="expBias"/> the exponent bias (jxrlib default 4). BD32F
+    /// is mono-only by design (T.832 has no Table A.6 GUID for BD32F RGB). Dimensions must be multiples
     /// of 16; the codec is lossless on the float-pixel representation (QP 0, OL_NONE by default).
     /// </summary>
     public static byte[] EncodeGrayF32(ReadOnlySpan<float> y, int width, int height,
-                                       int lenMantissa = 13, int expBias = 0,
+                                       int lenMantissa = 13, int expBias = 4,
                                        int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
     {
         var codestream = JxrCodestream.EncodeGrayF32(y, width, height, lenMantissa, expBias, qpDc, qpLp, qpHp, overlap);
