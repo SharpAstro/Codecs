@@ -1,0 +1,157 @@
+namespace SharpAstro.Jxr;
+
+/// <summary>
+/// The per-macroblock <b>signal path</b> for BD8 RGB → YUV444, <c>OL_NONE</c> (no
+/// overlap). Bridges 16×16 spatial pixels and a quantized coefficient
+/// <see cref="Macroblock"/>: forward = color transform (<c>_CC</c>) → load into the
+/// block-layout plane (via <c>idxCC</c>) → 2-stage Photo Core Transform → quantize →
+/// extract the DC block; inverse reverses it. With no overlap each macroblock is
+/// self-contained (no cross-MB staging — that's the pipelined OL_ONE/OL_TWO path).
+///
+/// <para>Ports the BD8 RGB input/output (jxrlib strenc.c <c>_CC</c> + idxCC store
+/// <c>pU=-r, pV=b, pY=g-128</c>, strdec.c <c>_ICC</c>), the 2-stage transform
+/// (<see cref="PhotoCoreTransform"/>), quantization (<see cref="Quantization"/>),
+/// and the DC-block extract/restore (<c>dctIndex[2]</c>, <c>dequantizeMacroblock</c>).
+/// At QP index 0 (lossless) the whole path is bit-exact pixel identity.</para>
+/// </summary>
+internal static class SignalTransform
+{
+    private const int Bias = 128; // BD8 luma level shift (jxrlib iOffset, cShift=0)
+
+    // strcodec.c dctIndex[2] — DC-block (super-DC) layout: BlockDc[i] <-> plane[DcIndex[i]].
+    private static readonly int[] DcIndex =
+        { 0, 128, 64, 208, 32, 240, 48, 224, 16, 192, 80, 144, 112, 176, 96, 160 };
+
+    // strcodec.c idxCC[row][col] flattened to [row*16 + col] — pixel position -> plane position.
+    private static readonly int[] IdxCc = BuildIdxCc();
+
+    private static int[] BuildIdxCc()
+    {
+        // The 16x16 table from jxrlib; high nibble = block-major, low nibble = within-block (4x4 zigzag-ish).
+        ReadOnlySpan<byte> rows = stackalloc byte[]
+        {
+            0x00,0x01,0x05,0x04, 0x40,0x41,0x45,0x44, 0x80,0x81,0x85,0x84, 0xc0,0xc1,0xc5,0xc4,
+            0x02,0x03,0x07,0x06, 0x42,0x43,0x47,0x46, 0x82,0x83,0x87,0x86, 0xc2,0xc3,0xc7,0xc6,
+            0x0a,0x0b,0x0f,0x0e, 0x4a,0x4b,0x4f,0x4e, 0x8a,0x8b,0x8f,0x8e, 0xca,0xcb,0xcf,0xce,
+            0x08,0x09,0x0d,0x0c, 0x48,0x49,0x4d,0x4c, 0x88,0x89,0x8d,0x8c, 0xc8,0xc9,0xcd,0xcc,
+            0x10,0x11,0x15,0x14, 0x50,0x51,0x55,0x54, 0x90,0x91,0x95,0x94, 0xd0,0xd1,0xd5,0xd4,
+            0x12,0x13,0x17,0x16, 0x52,0x53,0x57,0x56, 0x92,0x93,0x97,0x96, 0xd2,0xd3,0xd7,0xd6,
+            0x1a,0x1b,0x1f,0x1e, 0x5a,0x5b,0x5f,0x5e, 0x9a,0x9b,0x9f,0x9e, 0xda,0xdb,0xdf,0xde,
+            0x18,0x19,0x1d,0x1c, 0x58,0x59,0x5d,0x5c, 0x98,0x99,0x9d,0x9c, 0xd8,0xd9,0xdd,0xdc,
+            0x20,0x21,0x25,0x24, 0x60,0x61,0x65,0x64, 0xa0,0xa1,0xa5,0xa4, 0xe0,0xe1,0xe5,0xe4,
+            0x22,0x23,0x27,0x26, 0x62,0x63,0x67,0x66, 0xa2,0xa3,0xa7,0xa6, 0xe2,0xe3,0xe7,0xe6,
+            0x2a,0x2b,0x2f,0x2e, 0x6a,0x6b,0x6f,0x6e, 0xaa,0xab,0xaf,0xae, 0xea,0xeb,0xef,0xee,
+            0x28,0x29,0x2d,0x2c, 0x68,0x69,0x6d,0x6c, 0xa8,0xa9,0xad,0xac, 0xe8,0xe9,0xed,0xec,
+            0x30,0x31,0x35,0x34, 0x70,0x71,0x75,0x74, 0xb0,0xb1,0xb5,0xb4, 0xf0,0xf1,0xf5,0xf4,
+            0x32,0x33,0x37,0x36, 0x72,0x73,0x77,0x76, 0xb2,0xb3,0xb7,0xb6, 0xf2,0xf3,0xf7,0xf6,
+            0x3a,0x3b,0x3f,0x3e, 0x7a,0x7b,0x7f,0x7e, 0xba,0xbb,0xbf,0xbe, 0xfa,0xfb,0xff,0xfe,
+            0x38,0x39,0x3d,0x3c, 0x78,0x79,0x7d,0x7c, 0xb8,0xb9,0xbd,0xbc, 0xf8,0xf9,0xfd,0xfc,
+        };
+        var t = new int[256];
+        for (var i = 0; i < 256; i++) t[i] = rows[i];
+        return t;
+    }
+
+    // ---------------------------------------------------------------- forward
+
+    /// <summary>
+    /// Forward signal path for one BD8 RGB macroblock (each channel 256 samples in
+    /// raster order, pixel (row,col) at row*16+col) into a quantized YUV444
+    /// <see cref="Macroblock"/> (<see cref="Macroblock.BlockDc"/> = quantized DC+LP,
+    /// <see cref="Macroblock.Plane"/> = quantized coefficients incl. HP).
+    /// </summary>
+    public static void Forward(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b, Macroblock mb,
+                               in JxrQuantizer qDc, in JxrQuantizer qLp, in JxrQuantizer qHp)
+    {
+        var pY = mb.Plane[0];
+        var pU = mb.Plane[1];
+        var pV = mb.Plane[2];
+
+        // color transform (_CC) + load into the block-layout plane.
+        for (var px = 0; px < 256; px++)
+        {
+            int rr = r[px], gg = g[px], bb = b[px];
+            ColorTransform.ForwardRgb(ref rr, ref gg, ref bb);
+            int pos = IdxCc[px];
+            pU[pos] = -rr;
+            pV[pos] = bb;
+            pY[pos] = gg - Bias;
+        }
+
+        for (var ch = 0; ch < 3; ch++)
+        {
+            var p = mb.Plane[ch];
+            // 2-stage forward Photo Core Transform.
+            for (var blk = 0; blk < 16; blk++)
+                PhotoCoreTransform.ForwardStage1(p.AsSpan(16 * blk, 16));
+            PhotoCoreTransform.ForwardStage2(p);
+
+            // quantize (DC at block 0, LP at the other 15 super-DC slots, HP everywhere else).
+            for (var j = 0; j < 16; j++)
+            {
+                int off = MacroblockLayout.BlkOffset[j];
+                p[off] = Quantization.Quantize(p[off], j == 0 ? qDc : qLp);
+                for (var i = 1; i < 16; i++)
+                    p[off + i] = Quantization.Quantize(p[off + i], qHp);
+            }
+
+            // extract the DC block (quantized DC + 15 LP) for the DC/LP entropy bands.
+            for (var i = 0; i < 16; i++)
+                mb.BlockDc[ch][i] = p[DcIndex[i]];
+        }
+    }
+
+    /// <summary>
+    /// Dequantize the highpass coefficients in place (the step the entropy decoder
+    /// folds into <c>DecodeBlockHighpass</c>). Call this in signal-path isolation
+    /// tests between <see cref="Forward"/> and <see cref="Inverse"/>; in the full
+    /// codec the entropy decode already produces dequantized HP.
+    /// </summary>
+    public static void DequantizeHighpass(Macroblock mb, int hpQp)
+    {
+        for (var ch = 0; ch < 3; ch++)
+            for (var j = 0; j < 16; j++)
+            {
+                int off = MacroblockLayout.BlkOffset[j];
+                for (var i = 1; i < 16; i++)
+                    mb.Plane[ch][off + i] = Quantization.Dequantize(mb.Plane[ch][off + i], hpQp);
+            }
+    }
+
+    // ---------------------------------------------------------------- inverse
+
+    /// <summary>
+    /// Inverse signal path: dequantize DC/LP from <see cref="Macroblock.BlockDc"/>
+    /// into the plane (jxrlib <c>dequantizeMacroblock</c>; HP is assumed already
+    /// dequantized), run the inverse 2-stage transform, then unload + inverse color
+    /// (<c>_ICC</c>) into the BD8 RGB output (256 samples per channel, raster order).
+    /// </summary>
+    public static void Inverse(Macroblock mb, Span<int> r, Span<int> g, Span<int> b,
+                               int dcQp, int lpQp)
+    {
+        for (var ch = 0; ch < 3; ch++)
+        {
+            var p = mb.Plane[ch];
+            // restore dequantized DC + LP from the DC block.
+            p[DcIndex[0]] = Quantization.Dequantize(mb.BlockDc[ch][0], dcQp);
+            for (var i = 1; i < 16; i++)
+                p[DcIndex[i]] = Quantization.Dequantize(mb.BlockDc[ch][i], lpQp);
+
+            // inverse 2-stage transform.
+            PhotoCoreTransform.InverseStage2(p);
+            for (var blk = 0; blk < 16; blk++)
+                PhotoCoreTransform.InverseStage1(p.AsSpan(16 * blk, 16));
+        }
+
+        var pY = mb.Plane[0];
+        var pU = mb.Plane[1];
+        var pV = mb.Plane[2];
+        for (var px = 0; px < 256; px++)
+        {
+            int pos = IdxCc[px];
+            int gg = pY[pos] + Bias, rr = -pU[pos], bb = pV[pos];
+            ColorTransform.InverseRgb(ref rr, ref gg, ref bb);
+            r[px] = rr; g[px] = gg; b[px] = bb;
+        }
+    }
+}
