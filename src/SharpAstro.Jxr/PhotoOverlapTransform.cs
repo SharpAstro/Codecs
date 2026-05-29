@@ -333,6 +333,19 @@ internal static class PhotoOverlapTransform
         d += (a * 3 + 0) >> 4;
     }
 
+    // strInvTransform.c:524 strHSTdec1_alternate — HstDec1 plus the 7/1024 rescaling
+    // step (d += a>>7; d -= a>>10), making it the exact inverse of HstEnc1. This is
+    // the operator a standard (subversion != 0) codestream's decoder uses.
+    private static void HstDec1Alt(ref int a, ref int d)
+    {
+        a += d;
+        d = (a >> 1) - d;
+        a += (d * 3 + 0) >> 3;
+        d += (a * 3 + 0) >> 4;
+        d += a >> 7;
+        d -= a >> 10;
+    }
+
     // strInvTransform.c:544 strHSTdec1_edge — negates *pd on store.
     private static void HstDec1Edge(ref int a, ref int pd)
     {
@@ -424,6 +437,39 @@ internal static class PhotoOverlapTransform
     internal static void PostStage1(Span<int> buf, int p, int iOffset, int iHpQp, bool hpAbsent)
         => PostStage1Split(buf, p, p + 16, iOffset, iHpQp, hpAbsent);
 
+    /// <summary>
+    /// strInvTransform.c:389 strPost4x4Stage1Split_alternate — the exact structural
+    /// inverse of <see cref="PreStage1Split"/> (uses <see cref="HstDec1Alt"/> and has
+    /// no DC-leak compensation). This is the operator a standard codestream's decoder
+    /// uses (subversion != 0 ⇒ <c>invTransformMacroblock_alteredOperators_hard</c>).
+    /// </summary>
+    internal static void PostStage1SplitAlt(Span<int> buf, int p0, int p1, int iOffset)
+    {
+        int p2 = p0 + 72 - iOffset;
+        int p3 = p1 + 64 - iOffset;
+        p0 += 12;
+        p1 += 4;
+
+        for (var i = 0; i < 4; i++)
+            Dct2x2dn(ref buf[p0 + i], ref buf[p2 + i], ref buf[p1 + i], ref buf[p3 + i]);
+
+        InvOddOddPost(ref buf[p3 + 0], ref buf[p3 + 1], ref buf[p3 + 2], ref buf[p3 + 3]);
+
+        IRotate1(ref buf[p1 + 2], ref buf[p1 + 3]);
+        IRotate1(ref buf[p1 + 0], ref buf[p1 + 1]);
+        IRotate1(ref buf[p2 + 1], ref buf[p2 + 3]);
+        IRotate1(ref buf[p2 + 0], ref buf[p2 + 2]);
+
+        for (var i = 0; i < 4; i++)
+            HstDec1Alt(ref buf[p0 + i], ref buf[p3 + i]);
+        for (var i = 0; i < 4; i++)
+            HstDec(ref buf[p0 + i], ref buf[p2 + i], ref buf[p1 + i], ref buf[p3 + i]);
+    }
+
+    /// <summary>strInvTransform.c:422 strPost4x4Stage1_alternate — single-buffer convenience.</summary>
+    internal static void PostStage1Alt(Span<int> buf, int p, int iOffset)
+        => PostStage1SplitAlt(buf, p, p + 16, iOffset);
+
     /// <summary>strInvTransform.c:444 strPost4x4Stage2Split — inverse of <see cref="PreStage2Split"/>.</summary>
     internal static void PostStage2Split(Span<int> buf, int p0, int p1)
     {
@@ -443,6 +489,37 @@ internal static class PhotoOverlapTransform
         HstDec1(ref buf[p0 - 32], ref buf[p1 + 16]);
         HstDec1(ref buf[p0 - 80], ref buf[p1 + 64]);
         HstDec1(ref buf[p0 - 16], ref buf[p1 + 0]);
+
+        HstDec(ref buf[p0 - 96], ref buf[p1 - 112], ref buf[p0 + 96], ref buf[p1 + 80]);
+        HstDec(ref buf[p0 - 32], ref buf[p1 - 48], ref buf[p0 + 32], ref buf[p1 + 16]);
+        HstDec(ref buf[p0 - 80], ref buf[p1 - 128], ref buf[p0 + 112], ref buf[p1 + 64]);
+        HstDec(ref buf[p0 - 16], ref buf[p1 - 64], ref buf[p0 + 48], ref buf[p1 + 0]);
+    }
+
+    /// <summary>
+    /// strInvTransform.c:473 strPost4x4Stage2Split_alternate — the exact structural
+    /// inverse of <see cref="PreStage2Split"/> (identical to <see cref="PostStage2Split"/>
+    /// except it uses <see cref="HstDec1Alt"/>). The operator a standard codestream's
+    /// decoder uses for the second-level (MB-boundary) overlap.
+    /// </summary>
+    internal static void PostStage2SplitAlt(Span<int> buf, int p0, int p1)
+    {
+        Dct2x2dn(ref buf[p0 - 96], ref buf[p0 + 96], ref buf[p1 - 112], ref buf[p1 + 80]);
+        Dct2x2dn(ref buf[p0 - 32], ref buf[p0 + 32], ref buf[p1 - 48], ref buf[p1 + 16]);
+        Dct2x2dn(ref buf[p0 - 80], ref buf[p0 + 112], ref buf[p1 - 128], ref buf[p1 + 64]);
+        Dct2x2dn(ref buf[p0 - 16], ref buf[p0 + 48], ref buf[p1 - 64], ref buf[p1 + 0]);
+
+        InvOddOddPost(ref buf[p1 + 0], ref buf[p1 + 64], ref buf[p1 + 16], ref buf[p1 + 80]);
+
+        IRotate1(ref buf[p0 + 48], ref buf[p0 + 32]);
+        IRotate1(ref buf[p0 + 112], ref buf[p0 + 96]);
+        IRotate1(ref buf[p1 - 64], ref buf[p1 - 128]);
+        IRotate1(ref buf[p1 - 48], ref buf[p1 - 112]);
+
+        HstDec1Alt(ref buf[p0 - 96], ref buf[p1 + 80]);
+        HstDec1Alt(ref buf[p0 - 32], ref buf[p1 + 16]);
+        HstDec1Alt(ref buf[p0 - 80], ref buf[p1 + 64]);
+        HstDec1Alt(ref buf[p0 - 16], ref buf[p1 + 0]);
 
         HstDec(ref buf[p0 - 96], ref buf[p1 - 112], ref buf[p0 + 96], ref buf[p1 + 80]);
         HstDec(ref buf[p0 - 32], ref buf[p1 - 48], ref buf[p0 + 32], ref buf[p1 + 16]);

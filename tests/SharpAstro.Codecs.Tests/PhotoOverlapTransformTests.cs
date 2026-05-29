@@ -182,4 +182,39 @@ public sealed class PhotoOverlapTransformTests
             (a, b, c, d).ShouldBe((a0, b0, c0, d0), $"trial {t}");
         }
     }
+
+    // The *Alt block-level stages are the operators a real (subversion != 0) decoder
+    // applies, so their defining property is exact inversion of the encoder's PreStage*.
+    // (Their jxrlib intermediate values are pinned transitively when the full codec is
+    // oracle-validated for OL_ONE / OL_TWO.)
+
+    [Fact]
+    public void PostStage1Alt_ExactlyInverts_PreStage1()
+    {
+        var rng = new Random(0xD44);
+        for (var t = 0; t < 200; t++)
+        {
+            var buf = new int[256];
+            for (var i = 0; i < 256; i++) buf[i] = rng.Next(-4000, 4000);
+            var orig = (int[])buf.Clone();
+            PhotoOverlapTransform.PreStage1(buf, 0, 0);
+            PhotoOverlapTransform.PostStage1Alt(buf, 0, 0);
+            buf.ShouldBe(orig, $"trial {t}");
+        }
+    }
+
+    [Fact]
+    public void PostStage2SplitAlt_ExactlyInverts_PreStage2Split()
+    {
+        var rng = new Random(0xE55);
+        for (var t = 0; t < 200; t++)
+        {
+            var buf = new int[512];
+            for (var i = 0; i < 512; i++) buf[i] = rng.Next(-4000, 4000);
+            var orig = (int[])buf.Clone();
+            PhotoOverlapTransform.PreStage2Split(buf, 128, 256);
+            PhotoOverlapTransform.PostStage2SplitAlt(buf, 128, 256);
+            buf.ShouldBe(orig, $"trial {t}");
+        }
+    }
 }
