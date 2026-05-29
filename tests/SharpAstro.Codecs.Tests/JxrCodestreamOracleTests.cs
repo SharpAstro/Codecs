@@ -74,17 +74,24 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
-    // Rung 7f.2 — Photo Overlap (OL_ONE, jxrlib's default) encoder conformance: our
-    // overlap-on encode, decoded by the reference JxrDecApp, must come back lossless.
+    // Rung 7f.2/7f.3 — Photo Overlap encoder conformance: our overlap-on encode (OL_ONE
+    // = jxrlib's default, OL_TWO), decoded by the reference JxrDecApp, must come back lossless.
     [Theory]
-    [InlineData(16, 16, "gradient")]
-    [InlineData(32, 16, "gradient")]
-    [InlineData(48, 32, "gradient")]
-    [InlineData(64, 48, "gradient")]
-    [InlineData(64, 48, "random")]
-    [InlineData(80, 80, "gradient")]
-    [InlineData(272, 16, "gradient")]
-    public void OurEncode_Overlap1_DecodedByJxrDecApp_IsLossless(int w, int h, string kind)
+    [InlineData(16, 16, "gradient", 1)]
+    [InlineData(32, 16, "gradient", 1)]
+    [InlineData(48, 32, "gradient", 1)]
+    [InlineData(64, 48, "gradient", 1)]
+    [InlineData(64, 48, "random", 1)]
+    [InlineData(80, 80, "gradient", 1)]
+    [InlineData(272, 16, "gradient", 1)]
+    [InlineData(16, 16, "gradient", 2)]
+    [InlineData(32, 16, "gradient", 2)]
+    [InlineData(48, 32, "gradient", 2)]
+    [InlineData(64, 48, "gradient", 2)]
+    [InlineData(64, 48, "random", 2)]
+    [InlineData(80, 80, "gradient", 2)]
+    [InlineData(272, 16, "gradient", 2)]
+    public void OurEncode_Overlap_DecodedByJxrDecApp_IsLossless(int w, int h, string kind, int overlap)
     {
         var decApp = FindOracle("JxrDecApp.exe");
         if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
@@ -94,9 +101,9 @@ public sealed class JxrCodestreamOracleTests
             "random" => Random(w, h, seed: 0x7E5 + w * 31 + h),
             _ => Gradient(w, h),
         };
-        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: 1);
+        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: overlap);
 
-        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_ol1_{Guid.NewGuid():N}");
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_ol{overlap}_{Guid.NewGuid():N}");
         var jxrPath = tmp + ".jxr";
         var bmpPath = tmp + ".bmp";
         File.WriteAllBytes(jxrPath, jxr);
@@ -111,9 +118,9 @@ public sealed class JxrCodestreamOracleTests
             dh.ShouldBe(h);
             for (var i = 0; i < w * h; i++)
             {
-                dr[i].ShouldBe(r[i], $"R[{i}] (OL_ONE {kind} {w}x{h})");
-                dg[i].ShouldBe(g[i], $"G[{i}] (OL_ONE {kind} {w}x{h})");
-                db[i].ShouldBe(b[i], $"B[{i}] (OL_ONE {kind} {w}x{h})");
+                dr[i].ShouldBe(r[i], $"R[{i}] (OL{overlap} {kind} {w}x{h})");
+                dg[i].ShouldBe(g[i], $"G[{i}] (OL{overlap} {kind} {w}x{h})");
+                db[i].ShouldBe(b[i], $"B[{i}] (OL{overlap} {kind} {w}x{h})");
             }
         }
         finally
@@ -123,17 +130,23 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
-    // Rung 7f.2 — Photo Overlap (OL_ONE) decoder conformance: a lossless spatial OL_ONE
+    // Rung 7f.2/7f.3 — Photo Overlap decoder conformance: a lossless spatial OL_ONE/OL_TWO
     // YUV444 file produced by the reference JxrEncApp must decode losslessly through our
     // container reader + codestream decoder (the inverse overlap _alternate operators).
     [Theory]
-    [InlineData(16, 16, "gradient")]
-    [InlineData(32, 16, "gradient")]
-    [InlineData(48, 32, "gradient")]
-    [InlineData(64, 48, "gradient")]
-    [InlineData(64, 48, "random")]
-    [InlineData(80, 80, "gradient")]
-    public void JxrlibEncode_Overlap1_DecodedByUs_IsLossless(int w, int h, string kind)
+    [InlineData(16, 16, "gradient", 1)]
+    [InlineData(32, 16, "gradient", 1)]
+    [InlineData(48, 32, "gradient", 1)]
+    [InlineData(64, 48, "gradient", 1)]
+    [InlineData(64, 48, "random", 1)]
+    [InlineData(80, 80, "gradient", 1)]
+    [InlineData(16, 16, "gradient", 2)]
+    [InlineData(32, 16, "gradient", 2)]
+    [InlineData(48, 32, "gradient", 2)]
+    [InlineData(64, 48, "gradient", 2)]
+    [InlineData(64, 48, "random", 2)]
+    [InlineData(80, 80, "gradient", 2)]
+    public void JxrlibEncode_Overlap_DecodedByUs_IsLossless(int w, int h, string kind, int overlap)
     {
         var encApp = FindOracle("JxrEncApp.exe");
         if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
@@ -144,14 +157,14 @@ public sealed class JxrCodestreamOracleTests
             _ => Gradient(w, h),
         };
 
-        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_dec1_{Guid.NewGuid():N}");
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_dec{overlap}_{Guid.NewGuid():N}");
         var bmpPath = tmp + ".bmp";
         var jxrPath = tmp + ".jxr";
         WriteBmp24(bmpPath, w, h, r, g, b);
         try
         {
-            // -f spatial, -l 1 one-level overlap, -d 3 YUV444, -q 1 lossless, -c 0 24bppBGR.
-            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l 1 -f");
+            // -f spatial, -l N overlap level, -d 3 YUV444, -q 1 lossless, -c 0 24bppBGR.
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l {overlap} -f");
             _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
             exit.ShouldBe(0, "JxrEncApp must encode the BMP");
 
@@ -161,9 +174,9 @@ public sealed class JxrCodestreamOracleTests
             dh.ShouldBe(h);
             for (var i = 0; i < w * h; i++)
             {
-                dr[i].ShouldBe(r[i], $"R[{i}] (OL_ONE decode {kind} {w}x{h})");
-                dg[i].ShouldBe(g[i], $"G[{i}] (OL_ONE decode {kind} {w}x{h})");
-                db[i].ShouldBe(b[i], $"B[{i}] (OL_ONE decode {kind} {w}x{h})");
+                dr[i].ShouldBe(r[i], $"R[{i}] (OL{overlap} decode {kind} {w}x{h})");
+                dg[i].ShouldBe(g[i], $"G[{i}] (OL{overlap} decode {kind} {w}x{h})");
+                db[i].ShouldBe(b[i], $"B[{i}] (OL{overlap} decode {kind} {w}x{h})");
             }
         }
         finally
@@ -173,15 +186,20 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
-    // Rung 7f.2 — the strongest OL_ONE check: our entire codestream must be byte-for-byte
+    // Rung 7f.2/7f.3 — the strongest overlap check: our entire codestream must be byte-for-byte
     // identical to what the reference JxrEncApp emits for the same image and settings.
     [Theory]
-    [InlineData(16, 16, "gradient")]
-    [InlineData(32, 16, "gradient")]
-    [InlineData(48, 32, "gradient")]
-    [InlineData(64, 48, "random")]
-    [InlineData(80, 80, "gradient")]
-    public void OurEncode_Overlap1_CodestreamMatchesJxrlib(int w, int h, string kind)
+    [InlineData(16, 16, "gradient", 1)]
+    [InlineData(32, 16, "gradient", 1)]
+    [InlineData(48, 32, "gradient", 1)]
+    [InlineData(64, 48, "random", 1)]
+    [InlineData(80, 80, "gradient", 1)]
+    [InlineData(16, 16, "gradient", 2)]
+    [InlineData(32, 16, "gradient", 2)]
+    [InlineData(48, 32, "gradient", 2)]
+    [InlineData(64, 48, "random", 2)]
+    [InlineData(80, 80, "gradient", 2)]
+    public void OurEncode_Overlap_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
         var encApp = FindOracle("JxrEncApp.exe");
         if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
@@ -192,23 +210,23 @@ public sealed class JxrCodestreamOracleTests
             _ => Gradient(w, h),
         };
 
-        var ours = JxrCodestream.Encode(r, g, b, w, h, overlap: 1);
+        var ours = JxrCodestream.Encode(r, g, b, w, h, overlap: overlap);
 
-        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_cmp1_{Guid.NewGuid():N}");
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_cmp{overlap}_{Guid.NewGuid():N}");
         var bmpPath = tmp + ".bmp";
         var jxrPath = tmp + ".jxr";
         WriteBmp24(bmpPath, w, h, r, g, b);
         try
         {
-            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l 1 -f");
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l {overlap} -f");
             _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
             exit.ShouldBe(0, "JxrEncApp must encode the BMP");
 
             var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
             _out.WriteLine($"ours={ours.Length} theirs={theirs.Length}");
-            ours.Length.ShouldBe(theirs.Length, $"codestream length (OL_ONE {kind} {w}x{h})");
+            ours.Length.ShouldBe(theirs.Length, $"codestream length (OL{overlap} {kind} {w}x{h})");
             for (var i = 0; i < ours.Length; i++)
-                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (OL_ONE {kind} {w}x{h})");
+                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (OL{overlap} {kind} {w}x{h})");
         }
         finally
         {

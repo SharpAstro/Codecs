@@ -98,7 +98,9 @@ internal static class OverlapTransform
             }
         }
 
-        // ---- second level overlap (OL_TWO) — wired in Rung 7f.3 ----
+        // ---- second level overlap (OL_TWO) ----
+        if (overlap == 2)
+            SecondLevelOverlapEnc(buf, p0, p1, left, right, top, bottom);
 
         // ---- second level transform (strDCT4x4SecondStage on the lagged MB at p0-256) ----
         if (!(top || left))
@@ -143,7 +145,9 @@ internal static class OverlapTransform
             if (scaledArith) PhotoCoreTransform.NormalizeDec(buf.Slice(p1, Mb), chroma);
         }
 
-        // ---- second level inverse overlap (OL_TWO) — wired in Rung 7f.3 ----
+        // ---- second level inverse overlap (OL_TWO) ----
+        if (overlap == 2)
+            SecondLevelOverlapDec(buf, p0, p1, left, right, top, bottom);
 
         // ---- first level inverse transform (strIDCT4x4Stage1, staggered across the MB window) ----
         if (!top)
@@ -360,6 +364,120 @@ internal static class OverlapTransform
                 PostStage1SplitAlt(b, p0 + 48 + j, p1 + j, 0);
                 PostStage1Alt(b, p1 + j, 0);
             }
+        }
+    }
+
+    // ===================================================================== second-level overlap
+
+    // strFwdTransform.c:673-719 — second-level (MB-boundary) forward overlap, 444 branch,
+    // single-tile. Operates on the super-DC coefficients after the first-level transform.
+    private static void SecondLevelOverlapEnc(Span<int> b, int p0, int p1, bool left, bool right, bool top, bool bottom)
+    {
+        bool topORbottom = top || bottom, leftORright = left || right;
+        int p;
+
+        // Corner operations
+        if (top && left)
+            Pre4(ref b[p1 + 0], ref b[p1 + 64], ref b[p1 + 0 + 16], ref b[p1 + 64 + 16]);
+        if (top && right)
+            Pre4(ref b[p1 - 128], ref b[p1 - 64], ref b[p1 - 128 + 16], ref b[p1 - 64 + 16]);
+        if (bottom && left)
+            Pre4(ref b[p0 + 32], ref b[p0 + 96], ref b[p0 + 32 + 16], ref b[p0 + 96 + 16]);
+        if (bottom && right)
+            Pre4(ref b[p0 - 96], ref b[p0 - 32], ref b[p0 - 96 + 16], ref b[p0 - 32 + 16]);
+
+        if (leftORright && !topORbottom)
+        {
+            if (left)
+            {
+                int j = 0;
+                Pre4(ref b[p0 + j + 32], ref b[p0 + j + 48], ref b[p1 + j + 0], ref b[p1 + j + 16]);
+                Pre4(ref b[p0 + j + 96], ref b[p0 + j + 112], ref b[p1 + j + 64], ref b[p1 + j + 80]);
+            }
+            if (right)
+            {
+                int j = -128;
+                Pre4(ref b[p0 + j + 32], ref b[p0 + j + 48], ref b[p1 + j + 0], ref b[p1 + j + 16]);
+                Pre4(ref b[p0 + j + 96], ref b[p0 + j + 112], ref b[p1 + j + 64], ref b[p1 + j + 80]);
+            }
+        }
+
+        if (!leftORright)
+        {
+            if (topORbottom)
+            {
+                if (top)
+                {
+                    p = p1;
+                    Pre4(ref b[p - 128], ref b[p - 64], ref b[p + 0], ref b[p + 64]);
+                    Pre4(ref b[p - 112], ref b[p - 48], ref b[p + 16], ref b[p + 80]);
+                }
+                if (bottom)
+                {
+                    p = p0 + 32;
+                    Pre4(ref b[p - 128], ref b[p - 64], ref b[p + 0], ref b[p + 64]);
+                    Pre4(ref b[p - 112], ref b[p - 48], ref b[p + 16], ref b[p + 80]);
+                }
+            }
+            else
+            {
+                PreStage2Split(b, p0, p1);
+            }
+        }
+    }
+
+    // strInvTransform.c:1271-1312 — second-level inverse overlap, _alternate operators,
+    // 444 branch, single-tile. Exact inverse of SecondLevelOverlapEnc.
+    private static void SecondLevelOverlapDec(Span<int> b, int p0, int p1, bool left, bool right, bool top, bool bottom)
+    {
+        bool topORbottom = top || bottom, leftORright = left || right;
+        int p;
+
+        // Corner operations
+        if (top && left)
+            Post4Alt(ref b[p1 + 0], ref b[p1 + 64], ref b[p1 + 0 + 16], ref b[p1 + 64 + 16]);
+        if (top && right)
+            Post4Alt(ref b[p1 - 128], ref b[p1 - 64], ref b[p1 - 128 + 16], ref b[p1 - 64 + 16]);
+        if (bottom && left)
+            Post4Alt(ref b[p0 + 32], ref b[p0 + 96], ref b[p0 + 32 + 16], ref b[p0 + 96 + 16]);
+        if (bottom && right)
+            Post4Alt(ref b[p0 - 96], ref b[p0 - 32], ref b[p0 - 96 + 16], ref b[p0 - 32 + 16]);
+
+        if (leftORright && !topORbottom)
+        {
+            if (left)
+            {
+                int j = 0;
+                Post4Alt(ref b[p0 + j + 32], ref b[p0 + j + 48], ref b[p1 + j + 0], ref b[p1 + j + 16]);
+                Post4Alt(ref b[p0 + j + 96], ref b[p0 + j + 112], ref b[p1 + j + 64], ref b[p1 + j + 80]);
+            }
+            if (right)
+            {
+                int j = -128;
+                Post4Alt(ref b[p0 + j + 32], ref b[p0 + j + 48], ref b[p1 + j + 0], ref b[p1 + j + 16]);
+                Post4Alt(ref b[p0 + j + 96], ref b[p0 + j + 112], ref b[p1 + j + 64], ref b[p1 + j + 80]);
+            }
+        }
+
+        if (!leftORright)
+        {
+            if (topORbottom)
+            {
+                if (top)
+                {
+                    p = p1;
+                    Post4Alt(ref b[p - 128], ref b[p - 64], ref b[p + 0], ref b[p + 64]);
+                    Post4Alt(ref b[p - 112], ref b[p - 48], ref b[p + 16], ref b[p + 80]);
+                }
+                if (bottom)
+                {
+                    p = p0 + 32;
+                    Post4Alt(ref b[p - 128], ref b[p - 64], ref b[p + 0], ref b[p + 64]);
+                    Post4Alt(ref b[p - 112], ref b[p - 48], ref b[p + 16], ref b[p + 80]);
+                }
+            }
+            if (!topORbottom)
+                PostStage2SplitAlt(b, p0, p1);
         }
     }
 }

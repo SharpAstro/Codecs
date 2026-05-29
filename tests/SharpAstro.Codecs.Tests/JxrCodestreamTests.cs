@@ -95,6 +95,12 @@ public sealed class JxrCodestreamTests
     [InlineData(48, 32, 1)]
     [InlineData(64, 48, 1)]
     [InlineData(80, 80, 1)]
+    [InlineData(16, 16, 2)]
+    [InlineData(32, 16, 2)]
+    [InlineData(16, 32, 2)]
+    [InlineData(48, 32, 2)]
+    [InlineData(64, 48, 2)]
+    [InlineData(80, 80, 2)]
     public void Codestream_RoundTrip_Lossless_Overlap(int w, int h, int overlap)
     {
         // Self round-trip with the Photo Overlap filter on: the inverse overlap is the
