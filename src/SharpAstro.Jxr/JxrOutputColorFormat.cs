@@ -13,9 +13,9 @@ public enum JxrOutputColorFormat
     YUV422     = 2,
     YUV444     = 3,
     Cmyk       = 4,
-    // 5 reserved
-    CmykDirect = 6,
-    NComponent = 7,
-    Rgb        = 8,
-    Rgbe       = 9,
+    // 5 reserved (CMYK_DIRECT in some drafts; jxrlib leaves it commented out)
+    NComponent = 6,
+    Rgb        = 7,
+    Rgbe       = 8,
+    // 9..15 reserved
 }
