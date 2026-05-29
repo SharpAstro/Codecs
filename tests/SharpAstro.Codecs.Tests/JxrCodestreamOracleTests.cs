@@ -74,6 +74,42 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
+    /// <summary>
+    /// Rung 7e.4 — the Windows-Photo milestone: our encoded <c>.jxr</c> must open in
+    /// WIC (<c>System.Windows.Media.Imaging.BitmapDecoder</c>, what Windows Photo /
+    /// Microsoft Photos use), instantiate a frame at the right dimensions, and decode
+    /// to non-zero pixels (WIC silently yields all-zero pixels on some malformed
+    /// codestreams, so Frames>0 alone isn't enough). Windows-only; no-ops elsewhere.
+    /// </summary>
+    [Theory]
+    [InlineData(16, 16)]
+    [InlineData(48, 32)]
+    [InlineData(64, 48)]
+    public void OurEncode_OpensInWic(int w, int h)
+    {
+        if (!OperatingSystem.IsWindows()) { _out.WriteLine("Not Windows — skipping WIC test."); return; }
+
+        var (r, g, b) = Gradient(w, h);
+        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h);
+        var jxrPath = Path.Combine(Path.GetTempPath(), $"jxr_wic_{Guid.NewGuid():N}.jxr");
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var wic = WicOracle.Probe(jxrPath);
+            if (!wic.Available) { _out.WriteLine($"WIC unavailable — skipping. {wic.RawOutput}"); return; }
+            _out.WriteLine(wic.RawOutput);
+
+            wic.IsValidImage.ShouldBeTrue($"WIC must accept our .jxr ({w}x{h}); error: {wic.Error}");
+            wic.Width.ShouldBe(w);
+            wic.Height.ShouldBe(h);
+            wic.HasNonZeroPixels.ShouldBeTrue("WIC must decode to non-zero pixels (not a silent all-zero decode)");
+        }
+        finally
+        {
+            File.Delete(jxrPath);
+        }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     private static (int[] r, int[] g, int[] b) Random(int w, int h, int seed)
