@@ -20,6 +20,8 @@ internal sealed class PredInfo
 {
     public int Dc;
     public int QpIndex;
+    /// <summary>Highpass coded-block pattern (jxrlib <c>CWMIPredInfo.iCBP</c>), stored by CBP prediction for neighbor use.</summary>
+    public int Cbp;
     /// <summary>copyAC layout: [0..2] = DC-block cells 1,2,3 (first row); [3..5] = cells 4,8,12 (first column).</summary>
     public readonly int[] Ad = new int[6];
 }

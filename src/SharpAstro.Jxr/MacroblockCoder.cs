@@ -27,7 +27,7 @@ internal static class MacroblockCoder
 
     // ----------------------------------------------------------------- public API
 
-    /// <summary>Encode <paramref name="mb"/> (YUV444) into the DC/LP/AC streams.</summary>
+    /// <summary>Encode <paramref name="mb"/> (YUV444) into the DC/LP/AC streams (single isolated MB, no neighbors).</summary>
     public static void Encode(CodingContext ctx, Macroblock mb,
                               BitWriter dc, BitWriter lp, BitWriter ac,
                               bool ctxLeft = true, bool ctxTop = true)
@@ -35,10 +35,10 @@ internal static class MacroblockCoder
         RequireYuv444(ctx);
         EncodeDc(ctx, mb, dc);
         EncodeLowpass(ctx, mb, lp);
-        EncodeHighpass(ctx, mb, ac, ctxLeft, ctxTop);
+        EncodeHighpass(ctx, mb, ac, ctxLeft, ctxTop, null, null);
     }
 
-    /// <summary>Decode a YUV444 macroblock from the DC/LP/AC streams into <paramref name="mb"/>.</summary>
+    /// <summary>Decode a YUV444 macroblock from the DC/LP/AC streams into <paramref name="mb"/> (single isolated MB).</summary>
     public static void Decode(CodingContext ctx, Macroblock mb,
                               ref BitReader dc, ref BitReader lp, ref BitReader ac,
                               int hpQp = 1, bool ctxLeft = true, bool ctxTop = true)
@@ -46,7 +46,7 @@ internal static class MacroblockCoder
         RequireYuv444(ctx);
         DecodeDc(ctx, mb, ref dc);
         DecodeLowpass(ctx, mb, ref lp);
-        DecodeHighpass(ctx, mb, ref ac, hpQp, ctxLeft, ctxTop);
+        DecodeHighpass(ctx, mb, ref ac, hpQp, ctxLeft, ctxTop, null, null);
     }
 
     private static void RequireYuv444(CodingContext ctx)
@@ -57,7 +57,7 @@ internal static class MacroblockCoder
 
     // ===================================================================== DC band
 
-    private static void EncodeDc(CodingContext ctx, Macroblock mb, BitWriter w)
+    internal static void EncodeDc(CodingContext ctx, Macroblock mb, BitWriter w)
     {
         var model = ctx.ModelDc;
         var lapMean = new int[2];
@@ -90,7 +90,7 @@ internal static class MacroblockCoder
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, model);
     }
 
-    private static void DecodeDc(CodingContext ctx, Macroblock mb, ref BitReader r)
+    internal static void DecodeDc(CodingContext ctx, Macroblock mb, ref BitReader r)
     {
         var model = ctx.ModelDc;
         var lapMean = new int[2];
@@ -121,7 +121,7 @@ internal static class MacroblockCoder
 
     // ===================================================================== LP band
 
-    private static void EncodeLowpass(CodingContext ctx, Macroblock mb, BitWriter w)
+    internal static void EncodeLowpass(CodingContext ctx, Macroblock mb, BitWriter w)
     {
         var model = ctx.ModelLp;
         var scan = ctx.ScanLowpass;
@@ -174,7 +174,7 @@ internal static class MacroblockCoder
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, model);
     }
 
-    private static void DecodeLowpass(CodingContext ctx, Macroblock mb, ref BitReader r)
+    internal static void DecodeLowpass(CodingContext ctx, Macroblock mb, ref BitReader r)
     {
         var model = ctx.ModelLp;
         var scan = ctx.ScanLowpass;
@@ -249,18 +249,21 @@ internal static class MacroblockCoder
 
     // ===================================================================== HP band
 
-    private static void EncodeHighpass(CodingContext ctx, Macroblock mb, BitWriter w, bool ctxLeft, bool ctxTop)
+    internal static void EncodeHighpass(CodingContext ctx, Macroblock mb, BitWriter w,
+                                        bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp)
     {
-        CodeCbp(ctx, mb, w, ctxLeft, ctxTop);
+        CodeCbp(ctx, mb, w, ctxLeft, ctxTop, leftCbp, topCbp);
         CodeCoeffs(ctx, mb, w);
     }
 
-    private static void DecodeHighpass(CodingContext ctx, Macroblock mb, ref BitReader r, int hpQp, bool ctxLeft, bool ctxTop)
+    internal static void DecodeHighpass(CodingContext ctx, Macroblock mb, ref BitReader r, int hpQp,
+                                        bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp)
     {
         DecodeCbp(ctx, mb, ref r);
-        // predCBPDec reconstructs the actual CBP from the transmitted residual.
+        // predCBPDec reconstructs the actual CBP from the transmitted residual + neighbors.
         for (var i = 0; i < 3; i++)
-            mb.Cbp[i] = CbpPrediction.PredictDec(mb.DiffCbp[i], ctxLeft, ctxTop, 0, 0, i, ctx.Cbp);
+            mb.Cbp[i] = CbpPrediction.PredictDec(mb.DiffCbp[i], ctxLeft, ctxTop,
+                topCbp?[i] ?? 0, leftCbp?[i] ?? 0, i, ctx.Cbp);
         DecodeCoeffs(ctx, mb, ref r, hpQp);
     }
 
@@ -273,10 +276,11 @@ internal static class MacroblockCoder
     private static readonly int[] CbpGFl0 = { 0, 2, 2, 1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 2, 0 };
     private static readonly int[] CbpGCode0 = { 0, 0, 1, 0, 2, 0, 1, 0, 3, 2, 3, 1, 1, 2, 3, 0 };
 
-    private static void CodeCbp(CodingContext ctx, Macroblock mb, BitWriter w, bool ctxLeft, bool ctxTop)
+    private static void CodeCbp(CodingContext ctx, Macroblock mb, BitWriter w,
+                                bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp)
     {
         // predCBPEnc: derive the actual CBP from significant HP coefficients, then the
-        // transmitted residual via the adaptive prediction model.
+        // transmitted residual via the adaptive prediction model + neighbors.
         int acThreshold0 = (1 << ctx.ModelAc.FlcBits[0]) - 1;
         int acThreshold1 = (1 << ctx.ModelAc.FlcBits[1]) - 1;
         for (var ch = 0; ch < 3; ch++)
@@ -290,7 +294,8 @@ internal static class MacroblockCoder
                     if ((uint)(mb.Plane[ch][off + i] + threshold) >= (uint)threshold2) { cbp |= 1 << j; break; }
             }
             mb.Cbp[ch] = cbp;
-            mb.DiffCbp[ch] = CbpPrediction.PredictEnc(cbp, ctxLeft, ctxTop, 0, 0, ch, ctx.Cbp);
+            mb.DiffCbp[ch] = CbpPrediction.PredictEnc(cbp, ctxLeft, ctxTop,
+                topCbp?[ch] ?? 0, leftCbp?[ch] ?? 0, ch, ctx.Cbp);
         }
 
         int diffY = mb.DiffCbp[0], diffU = mb.DiffCbp[1], diffV = mb.DiffCbp[2];
