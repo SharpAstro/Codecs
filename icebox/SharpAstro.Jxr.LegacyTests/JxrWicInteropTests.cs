@@ -519,6 +519,10 @@ public sealed class JxrWicInteropTests
             using var proc = System.Diagnostics.Process.Start(psi)!;
             proc.WaitForExit(120_000).ShouldBeTrue();
             _out.WriteLine($"  JxrDecApp exit={proc.ExitCode}");
+            // FAIL if JxrDecApp couldn't even parse our codestream — that's
+            // strictly worse than producing wrong values (which the pixel-level
+            // assertion below catches).
+            proc.ExitCode.ShouldBe(0, "JxrDecApp could not parse our codestream — the bitstream is structurally malformed.");
             if (proc.ExitCode == 0 && File.Exists(refTif))
             {
                 // Parse the half-float TIFF strip.

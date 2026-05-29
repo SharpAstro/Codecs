@@ -1,0 +1,4 @@
+bin/
+jxrlib-src/
+probe/*.exe
+probe/*.obj
