@@ -20,9 +20,16 @@ internal sealed class AdaptiveScan
     public readonly int[] Scan = new int[16];
 
     /// <param name="initialScan">Initial scan order (e.g. the zigzag for the band); 16 entries.</param>
-    public AdaptiveScan(ReadOnlySpan<int> initialScan)
+    public AdaptiveScan(ReadOnlySpan<int> initialScan) => InitZigzag(initialScan);
+
+    /// <summary>
+    /// jxrlib <c>InitZigzagScan</c> + the <c>m_bResetRGITotals</c> ramp: restore the
+    /// scan permutation to <paramref name="order"/> and reset the totals. Applied at
+    /// each context reset (tile boundary) so a reused context starts clean.
+    /// </summary>
+    public void InitZigzag(ReadOnlySpan<int> order)
     {
-        initialScan.Slice(0, 16).CopyTo(Scan);
+        order.Slice(0, 16).CopyTo(Scan);
         Reset();
     }
 

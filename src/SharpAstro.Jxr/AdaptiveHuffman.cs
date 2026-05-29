@@ -100,6 +100,9 @@ internal sealed class AdaptiveHuffman
     /// <summary>Second-discriminant delta (alphabets 6 and 12 only).</summary>
     public int Delta1(int symbol) => _delta1 is null ? 0 : _delta1[_delta1Offset + symbol];
 
+    /// <summary>Raw (code, length) for a symbol in the currently selected table (jxrlib <c>m_pTable[sym*2+1/2]</c>).</summary>
+    public (int Code, int Length) Code(int symbol) => VlcTables.GetCode(NSymbols, CodeTableIndex, symbol);
+
     /// <summary>Encode one symbol with the currently selected table.</summary>
     public void Encode(BitWriter w, int symbol) => VlcSymbolCodec.Encode(w, NSymbols, CodeTableIndex, symbol);
 

@@ -81,6 +81,7 @@ internal static class CoefficientSyntax
         {
             int i = a >> 5, iFixed = 4;
             while (i != 0) { iFixed++; i >>= 1; }
+            ah7.Discriminant += ah7.Delta(6); // jxrlib EncodeSignificantAbsLevel updates the discriminant
             ah7.Encode(w, 6);
             if (iFixed > 18)
             {
@@ -98,6 +99,7 @@ internal static class CoefficientSyntax
         {
             int index = AbsIndexEnc[a];
             int iFixed = AbsFixedLen[index];
+            ah7.Discriminant += ah7.Delta(index); // jxrlib EncodeSignificantAbsLevel updates the discriminant
             ah7.Encode(w, index);
             w.WriteBits((uint)(a & ((1 << iFixed) - 1)), iFixed);
         }
@@ -107,6 +109,7 @@ internal static class CoefficientSyntax
     public static int DecodeAbsLevel(ref BitReader r, AdaptiveHuffman ah7)
     {
         int index = ah7.Decode(ref r);
+        ah7.Discriminant += ah7.Delta(index); // jxrlib DecodeSignificantAbsLevel updates the discriminant
         if (index < 2) return index + 2;
         if (index < 6) return AbsRemapDec[index] + (int)r.ReadBits(AbsFixedLen[index]);
 
