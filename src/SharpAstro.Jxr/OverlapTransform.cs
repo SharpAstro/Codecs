@@ -33,15 +33,16 @@ namespace SharpAstro.Jxr;
 /// </summary>
 internal static class OverlapTransform
 {
-    private const int Channels = 3;
     private const int Mb = 256; // one macroblock plane (16×16) — also the column stride
 
-    /// <summary>Allocate the three whole-image channel buffers (block-major, with the
-    /// one-MB right/bottom slack the boundary processing positions index into).</summary>
-    public static int[][] AllocatePlanes(int mbCols, int mbRows)
+    /// <summary>Allocate the <paramref name="channels"/> whole-image channel buffers (block-major,
+    /// with the one-MB right/bottom slack the boundary processing positions index into).</summary>
+    public static int[][] AllocatePlanes(int mbCols, int mbRows, int channels = 3)
     {
         int len = BufferLength(mbCols, mbRows);
-        return new[] { new int[len], new int[len], new int[len] };
+        var planes = new int[channels][];
+        for (var c = 0; c < channels; c++) planes[c] = new int[len];
+        return planes;
     }
 
     /// <summary>Byte offset (in ints) of macroblock <paramref name="mbC"/>,<paramref name="mbR"/> in a channel buffer.</summary>
@@ -67,7 +68,7 @@ internal static class OverlapTransform
                 bool left = cCol == 0, right = cCol == mbCols, top = cRow == 0, bottom = cRow == mbRows;
                 int p1 = cRow * rowStride + cCol * Mb;
                 int p0 = p1 - rowStride;
-                for (var ch = 0; ch < Channels; ch++)
+                for (var ch = 0; ch < planes.Length; ch++)
                     ForwardMb(planes[ch], p0, p1, left, right, top, bottom, overlap, scaledArith, ch != 0);
             }
         }
@@ -127,7 +128,7 @@ internal static class OverlapTransform
                 bool left = cCol == 0, right = cCol == mbCols, top = cRow == 0, bottom = cRow == mbRows;
                 int p1 = cRow * rowStride + cCol * Mb;
                 int p0 = p1 - rowStride;
-                for (var ch = 0; ch < Channels; ch++)
+                for (var ch = 0; ch < planes.Length; ch++)
                     InverseMb(planes[ch], p0, p1, left, right, top, bottom, overlap, scaledArith, ch != 0);
             }
         }

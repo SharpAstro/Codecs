@@ -35,7 +35,7 @@ internal static class MacroblockCoder
                               BitWriter dc, BitWriter lp, BitWriter ac, BitWriter fl,
                               bool ctxLeft = true, bool ctxTop = true)
     {
-        RequireYuv444(ctx);
+        RequireSupported(ctx);
         EncodeDc(ctx, mb, dc);
         EncodeLowpass(ctx, mb, lp, resetContext: true, resetTotals: true);
         EncodeHighpass(ctx, mb, ac, fl, ctxLeft, ctxTop, null, null, resetContext: true, resetTotals: true);
@@ -46,16 +46,18 @@ internal static class MacroblockCoder
                               ref BitReader dc, ref BitReader lp, ref BitReader ac, ref BitReader fl,
                               int hpQp = 1, bool ctxLeft = true, bool ctxTop = true)
     {
-        RequireYuv444(ctx);
+        RequireSupported(ctx);
         DecodeDc(ctx, mb, ref dc);
         DecodeLowpass(ctx, mb, ref lp, resetContext: true, resetTotals: true);
         DecodeHighpass(ctx, mb, ref ac, ref fl, hpQp, ctxLeft, ctxTop, null, null, resetContext: true, resetTotals: true);
     }
 
-    private static void RequireYuv444(CodingContext ctx)
+    private static void RequireSupported(CodingContext ctx)
     {
-        if (ctx.ColorFormat != ColorFormat.Yuv444 || ctx.Channels != 3)
-            throw new NotSupportedException("MacroblockCoder currently supports YUV444 (3 channels) only.");
+        bool yuv444 = ctx.ColorFormat == ColorFormat.Yuv444 && ctx.Channels == 3;
+        bool yOnly = ctx.ColorFormat == ColorFormat.YOnly && ctx.Channels == 1;
+        if (!yuv444 && !yOnly)
+            throw new NotSupportedException("MacroblockCoder currently supports YUV444 (3 channels) and Y-only (1 channel).");
     }
 
     // ===================================================================== DC band
@@ -64,6 +66,30 @@ internal static class MacroblockCoder
     {
         var model = ctx.ModelDc;
         var lapMean = new int[2];
+
+        // Y_ONLY / CMYK / N_CHANNEL DC: per-channel raw significance bit + abs level (AHexpt[3]).
+        if (ctx.ColorFormat != ColorFormat.Yuv444)
+        {
+            int mbits = model.FlcBits[0];
+            for (var ch = 0; ch < ctx.Channels; ch++)
+            {
+                int dc = mb.BlockDc[ch][0];
+                int absDc = Math.Abs(dc);
+                int q = absDc >> mbits;
+                if (q != 0)
+                {
+                    w.WriteBit(true);
+                    CoefficientSyntax.EncodeAbsLevel(w, ctx.AHexpt[3], q + 1);
+                    lapMean[ch == 0 ? 0 : 1]++;
+                }
+                else w.WriteBit(false);
+                w.WriteBits((uint)absDc, mbits);
+                if (absDc != 0) w.WriteBit(dc < 0);
+                mbits = model.FlcBits[1];
+            }
+            ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, model);
+            return;
+        }
 
         int dcY = mb.BlockDc[0][0], dcU = mb.BlockDc[1][0], dcV = mb.BlockDc[2][0];
         int qY = Math.Abs(dcY), qU = Math.Abs(dcU), qV = Math.Abs(dcV);
@@ -99,6 +125,27 @@ internal static class MacroblockCoder
         var lapMean = new int[2];
         for (var i = 0; i < ctx.Channels; i++) Array.Clear(mb.BlockDc[i]);
 
+        // Y_ONLY / CMYK / N_CHANNEL DC: per-channel raw significance bit + abs level (AHexpt[3]).
+        if (ctx.ColorFormat != ColorFormat.Yuv444)
+        {
+            int mbits0 = model.FlcBits[0];
+            for (var ch = 0; ch < ctx.Channels; ch++)
+            {
+                int q = 0;
+                if (r.ReadBit())
+                {
+                    q = CoefficientSyntax.DecodeAbsLevel(ref r, ctx.AHexpt[3]) - 1;
+                    lapMean[ch == 0 ? 0 : 1]++;
+                }
+                if (mbits0 != 0) q = (q << mbits0) | (int)r.ReadBits(mbits0);
+                if (q != 0 && r.ReadBit()) q = -q;
+                mb.BlockDc[ch][0] = q;
+                mbits0 = model.FlcBits[1];
+            }
+            ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, model);
+            return;
+        }
+
         int index = ctx.AHexpt[2].Decode(ref r);
         int qY = index >> 2, qU = (index >> 1) & 1, qV = index & 1;
 
@@ -130,12 +177,13 @@ internal static class MacroblockCoder
         var model = ctx.ModelLp;
         var scan = ctx.ScanLowpass;
         var lapMean = new int[2];
-        var rl = new int[3][];
-        var residual = new int[3][];
-        var numCoeffs = new int[3];
+        int fullCh = ctx.Channels; // iFullChannels (YUV420/422 not supported, so == iChannels)
+        var rl = new int[fullCh][];
+        var residual = new int[fullCh][];
+        var numCoeffs = new int[fullCh];
 
         int mbits = model.FlcBits[0];
-        for (var ch = 0; ch < 3; ch++)
+        for (var ch = 0; ch < fullCh; ch++)
         {
             rl[ch] = new int[32];
             residual[ch] = new int[16];
@@ -143,26 +191,35 @@ internal static class MacroblockCoder
             mbits = model.FlcBits[1];
         }
 
-        // YUV444 lowpass CBP (3-bit channel pattern), with the adaptive "raw mode" model.
-        const int max = 3 * 4 - 5; // 7
-        int cbp = (numCoeffs[0] > 0 ? 1 : 0) + (numCoeffs[1] > 0 ? 2 : 0) + (numCoeffs[2] > 0 ? 4 : 0);
-        int countM = ctx.CbpCountMax, countZ = ctx.CbpCountZero;
-        if (countZ <= 0 || countM < 0)
+        if (ctx.ColorFormat == ColorFormat.Yuv444)
         {
-            int val = countM < countZ ? max - cbp : cbp;
-            if (val == 0) w.WriteBits(0, 1);
-            else if (val == 1) w.WriteBits((3 + 1) & 0x6, 3);
-            else w.WriteBits((uint)(val + max + 1), 3 + 1);
+            // YUV444 lowpass CBP (3-bit channel pattern), with the adaptive "raw mode" model.
+            const int max = 3 * 4 - 5; // 7
+            int cbp = (numCoeffs[0] > 0 ? 1 : 0) + (numCoeffs[1] > 0 ? 2 : 0) + (numCoeffs[2] > 0 ? 4 : 0);
+            int countM = ctx.CbpCountMax, countZ = ctx.CbpCountZero;
+            if (countZ <= 0 || countM < 0)
+            {
+                int val = countM < countZ ? max - cbp : cbp;
+                if (val == 0) w.WriteBits(0, 1);
+                else if (val == 1) w.WriteBits((3 + 1) & 0x6, 3);
+                else w.WriteBits((uint)(val + max + 1), 3 + 1);
+            }
+            else
+            {
+                w.WriteBits((uint)cbp, 3);
+            }
+            ctx.CbpCountMax = Clamp8(countM + 1 - 4 * (cbp == max ? 1 : 0));
+            ctx.CbpCountZero = Clamp8(countZ + 1 - 4 * (cbp == 0 ? 1 : 0));
         }
         else
         {
-            w.WriteBits((uint)cbp, 3);
+            // Y_ONLY / N_CHANNEL: one raw significance bit per channel (no adaptive raw mode).
+            for (var ch = 0; ch < ctx.Channels; ch++)
+                w.WriteBit(numCoeffs[ch] > 0);
         }
-        ctx.CbpCountMax = Clamp8(countM + 1 - 4 * (cbp == max ? 1 : 0));
-        ctx.CbpCountZero = Clamp8(countZ + 1 - 4 * (cbp == 0 ? 1 : 0));
 
         mbits = model.FlcBits[0];
-        for (var ch = 0; ch < 3; ch++)
+        for (var ch = 0; ch < fullCh; ch++)
         {
             if (numCoeffs[ch] != 0)
             {
@@ -186,31 +243,42 @@ internal static class MacroblockCoder
         var scan = ctx.ScanLowpass;
         var lapMean = new int[2];
         var rl = new int[32];
+        int fullCh = ctx.Channels; // iFullPlanes (YUV420/422 not supported, so == iChannels)
 
-        // YUV444 lowpass CBP.
         int cbp;
-        int countM = ctx.CbpCountMax, countZ = ctx.CbpCountZero;
-        const int max = 3 * 4 - 5; // 7
-        if (countZ <= 0 || countM < 0)
+        if (ctx.ColorFormat == ColorFormat.Yuv444)
         {
-            cbp = 0;
-            if (r.ReadBit())
+            // YUV444 lowpass CBP.
+            int countM = ctx.CbpCountMax, countZ = ctx.CbpCountZero;
+            const int max = 3 * 4 - 5; // 7
+            if (countZ <= 0 || countM < 0)
             {
-                cbp = 1;
-                int k = (int)r.ReadBits(3 - 1);
-                if (k != 0) cbp = k * 2 + (int)r.ReadBits(1);
+                cbp = 0;
+                if (r.ReadBit())
+                {
+                    cbp = 1;
+                    int k = (int)r.ReadBits(3 - 1);
+                    if (k != 0) cbp = k * 2 + (int)r.ReadBits(1);
+                }
+                if (countM < countZ) cbp = max - cbp;
             }
-            if (countM < countZ) cbp = max - cbp;
+            else
+            {
+                cbp = (int)r.ReadBits(3);
+            }
+            ctx.CbpCountMax = Clamp8(countM + 1 - 4 * (cbp == max ? 1 : 0));
+            ctx.CbpCountZero = Clamp8(countZ + 1 - 4 * (cbp == 0 ? 1 : 0));
         }
         else
         {
-            cbp = (int)r.ReadBits(3);
+            // Y_ONLY / N_CHANNEL: one raw significance bit per channel.
+            cbp = 0;
+            for (var ch = 0; ch < ctx.Channels; ch++)
+                cbp |= (r.ReadBit() ? 1 : 0) << ch;
         }
-        ctx.CbpCountMax = Clamp8(countM + 1 - 4 * (cbp == max ? 1 : 0));
-        ctx.CbpCountZero = Clamp8(countZ + 1 - 4 * (cbp == 0 ? 1 : 0));
 
         int mbits = model.FlcBits[0];
-        for (var ch = 0; ch < 3; ch++)
+        for (var ch = 0; ch < fullCh; ch++)
         {
             int[] coeffs = mb.BlockDc[ch];
             if ((cbp & 1) != 0)
@@ -271,7 +339,7 @@ internal static class MacroblockCoder
         if (resetTotals) { ctx.ScanHoriz.Reset(); ctx.ScanVert.Reset(); } // jxrlib m_bResetRGITotals — START of HP band
         DecodeCbp(ctx, mb, ref r);
         // predCBPDec reconstructs the actual CBP from the transmitted residual + neighbors.
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < ctx.Channels; i++)
             mb.Cbp[i] = CbpPrediction.PredictDec(mb.DiffCbp[i], ctxLeft, ctxTop,
                 topCbp?[i] ?? 0, leftCbp?[i] ?? 0, i, ctx.Cbp);
         DecodeCoeffs(ctx, mb, ref r, ref fl, hpQp);
@@ -294,7 +362,7 @@ internal static class MacroblockCoder
         // transmitted residual via the adaptive prediction model + neighbors.
         int acThreshold0 = (1 << ctx.ModelAc.FlcBits[0]) - 1;
         int acThreshold1 = (1 << ctx.ModelAc.FlcBits[1]) - 1;
-        for (var ch = 0; ch < 3; ch++)
+        for (var ch = 0; ch < ctx.Channels; ch++)
         {
             int threshold = ch == 0 ? acThreshold0 : acThreshold1, threshold2 = threshold * 2 + 1;
             int cbp = 0;
@@ -308,6 +376,8 @@ internal static class MacroblockCoder
             mb.DiffCbp[ch] = CbpPrediction.PredictEnc(cbp, ctxLeft, ctxTop,
                 topCbp?[ch] ?? 0, leftCbp?[ch] ?? 0, ch, ctx.Cbp);
         }
+
+        if (ctx.ColorFormat != ColorFormat.Yuv444) { CodeCbpYOnly(ctx, mb, w); return; }
 
         int diffY = mb.DiffCbp[0], diffU = mb.DiffCbp[1], diffV = mb.DiffCbp[2];
 
@@ -368,6 +438,43 @@ internal static class MacroblockCoder
         }
     }
 
+    // jxrlib CodeCBP, Y_ONLY / N_CHANNEL branch: per channel, no chroma OR into the super-block
+    // pattern, no chroma sub-CBP, and val = gTab0[code]-1 (never the chroma +6/==8 path). The
+    // per-block CbpCy uses alphabet 5 (CodingContext seeds it from the "small" format flag).
+    private static void CodeCbpYOnly(CodingContext ctx, Macroblock mb, BitWriter w)
+    {
+        for (var ch = 0; ch < ctx.Channels; ch++)
+        {
+            int diff = mb.DiffCbp[ch];
+
+            int pattern = 0, dy = diff;
+            for (var iBlock = 0; iBlock < 4; iBlock++)
+            {
+                pattern |= (dy & 0xf) != 0 ? 0x10 : 0;
+                dy >>= 4;
+                pattern >>= 1;
+            }
+
+            int count = CbpNumOnes[pattern];
+            ctx.CbpCy1.Encode(w, count);
+            ctx.CbpCy1.Discriminant += ctx.CbpCy1.Delta(count);
+            if (CbpTabLen[pattern] != 0) w.WriteBits((uint)CbpTabCode[pattern], CbpTabLen[pattern]);
+
+            for (var iBlock = 0; iBlock < 4; iBlock++)
+            {
+                int code = diff & 0xf;
+                diff >>= 4;
+                if (code != 0)
+                {
+                    int val = CbpGTab0[code] - 1;
+                    ctx.CbpCy.Encode(w, val);
+                    ctx.CbpCy.Discriminant += ctx.CbpCy.Delta(val);
+                    if (CbpGFl0[code] != 0) w.WriteBits((uint)CbpGCode0[code], CbpGFl0[code]);
+                }
+            }
+        }
+    }
+
     // ----------------------------------------------------------- CBP (decode)
 
     private static readonly int[] CbpGFlc0 = { 0, 2, 1, 2, 2, 0 };
@@ -376,6 +483,8 @@ internal static class MacroblockCoder
 
     private static void DecodeCbp(CodingContext ctx, Macroblock mb, ref BitReader r)
     {
+        if (ctx.ColorFormat != ColorFormat.Yuv444) { DecodeCbpYOnly(ctx, mb, ref r); return; }
+
         int cbpY = 0, cbpU = 0, cbpV = 0;
 
         int numCbp = ctx.CbpCy1.Decode(ref r);
@@ -419,6 +528,32 @@ internal static class MacroblockCoder
         mb.DiffCbp[0] = cbpY;
         mb.DiffCbp[1] = cbpU;
         mb.DiffCbp[2] = cbpV;
+    }
+
+    // jxrlib DecodeCBP, Y_ONLY / N_CHANNEL branch (default case): per channel, no chroma path
+    // (val is always < 6 so the >=6 chroma block never fires) and no chroma sub-CBP. Sets only
+    // DiffCbp[ch]. The per-block CbpCy uses alphabet 5 (seeded by CodingContext).
+    private static void DecodeCbpYOnly(CodingContext ctx, Macroblock mb, ref BitReader r)
+    {
+        for (var ch = 0; ch < ctx.Channels; ch++)
+        {
+            int cbp = 0;
+            int numCbp = ctx.CbpCy1.Decode(ref r);
+            ctx.CbpCy1.Discriminant += ctx.CbpCy1.Delta(numCbp);
+            numCbp = ExpandCbpCount(numCbp, ref r);
+
+            for (var iBlock = 0; iBlock < 4; iBlock++)
+            {
+                if ((numCbp & (1 << iBlock)) == 0) continue;
+                int blockCbp = ctx.CbpCy.Decode(ref r);
+                ctx.CbpCy.Discriminant += ctx.CbpCy.Delta(blockCbp);
+                int val = blockCbp + 1; // Y-only: 1..5, never the chroma (>=6) path
+                int code1 = CbpGOff0[val];
+                if (CbpGFlc0[val] != 0) code1 += (int)r.ReadBits(CbpGFlc0[val]);
+                cbp |= CbpGOut0[code1] << (iBlock * 4);
+            }
+            mb.DiffCbp[ch] = cbp;
+        }
     }
 
     // The CbpCy1 count symbol expands to the 4-bit super-block pattern (mirror of CodeCBP's pattern→count).
@@ -472,7 +607,7 @@ internal static class MacroblockCoder
         var residual = new int[16];
         bool chroma = false;
 
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < ctx.Channels; i++)
         {
             int pattern = mb.Cbp[i];
             for (var iBlock = 0; iBlock < 4; iBlock++)
@@ -531,7 +666,7 @@ internal static class MacroblockCoder
         bool chroma = false;
         int cbp = mb.Cbp[0];
 
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < ctx.Channels; i++)
         {
             for (var iBlock = 0; iBlock < 4; iBlock++)
             {
@@ -545,7 +680,7 @@ internal static class MacroblockCoder
                 }
                 if (iBlock == 3) { mbits = ctx.ModelAc.FlcBits[1]; chroma = true; }
             }
-            cbp = mb.Cbp[(i + 1) % 3];
+            if (i + 1 < ctx.Channels) cbp = mb.Cbp[i + 1]; // jxrlib iCBP[(i+1)&0xf]; final read is unused
         }
 
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, ctx.ModelAc);

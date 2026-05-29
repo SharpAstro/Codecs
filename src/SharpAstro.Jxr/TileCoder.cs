@@ -20,20 +20,22 @@ namespace SharpAstro.Jxr;
 /// </summary>
 internal sealed class TileCoder
 {
-    private const int Channels = 3;
-    private const ColorFormat Cf = ColorFormat.Yuv444;
     private const int QIndexLp = 0; // single QP for now; multi-QP threads the real index in a later rung
     private static readonly PredInfo Empty = new();
 
+    private readonly int Channels;
+    private readonly ColorFormat Cf;
     private PredInfo[][] _cur;   // [ch][mbX] current MB row
     private PredInfo[][] _prev;  // [ch][mbX] previous MB row
     private readonly int _mbWidth;
 
-    public TileCoder(int mbWidth)
+    public TileCoder(int mbWidth, int channels = 3, ColorFormat cf = ColorFormat.Yuv444)
     {
         _mbWidth = mbWidth;
-        _cur = NewRow(mbWidth);
-        _prev = NewRow(mbWidth);
+        Channels = channels;
+        Cf = cf;
+        _cur = NewRow(mbWidth, channels);
+        _prev = NewRow(mbWidth, channels);
     }
 
     // jxrlib m_bResetContext (strcodec.c:163-169): re-adapt the VLC tables (AdaptDiscriminant)
@@ -44,10 +46,10 @@ internal sealed class TileCoder
     // every 16-wide group (each row's first MB) — no last-column override.
     private static bool ResetTotals(int mbX) => (mbX & 0xf) == 0;
 
-    private static PredInfo[][] NewRow(int w)
+    private static PredInfo[][] NewRow(int w, int channels)
     {
-        var rows = new PredInfo[Channels][];
-        for (var c = 0; c < Channels; c++)
+        var rows = new PredInfo[channels][];
+        for (var c = 0; c < channels; c++)
         {
             rows[c] = new PredInfo[w];
             for (var x = 0; x < w; x++) rows[c][x] = new PredInfo();
@@ -137,11 +139,15 @@ internal sealed class TileCoder
         var lY = Left(0, mbX);
         var tY = _prev[0][mbX];
         var tlY = mbX > 0 ? _prev[0][mbX - 1] : Empty;
-        (int left, int top, int topLeft)[] chroma =
+        (int left, int top, int topLeft)[]? chroma = null;
+        if (Channels >= 3) // Y-only / N-channel: getDCACPredMode ignores chroma DC
         {
-            (Left(1, mbX).Dc, _prev[1][mbX].Dc, mbX > 0 ? _prev[1][mbX - 1].Dc : 0),
-            (Left(2, mbX).Dc, _prev[2][mbX].Dc, mbX > 0 ? _prev[2][mbX - 1].Dc : 0),
-        };
+            chroma = new[]
+            {
+                (Left(1, mbX).Dc, _prev[1][mbX].Dc, mbX > 0 ? _prev[1][mbX - 1].Dc : 0),
+                (Left(2, mbX).Dc, _prev[2][mbX].Dc, mbX > 0 ? _prev[2][mbX - 1].Dc : 0),
+            };
+        }
         return Prediction.GetDcAcPredMode(ctxLeft, ctxTop, Cf,
             lY.Dc, tY.Dc, tlY.Dc, QIndexLp, lY.QpIndex, tY.QpIndex, chroma);
     }

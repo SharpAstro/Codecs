@@ -84,6 +84,55 @@ internal static class JxrCodestream
     }
 
     /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> BD8 grayscale image
+    /// (<c>width*height</c> samples, raster order, values 0..255) into a single-tile
+    /// SPATIAL <b>Y-only</b> JXR codestream. No colour transform — the single channel is
+    /// the Y plane. Dimensions must be multiples of 16; QP indices are 0 for lossless.
+    /// </summary>
+    public static byte[] EncodeGray(ReadOnlySpan<int> y, int width, int height,
+                                    int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+    {
+        RequireMbAligned(width, height);
+        int mbCols = width / 16, mbRows = height / 16;
+        bool scaled = ScaledArith(qpDc, qpLp, qpHp);
+        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+
+        var w = new BitWriter();
+        WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd8);
+        WritePlaneHeaderGray(w, qpDc, qpLp, qpHp, scaled);
+        WriteProfileLevelInfo(w);
+        WritePacketHeader(w);
+
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
+        var my = new int[256];
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                ExtractMbGray(y, width, mbR, mbC, my);
+                SignalTransform.LoadGray(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC));
+            }
+
+        OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
+
+        var ctx = new CodingContext(ColorFormat.YOnly, 1);
+        var tile = new TileCoder(mbCols, 1, ColorFormat.YOnly);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(1);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                SignalTransform.QuantizeExtract(planes[0], baseOff, block, 0, qDc, qLp, qHp);
+                tile.EncodeMacroblock(ctx, block, mbC, mbR, w, w, w, w);
+            }
+            tile.AdvanceRow();
+        }
+
+        FillToByte(w);
+        return w.ToArray();
+    }
+
+    /// <summary>
     /// Decode a single-tile SPATIAL OL_NONE YUV444 BD8 JXR codestream back into a BD8 RGB
     /// image. Dimensions and per-band QP indices are read from the codestream headers.
     /// </summary>
@@ -145,9 +194,65 @@ internal static class JxrCodestream
         return (width, height, r, g, b);
     }
 
+    /// <summary>
+    /// Decode a single-tile SPATIAL Y-only BD8 JXR codestream back into a BD8 grayscale
+    /// image. Dimensions and per-band QP indices are read from the codestream headers.
+    /// </summary>
+    public static (int width, int height, int[] y) DecodeGray(ReadOnlySpan<byte> codestream)
+    {
+        var padded = new byte[codestream.Length + EndPeekSlackBytes];
+        codestream.CopyTo(padded);
+        var reader = new BitReader(padded);
+        var ih = ImageHeader.Read(ref reader);
+        if (ih.FrequencyModeCodestreamFlag)
+            throw new NotSupportedException("JxrCodestream decodes SPATIAL codestreams only.");
+        if (ih.OverlapMode > 2)
+            throw new NotSupportedException($"JxrCodestream decodes OL_NONE / OL_ONE / OL_TWO only (got overlap mode {ih.OverlapMode}).");
+        int overlap = ih.OverlapMode;
+
+        int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
+        RequireMbAligned(width, height);
+        var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeaderGray(ref reader);
+        ReadProfileLevelInfo(ref reader);
+        ReadPacketHeader(ref reader);
+
+        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        int mbCols = width / 16, mbRows = height / 16;
+        var y = new int[width * height];
+
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
+        var ctx = new CodingContext(ColorFormat.YOnly, 1);
+        var tile = new TileCoder(mbCols, 1, ColorFormat.YOnly);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(1);
+                tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                SignalTransform.DequantizeRestore(block, 0, planes[0], baseOff, qDc.Qp, qLp.Qp);
+            }
+            tile.AdvanceRow();
+        }
+
+        OverlapTransform.Inverse(planes, mbCols, mbRows, overlap, scaled);
+
+        var my = new int[256];
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                SignalTransform.StoreGray(planes[0], baseOff, my);
+                StoreMbGray(y, width, mbR, mbC, my);
+            }
+        return (width, height, y);
+    }
+
     // ---------------------------------------------------------------- headers
 
-    private static void WriteImageHeader(BitWriter w, int width, int height, int overlap)
+    private static void WriteImageHeader(BitWriter w, int width, int height, int overlap,
+                                         JxrOutputColorFormat clrFmt = JxrOutputColorFormat.Rgb,
+                                         JxrOutputBitDepth bitDepth = JxrOutputBitDepth.Bd8)
     {
         int mbW = (width + 15) / 16, mbH = (height + 15) / 16;
         var ih = new ImageHeader
@@ -165,8 +270,8 @@ internal static class JxrCodestream
             RedBlueNotSwappedFlag = false,
             PremultipliedAlphaFlag = false,
             AlphaImagePlaneFlag = false,
-            OutputClrFmt = JxrOutputColorFormat.Rgb,        // CF_RGB = 7
-            OutputBitDepth = JxrOutputBitDepth.Bd8,         // BD_8 = 1
+            OutputClrFmt = clrFmt,                          // CF_RGB = 7 / CF_YONLY = 0
+            OutputBitDepth = bitDepth,                      // BD_8 = 1
             WidthMinus1 = (uint)(width - 1),
             HeightMinus1 = (uint)(height - 1),
         };
@@ -245,6 +350,58 @@ internal static class JxrCodestream
         else if (chMode == 2) { r.SkipBits(8); r.SkipBits(8); } // INDEPENDENT: U, V
         // chMode 0 (UNIFORM): no extra. We only consume Y; bands share one index in our codec.
         return y;
+    }
+
+    // Faithful port of WriteImagePlaneHeader for the YONLY / BD8 / all-bands / uQPMode==0x750
+    // case. Differs from the YUV444 writer in two ways (strenc.c:772 default + writeQuantizer
+    // cChannel==1): no RESERVED_F/RESERVED_H bytes, and each band's quantizer is just the 8-bit
+    // Y index (writeQuantizer forces cChMode 0 and writes no channel-mode bits for one channel).
+    private static void WritePlaneHeaderGray(BitWriter w, int qpDc, int qpLp, int qpHp, bool scaled)
+    {
+        w.WriteBits((uint)JxrInternalColorFormat.YOnly, 3); // internal color format = 0
+        w.WriteBit(scaled);                                 // bScaledArith
+        w.WriteBits((uint)JxrBandsPresent.AllBands, 4);     // SB_ALL
+        // YONLY: color-params switch hits default — no RESERVED_F / RESERVED_H.
+        // BD8 → no SHIFT_BITS / LEN_MANTISSA.
+
+        w.WriteBit(true);                 // DC uniform
+        w.WriteBits((uint)qpDc, 8);       // single-channel quantizer (Y index only)
+
+        w.WriteBit(false);                // use DC QP? no (own LP QP)
+        w.WriteBit(true);                 // LP uniform
+        w.WriteBits((uint)qpLp, 8);
+
+        w.WriteBit(false);                // use LP QP? no (own HP QP)
+        w.WriteBit(true);                 // HP uniform
+        w.WriteBits((uint)qpHp, 8);
+
+        FillToByte(w);
+    }
+
+    private static (int qpDc, int qpLp, int qpHp, bool scaled) ReadPlaneHeaderGray(ref BitReader r)
+    {
+        var clrFmt = (JxrInternalColorFormat)r.ReadBits(3);
+        if (clrFmt != JxrInternalColorFormat.YOnly)
+            throw new NotSupportedException($"JxrCodestream.DecodeGray expects YONLY internal format (got {clrFmt}).");
+        bool scaled = r.ReadBit();
+        var bands = (JxrBandsPresent)r.ReadBits(4);
+        if (bands != JxrBandsPresent.AllBands)
+            throw new NotSupportedException($"JxrCodestream.DecodeGray expects all-bands codestreams (got {bands}).");
+        // YONLY: no RESERVED bytes to skip.
+
+        if (!r.ReadBit()) throw new NotSupportedException("Non-uniform DC quantization not supported.");
+        int qpDc = (int)r.ReadBits(8);
+
+        if (r.ReadBit()) throw new NotSupportedException("LP reusing DC quantizer not supported by this writer's mirror.");
+        if (!r.ReadBit()) throw new NotSupportedException("Non-uniform LP quantization not supported.");
+        int qpLp = (int)r.ReadBits(8);
+
+        if (r.ReadBit()) throw new NotSupportedException("HP reusing LP quantizer not supported by this writer's mirror.");
+        if (!r.ReadBit()) throw new NotSupportedException("Non-uniform HP quantization not supported.");
+        int qpHp = (int)r.ReadBits(8);
+
+        AlignToByte(ref r);
+        return (qpDc, qpLp, qpHp, scaled);
     }
 
     private static void WriteProfileLevelInfo(BitWriter w)
@@ -348,6 +505,28 @@ internal static class JxrCodestream
                 g[dst + col] = mg[src + col];
                 b[dst + col] = mb[src + col];
             }
+        }
+    }
+
+    private static void ExtractMbGray(ReadOnlySpan<int> y, int width, int mbR, int mbC, int[] my)
+    {
+        for (var row = 0; row < 16; row++)
+        {
+            int src = (mbR * 16 + row) * width + mbC * 16;
+            int dst = row * 16;
+            for (var col = 0; col < 16; col++)
+                my[dst + col] = y[src + col];
+        }
+    }
+
+    private static void StoreMbGray(Span<int> y, int width, int mbR, int mbC, int[] my)
+    {
+        for (var row = 0; row < 16; row++)
+        {
+            int dst = (mbR * 16 + row) * width + mbC * 16;
+            int src = row * 16;
+            for (var col = 0; col < 16; col++)
+                y[dst + col] = my[src + col];
         }
     }
 }

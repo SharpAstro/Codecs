@@ -221,4 +221,25 @@ internal static class SignalTransform
             r[px] = rr; g[px] = gg; b[px] = bb;
         }
     }
+
+    // ---------------------------------------------------------------- grayscale (Y-only)
+    // jxrlib BD8 Y_ONLY input does NO color transform (strenc.c:1921-1938): the single
+    // channel becomes the Y plane via idxCC with the level shift `pY = src - (128 << cShift)`
+    // (cShift = 0 for BD8). Inverse adds the bias back.
+
+    /// <summary>idxCC load of one BD8 grayscale macroblock (256 samples, raster order) into the
+    /// whole-image Y plane at <paramref name="mbBase"/> with the level shift. No color transform.</summary>
+    public static void LoadGray(ReadOnlySpan<int> y, int[] planeY, int mbBase)
+    {
+        for (var px = 0; px < 256; px++)
+            planeY[mbBase + IdxCc[px]] = y[px] - Bias;
+    }
+
+    /// <summary>idxCC unload of one MB from the whole-image Y plane at <paramref name="mbBase"/>
+    /// back into BD8 grayscale samples, adding the bias. No color transform.</summary>
+    public static void StoreGray(int[] planeY, int mbBase, Span<int> y)
+    {
+        for (var px = 0; px < 256; px++)
+            y[px] = planeY[mbBase + IdxCc[px]] + Bias;
+    }
 }
