@@ -248,4 +248,24 @@ internal static class SignalTransform
         for (var px = 0; px < 256; px++)
             y[px] = Clip(planeY[mbBase + IdxCc[px]] + bias, max);
     }
+
+    // ---------------------------------------------------------------- grayscale float (BD32F/BD16F)
+    // jxrlib float input does NO color transform and NO luma bias (strenc.c:2284): the float is
+    // mapped straight to the internal PixelI via float2pixel, which is already signed/centered.
+
+    /// <summary>idxCC load of one BD32F grayscale macroblock (256 floats, raster order) into the
+    /// whole-image Y plane at <paramref name="mbBase"/> via <see cref="FloatPixel.ToPixel"/>.</summary>
+    public static void LoadGrayFloat(ReadOnlySpan<float> y, int[] planeY, int mbBase, int expBias, int lenMantissa)
+    {
+        for (var px = 0; px < 256; px++)
+            planeY[mbBase + IdxCc[px]] = FloatPixel.ToPixel(y[px], expBias, lenMantissa);
+    }
+
+    /// <summary>idxCC unload of one MB from the whole-image Y plane at <paramref name="mbBase"/>
+    /// back into BD32F grayscale floats via <see cref="FloatPixel.ToFloat"/>.</summary>
+    public static void StoreGrayFloat(int[] planeY, int mbBase, Span<float> y, int expBias, int lenMantissa)
+    {
+        for (var px = 0; px < 256; px++)
+            y[px] = FloatPixel.ToFloat(planeY[mbBase + IdxCc[px]], expBias, lenMantissa);
+    }
 }
