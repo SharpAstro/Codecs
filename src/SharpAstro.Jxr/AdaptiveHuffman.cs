@@ -77,5 +77,73 @@ internal sealed class AdaptiveHuffman
         int t = TableIndex;
         LowerBound = t == 0 ? (-1 << 31) : -Threshold;
         UpperBound = t == MaxTables[iSym] - 1 ? (1 << 30) : Threshold;
+
+        SelectTables(iSym, t);
+    }
+
+    // ---- active VLC table selection (the switch at the tail of AdaptDiscriminant) ----
+
+    /// <summary>Code-table block index for the current table (iSym=8 always uses block 0).</summary>
+    public int CodeTableIndex { get; private set; }
+
+    /// <summary>Active decode lookup table for the current table.</summary>
+    public short[] DecodeTable { get; private set; } = VlcTables.Dec4[0];
+
+    private int[]? _delta;
+    private int _deltaOffset;
+    private int[]? _delta1;
+    private int _delta1Offset;
+
+    /// <summary>Discriminant delta for a coded symbol (added to <see cref="Discriminant"/> per symbol).</summary>
+    public int Delta(int symbol) => _delta is null ? 0 : _delta[_deltaOffset + symbol];
+
+    /// <summary>Second-discriminant delta (alphabets 6 and 12 only).</summary>
+    public int Delta1(int symbol) => _delta1 is null ? 0 : _delta1[_delta1Offset + symbol];
+
+    /// <summary>Encode one symbol with the currently selected table.</summary>
+    public void Encode(BitWriter w, int symbol) => VlcSymbolCodec.Encode(w, NSymbols, CodeTableIndex, symbol);
+
+    /// <summary>Decode one symbol with the currently selected table.</summary>
+    public int Decode(ref BitReader r) => VlcSymbolCodec.Decode(DecodeTable, ref r);
+
+    private void SelectTables(int iSym, int t)
+    {
+        int maxT = MaxTables[iSym];
+        int hiAdj = t + 1 == maxT ? 1 : 0;   // (t+1 == gMaxTables[iSym])
+        int loAdj = t == 0 ? 1 : 0;          // (t == 0)
+        _delta = _delta1 = null;
+        _deltaOffset = _delta1Offset = 0;
+
+        switch (iSym)
+        {
+            case 4:
+                CodeTableIndex = 0; DecodeTable = VlcTables.Dec4[0];
+                break;
+            case 5:
+                CodeTableIndex = t; DecodeTable = VlcTables.Dec5[t];
+                _delta = VlcTables.Delta5;
+                break;
+            case 6:
+                CodeTableIndex = t; DecodeTable = VlcTables.Dec6[t];
+                _delta1 = VlcTables.Delta6; _delta1Offset = 6 * (t - hiAdj);
+                _delta = VlcTables.Delta6; _deltaOffset = (t - 1 + loAdj) * 6;
+                break;
+            case 7:
+                CodeTableIndex = t; DecodeTable = VlcTables.Dec7[t];
+                _delta = VlcTables.Delta7;
+                break;
+            case 8: // jxrlib always uses block 0 here (the +t offset is commented out)
+                CodeTableIndex = 0; DecodeTable = VlcTables.Dec8[0];
+                break;
+            case 9:
+                CodeTableIndex = t; DecodeTable = VlcTables.Dec9[t];
+                _delta = VlcTables.Delta9;
+                break;
+            case 12:
+                CodeTableIndex = t; DecodeTable = VlcTables.Dec12[t];
+                _delta1 = VlcTables.Delta12; _delta1Offset = 12 * (t - hiAdj);
+                _delta = VlcTables.Delta12; _deltaOffset = (t - 1 + loAdj) * 12;
+                break;
+        }
     }
 }
