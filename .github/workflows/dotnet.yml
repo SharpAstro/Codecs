@@ -12,7 +12,12 @@ env:
   # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg family) ships at the
   # same Major.Minor and a shared run-number patch. Bumped from 2.30 -> 3.0
   # with the SharpAstro.Tiff IccProfile API break (byte[]? -> ReadOnlyMemory<byte>).
-  VERSION_PREFIX: 3.0.${{ github.run_number }}
+  # Bumped 3.0 -> 3.1 with the SharpAstro.Png CicpChunk H.273-enum break
+  # (positional args switched from raw bytes to H.273 enums) + Color.Icc
+  # IccProfiles.WithCicp helper. This env var is the single source of truth for
+  # the family Major.Minor -- the -p:Version override below makes per-csproj
+  # VersionPrefix decorative for CI publishing.
+  VERSION_PREFIX: 3.1.${{ github.run_number }}
   VERSION_REV: ${{ github.run_attempt }}
   VERSION_HASH: +${{ github.sha }}
   BUILD_CONF: Release

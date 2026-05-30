@@ -10,9 +10,10 @@
     <!-- Versioning is driven by the CI workflow (VERSION_PREFIX env). All packages
          in this repo (StbImageSharp port + SharpAstro.* codec family) ship in
          lockstep with a shared run-number patch. Bumped from 2.30 -> 3.0 alongside
-         the SharpAstro.Tiff IccProfile API break. -->
-    <VersionPrefix>3.0.0</VersionPrefix>
-    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+         the SharpAstro.Tiff IccProfile API break, then 3.0 -> 3.1 alongside the
+         SharpAstro.Png CicpChunk H.273-enum break + Color.Icc WithCicp helper. -->
+    <VersionPrefix>3.1.0</VersionPrefix>
+    <AssemblyVersion>3.1.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.StbImage</PackageId>
     <Product>SharpAstro.StbImage</Product>
