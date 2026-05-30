@@ -70,18 +70,50 @@ public sealed class JxlOracleTests
         static void Check(MagickImage image, string label)
         {
             using (image)
-            {
-                byte[] cs = JxlContainer.ExtractCodestream(image.ToByteArray(MagickFormat.Jxl));
-                var br = new JxlBitReader(cs.AsSpan(2)); // skip FF 0A
-                (int w, int h) = JxlSizeHeader.Read(ref br);
-                JxlImageMetadata meta = JxlImageMetadata.Read(ref br);
-                JxlFrameHeader frame = JxlFrameHeader.Read(ref br, meta, w, h);
-                JxlToc toc = JxlToc.Read(ref br, frame);
-
-                // 2 signature bytes + headers/TOC bytes + data sections == whole codestream.
-                (2 + br.BytesRead + toc.TotalSize).ShouldBe((long)cs.Length, label);
-            }
+                CheckByteAccounting(image.ToByteArray(MagickFormat.Jxl), label);
         }
+    }
+
+    // The single-group boundary lies just past 256 px (VarDCT group_dim) — small images carry
+    // one TOC entry; once the frame spills into multiple groups the TOC grows to
+    // 1 (LfGlobal) + numLfGroups + 1 (HfGlobal) + numGroups*numPasses entries, exercising the
+    // permutation/section-size loop. Sweeping both sides of that boundary, for VarDCT (lossy)
+    // and Modular (lossless), guards the FrameHeader+TOC parse against multi-group misalignment.
+    [Theory]
+    [InlineData(1, 1, false)]        // minimal, single group
+    [InlineData(256, 256, false)]    // largest single-group VarDCT (group_dim 256)
+    [InlineData(257, 200, false)]    // first spill -> 2 groups
+    [InlineData(512, 384, false)]    // 4 groups
+    [InlineData(1000, 700, false)]   // 12 groups, 15 TOC entries
+    [InlineData(1, 1, true)]         // minimal Modular
+    [InlineData(300, 200, true)]     // single Modular group
+    [InlineData(512, 384, true)]     // 4 Modular groups
+    [InlineData(1000, 700, true)]    // 12 Modular groups
+    public void MagickEncoded_Jxl_ByteAccounting_AcrossGroupBoundary(int w, int h, bool lossless)
+    {
+        using var image = new MagickImage(MagickColors.SteelBlue, (uint)w, (uint)h);
+        if (lossless)
+            image.Quality = 100;
+        CheckByteAccounting(image.ToByteArray(MagickFormat.Jxl), $"{w}x{h} {(lossless ? "lossless" : "lossy")}");
+    }
+
+    private static void CheckByteAccounting(byte[] bytes, string label)
+    {
+        byte[] cs = JxlContainer.ExtractCodestream(bytes);
+        var br = new JxlBitReader(cs.AsSpan(2)); // skip FF 0A
+        (int w, int h) = JxlSizeHeader.Read(ref br);
+        JxlImageMetadata meta = JxlImageMetadata.Read(ref br);
+        JxlFrameHeader frame = JxlFrameHeader.Read(ref br, meta, w, h);
+        JxlToc toc = JxlToc.Read(ref br, frame);
+
+        // TOC entry count must follow the section layout implied by the group geometry.
+        long expectedEntries = frame.NumGroups == 1 && frame.NumPasses == 1
+            ? 1
+            : 1 + frame.NumLfGroups + 1 + (long)frame.NumGroups * frame.NumPasses;
+        ((long)toc.EntryCount).ShouldBe(expectedEntries, label);
+
+        // 2 signature bytes + headers/TOC bytes + data sections == whole codestream.
+        (2 + br.BytesRead + toc.TotalSize).ShouldBe((long)cs.Length, label);
     }
 
     private static MagickImage BuildRgb()
