@@ -50,8 +50,8 @@ public static class ExrImageCodec
     // ------------------------------------------------------------------ RGB HALF (interleaved)
 
     /// <summary>Encode interleaved <c>Half[width*height*3]</c> (RGBRGB…) as half-float R/G/B channels —
-    /// the consumer's HDR RGB shape.</summary>
-    public static byte[] EncodeRgbHalf(ReadOnlySpan<Half> rgb, int width, int height, ExrCompression compression = ExrCompression.Zip)
+    /// the consumer's HDR RGB shape. Pass <paramref name="chromaticities"/> to tag the colour primaries.</summary>
+    public static byte[] EncodeRgbHalf(ReadOnlySpan<Half> rgb, int width, int height, ExrCompression compression = ExrCompression.Zip, ExrChromaticities? chromaticities = null)
     {
         int n = width * height;
         if (rgb.Length < n * 3) throw new ArgumentException("Interleaved RGB half buffer must hold width*height*3 samples.", nameof(rgb));
@@ -62,7 +62,7 @@ public static class ExrImageCodec
             BinaryPrimitives.WriteInt16LittleEndian(g.AsSpan(i * 2), BitConverter.HalfToInt16Bits(rgb[i * 3 + 1]));
             BinaryPrimitives.WriteInt16LittleEndian(b.AsSpan(i * 2), BitConverter.HalfToInt16Bits(rgb[i * 3 + 2]));
         }
-        var img = new ExrImage { Width = width, Height = height, Compression = compression };
+        var img = new ExrImage { Width = width, Height = height, Compression = compression, Chromaticities = chromaticities };
         img.AddChannel(new ExrChannel { Name = "R", Type = ExrPixelType.Half }, r);
         img.AddChannel(new ExrChannel { Name = "G", Type = ExrPixelType.Half }, g);
         img.AddChannel(new ExrChannel { Name = "B", Type = ExrPixelType.Half }, b);
@@ -87,8 +87,9 @@ public static class ExrImageCodec
 
     // ------------------------------------------------------------------ RGB FLOAT (interleaved)
 
-    /// <summary>Encode interleaved <c>float[width*height*3]</c> (RGBRGB…) as 32-bit-float R/G/B channels.</summary>
-    public static byte[] EncodeRgbFloat(ReadOnlySpan<float> rgb, int width, int height, ExrCompression compression = ExrCompression.Zip)
+    /// <summary>Encode interleaved <c>float[width*height*3]</c> (RGBRGB…) as 32-bit-float R/G/B channels.
+    /// Pass <paramref name="chromaticities"/> to tag the colour primaries.</summary>
+    public static byte[] EncodeRgbFloat(ReadOnlySpan<float> rgb, int width, int height, ExrCompression compression = ExrCompression.Zip, ExrChromaticities? chromaticities = null)
     {
         int n = width * height;
         if (rgb.Length < n * 3) throw new ArgumentException("Interleaved RGB float buffer must hold width*height*3 samples.", nameof(rgb));
@@ -99,7 +100,7 @@ public static class ExrImageCodec
             BinaryPrimitives.WriteSingleLittleEndian(g.AsSpan(i * 4), rgb[i * 3 + 1]);
             BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(i * 4), rgb[i * 3 + 2]);
         }
-        var img = new ExrImage { Width = width, Height = height, Compression = compression };
+        var img = new ExrImage { Width = width, Height = height, Compression = compression, Chromaticities = chromaticities };
         img.AddChannel(new ExrChannel { Name = "R", Type = ExrPixelType.Float }, r);
         img.AddChannel(new ExrChannel { Name = "G", Type = ExrPixelType.Float }, g);
         img.AddChannel(new ExrChannel { Name = "B", Type = ExrPixelType.Float }, b);

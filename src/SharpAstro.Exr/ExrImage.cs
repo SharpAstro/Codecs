@@ -21,6 +21,10 @@ public sealed class ExrImage
     /// <summary>Scanline storage order. This codec writes <see cref="ExrLineOrder.IncreasingY"/>.</summary>
     public ExrLineOrder LineOrder { get; set; } = ExrLineOrder.IncreasingY;
 
+    /// <summary>Optional colour primaries (the <c>chromaticities</c> attribute). When null,
+    /// the attribute is omitted and readers assume Rec.709 / sRGB.</summary>
+    public ExrChromaticities? Chromaticities { get; set; }
+
     private readonly List<ExrChannel> _channels = [];
     private readonly List<byte[]> _data = [];
 

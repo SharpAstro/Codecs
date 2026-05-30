@@ -21,6 +21,9 @@ internal sealed class ExrHeader
     public float ScreenWindowCenterY = 0f;
     public float ScreenWindowWidth = 1f;
 
+    /// <summary>Optional <c>chromaticities</c> attribute; null ⇒ omit (readers assume Rec.709).</summary>
+    public ExrChromaticities? Chromaticities;
+
     public int Width => DataXMax - DataXMin + 1;
     public int Height => DataYMax - DataYMin + 1;
 
@@ -55,6 +58,14 @@ internal sealed class ExrHeader
         WriteAttr(w, "pixelAspectRatio", "float", t => t.WriteSingle(PixelAspectRatio));
         WriteAttr(w, "screenWindowCenter", "v2f", t => { t.WriteSingle(ScreenWindowCenterX); t.WriteSingle(ScreenWindowCenterY); });
         WriteAttr(w, "screenWindowWidth", "float", t => t.WriteSingle(ScreenWindowWidth));
+        if (Chromaticities is { } c)
+            WriteAttr(w, "chromaticities", "chromaticities", t =>
+            {
+                t.WriteSingle(c.RedX); t.WriteSingle(c.RedY);
+                t.WriteSingle(c.GreenX); t.WriteSingle(c.GreenY);
+                t.WriteSingle(c.BlueX); t.WriteSingle(c.BlueY);
+                t.WriteSingle(c.WhiteX); t.WriteSingle(c.WhiteY);
+            });
         w.WriteByte(0); // empty attribute name terminates the header
     }
 
@@ -130,7 +141,12 @@ internal sealed class ExrHeader
                 case "screenWindowWidth":
                     h.ScreenWindowWidth = r.ReadSingle();
                     break;
-                // Unknown / optional attributes (chromaticities, owner, comments, ...) are skipped.
+                case "chromaticities":
+                    h.Chromaticities = new ExrChromaticities(
+                        r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle(),
+                        r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    break;
+                // Other optional attributes (owner, comments, ...) are skipped.
             }
             r.Seek(end); // robust against partially-consumed or skipped attributes
         }

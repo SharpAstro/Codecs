@@ -27,6 +27,7 @@ public static class ExrFile
             LineOrder = ExrLineOrder.IncreasingY,
             DataXMin = 0, DataYMin = 0, DataXMax = w - 1, DataYMax = h - 1,
             DispXMin = 0, DispYMin = 0, DispXMax = w - 1, DispYMax = h - 1,
+            Chromaticities = image.Chromaticities,
         };
 
         var writer = new ExrWriter(1024 + w * h * 2);
@@ -116,7 +117,7 @@ public static class ExrFile
             }
         }
 
-        var image = new ExrImage { Width = w, Height = h, Compression = header.Compression, LineOrder = header.LineOrder };
+        var image = new ExrImage { Width = w, Height = h, Compression = header.Compression, LineOrder = header.LineOrder, Chromaticities = header.Chromaticities };
         for (var c = 0; c < channels.Count; c++)
             image.AddChannel(channels[c], data[c]);
         return image;
