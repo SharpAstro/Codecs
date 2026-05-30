@@ -53,31 +53,41 @@ internal static class JxlModularFrame
         JxlMaConfig? globalTree = globalTreePresent ? JxlMaConfig.Parse(ref br, nodeLimit) : null;
 
         int colorWidth = frame.ColorWidth, colorHeight = frame.ColorHeight;
-        var channels = new JxlModularChannel[colorChannels];
-        for (int i = 0; i < colorChannels; i++)
-            channels[i] = new JxlModularChannel(colorWidth, colorHeight);
 
+        // The local modular header (transforms) precedes the local tree in the bitstream; reshape
+        // the channel list with the forward transforms before reading the local tree, since the
+        // tree's node limit is sized from the transformed channel sample count.
         JxlModularHeader header = JxlModularHeader.Parse(ref br);
-        JxlMaConfig tree = header.UseGlobalTree
-            ? globalTree ?? throw new InvalidDataException("JPEG XL: local modular requests a global tree, but none is present.")
-            : JxlMaConfig.Parse(ref br, nodeLimit);
 
+        var channels = new List<JxlModularChannel>(colorChannels);
+        for (int i = 0; i < colorChannels; i++)
+            channels.Add(new JxlModularChannel(colorWidth, colorHeight));
+
+        int nbMeta = 0;
         foreach (JxlTransform t in header.Transforms)
-            if (t.Type != JxlTransformType.Rct)
-                throw new NotSupportedException($"JPEG XL Modular transform {t.Type} is not yet supported.");
+            JxlModularTransforms.ApplyForward(channels, t, ref nbMeta);
 
-        JxlModularImage.Decode(ref br, tree, channels, header.Wp, streamIndex: 0);
+        JxlMaConfig tree;
+        if (header.UseGlobalTree)
+        {
+            tree = globalTree ?? throw new InvalidDataException("JPEG XL: local modular requests a global tree, but none is present.");
+        }
+        else
+        {
+            long samples = 0;
+            foreach (JxlModularChannel ch in channels)
+                samples += (long)ch.Width * ch.Height;
+            tree = JxlMaConfig.Parse(ref br, (int)Math.Min(1 << 20, 1024 + samples));
+        }
 
-        // Inverse transforms in reverse order (RCT only). RCT may permute the channel array.
+        JxlModularImage.Decode(ref br, tree, channels.ToArray(), header.Wp, streamIndex: 0);
+
+        for (int i = header.Transforms.Length - 1; i >= 0; i--)
+            JxlModularTransforms.ApplyInverse(channels, header.Transforms[i], meta.BitDepth.BitsPerSample);
+
         var grids = new int[colorChannels][];
         for (int i = 0; i < colorChannels; i++)
             grids[i] = channels[i].Data;
-        for (int i = header.Transforms.Length - 1; i >= 0; i--)
-        {
-            JxlTransform t = header.Transforms[i];
-            if (t.Type == JxlTransformType.Rct)
-                JxlRct.Inverse(t.RctType, grids, t.BeginC);
-        }
 
         return new JxlModularDecodeResult
         {

@@ -1,13 +1,18 @@
 namespace SharpAstro.Jxl;
 
-/// <summary>A Modular channel: a row-major integer grid plus its shifts (ISO/IEC 18181-1 §H).</summary>
+/// <summary>
+/// A Modular channel: a row-major integer grid plus its shifts (ISO/IEC 18181-1 §H). Mutable so
+/// transforms (Palette/Squeeze) can reshape the channel list and rewrite grids.
+/// </summary>
 internal sealed class JxlModularChannel
 {
-    public int[] Data { get; }
-    public int Width { get; }
-    public int Height { get; }
-    public int Hshift { get; }
-    public int Vshift { get; }
+    public int[] Data { get; set; }
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public int Hshift { get; set; }
+    public int Vshift { get; set; }
+    public int OriginalWidth { get; set; }
+    public int OriginalHeight { get; set; }
 
     public JxlModularChannel(int width, int height, int hshift = 0, int vshift = 0)
     {
@@ -15,6 +20,8 @@ internal sealed class JxlModularChannel
         Height = height;
         Hshift = hshift;
         Vshift = vshift;
+        OriginalWidth = width;
+        OriginalHeight = height;
         Data = new int[width * height];
     }
 
