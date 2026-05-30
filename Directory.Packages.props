@@ -15,7 +15,7 @@
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
     <!-- Visual-diff judge for the JXR codec (RMSE pixel comparison + red-highlighted diff artifacts).
          Q16-HDR variant so 16-bit and float (BD16/BD16F/BD32F) rasters compare faithfully. -->
-    <PackageVersion Include="Magick.NET-Q16-HDRI-AnyCPU" Version="14.11.0" />
+    <PackageVersion Include="Magick.NET-Q16-HDRI-AnyCPU" Version="14.13.1" />
   </ItemGroup>
 
 </Project>
