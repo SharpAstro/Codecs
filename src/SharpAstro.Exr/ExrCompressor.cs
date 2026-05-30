@@ -16,6 +16,8 @@ internal static class ExrCompressor
 
         byte[] packed = compression switch
         {
+            ExrCompression.Rle => ExrRle.Compress(raw),
+            ExrCompression.Zip or ExrCompression.Zips => ExrZip.Compress(raw),
             _ => throw new NotSupportedException($"EXR compression {compression} is not yet implemented."),
         };
 
@@ -33,6 +35,8 @@ internal static class ExrCompressor
         return compression switch
         {
             ExrCompression.None => src.ToArray(),
+            ExrCompression.Rle => ExrRle.Decompress(src, uncompressedSize),
+            ExrCompression.Zip or ExrCompression.Zips => ExrZip.Decompress(src, uncompressedSize),
             _ => throw new NotSupportedException($"EXR compression {compression} is not yet implemented."),
         };
     }
