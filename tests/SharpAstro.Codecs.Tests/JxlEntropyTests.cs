@@ -106,6 +106,61 @@ public sealed class JxlEntropyTests
     }
 
     [Fact]
+    public void EntropyEncoder_WithExtraBits_RoundTrips()
+    {
+        // The full read_varint path: ANS token + hybrid-uint extra bits, interleaved per symbol.
+        // This is what the no-extra-bits Rung-3d tests deliberately avoided; the production encoder
+        // (JxlEntropyEncoder) must interleave correctly for our codestreams to round-trip.
+        JxlIntegerConfig[] configs =
+        [
+            JxlIntegerConfig.Create(splitExponent: 7, msbInToken: 0, lsbInToken: 0),
+            JxlIntegerConfig.Create(splitExponent: 6, msbInToken: 1, lsbInToken: 1),
+        ];
+        byte[] contextMap = [0, 1, 0, 1]; // 4 contexts -> 2 clusters
+
+        var stream = new List<(int Ctx, uint Value)>();
+        uint s = 0x99;
+        for (int k = 0; k < 600; k++)
+        {
+            s = s * 1664525 + 1013904223;
+            stream.Add((k % 4, s % 30000)); // large values -> real extra bits
+        }
+
+        var bw = new JxlBitWriter();
+        new JxlEntropyEncoder(contextMap, configs).Encode(bw, stream);
+
+        var br = new JxlBitReader(bw.ToArray());
+        JxlEntropyDecoder dec = JxlEntropyDecoder.Parse(ref br, (uint)contextMap.Length);
+        foreach ((int ctx, uint value) in stream)
+            dec.ReadVarint(ref br, (uint)ctx).ShouldBe(value);
+        dec.Finish();
+    }
+
+    [Fact]
+    public void EntropyEncoder_SingleContext_RoundTrips()
+    {
+        // num_dist == 1 path (no context map written). split_exponent < log_alphabet_size(8) so
+        // the config's msb/lsb survive serialization.
+        JxlIntegerConfig[] configs = [JxlIntegerConfig.Create(7, 2, 1)];
+        var stream = new List<(int Ctx, uint Value)>();
+        uint s = 0x1234;
+        for (int k = 0; k < 300; k++)
+        {
+            s = s * 1103515245 + 12345;
+            stream.Add((0, s % 50000));
+        }
+
+        var bw = new JxlBitWriter();
+        new JxlEntropyEncoder(contextMap: [0], configs).Encode(bw, stream);
+
+        var br = new JxlBitReader(bw.ToArray());
+        JxlEntropyDecoder dec = JxlEntropyDecoder.Parse(ref br, 1);
+        foreach ((int _, uint value) in stream)
+            dec.ReadVarint(ref br, 0).ShouldBe(value);
+        dec.Finish();
+    }
+
+    [Fact]
     public void Decoder_MultiCluster_ContextMap_RoundTrips()
     {
         // Full Decoder over 4 contexts mapped to 2 clusters via the simple context-map form,
