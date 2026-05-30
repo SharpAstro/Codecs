@@ -18,6 +18,7 @@ internal static class ExrCompressor
         {
             ExrCompression.Rle => ExrRle.Compress(raw),
             ExrCompression.Zip or ExrCompression.Zips => ExrZip.Compress(raw),
+            ExrCompression.Piz => ExrPiz.Compress(raw, info),
             _ => throw new NotSupportedException($"EXR compression {compression} is not yet implemented."),
         };
 
@@ -37,6 +38,7 @@ internal static class ExrCompressor
             ExrCompression.None => src.ToArray(),
             ExrCompression.Rle => ExrRle.Decompress(src, uncompressedSize),
             ExrCompression.Zip or ExrCompression.Zips => ExrZip.Decompress(src, uncompressedSize),
+            ExrCompression.Piz => ExrPiz.Decompress(src, uncompressedSize, info),
             _ => throw new NotSupportedException($"EXR compression {compression} is not yet implemented."),
         };
     }
