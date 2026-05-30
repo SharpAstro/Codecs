@@ -11,6 +11,7 @@ internal ref struct JxlBitReader
     private int _bytePos;
     private ulong _buffer; // staged bits; LSB is the next bit to consume
     private int _bitCount; // number of valid bits currently in _buffer
+    private long _bitsRead; // total bits consumed (for byte alignment / accounting)
 
     public JxlBitReader(ReadOnlySpan<byte> data)
     {
@@ -18,6 +19,7 @@ internal ref struct JxlBitReader
         _bytePos = 0;
         _buffer = 0;
         _bitCount = 0;
+        _bitsRead = 0;
     }
 
     private void Refill()
@@ -39,10 +41,25 @@ internal ref struct JxlBitReader
         uint value = (uint)(_buffer & ((1UL << count) - 1));
         _buffer >>= count;
         _bitCount -= count;
+        _bitsRead += count;
         return value;
     }
 
     public bool ReadBit() => ReadBits(1) != 0;
+
+    /// <summary>Total number of bits consumed so far.</summary>
+    public long BitsRead => _bitsRead;
+
+    /// <summary>Bytes consumed so far (exact only when byte-aligned, e.g. after ZeroPadToByte).</summary>
+    public long BytesRead => _bitsRead / 8;
+
+    /// <summary>Discards bits up to the next byte boundary (JPEG XL zero_pad_to_byte, §C.1).</summary>
+    public void ZeroPadToByte()
+    {
+        int remainder = (int)(_bitsRead & 7);
+        if (remainder != 0)
+            ReadBits(8 - remainder);
+    }
 
     /// <summary>
     /// JPEG XL U32(d0,d1,d2,d3) (§C.1): a 2-bit selector picks one of four distributions,
