@@ -157,8 +157,13 @@ public static class PngReader
             {
                 cicp = CicpChunk.Read(chunkData);
             }
-            else if (typeBytes.SequenceEqual("mDCv"u8))
+            else if (typeBytes.SequenceEqual("mDCV"u8)
+                  || typeBytes.SequenceEqual("mDCv"u8))
             {
+                // Canonical PNG-3 spec name is "mDCV" (uppercase V = not safe to copy).
+                // Pre-final-spec drafts and some early implementations used the lowercase
+                // "mDCv" form; accept both on read so we round-trip those legacy files
+                // correctly. The writer emits the canonical "mDCV".
                 mdcv = MdcvChunk.Read(chunkData);
             }
             else if (typeBytes.SequenceEqual("cLLI"u8))
@@ -441,19 +446,19 @@ public sealed record ChromaticityChunk(
 
 /// <summary>
 /// PNG-3 <c>cICP</c> chunk — Coding-Independent Code Points (4 bytes).
-/// Identifies the color space + transfer function of the image's sample
+/// Identifies the colour space + transfer function of the image's sample
 /// values using H.273 / ITU CICP numbering. This is how PNG-3 declares
 /// HDR — pixel data stays 16-bit integer, but cICP says e.g. "BT.2020
 /// primaries + PQ transfer function" to flag it as HDR10.
 /// </summary>
-/// <param name="ColorPrimaries">H.273 §8.1: 1=BT.709/sRGB, 9=BT.2020, 12=DCI-P3, 11=Display-P3.</param>
-/// <param name="TransferFunction">H.273 §8.2: 1=BT.709, 13=sRGB IEC 61966-2-1, 16=SMPTE 2084 (PQ), 18=ARIB STD-B67 (HLG).</param>
-/// <param name="MatrixCoefficients">H.273 §8.3: PNG-3 requires 0 (Identity / RGB) — PNG doesn't carry YCbCr.</param>
+/// <param name="ColorPrimaries">H.273 §8.1 colour primaries codepoint.</param>
+/// <param name="TransferFunction">H.273 §8.2 transfer characteristics codepoint.</param>
+/// <param name="MatrixCoefficients">H.273 §8.3 matrix codepoint. PNG-3 §11.3.2.6 requires <see cref="SharpAstro.Color.Icc.MatrixCoefficients.Identity"/> (RGB) — PNG doesn't carry YCbCr.</param>
 /// <param name="VideoFullRangeFlag">PNG-3 requires <c>true</c> (full range 0..2^N-1).</param>
 public sealed record CicpChunk(
-    byte ColorPrimaries,
-    byte TransferFunction,
-    byte MatrixCoefficients,
+    SharpAstro.Color.Icc.ColorPrimaries ColorPrimaries,
+    SharpAstro.Color.Icc.TransferFunction TransferFunction,
+    SharpAstro.Color.Icc.MatrixCoefficients MatrixCoefficients,
     bool VideoFullRangeFlag)
 {
     internal static CicpChunk Read(ReadOnlySpan<byte> chunkData)
@@ -461,28 +466,54 @@ public sealed record CicpChunk(
         if (chunkData.Length != 4)
             throw new InvalidDataException($"cICP chunk length must be 4, got {chunkData.Length}");
         return new CicpChunk(
-            ColorPrimaries:       chunkData[0],
-            TransferFunction:     chunkData[1],
-            MatrixCoefficients:   chunkData[2],
+            ColorPrimaries:       (SharpAstro.Color.Icc.ColorPrimaries)chunkData[0],
+            TransferFunction:     (SharpAstro.Color.Icc.TransferFunction)chunkData[1],
+            MatrixCoefficients:   (SharpAstro.Color.Icc.MatrixCoefficients)chunkData[2],
             VideoFullRangeFlag:   chunkData[3] != 0);
     }
 
     internal void Write(Span<byte> dst)
     {
-        dst[0] = ColorPrimaries;
-        dst[1] = TransferFunction;
-        dst[2] = MatrixCoefficients;
+        dst[0] = (byte)ColorPrimaries;
+        dst[1] = (byte)TransferFunction;
+        dst[2] = (byte)MatrixCoefficients;
         dst[3] = (byte)(VideoFullRangeFlag ? 1 : 0);
     }
 
-    /// <summary>BT.2020 + PQ (SMPTE 2084) — the standard "HDR10" signaling.</summary>
-    public static CicpChunk Hdr10Pq => new(9, 16, 0, true);
+    /// <summary>BT.2020 + PQ (SMPTE 2084) — the standard "HDR10" signalling.</summary>
+    public static CicpChunk Hdr10Pq => new(
+        SharpAstro.Color.Icc.ColorPrimaries.BT2020,
+        SharpAstro.Color.Icc.TransferFunction.Pq,
+        SharpAstro.Color.Icc.MatrixCoefficients.Identity,
+        true);
 
     /// <summary>BT.2020 + HLG (ARIB STD-B67) — broadcast HDR.</summary>
-    public static CicpChunk Bt2020Hlg => new(9, 18, 0, true);
+    public static CicpChunk Bt2020Hlg => new(
+        SharpAstro.Color.Icc.ColorPrimaries.BT2020,
+        SharpAstro.Color.Icc.TransferFunction.Hlg,
+        SharpAstro.Color.Icc.MatrixCoefficients.Identity,
+        true);
+
+    /// <summary>
+    /// sRGB primaries + PQ transfer — "narrow-gamut HDR". Non-canonical for
+    /// HDR10 (which is BT.2020 + PQ) but valid PNG-3 / ICC v4.4; sidesteps
+    /// the gamut-mismatch desaturation that consumer HDR displays sometimes
+    /// produce on BT.2020-encoded content displayed without a correct
+    /// inverse-gamut tonemap. Use when the source content is sRGB-saturation
+    /// and you want PQ HDR luminance without re-mapping primaries.
+    /// </summary>
+    public static CicpChunk SrgbPq => new(
+        SharpAstro.Color.Icc.ColorPrimaries.BT709,
+        SharpAstro.Color.Icc.TransferFunction.Pq,
+        SharpAstro.Color.Icc.MatrixCoefficients.Identity,
+        true);
 
     /// <summary>sRGB primaries + sRGB transfer — explicit signal of SDR sRGB.</summary>
-    public static CicpChunk Srgb => new(1, 13, 0, true);
+    public static CicpChunk Srgb => new(
+        SharpAstro.Color.Icc.ColorPrimaries.BT709,
+        SharpAstro.Color.Icc.TransferFunction.Srgb,
+        SharpAstro.Color.Icc.MatrixCoefficients.Identity,
+        true);
 }
 
 /// <summary>

@@ -1,366 +1,168 @@
 namespace SharpAstro.Jxr;
 
 /// <summary>
-/// Static VLC code tables from T.832 §8.7 — one per syntax element. Each
-/// table is constructed once at type-init time and reused for every
-/// macroblock that needs to encode or decode the corresponding element.
+/// The static adaptive-VLC tables from jxrlib (image/sys/adapthuff.c), transcribed
+/// verbatim. For each alphabet size (4, 5, 6, 7, 8, 9, 12) there are one or more
+/// VLC tables; <see cref="AdaptiveHuffman"/> picks the active one by index.
 /// </summary>
 /// <remarks>
-/// Bit patterns are transcribed verbatim from the spec's "Code | Value"
-/// tables. Binary literals (<c>0b...</c>) match the spec's left-to-right
-/// MSB-first ordering so the reviewer can scan the table side-by-side with
-/// the spec page. Adaptive tables (where the spec gives Code 0..N-1
-/// columns) are exposed as arrays indexed by <c>AdaptiveVlcState.TableIndex</c>.
+/// Layout notes (matching jxrlib exactly):
+/// <list type="bullet">
+/// <item><b>Code tables</b> (<c>g*CodeTable</c>): each table block is
+/// <c>nSym*2 + 1</c> ints — a leading alphabet-size marker, then a
+/// <c>(code, length)</c> pair per symbol. So for symbol <c>s</c> in block <c>t</c>:
+/// code = <c>table[(nSym*2+1)*t + s*2 + 1]</c>, length = <c>… + 2</c>.</item>
+/// <item><b>Length tables</b> (<c>g_Index*Table</c>): the per-symbol code lengths,
+/// used here only to cross-check the code-table length column.</item>
+/// <item><b>Decode tables</b> (<c>g*HuffLookupTable</c>): peek 5 bits
+/// (HUFFMAN_DECODE_ROOT_BITS) to index; a non-negative entry packs
+/// <c>(symbol &lt;&lt; 3) | length</c> (ROOT_BITS_LOG = 3); a negative entry is a
+/// two-level escape — <c>entry + 32768</c> is the offset into the extension nodes.</item>
+/// </list>
 /// </remarks>
-public static class VlcTables
+internal static class VlcTables
 {
-    // ======================================================================
-    // Table 51 — VAL_DC_YUV (T.832 8.7.14.2). Single fixed table.
-    // ======================================================================
-    public static readonly VlcCodeTable ValDcYuv = new(
-    [
-        new(Value: 0, Code: 0b10,    Length: 2),
-        new(Value: 1, Code: 0b001,   Length: 3),
-        new(Value: 2, Code: 0b00001, Length: 5),
-        new(Value: 3, Code: 0b0001,  Length: 4),
-        new(Value: 4, Code: 0b11,    Length: 2),
-        new(Value: 5, Code: 0b010,   Length: 3),
-        new(Value: 6, Code: 0b00000, Length: 5),
-        new(Value: 7, Code: 0b011,   Length: 3),
-    ]);
-
-    // ======================================================================
-    // Table 52 — ABS_LEVEL_INDEX (T.832 8.7.14.5). 2 adaptive tables.
-    // ======================================================================
-    public static readonly VlcCodeTable[] AbsLevelIndex =
-    [
-        // Code 0
-        new(
-        [
-            new(Value: 0, Code: 0b01,    Length: 2),
-            new(Value: 1, Code: 0b10,    Length: 2),
-            new(Value: 2, Code: 0b11,    Length: 2),
-            new(Value: 3, Code: 0b001,   Length: 3),
-            new(Value: 4, Code: 0b0001,  Length: 4),
-            new(Value: 5, Code: 0b00000, Length: 5),
-            new(Value: 6, Code: 0b00001, Length: 5),
-        ]),
-        // Code 1
-        new(
-        [
-            new(Value: 0, Code: 0b1,      Length: 1),
-            new(Value: 1, Code: 0b01,     Length: 2),
-            new(Value: 2, Code: 0b001,    Length: 3),
-            new(Value: 3, Code: 0b0001,   Length: 4),
-            new(Value: 4, Code: 0b00001,  Length: 5),
-            new(Value: 5, Code: 0b000000, Length: 6),
-            new(Value: 6, Code: 0b000001, Length: 6),
-        ]),
-    ];
-
-    // ======================================================================
-    // Table 55 — CBPLP_YUV1 for YUV444 (T.832 8.7.16.3.1). Single table.
-    // ======================================================================
-    public static readonly VlcCodeTable CbpLpYuv444 = new(
-    [
-        new(Value: 0, Code: 0b0,    Length: 1),
-        new(Value: 1, Code: 0b100,  Length: 3),
-        new(Value: 2, Code: 0b1010, Length: 4),
-        new(Value: 3, Code: 0b1011, Length: 4),
-        new(Value: 4, Code: 0b1100, Length: 4),
-        new(Value: 5, Code: 0b1101, Length: 4),
-        new(Value: 6, Code: 0b1110, Length: 4),
-        new(Value: 7, Code: 0b1111, Length: 4),
-    ]);
-
-    // ======================================================================
-    // Table 56 — CBPLP_YUV1 for YUV420 / YUV422. Single table.
-    // ======================================================================
-    public static readonly VlcCodeTable CbpLpYuv420Or422 = new(
-    [
-        new(Value: 0, Code: 0b0,   Length: 1),
-        new(Value: 1, Code: 0b10,  Length: 2),
-        new(Value: 2, Code: 0b110, Length: 3),
-        new(Value: 3, Code: 0b111, Length: 3),
-    ]);
-
-    // ======================================================================
-    // Table 59 — NUM_CBPHP (T.832 8.7.17.4.1). 2 adaptive tables.
-    // ======================================================================
-    public static readonly VlcCodeTable[] NumCbphp =
-    [
-        new(
-        [
-            new(Value: 0, Code: 0b1,    Length: 1),
-            new(Value: 1, Code: 0b01,   Length: 2),
-            new(Value: 2, Code: 0b001,  Length: 3),
-            new(Value: 3, Code: 0b0000, Length: 4),
-            new(Value: 4, Code: 0b0001, Length: 4),
-        ]),
-        new(
-        [
-            new(Value: 0, Code: 0b1,   Length: 1),
-            new(Value: 1, Code: 0b000, Length: 3),
-            new(Value: 2, Code: 0b001, Length: 3),
-            new(Value: 3, Code: 0b010, Length: 3),
-            new(Value: 4, Code: 0b011, Length: 3),
-        ]),
-    ];
-
-    // ======================================================================
-    // Table 60 — NUM_BLKCBPHP for YONLY / NCOMPONENT / YUVK. 2 adaptive tables.
-    // (Identical bit patterns to Table 59; kept separate per spec for clarity.)
-    // ======================================================================
-    public static readonly VlcCodeTable[] NumBlkCbphpYuvk = NumCbphp;
-
-    // ======================================================================
-    // Table 61 — NUM_BLKCBPHP for other formats. 2 adaptive tables, 9 values each.
-    // ======================================================================
-    public static readonly VlcCodeTable[] NumBlkCbphpColour =
-    [
-        new(
-        [
-            new(Value: 0, Code: 0b010,    Length: 3),
-            new(Value: 1, Code: 0b00000,  Length: 5),
-            new(Value: 2, Code: 0b0010,   Length: 4),
-            new(Value: 3, Code: 0b00001,  Length: 5),
-            new(Value: 4, Code: 0b00010,  Length: 5),
-            new(Value: 5, Code: 0b1,      Length: 1),
-            new(Value: 6, Code: 0b011,    Length: 3),
-            new(Value: 7, Code: 0b00011,  Length: 5),
-            new(Value: 8, Code: 0b0011,   Length: 4),
-        ]),
-        new(
-        [
-            new(Value: 0, Code: 0b1,       Length: 1),
-            new(Value: 1, Code: 0b001,     Length: 3),
-            new(Value: 2, Code: 0b010,     Length: 3),
-            new(Value: 3, Code: 0b0001,    Length: 4),
-            new(Value: 4, Code: 0b000001,  Length: 6),
-            new(Value: 5, Code: 0b011,     Length: 3),
-            new(Value: 6, Code: 0b00001,   Length: 5),
-            new(Value: 7, Code: 0b0000000, Length: 7),
-            new(Value: 8, Code: 0b0000001, Length: 7),
-        ]),
-    ];
-
-    // ======================================================================
-    // Table 62 — CHR_CBPHP, VAL_INC, CBPHP_CH_BLK (T.832 8.7.17.4.3). Single table.
-    // ======================================================================
-    public static readonly VlcCodeTable ChrCbphp = new(
-    [
-        new(Value: 0, Code: 0b1,  Length: 1),
-        new(Value: 1, Code: 0b01, Length: 2),
-        new(Value: 2, Code: 0b00, Length: 2),
-    ]);
-
-    // ======================================================================
-    // Table 63 — NUM_CH_BLK (T.832 8.7.17.4.6). Single table.
-    // ======================================================================
-    public static readonly VlcCodeTable NumChBlk = new(
-    [
-        new(Value: 0, Code: 0b1,   Length: 1),
-        new(Value: 1, Code: 0b01,  Length: 2),
-        new(Value: 2, Code: 0b000, Length: 3),
-        new(Value: 3, Code: 0b001, Length: 3),
-    ]);
-
-    // ======================================================================
-    // Table 64 — REF_CBPHP1 (T.832 8.7.17.4.8). Single table.
-    // ======================================================================
-    public static readonly VlcCodeTable RefCbphp1 = new(
-    [
-        new(Value: 3,  Code: 0b00,  Length: 2),
-        new(Value: 5,  Code: 0b01,  Length: 2),
-        new(Value: 6,  Code: 0b100, Length: 3),
-        new(Value: 9,  Code: 0b101, Length: 3),
-        new(Value: 10, Code: 0b110, Length: 3),
-        new(Value: 12, Code: 0b111, Length: 3),
-    ]);
-
-    // ======================================================================
-    // Tables 76 / 77 / 78 — RUN_VALUE for iMaxRun in {2, 3, 4}.
-    // ======================================================================
-    public static readonly VlcCodeTable RunValueMax2 = new(
-    [
-        new(Value: 1, Code: 0b1, Length: 1),
-        new(Value: 2, Code: 0b0, Length: 1),
-    ]);
-
-    public static readonly VlcCodeTable RunValueMax3 = new(
-    [
-        new(Value: 1, Code: 0b1,  Length: 1),
-        new(Value: 2, Code: 0b01, Length: 2),
-        new(Value: 3, Code: 0b00, Length: 2),
-    ]);
-
-    public static readonly VlcCodeTable RunValueMax4 = new(
-    [
-        new(Value: 1, Code: 0b1,   Length: 1),
-        new(Value: 2, Code: 0b01,  Length: 2),
-        new(Value: 3, Code: 0b001, Length: 3),
-        new(Value: 4, Code: 0b000, Length: 3),
-    ]);
-
-    /// <summary>Pick the right RUN_VALUE table from <paramref name="iMaxRun"/> in {2,3,4}.</summary>
-    public static VlcCodeTable RunValue(int iMaxRun) => iMaxRun switch
+    // ---------------- alphabet 4 (1 table) ----------------
+    public static readonly int[] Code4 = { 4, 1, 1, 1, 2, 0, 3, 1, 3 };
+    public static readonly int[] Len4 = { 1, 2, 3, 3 };
+    public static readonly short[][] Dec4 =
     {
-        2 => RunValueMax2,
-        3 => RunValueMax3,
-        4 => RunValueMax4,
-        _ => throw new ArgumentOutOfRangeException(nameof(iMaxRun), "RUN_VALUE is defined only for iMaxRun in {2,3,4}"),
+        new short[] { 19,19,19,19,27,27,27,27,10,10,10,10,10,10,10,10, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 0,0,0,0,0,0,0,0 },
     };
 
-    // ======================================================================
-    // Table 79 — RUN_INDEX. Single table.
-    // ======================================================================
-    public static readonly VlcCodeTable RunIndex = new(
-    [
-        new(Value: 0, Code: 0b1,    Length: 1),
-        new(Value: 1, Code: 0b01,   Length: 2),
-        new(Value: 2, Code: 0b001,  Length: 3),
-        new(Value: 3, Code: 0b0000, Length: 4),
-        new(Value: 4, Code: 0b0001, Length: 4),
-    ]);
+    // ---------------- alphabet 5 (2 tables) ----------------
+    public static readonly int[] Code5 =
+    {
+        5, 1,1, 1,2, 1,3, 0,4, 1,4,
+        5, 1,1, 0,3, 1,3, 2,3, 3,3,
+    };
+    public static readonly int[] Len5 = { 1,2,3,4,4,  1,3,3,3,3 };
+    public static readonly int[] Delta5 = { 0, -1, 0, 1, 1 };
+    public static readonly short[][] Dec5 =
+    {
+        new short[] { 28,28,36,36,19,19,19,19,10,10,10,10,10,10,10,10, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 0,0,0,0,0,0,0,0,0,0 },
+        new short[] { 11,11,11,11,19,19,19,19,27,27,27,27,35,35,35,35, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 0,0,0,0,0,0,0,0,0,0 },
+    };
 
-    // ======================================================================
-    // Table 80 — INDEX_A (T.832 8.7.18.9.4). 4 adaptive tables, 6 values each.
-    // ======================================================================
-    public static readonly VlcCodeTable[] IndexA =
-    [
-        new(
-        [
-            new(Value: 0, Code: 0b1,     Length: 1),
-            new(Value: 1, Code: 0b00000, Length: 5),
-            new(Value: 2, Code: 0b001,   Length: 3),
-            new(Value: 3, Code: 0b00001, Length: 5),
-            new(Value: 4, Code: 0b01,    Length: 2),
-            new(Value: 5, Code: 0b0001,  Length: 4),
-        ]),
-        new(
-        [
-            new(Value: 0, Code: 0b01,   Length: 2),
-            new(Value: 1, Code: 0b0000, Length: 4),
-            new(Value: 2, Code: 0b10,   Length: 2),
-            new(Value: 3, Code: 0b0001, Length: 4),
-            new(Value: 4, Code: 0b11,   Length: 2),
-            new(Value: 5, Code: 0b001,  Length: 3),
-        ]),
-        new(
-        [
-            new(Value: 0, Code: 0b0000, Length: 4),
-            new(Value: 1, Code: 0b0001, Length: 4),
-            new(Value: 2, Code: 0b01,   Length: 2),
-            new(Value: 3, Code: 0b10,   Length: 2),
-            new(Value: 4, Code: 0b11,   Length: 2),
-            new(Value: 5, Code: 0b001,  Length: 3),
-        ]),
-        new(
-        [
-            new(Value: 0, Code: 0b00000, Length: 5),
-            new(Value: 1, Code: 0b00001, Length: 5),
-            new(Value: 2, Code: 0b01,    Length: 2),
-            new(Value: 3, Code: 0b1,     Length: 1),
-            new(Value: 4, Code: 0b0001,  Length: 4),
-            new(Value: 5, Code: 0b001,   Length: 3),
-        ]),
-    ];
+    // ---------------- alphabet 6 (4 tables, dual-discriminant) ----------------
+    public static readonly int[] Code6 =
+    {
+        6, 1,1, 0,5, 1,3, 1,5, 1,2, 1,4,
+        6, 1,2, 0,4, 2,2, 1,4, 3,2, 1,3,
+        6, 0,4, 1,4, 1,2, 2,2, 3,2, 1,3,
+        6, 0,5, 1,5, 1,2, 1,1, 1,4, 1,3,
+    };
+    public static readonly int[] Len6 = { 1,5,3,5,2,4,  2,4,2,4,2,3,  4,4,2,2,2,3,  5,5,2,1,4,3 };
+    public static readonly int[] Delta6 = { -1,1,1,1,0,1,  -2,0,0,2,0,0,  -1,-1,0,1,-2,0 };
+    public static readonly short[][] Dec6 =
+    {
+        new short[] { 13,29,44,44,19,19,19,19,34,34,34,34,34,34,34,34, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 0,0,0,0,0,0,0,0,0,0,0,0 },
+        new short[] { 12,12,28,28,43,43,43,43,2,2,2,2,2,2,2,2, 18,18,18,18,18,18,18,18,34,34,34,34,34,34,34,34, 0,0,0,0,0,0,0,0,0,0,0,0 },
+        new short[] { 4,4,12,12,43,43,43,43,18,18,18,18,18,18,18,18, 26,26,26,26,26,26,26,26,34,34,34,34,34,34,34,34, 0,0,0,0,0,0,0,0,0,0,0,0 },
+        new short[] { 5,13,36,36,43,43,43,43,18,18,18,18,18,18,18,18, 25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25, 0,0,0,0,0,0,0,0,0,0,0,0 },
+    };
 
-    // ======================================================================
-    // Table 81 — INDEX_B (T.832 8.7.18.9.5). Single table.
-    // ======================================================================
-    public static readonly VlcCodeTable IndexB = new(
-    [
-        new(Value: 0, Code: 0b0,   Length: 1),
-        new(Value: 1, Code: 0b110, Length: 3),
-        new(Value: 2, Code: 0b10,  Length: 2),
-        new(Value: 3, Code: 0b111, Length: 3),
-    ]);
+    // ---------------- alphabet 7 (2 tables) ----------------
+    public static readonly int[] Code7 =
+    {
+        7, 1,2, 2,2, 3,2, 1,3, 1,4, 0,5, 1,5,
+        7, 1,1, 1,2, 1,3, 1,4, 1,5, 0,6, 1,6,
+    };
+    public static readonly int[] Len7 = { 2,2,2,3,4,5,5,  1,2,3,4,5,6,6 };
+    public static readonly int[] Delta7 = { 1, 0, -1, -1, -1, -1, -1 };
+    public static readonly short[][] Dec7 =
+    {
+        new short[] { 45,53,36,36,27,27,27,27,2,2,2,2,2,2,2,2, 10,10,10,10,10,10,10,10,18,18,18,18,18,18,18,18, 0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+        new short[] { -32736,37,28,28,19,19,19,19,10,10,10,10,10,10,10,10, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 5,6,0,0,0,0,0,0,0,0,0,0,0,0 },
+    };
 
-    // ======================================================================
-    // Table 82 — FIRST_INDEX (T.832 8.7.18.9.7). 5 adaptive tables, 12 values each.
-    // ======================================================================
-    public static readonly VlcCodeTable[] FirstIndex =
-    [
-        // Code 0
-        new(
-        [
-            new(Value: 0,  Code: 0b00001,    Length: 5),
-            new(Value: 1,  Code: 0b000001,   Length: 6),
-            new(Value: 2,  Code: 0b0000000,  Length: 7),
-            new(Value: 3,  Code: 0b0000001,  Length: 7),
-            new(Value: 4,  Code: 0b00100,    Length: 5),
-            new(Value: 5,  Code: 0b010,      Length: 3),
-            new(Value: 6,  Code: 0b00101,    Length: 5),
-            new(Value: 7,  Code: 0b1,        Length: 1),
-            new(Value: 8,  Code: 0b00110,    Length: 5),
-            new(Value: 9,  Code: 0b0001,     Length: 4),
-            new(Value: 10, Code: 0b00111,    Length: 5),
-            new(Value: 11, Code: 0b011,      Length: 3),
-        ]),
-        // Code 1
-        new(
-        [
-            new(Value: 0,  Code: 0b0010,     Length: 4),
-            new(Value: 1,  Code: 0b00010,    Length: 5),
-            new(Value: 2,  Code: 0b000000,   Length: 6),
-            new(Value: 3,  Code: 0b000001,   Length: 6),
-            new(Value: 4,  Code: 0b0011,     Length: 4),
-            new(Value: 5,  Code: 0b010,      Length: 3),
-            new(Value: 6,  Code: 0b00011,    Length: 5),
-            new(Value: 7,  Code: 0b11,       Length: 2),
-            new(Value: 8,  Code: 0b011,      Length: 3),
-            new(Value: 9,  Code: 0b100,      Length: 3),
-            new(Value: 10, Code: 0b00001,    Length: 5),
-            new(Value: 11, Code: 0b101,      Length: 3),
-        ]),
-        // Code 2
-        new(
-        [
-            new(Value: 0,  Code: 0b11,       Length: 2),
-            new(Value: 1,  Code: 0b001,      Length: 3),
-            new(Value: 2,  Code: 0b0000000,  Length: 7),
-            new(Value: 3,  Code: 0b0000001,  Length: 7),
-            new(Value: 4,  Code: 0b00001,    Length: 5),
-            new(Value: 5,  Code: 0b010,      Length: 3),
-            new(Value: 6,  Code: 0b0000010,  Length: 7),
-            new(Value: 7,  Code: 0b011,      Length: 3),
-            new(Value: 8,  Code: 0b100,      Length: 3),
-            new(Value: 9,  Code: 0b101,      Length: 3),
-            new(Value: 10, Code: 0b0000011,  Length: 7),
-            new(Value: 11, Code: 0b0001,     Length: 4),
-        ]),
-        // Code 3
-        new(
-        [
-            new(Value: 0,  Code: 0b001,      Length: 3),
-            new(Value: 1,  Code: 0b11,       Length: 2),
-            new(Value: 2,  Code: 0b0000000,  Length: 7),
-            new(Value: 3,  Code: 0b00001,    Length: 5),
-            new(Value: 4,  Code: 0b00010,    Length: 5),
-            new(Value: 5,  Code: 0b010,      Length: 3),
-            new(Value: 6,  Code: 0b0000001,  Length: 7),
-            new(Value: 7,  Code: 0b011,      Length: 3),
-            new(Value: 8,  Code: 0b00011,    Length: 5),
-            new(Value: 9,  Code: 0b100,      Length: 3),
-            new(Value: 10, Code: 0b000001,   Length: 6),
-            new(Value: 11, Code: 0b101,      Length: 3),
-        ]),
-        // Code 4
-        new(
-        [
-            new(Value: 0,  Code: 0b010,      Length: 3),
-            new(Value: 1,  Code: 0b1,        Length: 1),
-            new(Value: 2,  Code: 0b0000001,  Length: 7),
-            new(Value: 3,  Code: 0b0001,     Length: 4),
-            new(Value: 4,  Code: 0b0000010,  Length: 7),
-            new(Value: 5,  Code: 0b011,      Length: 3),
-            new(Value: 6,  Code: 0b00000000, Length: 8),
-            new(Value: 7,  Code: 0b0010,     Length: 4),
-            new(Value: 8,  Code: 0b0000011,  Length: 7),
-            new(Value: 9,  Code: 0b0011,     Length: 4),
-            new(Value: 10, Code: 0b00000001, Length: 8),
-            new(Value: 11, Code: 0b00001,    Length: 5),
-        ]),
-    ];
+    // ---------------- alphabet 8 (2 tables defined; jxrlib always uses table 0) ----------------
+    public static readonly int[] Code8 =
+    {
+        8, 2,2, 1,3, 1,5, 1,4, 3,2, 2,3, 0,5, 3,3,
+        8, 1,3, 2,3, 1,4, 3,3, 4,3, 5,3, 0,4, 3,2,
+    };
+    public static readonly int[] Len8 = { 2,3,5,4,2,3,5,3,  3,3,4,3,3,3,4,2 };
+    public static readonly int[] Delta8 = { -1, 0, 1, 1, -1, 0, 1, 1 };
+    public static readonly short[][] Dec8 =
+    {
+        new short[] { 53,21,28,28,11,11,11,11,43,43,43,43,59,59,59,59, 2,2,2,2,2,2,2,2,34,34,34,34,34,34,34,34, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+        new short[] { 52,52,20,20,3,3,3,3,11,11,11,11,27,27,27,27, 35,35,35,35,43,43,43,43,58,58,58,58,58,58,58,58, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+    };
+
+    // ---------------- alphabet 9 (2 tables) ----------------
+    public static readonly int[] Code9 =
+    {
+        9, 2,3, 0,5, 2,4, 1,5, 2,5, 1,1, 3,3, 3,5, 3,4,
+        9, 1,1, 1,3, 2,3, 1,4, 1,6, 3,3, 1,5, 0,7, 1,7,
+    };
+    public static readonly int[] Len9 = { 3,5,4,5,5,1,3,5,4,  1,3,3,4,6,3,5,7,7 };
+    public static readonly int[] Delta9 = { 2, 2, 1, 1, -1, -2, -2, -2, -3 };
+    public static readonly short[][] Dec9 =
+    {
+        new short[] { 13,29,37,61,20,20,68,68,3,3,3,3,51,51,51,51, 41,41,41,41,41,41,41,41,41,41,41,41,41,41,41,41, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0 },
+        new short[] { -32736,53,28,28,11,11,11,11,19,19,19,19,43,43,43,43, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, -32734,4,7,8,0,0,0,0,0,0,0,0,0,0,0,0, 0,0 },
+    };
+
+    // ---------------- alphabet 12 (5 tables, dual-discriminant) ----------------
+    public static readonly int[] Code12 =
+    {
+        12, 1,5, 1,6, 0,7, 1,7, 4,5, 2,3, 5,5, 1,1, 6,5, 1,4, 7,5, 3,3,
+        12, 2,4, 2,5, 0,6, 1,6, 3,4, 2,3, 3,5, 3,2, 3,3, 4,3, 1,5, 5,3,
+        12, 3,2, 1,3, 0,7, 1,7, 1,5, 2,3, 2,7, 3,3, 4,3, 5,3, 3,7, 1,4,
+        12, 1,3, 3,2, 0,7, 1,5, 2,5, 2,3, 1,7, 3,3, 3,5, 4,3, 1,6, 5,3,
+        12, 2,3, 1,1, 1,7, 1,4, 2,7, 3,3, 0,8, 2,4, 3,7, 3,4, 1,8, 1,5,
+    };
+    public static readonly int[] Len12 =
+    {
+        5,6,7,7,5,3,5,1,5,4,5,3,
+        4,5,6,6,4,3,5,2,3,3,5,3,
+        2,3,7,7,5,3,7,3,3,3,7,4,
+        3,2,7,5,5,3,7,3,5,3,6,3,
+        3,1,7,4,7,3,8,4,7,4,8,5,
+    };
+    public static readonly int[] Delta12 =
+    {
+        1,1,1,1,1,0,0,-1,2,1,0,0,
+        2,2,-1,-1,-1,0,-2,-1,0,0,-2,-1,
+        -1,1,0,2,0,0,0,0,-2,0,1,1,
+        0,1,0,1,-2,0,-1,-1,-2,-1,-2,-2,
+    };
+    public static readonly short[][] Dec12 =
+    {
+        new short[] { -32736,5,76,76,37,53,69,85,43,43,43,43,91,91,91,91, 57,57,57,57,57,57,57,57,57,57,57,57,57,57,57,57, -32734,1,2,3,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0 },
+        new short[] { -32736,85,13,53,4,4,36,36,43,43,43,43,67,67,67,67, 75,75,75,75,91,91,91,91,58,58,58,58,58,58,58,58, 2,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0 },
+        new short[] { -32736,37,92,92,11,11,11,11,43,43,43,43,59,59,59,59, 67,67,67,67,75,75,75,75,2,2,2,2,2,2,2,2, -32734,-32732,2,3,6,10,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0 },
+        new short[] { -32736,29,37,69,3,3,3,3,43,43,43,43,59,59,59,59, 75,75,75,75,91,91,91,91,10,10,10,10,10,10,10,10, -32734,10,2,6,0,0,0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0 },
+        new short[] { -32736,93,28,28,60,60,76,76,3,3,3,3,43,43,43,43, 9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9, -32734,-32732,-32730,2,4,8,6,10,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0 },
+    };
+
+    /// <summary>Code table (flat, with markers) for an alphabet size.</summary>
+    public static int[] CodeTable(int nSym) => nSym switch
+    {
+        4 => Code4, 5 => Code5, 6 => Code6, 7 => Code7, 8 => Code8, 9 => Code9, 12 => Code12,
+        _ => throw new ArgumentOutOfRangeException(nameof(nSym)),
+    };
+
+    /// <summary>Per-symbol code lengths (g_Index*Table) for cross-checking.</summary>
+    public static int[] LengthTable(int nSym) => nSym switch
+    {
+        4 => Len4, 5 => Len5, 6 => Len6, 7 => Len7, 8 => Len8, 9 => Len9, 12 => Len12,
+        _ => throw new ArgumentOutOfRangeException(nameof(nSym)),
+    };
+
+    /// <summary>Decode lookup tables (one short[] per table index) for an alphabet size.</summary>
+    public static short[][] DecodeTables(int nSym) => nSym switch
+    {
+        4 => Dec4, 5 => Dec5, 6 => Dec6, 7 => Dec7, 8 => Dec8, 9 => Dec9, 12 => Dec12,
+        _ => throw new ArgumentOutOfRangeException(nameof(nSym)),
+    };
+
+    /// <summary>(code, length) for <paramref name="symbol"/> in table block <paramref name="tableIndex"/>.</summary>
+    public static (int Code, int Length) GetCode(int nSym, int tableIndex, int symbol)
+    {
+        var t = CodeTable(nSym);
+        int baseIdx = (nSym * 2 + 1) * tableIndex;
+        return (t[baseIdx + symbol * 2 + 1], t[baseIdx + symbol * 2 + 2]);
+    }
 }

@@ -1,109 +1,68 @@
 namespace SharpAstro.Jxr;
 
 /// <summary>
-/// Adaptive inverse-scanning tables for LP and HP coefficients — T.832 §8.11.
+/// The JPEG XR adaptive coefficient scan (jxrlib <c>CAdaptiveScan</c>). Each of
+/// the 16 slots pairs a running <see cref="Total"/> with the physical
+/// coefficient index <see cref="Scan"/>. As coefficients at a slot turn out
+/// nonzero, that slot's total is bumped and bubbled toward the front, so the
+/// scan order tracks the statistics of the band. Ported from the encode
+/// (<c>segenc.c AdaptiveScan</c>) / decode (<c>segdec.c</c>) inner loops.
 /// </summary>
-/// <remarks>
-/// Each band (LP, HP-horizontal, HP-vertical) maintains a permutation of
-/// the integers 1..15 that determines the order in which coefficients are
-/// written to / read from the bitstream. The permutation adapts based on
-/// observed coefficient activity: positions that hold non-zero coefficients
-/// more often migrate forward in the scan, putting the most-likely-significant
-/// coefficients first so RLE/EOB termination can fire sooner.
-///
-/// Both encoder and decoder maintain the same scan state, updated by the
-/// same rule — see <see cref="Step"/>. As long as both sides call Step in
-/// the same order with the same coefficient values, they stay in sync.
-///
-/// The HP-horizontal / HP-vertical distinction comes from the per-MB
-/// MBHPMode (computed by <see cref="HpPrediction.CalcMode"/>): mode 0
-/// (predict-from-left) uses the horizontal scan, mode 1 (predict-from-top)
-/// uses the vertical scan, mode 2 (no prediction) defaults to horizontal.
-/// </remarks>
-public sealed class AdaptiveScan
+internal sealed class AdaptiveScan
 {
-    // T.832 Table 107.
-    private static ReadOnlySpan<byte> ScanOrder0 =>
-        [0, 4, 1, 5, 8, 2, 9, 6, 12, 3, 10, 13, 7, 14, 11, 15];
-    private static ReadOnlySpan<byte> ScanOrder1 =>
-        [0, 1, 2, 5, 4, 3, 6, 9, 8, 7, 12, 15, 13, 10, 11, 14];
+    // common.h MAXTOTAL — pins slot 0 at the front so it never bubbles.
+    public const int MaxTotal = 32767;
 
-    // T.832 Table 108. Index 0 is unused; the band runs over i = 1..15.
-    private static ReadOnlySpan<byte> ScanTotalsInit =>
-        [0, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4];
+    /// <summary>Running nonzero counts (slot 0 pinned at <see cref="MaxTotal"/>).</summary>
+    public readonly int[] Total = new int[16];
 
-    private readonly byte[] _order = new byte[16];
-    private readonly byte[] _totals = new byte[16];
+    /// <summary>Physical coefficient index visited at each slot, in scan order.</summary>
+    public readonly int[] Scan = new int[16];
 
-    /// <summary>Create an LP-scan state initialised per T.832 8.11.2.</summary>
-    public static AdaptiveScan ForLp() => new(ScanOrder0);
+    /// <param name="initialScan">Initial scan order (e.g. the zigzag for the band); 16 entries.</param>
+    public AdaptiveScan(ReadOnlySpan<int> initialScan) => InitZigzag(initialScan);
 
     /// <summary>
-    /// Create an HP horizontal-scan state (used when MBHPMode = 0 or 2).
-    /// Initialised per T.832 8.11.3 first branch.
+    /// jxrlib <c>InitZigzagScan</c> + the <c>m_bResetRGITotals</c> ramp: restore the
+    /// scan permutation to <paramref name="order"/> and reset the totals. Applied at
+    /// each context reset (tile boundary) so a reused context starts clean.
     /// </summary>
-    public static AdaptiveScan ForHpHorizontal() => new(ScanOrder0);
-
-    /// <summary>
-    /// Create an HP vertical-scan state (used when MBHPMode = 1).
-    /// Initialised per T.832 8.11.3 second branch.
-    /// </summary>
-    public static AdaptiveScan ForHpVertical() => new(ScanOrder1);
-
-    private AdaptiveScan(ReadOnlySpan<byte> initialOrder)
+    public void InitZigzag(ReadOnlySpan<int> order)
     {
-        initialOrder.CopyTo(_order);
-        ScanTotalsInit.CopyTo(_totals);
+        order.Slice(0, 16).CopyTo(Scan);
+        Reset();
     }
 
     /// <summary>
-    /// Reset the totals (frequency counts) but preserve the current
-    /// permutation — T.832 8.11.4 / 8.11.5. Called at tile boundaries.
+    /// Reset the totals to the fixed ramp jxrlib applies every 16 MBs
+    /// (<c>m_bResetRGITotals</c>): slot 0 = <see cref="MaxTotal"/>, then
+    /// 32, 30, 28, … , 4 (iScale = 2, iWeight = 32). The scan order itself is
+    /// not reset — only the totals.
     /// </summary>
-    public void ResetTotals()
+    public void Reset()
     {
-        ScanTotalsInit.CopyTo(_totals);
-    }
-
-    /// <summary>
-    /// Look up the block position for parse-index <paramref name="i"/> (1..15).
-    /// Does not mutate state — use <see cref="Step"/> for the full
-    /// scan-and-update sequence.
-    /// </summary>
-    public int Position(int i) => _order[i];
-
-    /// <summary>
-    /// Single scan step — T.832 8.11.6 (LP) / 8.11.7 (HP). Returns the
-    /// block-position <c>k</c> corresponding to parse-index <c>i</c>, then
-    /// updates the totals/order so future calls may see a different
-    /// permutation.
-    /// </summary>
-    /// <param name="i">Parse-index (1..15). Caller iterates 1..15 over each block.</param>
-    /// <returns>The block position k = scanOrder[i] AT CALL TIME (before any swap).</returns>
-    public int Step(int i)
-    {
-        if (i < 1 || i > 15) throw new ArgumentOutOfRangeException(nameof(i));
-        var k = _order[i];
-        _totals[i]++;
-        if (i > 1 && _totals[i] > _totals[i - 1])
+        const int iScale = 2;
+        int iWeight = iScale * 16; // 32
+        Total[0] = MaxTotal;
+        for (var k = 1; k < 16; k++)
         {
-            (_totals[i], _totals[i - 1]) = (_totals[i - 1], _totals[i]);
-            (_order[i], _order[i - 1]) = (_order[i - 1], _order[i]);
+            Total[k] = iWeight;
+            iWeight -= iScale;
         }
-        return k;
     }
 
-    /// <summary>Copy the current scan order into <paramref name="dest"/> for inspection or persistence.</summary>
-    public void CopyOrderTo(Span<byte> dest)
+    /// <summary>
+    /// Record that the coefficient at scan slot <paramref name="k"/> was significant:
+    /// bump its total and, if it now exceeds the previous slot, swap the two slots
+    /// (a single adjacent bubble — never a full sort; slot 0 is pinned).
+    /// </summary>
+    public void Visit(int k)
     {
-        if (dest.Length < 16) throw new ArgumentException("Destination too small", nameof(dest));
-        ((ReadOnlySpan<byte>)_order).CopyTo(dest);
-    }
-
-    /// <summary>Copy the current totals into <paramref name="dest"/>.</summary>
-    public void CopyTotalsTo(Span<byte> dest)
-    {
-        if (dest.Length < 16) throw new ArgumentException("Destination too small", nameof(dest));
-        ((ReadOnlySpan<byte>)_totals).CopyTo(dest);
+        Total[k]++;
+        if (k > 0 && Total[k] > Total[k - 1])
+        {
+            (Total[k], Total[k - 1]) = (Total[k - 1], Total[k]);
+            (Scan[k], Scan[k - 1]) = (Scan[k - 1], Scan[k]);
+        }
     }
 }

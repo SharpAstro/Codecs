@@ -200,7 +200,11 @@ public static class PngWriter
         {
             Span<byte> buf = stackalloc byte[24];
             options.Mdcv.Write(buf);
-            WriteChunk(ms, "mDCv"u8, buf);
+            // Canonical PNG-3 spec chunk type is "mDCV" (uppercase V = unsafe-to-copy
+            // ancillary chunk; mastering display metadata becomes invalid if pixel
+            // data is recoloured, per PNG chunk-naming convention). Pre-final drafts
+            // used "mDCv" -- the reader accepts both.
+            WriteChunk(ms, "mDCV"u8, buf);
         }
         if (options.Clli is not null)
         {

@@ -44,8 +44,8 @@ public sealed record JxrTileLayout(int[] TileWidthInMb, int[] TileHeightInMb)
     }
 
     /// <summary>
-    /// Build the MB-edge masks that <see cref="DcPrediction.Encode"/> /
-    /// <see cref="DcPrediction.Decode"/> use to suppress prediction across tile
+    /// Build the MB-edge masks that the DC-prediction encode/decode steps use to
+    /// suppress prediction across tile
     /// boundaries. <paramref name="leftEdgeMask"/>[x, y] is true iff MB
     /// column <c>x</c> is the leftmost in some tile; similar for top.
     /// </summary>

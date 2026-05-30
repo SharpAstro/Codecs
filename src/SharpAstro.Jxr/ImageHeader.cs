@@ -14,7 +14,12 @@ namespace SharpAstro.Jxr;
 ///   <item><c>INDEX_TABLE_PRESENT_FLAG = false</c> (spatial mode only)</item>
 /// </list>
 /// Those features extend the syntax with additional fields and add MB-grid
-/// bookkeeping that lands in a follow-on commit.
+/// bookkeeping that lands in a follow-on commit. Note that <c>WINDOWING_FLAG</c>
+/// is unrelated to arbitrary (non-16-aligned) image dimensions, which <i>are</i>
+/// supported: jxrlib only emits the windowing margins (<c>cExtraPixels*</c>) for
+/// compressed-domain transcoding, never for a normal sub-MB encode — WIDTH/HEIGHT
+/// carry the real size and the partial edge macroblocks are padded then cropped
+/// (see <c>JxrCodestream.RequirePositiveDims</c>).
 /// </remarks>
 public sealed class ImageHeader
 {

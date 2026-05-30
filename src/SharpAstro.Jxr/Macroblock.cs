@@ -1,43 +1,35 @@
 namespace SharpAstro.Jxr;
 
 /// <summary>
-/// Per-MB payload passed between the transform/prediction pipeline and the
-/// codestream orchestrator <see cref="TileSpatial"/>. Holds the
-/// post-prediction coefficients for one macroblock; <em>not</em> raw pixel
-/// data — colour conversion, FCT/POT, and DC/LP/HP prediction must have
-/// already produced these values upstream.
+/// One macroblock's coefficient state — the C# analogue of jxrlib's per-MB slice
+/// of <c>CWMImageStrCodec</c> (<c>MBInfo</c> + <c>pPlane[]</c>). For each channel:
+/// <see cref="BlockDc"/>[ch][0] is the MB DC, [1..15] the second-stage lowpass (AD)
+/// coefficients, and <see cref="Plane"/>[ch] is the 256-int highpass coefficient
+/// plane addressed via <see cref="MacroblockLayout.BlkOffset"/>. <see cref="Cbp"/> /
+/// <see cref="DiffCbp"/> hold the HP coded-block pattern and its prediction residual.
 /// </summary>
-/// <remarks>
-/// <para>Storage layout (all arrays are component-major, then position):</para>
-/// <list type="bullet">
-///   <item><see cref="Dc"/>: <c>numComponents</c> super-DC values.</item>
-///   <item><see cref="Lp"/>: <c>numComponents × 16</c> LP coefficients (position 0 is
-///         the super-DC slot and ignored; positions 1..15 carry the 15 LP coefficients).
-///         Used only when BANDS_PRESENT is not DcOnly.</item>
-///   <item><see cref="Hp"/>: <c>numComponents × 256</c> HP coefficients (16 blocks of
-///         16 coefficients each per component). Used only when HP band is present.</item>
-///   <item><see cref="MbHpMode"/>: 0=horizontal-dominant, 1=vertical-dominant adaptive
-///         scan (T.832 §8.7.18). Computed by upstream block analysis.</item>
-/// </list>
-/// </remarks>
-public sealed class Macroblock
+internal sealed class Macroblock
 {
-    public int[] Dc = [];
-    public int[] Lp = [];
-    public int[] Hp = [];
-    public int MbHpMode;
+    public readonly int Channels;
+    public readonly int[][] Plane;    // [ch][256] highpass coefficients
+    public readonly int[][] BlockDc;  // [ch][16] DC (0) + lowpass AD (1..15)
+    public readonly int[] Cbp;        // [ch] highpass coded-block pattern (16 bits)
+    public readonly int[] DiffCbp;    // [ch] CBP prediction residual (transmitted)
 
-    /// <summary>
-    /// LP_QP_INDEX for this MB (T.832 §8.7.10.10). Selects a row of the LP QP
-    /// table (either the per-tile <see cref="TileHeaderLowpass.LpQp"/> or the
-    /// per-tile DC table when USE_DC_QP_FLAG is true). Zero when NumLPQPs == 1
-    /// (no QP_INDEX bit emitted in the codestream).
-    /// </summary>
-    public int LpQpIndex;
+    /// <summary>0 selects the horizontal HP scan, 1 the vertical (jxrlib <c>iOrientation</c>).</summary>
+    public int Orientation;
 
-    /// <summary>
-    /// HP_QP_INDEX for this MB. Zero when NumHPQPs == 1 or when USE_LP_QP_FLAG
-    /// is true (HP inherits LP's index).
-    /// </summary>
-    public int HpQpIndex;
+    public Macroblock(int channels)
+    {
+        Channels = channels;
+        Plane = new int[channels][];
+        BlockDc = new int[channels][];
+        Cbp = new int[channels];
+        DiffCbp = new int[channels];
+        for (var c = 0; c < channels; c++)
+        {
+            Plane[c] = new int[MacroblockLayout.PlaneSize];
+            BlockDc[c] = new int[16];
+        }
+    }
 }
