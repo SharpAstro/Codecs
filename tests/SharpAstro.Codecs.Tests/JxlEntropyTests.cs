@@ -63,6 +63,86 @@ public sealed class JxlEntropyTests
         }
     }
 
+    [Fact]
+    public void PrefixCode_SimpleTrees_RoundTrip()
+    {
+        // The four "simple" prefix-tree shapes (ISO §C.2.4): nsym 1..4 with fixed length sets.
+        // Exercises the toplevel-table build + read_symbol for code lengths up to 3. The complex
+        // form and the nested second-level table (codes longer than 10 bits) are validated
+        // end-to-end against real libjxl bytes at Rung 4.
+        uint alphabet = 32;
+        (uint[] syms, byte[] lens)[] trees =
+        [
+            ([7], [0]),                         // nsym=1: single 0-bit symbol
+            ([3, 20], [1, 1]),                  // nsym=2: two length-1 codes
+            ([1, 9, 30], [1, 2, 2]),            // nsym=3
+            ([2, 5, 11, 19], [1, 2, 3, 3]),     // nsym=4, tree_selector = true
+            ([4, 8, 12, 16], [2, 2, 2, 2]),     // nsym=4, tree_selector = false
+        ];
+
+        foreach ((uint[] syms, byte[] lens) in trees)
+        {
+            var bw = new JxlBitWriter();
+            WriteSimpleHeader(bw, alphabet, syms, lens);
+
+            // Encode a stream cycling through the alphabet's symbols.
+            var codeLengths = new byte[alphabet];
+            for (int i = 0; i < syms.Length; i++)
+                codeLengths[syms[i]] = lens[i];
+            uint[] codes = CanonicalCodes(codeLengths);
+
+            uint[] stream = [.. Enumerable.Range(0, 25).Select(i => syms[i % syms.Length])];
+            foreach (uint s in stream)
+                bw.WriteBits(JxlPrefixCode.ReverseLowBits(codes[s], codeLengths[s]), codeLengths[s]);
+
+            var br = new JxlBitReader(bw.ToArray());
+            JxlPrefixCode code = JxlPrefixCode.Parse(ref br, alphabet);
+            foreach (uint expected in stream)
+                code.ReadSymbol(ref br).ShouldBe(expected, $"nsym={syms.Length}");
+
+            if (syms.Length == 1)
+                code.SingleSymbol().ShouldBe(syms[0]);
+        }
+    }
+
+    private static void WriteSimpleHeader(JxlBitWriter bw, uint alphabet, uint[] syms, byte[] lens)
+    {
+        int alphabetBits = JxlIntegerConfig.AddLog2Ceil(alphabet - 1);
+        bw.WriteBits(1, 2);                       // hskip = 1 -> simple
+        bw.WriteBits((uint)syms.Length - 1, 2);   // nsym - 1
+        foreach (uint s in syms)
+            bw.WriteBits(s, alphabetBits);
+        if (syms.Length == 4)
+            bw.WriteBit(lens is [1, 2, 3, 3]);    // tree_selector
+    }
+
+    // Deflate-style canonical code assignment: shortest lengths first, increasing symbol order.
+    private static uint[] CanonicalCodes(byte[] codeLengths)
+    {
+        int maxLen = codeLengths.Length == 0 ? 0 : codeLengths.Max();
+        var blCount = new int[maxLen + 1];
+        foreach (byte len in codeLengths)
+            if (len > 0)
+                blCount[len]++;
+
+        var nextCode = new uint[maxLen + 2];
+        uint code = 0;
+        for (int len = 1; len <= maxLen; len++)
+        {
+            code = (code + (uint)blCount[len - 1]) << 1;
+            nextCode[len] = code;
+        }
+
+        var codes = new uint[codeLengths.Length];
+        for (int sym = 0; sym < codeLengths.Length; sym++)
+        {
+            int len = codeLengths[sym];
+            if (len > 0)
+                codes[sym] = nextCode[len]++;
+        }
+        return codes;
+    }
+
     // A representative spread of valid (split_exponent, msb, lsb) triples for the alphabet size.
     private static IEnumerable<JxlIntegerConfig> ConfigsFor(int logAlphabetSize)
     {
