@@ -47,6 +47,33 @@ internal ref struct JxlBitReader
 
     public bool ReadBit() => ReadBits(1) != 0;
 
+    /// <summary>
+    /// Peeks the next <paramref name="count"/> bits (0..32) without consuming them; bits past
+    /// end-of-stream read as zero. Pairs with <see cref="ConsumeBits"/> for entropy decoding,
+    /// where the number of bits inspected and the number actually consumed differ.
+    /// </summary>
+    public uint PeekBits(int count)
+    {
+        if (count == 0)
+            return 0;
+        if (_bitCount < count)
+            Refill();
+        return (uint)(_buffer & ((1UL << count) - 1));
+    }
+
+    /// <summary>Advances past <paramref name="count"/> bits previously inspected via <see cref="PeekBits"/>.</summary>
+    public void ConsumeBits(int count)
+    {
+        if (count == 0)
+            return;
+        if (_bitCount < count)
+            Refill();
+        int avail = _bitCount < count ? _bitCount : count; // clamp at EOF so _bitCount never goes negative
+        _buffer >>= avail;
+        _bitCount -= avail;
+        _bitsRead += count;
+    }
+
     /// <summary>Total number of bits consumed so far.</summary>
     public long BitsRead => _bitsRead;
 
