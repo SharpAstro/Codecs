@@ -28,6 +28,7 @@
     <ProjectReference Include="..\..\src\SharpAstro.Jpeg.IccInjector\SharpAstro.Jpeg.IccInjector.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jxr\SharpAstro.Jxr.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Exr\SharpAstro.Exr.csproj" />
+    <ProjectReference Include="..\..\src\SharpAstro.Jxl\SharpAstro.Jxl.csproj" />
   </ItemGroup>
 
   <ItemGroup>
