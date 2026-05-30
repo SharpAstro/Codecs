@@ -20,6 +20,9 @@ public sealed class JxrBd16FTests
     [InlineData(64, 48, "hdr")]
     [InlineData(80, 80, "gradient")]
     [InlineData(272, 16, "gradient")]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient")]
+    [InlineData(33, 40, "hdr")]
     public void EncodeGrayF16_DecodeGrayF16_RoundTripsLossless(int w, int h, string kind)
     {
         var y = GrayPattern(w, h, kind);
@@ -51,6 +54,9 @@ public sealed class JxrBd16FTests
     [InlineData(48, 32, "gradient")]
     [InlineData(64, 48, "hdr")]
     [InlineData(80, 80, "gradient")]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient")]
+    [InlineData(33, 40, "hdr")]
     public void EncodeRgbF16_DecodeRgbF16_RoundTripsLossless(int w, int h, string kind)
     {
         var rgb = RgbPattern(w, h, kind);

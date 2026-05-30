@@ -22,6 +22,9 @@ public sealed class JxrBd32FTests
     [InlineData(80, 80, "gradient", 13)]
     [InlineData(64, 48, "hdr", 13)]
     [InlineData(272, 16, "gradient", 8)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient", 8)]
+    [InlineData(33, 40, "hdr", 8)]
     public void EncodeGrayF32_DecodeGrayF32_RoundTripsToRequantized(int w, int h, string kind, int lenMantissa)
     {
         const int expBias = 0;

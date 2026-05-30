@@ -24,6 +24,10 @@ public sealed class JxrGrayscaleTests
     [InlineData(96, 64, "random")]
     [InlineData(80, 80, "gradient")]
     [InlineData(272, 16, "gradient")] // crosses a 16-MB group boundary
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient")]
+    [InlineData(33, 40, "random")]
+    [InlineData(100, 60, "gradient")]
     public void EncodeGray8_DecodeGray8_RoundTripsLossless(int w, int h, string kind)
     {
         var y = Pattern(w, h, kind);

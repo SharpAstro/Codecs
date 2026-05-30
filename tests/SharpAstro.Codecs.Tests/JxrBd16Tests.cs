@@ -21,6 +21,9 @@ public sealed class JxrBd16Tests
     [InlineData(64, 48, "random")]
     [InlineData(80, 80, "gradient")]
     [InlineData(272, 16, "gradient")]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient")]
+    [InlineData(33, 40, "random")]
     public void EncodeGray16_DecodeGray16_RoundTripsLossless(int w, int h, string kind)
     {
         var y = Pattern(w, h, kind, 7);
@@ -52,6 +55,9 @@ public sealed class JxrBd16Tests
     [InlineData(48, 32, "gradient")]
     [InlineData(64, 48, "random")]
     [InlineData(80, 80, "gradient")]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient")]
+    [InlineData(33, 40, "random")]
     public void EncodeRgb48_DecodeRgb48_RoundTripsLossless(int w, int h, string kind)
     {
         var r = Pattern(w, h, kind, 1);

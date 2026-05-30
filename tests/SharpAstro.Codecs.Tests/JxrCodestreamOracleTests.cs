@@ -34,6 +34,10 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(96, 64, "random")]
     [InlineData(80, 80, "gradient")]
     [InlineData(272, 16, "gradient")] // spans a 16-MB group boundary (mbX wraps 0..16,17)
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient")]
+    [InlineData(33, 40, "random")]
+    [InlineData(100, 60, "gradient")]
     public void OurEncode_DecodedByJxrDecApp_IsLossless(int w, int h, string kind)
     {
         var decApp = FindOracle("JxrDecApp.exe");
@@ -146,6 +150,8 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(64, 48, "gradient", 2)]
     [InlineData(64, 48, "random", 2)]
     [InlineData(80, 80, "gradient", 2)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient", 1)]
     public void JxrlibEncode_Overlap_DecodedByUs_IsLossless(int w, int h, string kind, int overlap)
     {
         var encApp = FindOracle("JxrEncApp.exe");
@@ -199,6 +205,10 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(48, 32, "gradient", 2)]
     [InlineData(64, 48, "random", 2)]
     [InlineData(80, 80, "gradient", 2)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient", 1)]
+    [InlineData(33, 40, "random", 1)]
+    [InlineData(100, 60, "gradient", 2)]
     public void OurEncode_Overlap_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
         var encApp = FindOracle("JxrEncApp.exe");

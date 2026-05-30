@@ -31,6 +31,8 @@ public sealed class JxrBd32FOracleTests
     [InlineData(64, 48, "hdr", 13, 0)]
     [InlineData(64, 48, "hdr", 8, 1)]       // overlap OL_ONE
     [InlineData(48, 32, "hdr", 10, 2)]      // overlap OL_TWO
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(33, 40, "hdr", 8, 0)]
     public void OurEncodeGrayF32_DecodedByJxrDecApp_IsLossless(int w, int h, string kind, int lenMantissa, int overlap)
     {
         var decApp = FindOracle("JxrDecApp.exe");

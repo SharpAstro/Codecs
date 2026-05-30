@@ -23,6 +23,9 @@ public sealed class JxrHdrHarnessOracleTests
     [InlineData(48, 32, "gradient", 0)]
     [InlineData(64, 48, "random", 0)]
     [InlineData(80, 80, "gradient", 1)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(33, 40, "random", 0)]
+    [InlineData(17, 13, "gradient", 1)]
     public void Gray16_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
         var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
@@ -35,6 +38,8 @@ public sealed class JxrHdrHarnessOracleTests
     [Theory]
     [InlineData(48, 32, "gradient", 0)]
     [InlineData(64, 48, "random", 1)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(33, 40, "random", 0)]
     public void Gray16_JxrlibEncode_DecodedByUs_IsLossless(int w, int h, string kind, int overlap)
     {
         var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
@@ -47,6 +52,9 @@ public sealed class JxrHdrHarnessOracleTests
     [Theory]
     [InlineData(48, 32, "gradient", 0)]
     [InlineData(64, 48, "random", 1)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "random", 0)]
+    [InlineData(33, 40, "gradient", 1)]
     public void Rgb48_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
         var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
@@ -61,6 +69,9 @@ public sealed class JxrHdrHarnessOracleTests
     [Theory]
     [InlineData(48, 32, "gradient", 0)]
     [InlineData(64, 48, "hdr", 1)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient", 0)]
+    [InlineData(33, 40, "hdr", 1)]
     public void GrayF32_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
         var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
@@ -76,6 +87,9 @@ public sealed class JxrHdrHarnessOracleTests
     [Theory]
     [InlineData(48, 32, "gradient", 0)]
     [InlineData(64, 48, "hdr", 1)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient", 0)]
+    [InlineData(33, 40, "hdr", 1)]
     public void GrayF16_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
         var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
@@ -88,6 +102,9 @@ public sealed class JxrHdrHarnessOracleTests
     [Theory]
     [InlineData(48, 32, "gradient", 0)]
     [InlineData(64, 48, "hdr", 1)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient", 0)]
+    [InlineData(33, 40, "hdr", 1)]
     public void RgbF16_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
         var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }

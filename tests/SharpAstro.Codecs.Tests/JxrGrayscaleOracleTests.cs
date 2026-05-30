@@ -32,6 +32,15 @@ public sealed class JxrGrayscaleOracleTests
     [InlineData(80, 80, "gradient", 1)]
     [InlineData(48, 32, "gradient", 2)]
     [InlineData(80, 80, "gradient", 2)]
+    // sub-MB / non-16-aligned dimensions: partial right/bottom macroblocks edge-replicated.
+    [InlineData(17, 13, "gradient", 0)]
+    [InlineData(33, 40, "random", 0)]
+    [InlineData(100, 60, "gradient", 0)]
+    [InlineData(17, 13, "gradient", 1)]
+    [InlineData(33, 40, "random", 1)]
+    [InlineData(100, 60, "gradient", 2)]
+    [InlineData(1, 1, "flat", 0)]
+    [InlineData(7, 1, "gradient", 0)]
     public void OurEncodeGray_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
         var encApp = FindOracle("JxrEncApp.exe");
@@ -73,6 +82,8 @@ public sealed class JxrGrayscaleOracleTests
     [InlineData(80, 80, "gradient", 1)]
     [InlineData(64, 48, "random", 1)]
     [InlineData(48, 32, "gradient", 2)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(33, 40, "random", 0)]
     public void JxrlibEncodeGray_DecodedByUs_IsLossless(int w, int h, string kind, int overlap)
     {
         var encApp = FindOracle("JxrEncApp.exe");

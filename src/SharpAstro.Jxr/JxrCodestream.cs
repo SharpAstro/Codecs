@@ -32,14 +32,15 @@ internal static class JxrCodestream
     /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> BD8 RGB image
     /// (each channel <c>width*height</c> samples, raster order) into a JXR codestream.
-    /// Dimensions must be multiples of 16. QP indices are 0 for lossless.
+    /// Arbitrary dimensions are allowed (the partial right/bottom macroblocks are edge-
+    /// replicated; see <see cref="RequirePositiveDims"/>). QP indices are 0 for lossless.
     /// </summary>
     public static byte[] Encode(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
                                 int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
                                 JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8)
     {
-        RequireMbAligned(width, height);
-        int mbCols = width / 16, mbRows = height / 16;
+        RequirePositiveDims(width, height);
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int bias = LumaBias(bd);
@@ -58,7 +59,7 @@ internal static class JxrCodestream
         for (var mbR = 0; mbR < mbRows; mbR++)
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
-                ExtractMb(r, g, b, width, mbR, mbC, mr, mg, mb);
+                ExtractMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
                 SignalTransform.LoadColor(mr, mg, mb, planes[0], planes[1], planes[2],
                                           OverlapTransform.MbBase(mbCols, mbR, mbC), bias);
             }
@@ -89,14 +90,14 @@ internal static class JxrCodestream
     /// Encode a <paramref name="width"/>×<paramref name="height"/> BD8 grayscale image
     /// (<c>width*height</c> samples, raster order, values 0..255) into a single-tile
     /// SPATIAL <b>Y-only</b> JXR codestream. No colour transform — the single channel is
-    /// the Y plane. Dimensions must be multiples of 16; QP indices are 0 for lossless.
+    /// the Y plane. Arbitrary dimensions are allowed (partial MBs edge-replicated); QP indices are 0 for lossless.
     /// </summary>
     public static byte[] EncodeGray(ReadOnlySpan<int> y, int width, int height,
                                     int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
                                     JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8)
     {
-        RequireMbAligned(width, height);
-        int mbCols = width / 16, mbRows = height / 16;
+        RequirePositiveDims(width, height);
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int bias = LumaBias(bd);
@@ -112,7 +113,7 @@ internal static class JxrCodestream
         for (var mbR = 0; mbR < mbRows; mbR++)
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
-                ExtractMbGray(y, width, mbR, mbC, my);
+                ExtractMbGray(y, width, height, mbR, mbC, my);
                 SignalTransform.LoadGray(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC), bias);
             }
 
@@ -141,15 +142,15 @@ internal static class JxrCodestream
     /// (<c>width*height</c> floats, raster order, values verbatim — NOT normalized) into a single-
     /// tile SPATIAL Y-only JXR codestream. <paramref name="lenMantissa"/> (mantissa bits, jxrlib
     /// default 13) and <paramref name="expBias"/> (exponent bias, jxrlib default 0) parameterize
-    /// the float↔pixel mapping and are written to the plane header. Dimensions must be multiples
-    /// of 16; QP indices are 0 for lossless (the codec is lossless on the float-pixel values).
+    /// the float↔pixel mapping and are written to the plane header. Arbitrary dimensions are
+    /// allowed (partial MBs edge-replicated); QP indices are 0 for lossless (the codec is lossless on the float-pixel values).
     /// </summary>
     public static byte[] EncodeGrayF32(ReadOnlySpan<float> y, int width, int height,
                                        int lenMantissa = 13, int expBias = 4,
                                        int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
     {
-        RequireMbAligned(width, height);
-        int mbCols = width / 16, mbRows = height / 16;
+        RequirePositiveDims(width, height);
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
 
@@ -164,7 +165,7 @@ internal static class JxrCodestream
         for (var mbR = 0; mbR < mbRows; mbR++)
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
-                ExtractMbGrayF(y, width, mbR, mbC, my);
+                ExtractMbGrayF(y, width, height, mbR, mbC, my);
                 SignalTransform.LoadGrayFloat(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC), expBias, lenMantissa);
             }
 
@@ -209,7 +210,7 @@ internal static class JxrCodestream
         int overlap = ih.OverlapMode;
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
-        RequireMbAligned(width, height);
+        RequirePositiveDims(width, height);
         var bd = ih.OutputBitDepth;
         int bias = LumaBias(bd), max = SampleMax(bd);
         var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, bd);
@@ -217,7 +218,7 @@ internal static class JxrCodestream
         ReadPacketHeader(ref reader);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
-        int mbCols = width / 16, mbRows = height / 16;
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         var (r, g, b) = (new int[width * height], new int[width * height], new int[width * height]);
 
         // Per-MB entropy decode + dequantize into the whole-image YUV planes, then
@@ -247,7 +248,7 @@ internal static class JxrCodestream
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb, bias, max);
-                StoreMb(r, g, b, width, mbR, mbC, mr, mg, mb);
+                StoreMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
             }
         return (width, height, r, g, b);
     }
@@ -269,7 +270,7 @@ internal static class JxrCodestream
         int overlap = ih.OverlapMode;
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
-        RequireMbAligned(width, height);
+        RequirePositiveDims(width, height);
         var bd = ih.OutputBitDepth;
         int bias = LumaBias(bd), max = SampleMax(bd);
         var (qpDc, qpLp, qpHp, scaled, _, _) = ReadPlaneHeaderGray(ref reader, bd);
@@ -277,7 +278,7 @@ internal static class JxrCodestream
         ReadPacketHeader(ref reader);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
-        int mbCols = width / 16, mbRows = height / 16;
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         var y = new int[width * height];
 
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
@@ -303,7 +304,7 @@ internal static class JxrCodestream
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 SignalTransform.StoreGray(planes[0], baseOff, my, bias, max);
-                StoreMbGray(y, width, mbR, mbC, my);
+                StoreMbGray(y, width, height, mbR, mbC, my);
             }
         return (width, height, y);
     }
@@ -326,13 +327,13 @@ internal static class JxrCodestream
         int overlap = ih.OverlapMode;
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
-        RequireMbAligned(width, height);
+        RequirePositiveDims(width, height);
         var (qpDc, qpLp, qpHp, scaled, lenMantissa, expBias) = ReadPlaneHeaderGray(ref reader, ih.OutputBitDepth);
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
-        int mbCols = width / 16, mbRows = height / 16;
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         var y = new float[width * height];
 
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
@@ -358,7 +359,7 @@ internal static class JxrCodestream
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 SignalTransform.StoreGrayFloat(planes[0], baseOff, my, expBias, lenMantissa);
-                StoreMbGrayF(y, width, mbR, mbC, my);
+                StoreMbGrayF(y, width, height, mbR, mbC, my);
             }
         return (width, height, y);
     }
@@ -367,13 +368,13 @@ internal static class JxrCodestream
     /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16F</b> half-float grayscale
     /// image into a single-tile SPATIAL Y-only JXR codestream. The half is kept as its raw
     /// sign-magnitude bit pattern (no bias, no float params in the header), so the round-trip is
-    /// bit-exact. Dimensions must be multiples of 16; QP indices are 0 for lossless.
+    /// bit-exact. Arbitrary dimensions are allowed (partial MBs edge-replicated); QP indices are 0 for lossless.
     /// </summary>
     public static byte[] EncodeGrayHalf(ReadOnlySpan<Half> y, int width, int height,
                                         int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
     {
-        RequireMbAligned(width, height);
-        int mbCols = width / 16, mbRows = height / 16;
+        RequirePositiveDims(width, height);
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
 
@@ -388,7 +389,7 @@ internal static class JxrCodestream
         for (var mbR = 0; mbR < mbRows; mbR++)
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
-                ExtractMb1(y, width, mbR, mbC, my);
+                ExtractMb1(y, width, height, mbR, mbC, my);
                 SignalTransform.LoadGrayHalf(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC));
             }
 
@@ -426,13 +427,13 @@ internal static class JxrCodestream
         int overlap = ih.OverlapMode;
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
-        RequireMbAligned(width, height);
+        RequirePositiveDims(width, height);
         var (qpDc, qpLp, qpHp, scaled, _, _) = ReadPlaneHeaderGray(ref reader, ih.OutputBitDepth);
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
-        int mbCols = width / 16, mbRows = height / 16;
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         var y = new Half[width * height];
 
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
@@ -458,7 +459,7 @@ internal static class JxrCodestream
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 SignalTransform.StoreGrayHalf(planes[0], baseOff, my);
-                StoreMb1(y, width, mbR, mbC, my);
+                StoreMb1(y, width, height, mbR, mbC, my);
             }
         return (width, height, y);
     }
@@ -466,13 +467,13 @@ internal static class JxrCodestream
     /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16F</b> half-float RGB image
     /// (three channels) into a single-tile SPATIAL YUV444 JXR codestream — YCoCg-R on the raw half
-    /// magnitudes, bit-exact round-trip. Dimensions must be multiples of 16; QP indices 0 for lossless.
+    /// magnitudes, bit-exact round-trip. Arbitrary dimensions are allowed (partial MBs edge-replicated); QP indices 0 for lossless.
     /// </summary>
     public static byte[] EncodeRgbHalf(ReadOnlySpan<Half> r, ReadOnlySpan<Half> g, ReadOnlySpan<Half> b,
                                        int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
     {
-        RequireMbAligned(width, height);
-        int mbCols = width / 16, mbRows = height / 16;
+        RequirePositiveDims(width, height);
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
 
@@ -487,9 +488,9 @@ internal static class JxrCodestream
         for (var mbR = 0; mbR < mbRows; mbR++)
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
-                ExtractMb1(r, width, mbR, mbC, mr);
-                ExtractMb1(g, width, mbR, mbC, mg);
-                ExtractMb1(b, width, mbR, mbC, mb);
+                ExtractMb1(r, width, height, mbR, mbC, mr);
+                ExtractMb1(g, width, height, mbR, mbC, mg);
+                ExtractMb1(b, width, height, mbR, mbC, mb);
                 SignalTransform.LoadColorHalf(mr, mg, mb, planes[0], planes[1], planes[2],
                                               OverlapTransform.MbBase(mbCols, mbR, mbC));
             }
@@ -529,13 +530,13 @@ internal static class JxrCodestream
         int overlap = ih.OverlapMode;
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
-        RequireMbAligned(width, height);
+        RequirePositiveDims(width, height);
         var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, ih.OutputBitDepth);
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
-        int mbCols = width / 16, mbRows = height / 16;
+        int mbCols = MbCount(width), mbRows = MbCount(height);
         var (r, g, b) = (new Half[width * height], new Half[width * height], new Half[width * height]);
 
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
@@ -562,9 +563,9 @@ internal static class JxrCodestream
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 SignalTransform.StoreColorHalf(planes[0], planes[1], planes[2], baseOff, mr, mg, mb);
-                StoreMb1(r, width, mbR, mbC, mr);
-                StoreMb1(g, width, mbR, mbC, mg);
-                StoreMb1(b, width, mbR, mbC, mb);
+                StoreMb1(r, width, height, mbR, mbC, mr);
+                StoreMb1(g, width, height, mbR, mbC, mg);
+                StoreMb1(b, width, height, mbR, mbC, mb);
             }
         return (width, height, r, g, b);
     }
@@ -836,108 +837,145 @@ internal static class JxrCodestream
         if (slack > 0) r.SkipBits(slack);
     }
 
-    private static void RequireMbAligned(int width, int height)
+    // jxrlib supports arbitrary dimensions: WIDTH_MINUS1 / HEIGHT_MINUS1 carry the real
+    // (unpadded) size, the coded grid is ceil(dim/16) macroblocks, the encoder edge-
+    // replicates the partial right/bottom macroblocks (strenc.c padHorizontally replicates
+    // the last column; inputMBRow replicates the last row by not advancing the source past
+    // it), and the decoder crops the grid back to the real size on output (strdec.c
+    // outputNChannel loops iColumn<cWidth / iRow<cHeight). There is NO WINDOWING_FLAG — the
+    // flag (cExtraPixels*) is only emitted for compressed-domain transcoding (bTranscode),
+    // which this codec never does. So sub-MB images are a pad-then-crop, not a windowed crop.
+    private static void RequirePositiveDims(int width, int height)
     {
-        if (width <= 0 || height <= 0 || (width & 15) != 0 || (height & 15) != 0)
-            throw new ArgumentException("JxrCodestream requires width and height that are positive multiples of 16.");
+        if (width <= 0 || height <= 0)
+            throw new ArgumentException("JxrCodestream requires positive width and height.");
     }
 
-    private static void ExtractMb(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b, int width,
+    // Number of macroblocks spanning a dimension: ceil(dim / 16).
+    private static int MbCount(int dim) => (dim + 15) / 16;
+
+    private static void ExtractMb(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b, int width, int height,
                                   int mbR, int mbC, int[] mr, int[] mg, int[] mb)
     {
         for (var row = 0; row < 16; row++)
         {
-            int src = (mbR * 16 + row) * width + mbC * 16;
+            int sy = Math.Min(mbR * 16 + row, height - 1); // edge-replicate the last row past the bottom
+            int rowBase = sy * width;
             int dst = row * 16;
             for (var col = 0; col < 16; col++)
             {
-                mr[dst + col] = r[src + col];
-                mg[dst + col] = g[src + col];
-                mb[dst + col] = b[src + col];
+                int sx = Math.Min(mbC * 16 + col, width - 1); // edge-replicate the last column past the right
+                mr[dst + col] = r[rowBase + sx];
+                mg[dst + col] = g[rowBase + sx];
+                mb[dst + col] = b[rowBase + sx];
             }
         }
     }
 
-    private static void StoreMb(Span<int> r, Span<int> g, Span<int> b, int width,
+    private static void StoreMb(Span<int> r, Span<int> g, Span<int> b, int width, int height,
                                 int mbR, int mbC, int[] mr, int[] mg, int[] mb)
     {
         for (var row = 0; row < 16; row++)
         {
-            int dst = (mbR * 16 + row) * width + mbC * 16;
+            int dy = mbR * 16 + row;
+            if (dy >= height) break;             // drop the padded rows below the image
+            int rowBase = dy * width;
             int src = row * 16;
             for (var col = 0; col < 16; col++)
             {
-                r[dst + col] = mr[src + col];
-                g[dst + col] = mg[src + col];
-                b[dst + col] = mb[src + col];
+                int dx = mbC * 16 + col;
+                if (dx >= width) break;          // drop the padded columns past the right edge
+                r[rowBase + dx] = mr[src + col];
+                g[rowBase + dx] = mg[src + col];
+                b[rowBase + dx] = mb[src + col];
             }
         }
     }
 
-    private static void ExtractMbGray(ReadOnlySpan<int> y, int width, int mbR, int mbC, int[] my)
+    private static void ExtractMbGray(ReadOnlySpan<int> y, int width, int height, int mbR, int mbC, int[] my)
     {
         for (var row = 0; row < 16; row++)
         {
-            int src = (mbR * 16 + row) * width + mbC * 16;
+            int rowBase = Math.Min(mbR * 16 + row, height - 1) * width;
             int dst = row * 16;
             for (var col = 0; col < 16; col++)
-                my[dst + col] = y[src + col];
+                my[dst + col] = y[rowBase + Math.Min(mbC * 16 + col, width - 1)];
         }
     }
 
-    private static void StoreMbGray(Span<int> y, int width, int mbR, int mbC, int[] my)
+    private static void StoreMbGray(Span<int> y, int width, int height, int mbR, int mbC, int[] my)
     {
         for (var row = 0; row < 16; row++)
         {
-            int dst = (mbR * 16 + row) * width + mbC * 16;
+            int dy = mbR * 16 + row;
+            if (dy >= height) break;
+            int rowBase = dy * width;
             int src = row * 16;
             for (var col = 0; col < 16; col++)
-                y[dst + col] = my[src + col];
+            {
+                int dx = mbC * 16 + col;
+                if (dx >= width) break;
+                y[rowBase + dx] = my[src + col];
+            }
         }
     }
 
-    private static void ExtractMbGrayF(ReadOnlySpan<float> y, int width, int mbR, int mbC, float[] my)
+    private static void ExtractMbGrayF(ReadOnlySpan<float> y, int width, int height, int mbR, int mbC, float[] my)
     {
         for (var row = 0; row < 16; row++)
         {
-            int src = (mbR * 16 + row) * width + mbC * 16;
+            int rowBase = Math.Min(mbR * 16 + row, height - 1) * width;
             int dst = row * 16;
             for (var col = 0; col < 16; col++)
-                my[dst + col] = y[src + col];
+                my[dst + col] = y[rowBase + Math.Min(mbC * 16 + col, width - 1)];
         }
     }
 
-    private static void StoreMbGrayF(Span<float> y, int width, int mbR, int mbC, float[] my)
+    private static void StoreMbGrayF(Span<float> y, int width, int height, int mbR, int mbC, float[] my)
     {
         for (var row = 0; row < 16; row++)
         {
-            int dst = (mbR * 16 + row) * width + mbC * 16;
+            int dy = mbR * 16 + row;
+            if (dy >= height) break;
+            int rowBase = dy * width;
             int src = row * 16;
             for (var col = 0; col < 16; col++)
-                y[dst + col] = my[src + col];
+            {
+                int dx = mbC * 16 + col;
+                if (dx >= width) break;
+                y[rowBase + dx] = my[src + col];
+            }
         }
     }
 
     // Generic single-channel macroblock copy (used by the half-float gray/RGB paths).
-    private static void ExtractMb1<T>(ReadOnlySpan<T> src, int width, int mbR, int mbC, Span<T> mb)
+    // Encode side edge-replicates the partial right/bottom MB (Math.Min clamp).
+    private static void ExtractMb1<T>(ReadOnlySpan<T> src, int width, int height, int mbR, int mbC, Span<T> mb)
     {
         for (var row = 0; row < 16; row++)
         {
-            int s = (mbR * 16 + row) * width + mbC * 16;
+            int rowBase = Math.Min(mbR * 16 + row, height - 1) * width;
             int d = row * 16;
             for (var col = 0; col < 16; col++)
-                mb[d + col] = src[s + col];
+                mb[d + col] = src[rowBase + Math.Min(mbC * 16 + col, width - 1)];
         }
     }
 
-    private static void StoreMb1<T>(Span<T> dst, int width, int mbR, int mbC, ReadOnlySpan<T> mb)
+    // Decode side crops the padded MB grid back to the real dimensions.
+    private static void StoreMb1<T>(Span<T> dst, int width, int height, int mbR, int mbC, ReadOnlySpan<T> mb)
     {
         for (var row = 0; row < 16; row++)
         {
-            int d = (mbR * 16 + row) * width + mbC * 16;
+            int dy = mbR * 16 + row;
+            if (dy >= height) break;
+            int rowBase = dy * width;
             int s = row * 16;
             for (var col = 0; col < 16; col++)
-                dst[d + col] = mb[s + col];
+            {
+                int dx = mbC * 16 + col;
+                if (dx >= width) break;
+                dst[rowBase + dx] = mb[s + col];
+            }
         }
     }
 }

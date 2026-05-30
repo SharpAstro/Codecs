@@ -12,8 +12,8 @@ public static class JxrImageCodec
     /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> BD8 RGB image
     /// (each channel <c>width*height</c> samples in raster order, values 0..255)
-    /// into a <c>.jxr</c> byte stream. Dimensions must be multiples of 16. QP
-    /// indices default to 0 (lossless). <paramref name="overlap"/> is the Photo
+    /// into a <c>.jxr</c> byte stream. Arbitrary dimensions are allowed (partial macroblocks
+    /// edge-replicated). QP indices default to 0 (lossless). <paramref name="overlap"/> is the Photo
     /// Overlap level (0 = none, 1 = one level — jxrlib's default, 2 = two levels).
     /// </summary>
     public static byte[] EncodeRgb24(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
@@ -40,8 +40,8 @@ public static class JxrImageCodec
     /// Encode a <paramref name="width"/>×<paramref name="height"/> BD8 grayscale image
     /// (<c>width*height</c> samples in raster order, values 0..255) into a <c>.jxr</c> byte
     /// stream — a single-channel Y-only codestream (no colour transform). Dimensions must be
-    /// multiples of 16. QP indices default to 0 (lossless). <paramref name="overlap"/> is the
-    /// Photo Overlap level (0 = none, 1 = jxrlib's default, 2 = two levels).
+    /// any positive size (partial macroblocks edge-replicated). QP indices default to 0 (lossless).
+    /// <paramref name="overlap"/> is the Photo Overlap level (0 = none, 1 = jxrlib's default, 2 = two levels).
     /// </summary>
     public static byte[] EncodeGray8(ReadOnlySpan<int> y, int width, int height,
                                      int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
@@ -67,7 +67,7 @@ public static class JxrImageCodec
     /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16</b> grayscale image
     /// (<c>width*height</c> samples in raster order, values 0..65535) into a <c>.jxr</c> byte
     /// stream — a single-channel Y-only codestream, full-precision lossless (SHIFT_BITS 0).
-    /// Dimensions must be multiples of 16; QP indices default to 0 (lossless).
+    /// Arbitrary dimensions are allowed (partial macroblocks edge-replicated); QP indices default to 0 (lossless).
     /// </summary>
     public static byte[] EncodeGray16(ReadOnlySpan<int> y, int width, int height,
                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
@@ -92,8 +92,8 @@ public static class JxrImageCodec
     /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16</b> RGB image (each
     /// channel <c>width*height</c> samples, raster order, values 0..65535) into a <c>.jxr</c> byte
-    /// stream — YCoCg-R + InternalClrFmt=YUV444, full-precision lossless (SHIFT_BITS 0). Dimensions
-    /// must be multiples of 16; QP indices default to 0 (lossless).
+    /// stream — YCoCg-R + InternalClrFmt=YUV444, full-precision lossless (SHIFT_BITS 0). Arbitrary
+    /// dimensions are allowed (partial macroblocks edge-replicated); QP indices default to 0 (lossless).
     /// </summary>
     public static byte[] EncodeRgb48(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
                                      int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
@@ -121,8 +121,8 @@ public static class JxrImageCodec
     /// star cores may overshoot 1.0; raw FITS data spans tens of thousands). <paramref name="lenMantissa"/>
     /// is the stored mantissa-bit count (jxrlib default 13; astrophotography commonly uses 8 to trade
     /// precision for size) and <paramref name="expBias"/> the exponent bias (jxrlib default 4). BD32F
-    /// is mono-only by design (T.832 has no Table A.6 GUID for BD32F RGB). Dimensions must be multiples
-    /// of 16; the codec is lossless on the float-pixel representation (QP 0, OL_NONE by default).
+    /// is mono-only by design (T.832 has no Table A.6 GUID for BD32F RGB). Arbitrary dimensions are
+    /// allowed (partial macroblocks edge-replicated); the codec is lossless on the float-pixel representation (QP 0, OL_NONE by default).
     /// </summary>
     public static byte[] EncodeGrayF32(ReadOnlySpan<float> y, int width, int height,
                                        int lenMantissa = 13, int expBias = 4,
@@ -148,7 +148,7 @@ public static class JxrImageCodec
     /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16F</b> half-float grayscale
     /// image (<c>width*height</c> halves, raster order) into a <c>.jxr</c> byte stream. The half is
-    /// preserved bit-exact (no mantissa quantization). Dimensions must be multiples of 16; lossless.
+    /// preserved bit-exact (no mantissa quantization). Arbitrary dimensions are allowed (partial macroblocks edge-replicated); lossless.
     /// </summary>
     public static byte[] EncodeGrayF16(ReadOnlySpan<Half> y, int width, int height,
                                        int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
@@ -172,8 +172,8 @@ public static class JxrImageCodec
     /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16F</b> half-float RGB image
     /// from an <b>interleaved</b> <c>Half[width*height*3]</c> (RGBRGB…) — the consumer's HDR RGB
-    /// shape — into a <c>.jxr</c> byte stream (YCoCg-R + InternalClrFmt=YUV444, bit-exact). Dimensions
-    /// must be multiples of 16; lossless.
+    /// shape — into a <c>.jxr</c> byte stream (YCoCg-R + InternalClrFmt=YUV444, bit-exact). Arbitrary
+    /// dimensions are allowed (partial macroblocks edge-replicated); lossless.
     /// </summary>
     public static byte[] EncodeRgbF16(ReadOnlySpan<Half> rgb, int width, int height,
                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)

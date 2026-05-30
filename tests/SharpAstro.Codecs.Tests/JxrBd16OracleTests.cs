@@ -28,6 +28,8 @@ public sealed class JxrBd16OracleTests
     [InlineData(64, 48, "random", 0)]
     [InlineData(80, 80, "gradient", 1)]
     [InlineData(64, 48, "random", 2)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(33, 40, "random", 0)]
     public void OurEncodeGray16_DecodedByJxrDecApp_IsLossless(int w, int h, string kind, int overlap)
     {
         var decApp = FindOracle("JxrDecApp.exe");
@@ -60,6 +62,8 @@ public sealed class JxrBd16OracleTests
     [InlineData(64, 48, "random", 0)]
     [InlineData(80, 80, "gradient", 1)]
     [InlineData(64, 48, "random", 2)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(33, 40, "random", 0)]
     public void OurEncodeRgb48_DecodedByJxrDecApp_IsLossless(int w, int h, string kind, int overlap)
     {
         var decApp = FindOracle("JxrDecApp.exe");
