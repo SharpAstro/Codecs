@@ -39,6 +39,10 @@ internal readonly struct JxlFrameHeader
     public int NumGroups { get; init; }
     public int NumLfGroups { get; init; }
     public int NumPasses { get; init; }
+    public ulong Flags { get; init; }
+    public bool DoYcbcr { get; init; }
+    public int ColorWidth { get; init; }
+    public int ColorHeight { get; init; }
 
     private const ulong FlagUseLfFrame = 0x20;
 
@@ -54,6 +58,8 @@ internal readonly struct JxlFrameHeader
         int groupSizeShift = 1; // VarDCT default => group dim 256
         int numPasses = 1;
         int upsampling = 1;
+        ulong flags = 0;
+        bool doYcbcr = false;
 
         if (!allDefault)
         {
@@ -62,9 +68,9 @@ internal readonly struct JxlFrameHeader
                 throw new NotSupportedException($"JPEG XL {frameType} frames are not yet supported.");
 
             encoding = (JxlFrameEncoding)br.ReadBits(1);
-            ulong flags = br.ReadU64();
+            flags = br.ReadU64();
 
-            bool doYcbcr = !meta.XybEncoded && br.ReadBit();
+            doYcbcr = !meta.XybEncoded && br.ReadBit();
             bool useLfFrame = (flags & FlagUseLfFrame) != 0;
 
             if (doYcbcr && !useLfFrame)
@@ -124,6 +130,10 @@ internal readonly struct JxlFrameHeader
             NumGroups = DivCeil(colorW, groupDim) * DivCeil(colorH, groupDim),
             NumLfGroups = DivCeil(colorW, lfGroupDim) * DivCeil(colorH, lfGroupDim),
             NumPasses = numPasses,
+            Flags = flags,
+            DoYcbcr = doYcbcr,
+            ColorWidth = colorW,
+            ColorHeight = colorH,
         };
     }
 
