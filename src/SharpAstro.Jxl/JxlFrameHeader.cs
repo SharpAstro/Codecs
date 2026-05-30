@@ -44,6 +44,10 @@ internal readonly struct JxlFrameHeader
 
     public static JxlFrameHeader Read(ref JxlBitReader br, in JxlImageMetadata meta, int width, int height)
     {
+        // A frame begins on a byte boundary: the codestream is zero-padded to the next byte
+        // after the image header and before the FrameHeader (jxl-frame Frame::parse → zero_pad_to_byte).
+        br.ZeroPadToByte();
+
         bool allDefault = br.ReadBit();
 
         var encoding = JxlFrameEncoding.VarDct;

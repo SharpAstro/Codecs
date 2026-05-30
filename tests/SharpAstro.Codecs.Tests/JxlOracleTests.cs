@@ -56,7 +56,7 @@ public sealed class JxlOracleTests
         }
     }
 
-    [Fact(Skip = "Rung 2 WIP: FrameHeader bit-alignment under investigation (have_crop/num_passes land wrong). See jxl-codec memory.")]
+    [Fact]
     public void MagickEncoded_Jxl_FrameHeaderAndToc_ByteAccountingConsistent()
     {
         // FrameHeader exposes no field Magick reports back, so we validate structurally:
