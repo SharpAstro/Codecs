@@ -1,3 +1,4 @@
+using ImageMagick;
 using SharpAstro.Jxl;
 using Shouldly;
 using Xunit;
@@ -106,6 +107,7 @@ public sealed class JxlModularTests
         public int Get(int index) => index == 5 ? prop5 : 0;
     }
 
+
     [Fact]
     public void MaTree_DecisionWithTwoLeaves_ParsesAndWalks()
     {
@@ -168,6 +170,56 @@ public sealed class JxlModularTests
         JxlMaLeaf leaf = config.GetLeaf(new FixedProperties(prop5: 99));
         leaf.Predictor.ShouldBe(JxlPredictor.West);
         leaf.Multiplier.ShouldBe(1u);
+    }
+
+    [Fact]
+    public void DecodesLossless_PixelExact_VsMagick()
+    {
+        // Solid colour: single-leaf tree, trivial residuals.
+        using (var solid = new MagickImage(MagickColors.SteelBlue, 32, 24))
+            AssertDecodeMatches(solid, "solid-rgb", colorChannels: 3);
+
+        // Grayscale: 1 channel, no RCT.
+        using (var gray = new MagickImage(MagickColors.Gray, 32, 24) { ColorSpace = ColorSpace.Gray })
+            AssertDecodeMatches(gray, "gray", colorChannels: 1);
+
+        // High-entropy noise: a real multi-leaf MA tree (branches on channel index + neighbour
+        // gradients + weighted-predictor max-error) over RCT, exercising the whole decode loop.
+        using (var noise = new MagickImage(MagickColors.Black, 40, 30))
+        {
+            uint state = 0x12345678;
+            uint Next() { state ^= state << 13; state ^= state >> 17; state ^= state << 5; return state; }
+            using (IPixelCollection<float> px = noise.GetPixels())
+                for (int y = 0; y < 30; y++)
+                    for (int x = 0; x < 40; x++)
+                        px.SetPixel(x, y, [Next() % 65536, Next() % 65536, Next() % 65536]);
+            AssertDecodeMatches(noise, "noise-rgb", colorChannels: 3);
+        }
+    }
+
+    private static void AssertDecodeMatches(MagickImage image, string label, int colorChannels)
+    {
+        image.Quality = 100; // lossless -> Modular
+        byte[] jxl = image.ToByteArray(MagickFormat.Jxl);
+
+        JxlModularDecodeResult result = JxlModularFrame.Decode(jxl);
+
+        int w = (int)image.Width, h = (int)image.Height;
+        result.Width.ShouldBe(w, label);
+        result.Height.ShouldBe(h, label);
+        result.ColorChannels.ShouldBe(colorChannels, label);
+
+        using var truth = new MagickImage(jxl); // ground-truth libjxl decode via Magick
+        using IPixelCollection<float> px = truth.GetPixels();
+        int channels = (int)px.Channels;
+        float[] values = px.GetValues()!;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                for (int c = 0; c < colorChannels; c++)
+                {
+                    int expected = (int)Math.Round(values[(y * w + x) * channels + c]);
+                    result.Channels[c][y * w + x].ShouldBe(expected, $"{label} ({x},{y}) ch{c}");
+                }
     }
 
     private static int[] MakeChannel(int n, int seed)

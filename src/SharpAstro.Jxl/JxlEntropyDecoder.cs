@@ -44,6 +44,10 @@ internal sealed class JxlEntropyDecoder
 
     public byte[] ClusterMap => _clusters;
 
+    // Diagnostics.
+    public bool UsesLz77 => _lz77Enabled;
+    public bool UsesPrefix => _usePrefix;
+
     public static JxlEntropyDecoder Parse(ref JxlBitReader br, uint numDist)
     {
         bool lz77Enabled = br.ReadBit();
@@ -193,7 +197,8 @@ internal sealed class JxlEntropyDecoder
     public uint ReadVarintWithMultiplier(ref JxlBitReader br, uint ctx, uint distMultiplier)
         => ReadVarintClustered(ref br, _clusters[ctx], distMultiplier);
 
-    private uint ReadVarintClustered(ref JxlBitReader br, byte cluster, uint distMultiplier)
+    /// <summary>Reads an integer for an explicit cluster (used by the Modular decode loop, which holds the leaf's cluster).</summary>
+    public uint ReadVarintClustered(ref JxlBitReader br, byte cluster, uint distMultiplier)
     {
         if (_lz77Enabled)
             return ReadVarintLz77(ref br, cluster, distMultiplier);
