@@ -183,6 +183,16 @@ public sealed class JxlModularTests
         using (var gray = new MagickImage(MagickColors.Gray, 32, 24) { ColorSpace = ColorSpace.Gray })
             AssertDecodeMatches(gray, "gray", colorChannels: 1);
 
+        // Smooth gradient: libjxl palettises this, exercising the Palette transform inverse.
+        using (var grad = new MagickImage(MagickColors.Black, 40, 30))
+        {
+            using (IPixelCollection<float> px = grad.GetPixels())
+                for (int y = 0; y < 30; y++)
+                    for (int x = 0; x < 40; x++)
+                        px.SetPixel(x, y, [x * 1500f, y * 2000f, (x + y) * 800f]);
+            AssertDecodeMatches(grad, "gradient-palette", colorChannels: 3);
+        }
+
         // High-entropy noise: a real multi-leaf MA tree (branches on channel index + neighbour
         // gradients + weighted-predictor max-error) over RCT, exercising the whole decode loop.
         using (var noise = new MagickImage(MagickColors.Black, 40, 30))
