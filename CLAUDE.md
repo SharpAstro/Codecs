@@ -14,9 +14,8 @@ Two distinct bodies of code share one repo and one CI/versioning pipeline:
    (`Tiff`, `Png`, `Jxr`, `Exif`, `Color.Icc`, `Jpeg.IccInjector`). Each ships as an
    independent NuGet. This is where almost all active development happens.
 
-`CODECS.md` documents the per-package decode/encode matrix. **Caveat: its `SharpAstro.Jxr`
-row is stale** — it describes the original spec-derived codec that was iceboxed and deleted
-(commit `48b0432`). See "JXR codec" below for the real current state.
+`CODECS.md` documents the per-package decode/encode matrix (its `SharpAstro.Jxr` row reflects
+the jxrlib re-port). See "JXR codec" below for the architecture and validation discipline.
 
 ## Build & test
 
@@ -52,12 +51,15 @@ ship in lockstep (shared Major.Minor + CI run-number patch). Project conventions
 `IsAotCompatible=true`, SourceLink/embedded debug. Note `StbImageSharp` is `Nullable=disable`
 (transpiled), while the `SharpAstro.*` codecs are `Nullable=enable` + `ImplicitUsings=enable`.
 
-## JXR codec — active re-port (the most involved subsystem)
+## JXR codec — jxrlib re-port (the most involved subsystem)
 
-`SharpAstro.Jxr` is being rewritten as a **faithful, table-exact C# re-port of Microsoft's
-jxrlib C** (the earlier spec-derived codec produced "garbage after the first block" and was
-retired). Development happens on the **`jxr-reimpl`** branch; **`master` is kept clean** until
-the re-port is proven. It is built up incrementally and validated bit-exact at each step.
+`SharpAstro.Jxr` is a **faithful, table-exact C# re-port of Microsoft's jxrlib C** (the earlier
+spec-derived codec produced "garbage after the first block" and was retired). The re-port was
+built up incrementally and validated bit-exact at each step; it landed on **`master`** via
+PR #1 (merge commit `5b2f3f2`) and shipped to NuGet at **3.0.211**. It supports BD8/BD16/BD16F/
+BD32F × grayscale (Y-only) + RGB, single-tile SPATIAL mode, POT (OL_NONE/ONE/TWO), lossy QP, and
+arbitrary (non-16-aligned) dimensions (pad-then-crop, not WINDOWING_FLAG). Frequency mode,
+multi-tile, and alpha plane remain out of scope.
 
 Architecture (encode pipeline; decode mirrors it):
 
