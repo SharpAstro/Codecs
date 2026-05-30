@@ -106,6 +106,131 @@ public sealed class JxlEntropyTests
     }
 
     [Fact]
+    public void Decoder_MultiCluster_ContextMap_RoundTrips()
+    {
+        // Full Decoder over 4 contexts mapped to 2 clusters via the simple context-map form,
+        // no LZ77, ANS coding. Configs use split_exponent == log_alphabet_size so every value is
+        // a literal token (no trailing raw bits) — isolating the cluster/dispatch wiring and the
+        // rANS state threaded across clusters. The complex context-map form and the hybrid-uint
+        // extra-bit interleaving are validated against real libjxl bytes at Rung 4.
+        const int las = 8;
+        byte[] clusters = [0, 1, 0, 1];     // context -> cluster
+        int[] alphabet = [16, 64];          // per-cluster even-distribution alphabet
+
+        JxlAnsHistogram[] hist =
+        [
+            ParseEvenHistogram(alphabet[0], las),
+            ParseEvenHistogram(alphabet[1], las),
+        ];
+        var config = JxlIntegerConfig.Create(las, 0, 0); // split == 2^8, every test value < 256
+
+        // (context, value) stream; value must be < the cluster's alphabet.
+        var ctxs = new int[240];
+        var values = new int[240];
+        for (int k = 0; k < ctxs.Length; k++)
+        {
+            int ctx = k % 4;
+            ctxs[k] = ctx;
+            values[k] = (k * 11 + k / 3) % alphabet[clusters[ctx]];
+        }
+
+        // Encode tokens in reverse with a shared rANS state, switching histogram per cluster.
+        uint state = JxlAnsHistogram.InitialState;
+        var words = new List<ushort>();
+        for (int k = ctxs.Length - 1; k >= 0; k--)
+            hist[clusters[ctxs[k]]].EncodeStep(ref state, values[k], words);
+        words.Reverse();
+
+        var bw = new JxlBitWriter();
+        WriteAnsDecoderHeader(bw, clusters, las, [config, config], hw =>
+        {
+            WriteEvenHeader(hw, alphabet[0]);
+            WriteEvenHeader(hw, alphabet[1]);
+        });
+        bw.WriteBits(state, 32);
+        foreach (ushort w in words)
+            bw.WriteBits(w, 16);
+
+        var br = new JxlBitReader(bw.ToArray());
+        JxlEntropyDecoder dec = JxlEntropyDecoder.Parse(ref br, (uint)clusters.Length);
+        for (int k = 0; k < ctxs.Length; k++)
+            dec.ReadVarint(ref br, (uint)ctxs[k]).ShouldBe((uint)values[k], $"k={k}");
+        dec.Finish();
+    }
+
+    [Fact]
+    public void Decoder_ReadPermutation_RoundTrips()
+    {
+        // read_permutation drives a Decoder (here 8 single-cluster contexts) over the Lehmer code.
+        const int size = 10;
+        const int skip = 0;
+        const int las = 8;
+        int[] permutation = [3, 7, 0, 9, 1, 8, 2, 6, 4, 5];
+
+        // Lehmer encode: index of each output element among the still-available elements.
+        var temp = Enumerable.Range(skip, size - skip).ToList();
+        var lehmer = new List<uint>();
+        for (int i = skip; i < size; i++)
+        {
+            int idx = temp.IndexOf(permutation[i]);
+            lehmer.Add((uint)idx);
+            temp.RemoveAt(idx);
+        }
+        // Sequence the decoder reads: end, then each lehmer value.
+        int[] tokens = [size - skip, .. lehmer.Select(l => (int)l)];
+
+        JxlAnsHistogram hist = ParseEvenHistogram(alphabetSize: 16, las); // covers values 0..15
+        uint state = JxlAnsHistogram.InitialState;
+        var words = new List<ushort>();
+        for (int k = tokens.Length - 1; k >= 0; k--)
+            hist.EncodeStep(ref state, tokens[k], words);
+        words.Reverse();
+
+        byte[] singleCluster = new byte[8]; // 8 contexts all -> cluster 0
+        var bw = new JxlBitWriter();
+        WriteAnsDecoderHeader(bw, singleCluster, las, [JxlIntegerConfig.Create(las, 0, 0)],
+            hw => WriteEvenHeader(hw, 16));
+        bw.WriteBits(state, 32);
+        foreach (ushort w in words)
+            bw.WriteBits(w, 16);
+
+        var br = new JxlBitReader(bw.ToArray());
+        JxlEntropyDecoder dec = JxlEntropyDecoder.Parse(ref br, 8);
+        int[] decoded = JxlEntropyDecoder.ReadPermutation(ref br, dec, size, skip);
+        dec.Finish();
+        decoded.ShouldBe(permutation);
+    }
+
+    private static JxlAnsHistogram ParseEvenHistogram(int alphabetSize, int las)
+    {
+        var hw = new JxlBitWriter();
+        WriteEvenHeader(hw, alphabetSize);
+        var hr = new JxlBitReader(hw.ToArray());
+        return JxlAnsHistogram.Parse(ref hr, las);
+    }
+
+    // Writes a full Decoder header: LZ77 disabled, a simple context map, ANS coding.
+    private static void WriteAnsDecoderHeader(
+        JxlBitWriter bw, byte[] clusters, int las, JxlIntegerConfig[] configs, Action<JxlBitWriter> writeHistograms)
+    {
+        bw.WriteBit(false); // lz77 disabled
+
+        // context map (simple form): one bit width sized to the max cluster index.
+        int maxCluster = clusters.Length == 0 ? 0 : clusters.Max();
+        int nbits = maxCluster == 0 ? 0 : 32 - System.Numerics.BitOperations.LeadingZeroCount((uint)maxCluster);
+        bw.WriteBit(true);          // simple distribution
+        bw.WriteBits((uint)nbits, 2);
+        foreach (byte c in clusters)
+            bw.WriteBits(c, nbits);
+
+        bw.WriteBit(false);                 // use_prefix_code = false (ANS)
+        bw.WriteBits((uint)(las - 5), 2);   // log_alphabet_size
+        foreach (JxlIntegerConfig cfg in configs)
+            cfg.Write(bw, las);
+        writeHistograms(bw);
+    }
+
+    [Fact]
     public void Ans_EvenDistribution_RoundTrips()
     {
         // The evenly-distributed form spreads frequencies across many symbols, exercising the
