@@ -9,15 +9,16 @@ on:
 
 env:
   # Lockstep version: every package in this repo (StbImageSharp port + the
-  # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg family) ships at the
-  # same Major.Minor and a shared run-number patch. Bumped from 2.30 -> 3.0
-  # with the SharpAstro.Tiff IccProfile API break (byte[]? -> ReadOnlyMemory<byte>).
-  # Bumped 3.0 -> 3.1 with the SharpAstro.Png CicpChunk H.273-enum break
-  # (positional args switched from raw bytes to H.273 enums) + Color.Icc
-  # IccProfiles.WithCicp helper. This env var is the single source of truth for
-  # the family Major.Minor -- the -p:Version override below makes per-csproj
-  # VersionPrefix decorative for CI publishing.
-  VERSION_PREFIX: 3.1.${{ github.run_number }}
+  # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg / .Jxr / .Exr family)
+  # ships at the same Major.Minor and a shared run-number patch. Bumped from
+  # 2.30 -> 3.0 with the SharpAstro.Tiff IccProfile API break (byte[]? ->
+  # ReadOnlyMemory<byte>). Bumped 3.0 -> 3.1 with the SharpAstro.Png CicpChunk
+  # H.273-enum break (positional args switched from raw bytes to H.273 enums) +
+  # Color.Icc IccProfiles.WithCicp helper. Bumped 3.1 -> 3.2 with the new
+  # SharpAstro.Exr (OpenEXR read+write) package joining the family. This env var
+  # is the single source of truth for the family Major.Minor -- the -p:Version
+  # override below makes per-csproj VersionPrefix decorative for CI publishing.
+  VERSION_PREFIX: 3.2.${{ github.run_number }}
   VERSION_REV: ${{ github.run_attempt }}
   VERSION_HASH: +${{ github.sha }}
   BUILD_CONF: Release
