@@ -64,4 +64,41 @@ internal ref struct JxlBitReader
         };
         return (uint)d.Offset + ReadBits(d.Bits);
     }
+
+    /// <summary>
+    /// JPEG XL Enum() (§C.1): U32(Val(0), Val(1), BitsOffset(4, 2), BitsOffset(6, 18)).
+    /// </summary>
+    public uint ReadEnum() => ReadU32((0, 0), (1, 0), (2, 4), (18, 6));
+
+    /// <summary>JPEG XL U64() (§C.1) — variable-length unsigned, chained 8-bit groups.</summary>
+    public ulong ReadU64()
+    {
+        uint selector = ReadBits(2);
+        switch (selector)
+        {
+            case 0:
+                return 0;
+            case 1:
+                return 1 + ReadBits(4);
+            case 2:
+                return 17 + ReadBits(8);
+            default:
+                ulong value = ReadBits(12);
+                int shift = 12;
+                while (ReadBit())
+                {
+                    if (shift < 60)
+                    {
+                        value |= (ulong)ReadBits(8) << shift;
+                        shift += 8;
+                    }
+                    else
+                    {
+                        value |= (ulong)ReadBits(4) << 60;
+                        break;
+                    }
+                }
+                return value;
+        }
+    }
 }
