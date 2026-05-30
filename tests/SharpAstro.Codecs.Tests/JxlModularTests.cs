@@ -101,6 +101,75 @@ public sealed class JxlModularTests
             ch[c].ShouldBe(expected[c]);
     }
 
+    private sealed class FixedProperties(int prop5) : IJxlProperties
+    {
+        public int Get(int index) => index == 5 ? prop5 : 0;
+    }
+
+    [Fact]
+    public void MaTree_DecisionWithTwoLeaves_ParsesAndWalks()
+    {
+        // Build a tree: decision(property 5 > 10 ? leaf0 : leaf1).
+        //   leaf0 (ctx 0, read first -> LEFT child):  Gradient, offset 0, multiplier 1
+        //   leaf1 (ctx 1, read second -> RIGHT child): Zero,    offset 3, multiplier 2
+        // Tree-decoder contexts: 0=value, 1=property, 2=predictor, 3=offset, 4=mul_log, 5=mul_bits.
+        var nodes = new (int Ctx, int Value)[]
+        {
+            (1, 6),                                                    // decision: property_raw = 5 + 1
+            (0, (int)JxlEntropyTestCodec.PackSigned(10)),             // split value 10
+            (1, 0),                                                    // leaf0 marker
+            (2, (int)JxlPredictor.Gradient), (3, 0), (4, 0), (5, 0),  // leaf0: pred, offset 0, mult 1
+            (1, 0),                                                    // leaf1 marker
+            (2, (int)JxlPredictor.Zero),
+            (3, (int)JxlEntropyTestCodec.PackSigned(3)), (4, 0), (5, 1), // leaf1: pred, offset 3, mult 2
+        };
+
+        var bw = new JxlBitWriter();
+        // Tree decoder: 6 contexts, identity cluster map, alphabet 64 each (all values < 64).
+        byte[] treeClusters = [0, 1, 2, 3, 4, 5];
+        int[] treeAlphabet = [64, 64, 64, 64, 64, 64];
+        JxlEntropyTestCodec.WriteDecoderWithData(bw, treeClusters, treeAlphabet, nodes);
+        // Sample decoder: 2 leaves -> 2 distributions; parsed but never read here.
+        JxlEntropyTestCodec.WriteDecoderHeaderOnly(bw, clusters: [0, 1], perClusterAlphabet: [64, 64]);
+
+        var br = new JxlBitReader(bw.ToArray());
+        JxlMaConfig config = JxlMaConfig.Parse(ref br, nodeLimit: 1 << 20);
+        config.NumLeaves.ShouldBe(2);
+
+        JxlMaLeaf left = config.GetLeaf(new FixedProperties(prop5: 20));  // 20 > 10 -> left (leaf0)
+        left.Predictor.ShouldBe(JxlPredictor.Gradient);
+        left.Offset.ShouldBe(0);
+        left.Multiplier.ShouldBe(1u);
+        left.Cluster.ShouldBe((byte)0);
+
+        JxlMaLeaf right = config.GetLeaf(new FixedProperties(prop5: 5)); // 5 <= 10 -> right (leaf1)
+        right.Predictor.ShouldBe(JxlPredictor.Zero);
+        right.Offset.ShouldBe(3);
+        right.Multiplier.ShouldBe(2u);
+        right.Cluster.ShouldBe((byte)1);
+    }
+
+    [Fact]
+    public void MaTree_SingleLeaf_Parses()
+    {
+        // First node is a leaf (property_raw == 0) -> single-leaf tree.
+        var nodes = new (int Ctx, int Value)[]
+        {
+            (1, 0),                                                    // leaf marker
+            (2, (int)JxlPredictor.West), (3, 0), (4, 0), (5, 0),       // West, offset 0, mult 1
+        };
+        var bw = new JxlBitWriter();
+        JxlEntropyTestCodec.WriteDecoderWithData(bw, [0, 1, 2, 3, 4, 5], [64, 64, 64, 64, 64, 64], nodes);
+        JxlEntropyTestCodec.WriteDecoderHeaderOnly(bw, clusters: [0], perClusterAlphabet: [64]);
+
+        var br = new JxlBitReader(bw.ToArray());
+        JxlMaConfig config = JxlMaConfig.Parse(ref br, nodeLimit: 1 << 20);
+        config.NumLeaves.ShouldBe(1);
+        JxlMaLeaf leaf = config.GetLeaf(new FixedProperties(prop5: 99));
+        leaf.Predictor.ShouldBe(JxlPredictor.West);
+        leaf.Multiplier.ShouldBe(1u);
+    }
+
     private static int[] MakeChannel(int n, int seed)
     {
         var a = new int[n];
