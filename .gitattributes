@@ -1,1 +1,14 @@
+# Normalize line endings: text files are stored LF in the repo, regardless
+# of any contributor's core.autocrlf setting. This is the shared, in-repo
+# source of truth — autocrlf is per-machine and unreliable.
+* text=auto
+
+# Visual Studio tooling expects CRLF in the working tree for these.
+# (Still normalized to LF in the index; checked out as CRLF.)
+*.sln             text eol=crlf
+*.vcxproj         text eol=crlf
+*.vcxproj.filters text eol=crlf
+
+# Upstream stb_image.h is vendored verbatim; mark it so GitHub language
+# stats don't attribute it to this repo.
 *.h linguist-vendored
