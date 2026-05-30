@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+    <VersionPrefix>3.2.0</VersionPrefix>
+    <AssemblyVersion>3.2.0.0</AssemblyVersion>
+
+    <PackageId>SharpAstro.Jxl</PackageId>
+    <Product>SharpAstro.Jxl</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>Pure-managed JPEG XL (.jxl) codec for .NET. Clean-room implementation against ISO/IEC 18181, validated against the Magick.NET (libjxl) oracle. AOT-compatible.</Description>
+    <PackageTags>jxl jpegxl jpeg-xl image codec aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../UNLICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
