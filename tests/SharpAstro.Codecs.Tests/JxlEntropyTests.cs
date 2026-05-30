@@ -105,6 +105,102 @@ public sealed class JxlEntropyTests
         }
     }
 
+    [Fact]
+    public void Ans_EvenDistribution_RoundTrips()
+    {
+        // The evenly-distributed form spreads frequencies across many symbols, exercising the
+        // alias-table over/under-full balancing and the rANS renorm/word-ordering most heavily.
+        foreach (int las in (int[])[5, 6, 7, 8])
+        {
+            int tableSize = 1 << las;
+            foreach (int alphabet in (int[])[2, 3, 5, 8, 17])
+            {
+                if (alphabet > tableSize)
+                    continue;
+                uint[] stream = [.. Enumerable.Range(0, 300).Select(i => (uint)((i * 7 + i / 5) % alphabet))];
+                RoundTrip(las, hw => WriteEvenHeader(hw, alphabet), stream, $"even las={las} A={alphabet}");
+            }
+        }
+    }
+
+    [Fact]
+    public void Ans_BinaryAndUnary_RoundTrip()
+    {
+        // Binary (two skewed symbols) and unary (single symbol) distribution forms.
+        const int las = 8;
+        uint[] binStream = [.. Enumerable.Range(0, 400).Select(i => (uint)(i % 5 == 0 ? 1 : 0))];
+        RoundTrip(las, hw => WriteBinaryHeader(hw, v0: 0, v1: 1, prob: 3200), binStream, "binary");
+
+        uint[] unaryStream = [.. Enumerable.Repeat(42u, 50)];
+        RoundTrip(las, hw => WriteUnaryHeader(hw, symbol: 42), unaryStream, "unary");
+    }
+
+    private static void RoundTrip(int las, Action<JxlBitWriter> writeHeader, uint[] stream, string label)
+    {
+        // Build the histogram from its own serialized header so the encoder and decoder agree.
+        var hw = new JxlBitWriter();
+        writeHeader(hw);
+        var hr = new JxlBitReader(hw.ToArray());
+        JxlAnsHistogram hist = JxlAnsHistogram.Parse(ref hr, las);
+
+        // Encode in reverse, collect 16-bit renorm words, reverse to stream order.
+        uint state = JxlAnsHistogram.InitialState;
+        var words = new List<ushort>();
+        for (int k = stream.Length - 1; k >= 0; k--)
+            hist.EncodeStep(ref state, (int)stream[k], words);
+        words.Reverse();
+
+        // Assemble [header][32-bit initial state][16-bit words], all one continuous bitstream.
+        var bw = new JxlBitWriter();
+        writeHeader(bw);
+        bw.WriteBits(state, 32);
+        foreach (ushort w in words)
+            bw.WriteBits(w, 16);
+
+        var br = new JxlBitReader(bw.ToArray());
+        JxlAnsHistogram dec = JxlAnsHistogram.Parse(ref br, las);
+        uint dstate = br.ReadBits(32);
+        foreach (uint expected in stream)
+            dec.ReadSymbol(ref br, ref dstate).ShouldBe(expected, label);
+        dstate.ShouldBe(JxlAnsHistogram.InitialState, $"{label}: final ANS state");
+    }
+
+    private static void WriteEvenHeader(JxlBitWriter bw, int alphabetSize)
+    {
+        bw.WriteBit(false); // not binary/unary
+        bw.WriteBit(true);  // evenly distributed
+        WriteU8(bw, alphabetSize - 1);
+    }
+
+    private static void WriteBinaryHeader(JxlBitWriter bw, int v0, int v1, ushort prob)
+    {
+        bw.WriteBit(true);  // first branch
+        bw.WriteBit(true);  // binary
+        WriteU8(bw, v0);
+        WriteU8(bw, v1);
+        bw.WriteBits(prob, 12);
+    }
+
+    private static void WriteUnaryHeader(JxlBitWriter bw, int symbol)
+    {
+        bw.WriteBit(true);  // first branch
+        bw.WriteBit(false); // unary
+        WriteU8(bw, symbol);
+    }
+
+    private static void WriteU8(JxlBitWriter bw, int value)
+    {
+        if (value == 0)
+        {
+            bw.WriteBit(false);
+            return;
+        }
+        bw.WriteBit(true);
+        int n = 31 - System.Numerics.BitOperations.LeadingZeroCount((uint)value);
+        bw.WriteBits((uint)n, 3);
+        bw.WriteBits((uint)(value - (1 << n)), n);
+    }
+
     private static void WriteSimpleHeader(JxlBitWriter bw, uint alphabet, uint[] syms, byte[] lens)
     {
         int alphabetBits = JxlIntegerConfig.AddLog2Ceil(alphabet - 1);
