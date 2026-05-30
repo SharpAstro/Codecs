@@ -64,9 +64,17 @@ internal readonly struct JxlImageMetadata
         bool xybEncoded = br.ReadBit();
         JxlColorEncoding color = JxlColorEncoding.Read(ref br);
 
-        ulong extensions = br.ReadU64();
-        if (extensions != 0)
-            throw new NotSupportedException("JPEG XL ImageMetadata extensions are not yet supported.");
+        JxlExtensions.Skip(ref br);
+
+        // default_m is read unconditionally; when false it is followed by the opsin inverse
+        // matrix (if xyb) and custom upsampling-weight tables — not yet exercised by any oracle
+        // input, so unsupported for now. Omitting this bit was a latent Rung-1 misalignment.
+        bool defaultModular = br.ReadBit();
+        if (!defaultModular)
+        {
+            throw new NotSupportedException(
+                "JPEG XL custom opsin matrix / upsampling weights (default_m = false) are not yet supported.");
+        }
 
         return new JxlImageMetadata
         {
