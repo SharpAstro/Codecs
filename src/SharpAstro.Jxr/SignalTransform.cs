@@ -23,7 +23,8 @@ internal static class SignalTransform
         { 0, 128, 64, 208, 32, 240, 48, 224, 16, 192, 80, 144, 112, 176, 96, 160 };
 
     // strcodec.c idxCC[row][col] flattened to [row*16 + col] — pixel position -> plane position.
-    private static readonly int[] IdxCc = BuildIdxCc();
+    // Internal so the chroma upsampler (ChromaUpsample) can address the full-resolution plane.
+    internal static readonly int[] IdxCc = BuildIdxCc();
 
     private static int[] BuildIdxCc()
     {
