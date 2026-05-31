@@ -239,4 +239,41 @@ internal static class PhotoCoreTransform
         if (!chroma) return;
         for (var i = 0; i < 256; i += 16) p[i] += p[i];
     }
+
+    // ---------------------------------------------------------------- chroma second stage
+    // For the subsampled formats the chroma plane has only 4 (420) / 8 (422) blocks, so the
+    // second stage is a 2×2 core on the block DCs (at blkOffsetUV positions) rather than the
+    // full 4×4 strDCT4x4SecondStage. jxrlib strInvTransform.c (420_UV / 422_UV loops).
+
+    /// <summary>
+    /// YUV420 chroma second stage: a single 2×2 core on the four block DCs (offsets
+    /// {0,32,16,48} = <see cref="MacroblockLayout.BlkOffsetUV420"/>). <see cref="Dct2x2dn"/>
+    /// is self-inverse, so this is used for both the forward and inverse direction.
+    /// </summary>
+    public static void ChromaStage2_420(Span<int> mb) => Dct2x2dn(mb, 0, 32, 16, 48);
+
+    /// <summary>
+    /// YUV422 chroma second stage, <b>inverse</b> (decode): a 1-D lossless Hadamard step on the
+    /// two vertically-adjacent DCs (0,32) then two 2×2 cores on {0,64,16,80} and {32,96,48,112}.
+    /// </summary>
+    public static void ChromaInverseStage2_422(Span<int> mb)
+    {
+        mb[0] -= (mb[32] + 1) >> 1;
+        mb[32] += mb[0];
+        Dct2x2dn(mb, 0, 64, 16, 80);
+        Dct2x2dn(mb, 32, 96, 48, 112);
+    }
+
+    /// <summary>
+    /// YUV422 chroma second stage, <b>forward</b> (encode): the exact inverse of
+    /// <see cref="ChromaInverseStage2_422"/> — the two 2×2 cores (self-inverse) followed by the
+    /// inverted Hadamard step.
+    /// </summary>
+    public static void ChromaForwardStage2_422(Span<int> mb)
+    {
+        Dct2x2dn(mb, 0, 64, 16, 80);
+        Dct2x2dn(mb, 32, 96, 48, 112);
+        mb[32] -= mb[0];
+        mb[0] += (mb[32] + 1) >> 1;
+    }
 }
