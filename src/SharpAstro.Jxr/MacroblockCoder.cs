@@ -25,6 +25,15 @@ internal static class MacroblockCoder
     private const int CtDc = CodingContext.CtDc;            // 5
     private const int CtHp = CodingContext.CtDc + CodingContext.ContextX; // 13
 
+    // The two chroma planes of YUV420/422 share one interleaved LP run/level stream; aRemap maps
+    // the joint-stream index to the per-plane LP coefficient position (segenc.c/segdec.c). 420 uses
+    // the tail {1,2,3,5,6,7} (offset 1, only the first 3 are reached), 422 the full 7-entry table.
+    private static readonly int[] LpChromaRemap = { 4, 1, 2, 3, 5, 6, 7 };
+
+    /// <summary>The three-channel YUV formats that share the joint (Y,U,V) DC path and chroma LP interleave.</summary>
+    private static bool IsYuv(ColorFormat cf) =>
+        cf is ColorFormat.Yuv444 or ColorFormat.Yuv422 or ColorFormat.Yuv420;
+
     // ----------------------------------------------------------------- public API
 
     /// <summary>
@@ -68,7 +77,8 @@ internal static class MacroblockCoder
         var lapMean = new int[2];
 
         // Y_ONLY / CMYK / N_CHANNEL DC: per-channel raw significance bit + abs level (AHexpt[3]).
-        if (ctx.ColorFormat != ColorFormat.Yuv444)
+        // The three-channel YUV formats (444/422/420) all use the joint (Y,U,V) DC path below.
+        if (!IsYuv(ctx.ColorFormat))
         {
             int mbits = model.FlcBits[0];
             for (var ch = 0; ch < ctx.Channels; ch++)
@@ -126,7 +136,8 @@ internal static class MacroblockCoder
         for (var i = 0; i < ctx.Channels; i++) Array.Clear(mb.BlockDc[i]);
 
         // Y_ONLY / CMYK / N_CHANNEL DC: per-channel raw significance bit + abs level (AHexpt[3]).
-        if (ctx.ColorFormat != ColorFormat.Yuv444)
+        // The three-channel YUV formats (444/422/420) all use the joint (Y,U,V) DC path below.
+        if (!IsYuv(ctx.ColorFormat))
         {
             int mbits0 = model.FlcBits[0];
             for (var ch = 0; ch < ctx.Channels; ch++)
@@ -174,6 +185,11 @@ internal static class MacroblockCoder
     internal static void EncodeLowpass(CodingContext ctx, Macroblock mb, BitWriter w, bool resetContext, bool resetTotals)
     {
         if (resetTotals) ctx.ScanLowpass.Reset(); // jxrlib m_bResetRGITotals — at the START of the LP band
+        if (ctx.ColorFormat is ColorFormat.Yuv420 or ColorFormat.Yuv422)
+        {
+            EncodeLowpassChroma(ctx, mb, w, resetContext);
+            return;
+        }
         var model = ctx.ModelLp;
         var scan = ctx.ScanLowpass;
         var lapMean = new int[2];
@@ -239,6 +255,11 @@ internal static class MacroblockCoder
     internal static void DecodeLowpass(CodingContext ctx, Macroblock mb, ref BitReader r, bool resetContext, bool resetTotals)
     {
         if (resetTotals) ctx.ScanLowpass.Reset(); // jxrlib m_bResetRGITotals — at the START of the LP band
+        if (ctx.ColorFormat is ColorFormat.Yuv420 or ColorFormat.Yuv422)
+        {
+            DecodeLowpassChroma(ctx, mb, ref r, resetContext);
+            return;
+        }
         var model = ctx.ModelLp;
         var scan = ctx.ScanLowpass;
         var lapMean = new int[2];
@@ -320,6 +341,189 @@ internal static class MacroblockCoder
 
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, model);
         if (resetContext) ctx.AdaptLowpass();
+    }
+
+    // ----------------------------------------------------------- LP band (chroma 420/422)
+
+    // segenc.c EncodeMacroblockLowpass, YUV420/422 branch. A luma pass (channel 0, standard scan +
+    // residual refinement) and a single joint U+V pass: the two chroma planes are interleaved into
+    // one run/level stream via LpChromaRemap (iLocation 10 for 420 / 2 for 422), with an
+    // interleaved-sign refinement. The LP-CBP is a 2-channel (iFullChannels=2, iMax=3) pattern.
+    private static void EncodeLowpassChroma(CodingContext ctx, Macroblock mb, BitWriter w, bool resetContext)
+    {
+        var model = ctx.ModelLp;
+        var scan = ctx.ScanLowpass;
+        var lapMean = new int[2];
+        bool is420 = ctx.ColorFormat == ColorFormat.Yuv420;
+        int remapOff = is420 ? 1 : 0;
+        int count = is420 ? 6 : 14;
+
+        // luma scan (iFullChannels begins at 1)
+        int mbitsY = model.FlcBits[0];
+        var rlY = new int[32];
+        var residualY = new int[16];
+        int numY = ScanCoefficients(mb.BlockDc[0], 0, residualY, scan, mbitsY, rlY);
+
+        // gather the two chroma planes into one interleaved run/level stream
+        int mbitsC = model.FlcBits[1];
+        var rlC = new int[32];
+        var bufU = new int[16];
+        var bufV = new int[16];
+        int run = 0, numC = 0;
+        for (var k = 0; k < count; k++)
+        {
+            int idx = LpChromaRemap[remapOff + (k >> 1)];
+            int dc = mb.BlockDc[(k & 1) + 1][idx];
+            int val = Math.Abs(dc) >> mbitsC;
+            if ((k & 1) == 0) bufU[idx] = val; else bufV[idx] = val;
+            if (val != 0) { rlC[numC * 2] = run; rlC[numC * 2 + 1] = dc < 0 ? -val : val; numC++; run = 0; }
+            else run++;
+        }
+
+        // LP-CBP (iFullChannels = 2, iMax = 3)
+        const int max = 2 * 4 - 5; // 3
+        int cbp = (numY > 0 ? 1 : 0) + (numC > 0 ? 2 : 0);
+        int countM = ctx.CbpCountMax, countZ = ctx.CbpCountZero;
+        if (countZ <= 0 || countM < 0)
+        {
+            int val = countM < countZ ? max - cbp : cbp;
+            if (val == 0) w.WriteBits(0, 1);
+            else if (val == 1) w.WriteBits((2 + 1) & 0x6, 2);     // (iFullChannels+1)&6, width iFullChannels
+            else w.WriteBits((uint)(val + max + 1), 2 + 1);       // width iFullChannels+1
+        }
+        else
+        {
+            w.WriteBits((uint)cbp, 2);
+        }
+        ctx.CbpCountMax = Clamp8(countM + 1 - 4 * (cbp == max ? 1 : 0));
+        ctx.CbpCountZero = Clamp8(countZ + 1 - 4 * (cbp == 0 ? 1 : 0));
+
+        // pass 0: luma
+        if (numY != 0) { lapMean[0] += numY; EncodeBlock(false, rlY, numY, ctx, CtDc, w, 1); }
+        if (mbitsY != 0)
+            for (var k = 1; k < 16; k++)
+                w.WriteBits((uint)(residualY[k] >> 1), mbitsY + (residualY[k] & 1));
+
+        // pass 1: joint U+V (interleaved refinement: U[k] then V[k], k = 1..3 / 1..7)
+        if (numC != 0) { lapMean[1] += numC; EncodeBlock(true, rlC, numC, ctx, CtDc, w, is420 ? 10 : 2); }
+        if (mbitsC != 0)
+        {
+            int refCount = is420 ? 4 : 8;
+            for (var k = 1; k < refCount; k++)
+            {
+                int u = mb.BlockDc[1][k];
+                w.WriteBits((uint)Math.Abs(u), mbitsC);
+                if (bufU[k] == 0 && u != 0) w.WriteBit(u < 0);
+                int v = mb.BlockDc[2][k];
+                w.WriteBits((uint)Math.Abs(v), mbitsC);
+                if (bufV[k] == 0 && v != 0) w.WriteBit(v < 0);
+            }
+        }
+
+        ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, model);
+        if (resetContext) ctx.AdaptLowpass();
+    }
+
+    // segdec.c DecodeMacroblockLowpass, YUV420/422 branch — exact mirror of EncodeLowpassChroma.
+    private static void DecodeLowpassChroma(CodingContext ctx, Macroblock mb, ref BitReader r, bool resetContext)
+    {
+        var model = ctx.ModelLp;
+        var scan = ctx.ScanLowpass;
+        var lapMean = new int[2];
+        bool is420 = ctx.ColorFormat == ColorFormat.Yuv420;
+        int remapOff = is420 ? 1 : 0;
+        int count = is420 ? 6 : 14;
+
+        // LP-CBP (iFullPlanes = 2, iMax = 3)
+        const int max = 2 * 4 - 5;
+        int countM = ctx.CbpCountMax, countZ = ctx.CbpCountZero;
+        int cbp;
+        if (countZ <= 0 || countM < 0)
+        {
+            cbp = 0;
+            if (r.ReadBit())
+            {
+                cbp = 1;
+                int k = (int)r.ReadBits(2 - 1);
+                if (k != 0) cbp = k * 2 + (int)r.ReadBits(1);
+            }
+            if (countM < countZ) cbp = max - cbp;
+        }
+        else cbp = (int)r.ReadBits(2);
+        ctx.CbpCountMax = Clamp8(countM + 1 - 4 * (cbp == max ? 1 : 0));
+        ctx.CbpCountZero = Clamp8(countZ + 1 - 4 * (cbp == 0 ? 1 : 0));
+
+        // pass 0: luma
+        int mbitsY = model.FlcBits[0];
+        if ((cbp & 1) != 0)
+        {
+            var rl = new int[32];
+            int n = DecodeBlock(false, rl, ctx, CtDc, ref r, 1);
+            lapMean[0] += n;
+            int idx = 1;
+            for (var k = 0; k < n; k++) { idx += rl[k * 2]; mb.BlockDc[0][scan.Scan[idx]] = rl[k * 2 + 1]; scan.Visit(idx); idx++; }
+        }
+        if (mbitsY != 0) DecodeLpResidual(mb.BlockDc[0], ref r, mbitsY);
+
+        // pass 1: joint U+V
+        int mbitsC = model.FlcBits[1];
+        if ((cbp & 2) != 0)
+        {
+            var rl = new int[32];
+            int n = DecodeBlock(true, rl, ctx, CtDc, ref r, is420 ? 10 : 2);
+            lapMean[1] += n;
+            var aTemp = new int[16];
+            int idx = 0;
+            for (var k = 0; k < n; k++) { idx += rl[k * 2]; aTemp[idx & 0xf] = rl[k * 2 + 1]; idx++; }
+            for (var k = 0; k < count; k++)
+                mb.BlockDc[(k & 1) + 1][LpChromaRemap[remapOff + (k >> 1)]] = aTemp[k];
+        }
+        if (mbitsC != 0)
+        {
+            int refCount = is420 ? 4 : 8;
+            for (var k = 1; k < refCount; k++)
+            {
+                mb.BlockDc[1][k] = RefineLpChroma(mb.BlockDc[1][k], ref r, mbitsC);
+                mb.BlockDc[2][k] = RefineLpChroma(mb.BlockDc[2][k], ref r, mbitsC);
+            }
+        }
+
+        ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, model);
+        if (resetContext) ctx.AdaptLowpass();
+    }
+
+    // The 444 LP luma-residual decode (the RotateLeft refinement), reused for the luma pass of the
+    // chroma LP band. Mirrors the inline block in DecodeLowpass.
+    private static void DecodeLpResidual(int[] coeffs, ref BitReader r, int mbits)
+    {
+        int mask = (1 << mbits) - 1;
+        for (var k = 1; k < 16; k++)
+        {
+            if (coeffs[k] != 0)
+            {
+                int r1 = (int)BitOperations.RotateLeft((uint)coeffs[k], mbits);
+                coeffs[k] = (r1 ^ (int)r.ReadBits(mbits)) - (r1 & mask);
+            }
+            else
+            {
+                uint v = r.PeekBits(mbits + 1);
+                int val = (int)((v >> 1) ^ (uint)-(int)(v & 1)) + (int)(v & 1);
+                coeffs[k] = val;
+                r.SkipBits(mbits + (val != 0 ? 1 : 0));
+            }
+        }
+    }
+
+    // segdec.c chroma LP refinement of one coefficient: <paramref name="hi"/> is the run/level high
+    // part already scattered into the plane; fold in the low <paramref name="mbits"/> bits (sign in
+    // the high part when present, else a trailing sign bit on a nonzero value).
+    private static int RefineLpChroma(int hi, ref BitReader r, int mbits)
+    {
+        if (hi > 0) return (hi << mbits) + (int)r.ReadBits(mbits);
+        if (hi < 0) return (hi << mbits) - (int)r.ReadBits(mbits);
+        int v = (int)r.ReadBits(mbits);
+        if (v != 0 && r.ReadBit()) v = -v;
+        return v;
     }
 
     // ===================================================================== HP band
