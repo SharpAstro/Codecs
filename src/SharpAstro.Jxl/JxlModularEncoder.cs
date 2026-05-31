@@ -16,6 +16,8 @@ internal static class JxlModularEncoder
     private static readonly JxlIntegerConfig TreeConfig = JxlIntegerConfig.Create(4, 0, 0);
     private static readonly JxlIntegerConfig SampleConfig = JxlIntegerConfig.Create(4, 0, 0);
 
+    private const int RctType = 6; // permutation 0, transform 6 = YCoCg-R
+
     /// <summary>
     /// Encodes <paramref name="channels"/> (one row-major integer grid per colour channel, length
     /// <c>width*height</c>) as a bare .jxl codestream. <paramref name="grayscale"/> selects 1 vs 3
@@ -37,14 +39,26 @@ internal static class JxlModularEncoder
         while (groupSizeShift < 3 && (128 << groupSizeShift) < Math.Max(width, height))
             groupSizeShift++;
 
-        byte[] section = BuildSection(channels, width, height);
+        // RGB is decorrelated with the reversible YCoCg-R colour transform (RCT type 6) before
+        // prediction — the same transform libjxl applies for lossless RGB. Grey has nothing to
+        // decorrelate. The YCoCg-R domain needs ~1 extra bit of headroom, so 16-bit sample buffers
+        // only suffice up to 14-bit input; wider inputs force 32-bit modular buffers.
+        bool useRct = !grayscale;
+        int[][] encChannels = channels;
+        if (useRct)
+        {
+            encChannels = [(int[])channels[0].Clone(), (int[])channels[1].Clone(), (int[])channels[2].Clone()];
+            JxlRct.Forward(RctType, encChannels, beginC: 0);
+        }
+
+        byte[] section = BuildSection(encChannels, width, height, useRct);
 
         var bw = new JxlBitWriter();
         bw.WriteBits(0xFF, 8);
         bw.WriteBits(0x0A, 8); // codestream signature FF 0A
 
         WriteSizeHeader(bw, width, height);
-        WriteImageMetadata(bw, bitsPerSample, grayscale);
+        WriteImageMetadata(bw, bitsPerSample, grayscale, useRct);
         WriteFrameHeader(bw, groupSizeShift);
         WriteToc(bw, section.Length);
 
@@ -65,13 +79,14 @@ internal static class JxlModularEncoder
     private static void WriteDimension(JxlBitWriter bw, int value) =>
         bw.WriteU32((uint)(value - 1), (0, 9), (0, 13), (0, 18), (0, 30));
 
-    private static void WriteImageMetadata(JxlBitWriter bw, int bitsPerSample, bool grayscale)
+    private static void WriteImageMetadata(JxlBitWriter bw, int bitsPerSample, bool grayscale, bool useRct)
     {
         bw.WriteBit(false); // all_default = false (we are not XYB)
         bw.WriteBit(false); // extra_fields = false
 
         new JxlBitDepth { FloatingPoint = false, BitsPerSample = bitsPerSample, ExponentBits = 0 }.Write(bw);
-        bw.WriteBit(bitsPerSample <= 16);        // modular_16bit_buffers
+        int maxBufferBits = useRct ? 14 : 16;    // RCT (YCoCg-R) needs ~1 extra bit of headroom
+        bw.WriteBit(bitsPerSample <= maxBufferBits); // modular_16bit_buffers
         bw.WriteU32(0, (0, 0), (1, 0), (2, 4), (1, 12)); // num_extra_channels = 0
         bw.WriteBit(false);                       // xyb_encoded = false
 
@@ -135,7 +150,7 @@ internal static class JxlModularEncoder
 
     // ---- the single TOC section: LfGlobal + GlobalModular + tree + samples ----
 
-    private static byte[] BuildSection(int[][] channels, int width, int height)
+    private static byte[] BuildSection(int[][] channels, int width, int height, bool useRct)
     {
         var sec = new JxlBitWriter();
 
@@ -148,12 +163,28 @@ internal static class JxlModularEncoder
         // Local modular header.
         sec.WriteBit(false); // use_global_tree = false
         sec.WriteBit(true);  // wp default_wp
-        sec.WriteU32(0, (0, 0), (1, 0), (2, 4), (18, 8)); // nb_transforms = 0
+        if (useRct)
+        {
+            sec.WriteU32(1, (0, 0), (1, 0), (2, 4), (18, 8)); // nb_transforms = 1
+            WriteRctTransform(sec);
+        }
+        else
+        {
+            sec.WriteU32(0, (0, 0), (1, 0), (2, 4), (18, 8)); // nb_transforms = 0
+        }
 
         WriteSingleLeafTree(sec);
         WriteSamples(sec, channels, width, height);
 
         return sec.ToArray();
+    }
+
+    // Inverse of JxlTransform.Parse for an RCT: tag 0, begin_c 0, rct_type (YCoCg-R).
+    private static void WriteRctTransform(JxlBitWriter sec)
+    {
+        sec.WriteBits((uint)JxlTransformType.Rct, 2);
+        sec.WriteU32(0, (0, 3), (8, 6), (72, 10), (1096, 13)); // begin_c = 0
+        sec.WriteU32(RctType, (6, 0), (0, 2), (2, 4), (10, 6)); // rct_type
     }
 
     // A one-node MA tree: property==0 marks a leaf; then predictor / offset / mul_log / mul_bits.
