@@ -30,4 +30,17 @@ internal readonly struct JxlBitDepth
         int exponentBits = 1 + (int)br.ReadBits(4);
         return new JxlBitDepth { FloatingPoint = true, BitsPerSample = bits, ExponentBits = exponentBits };
     }
+
+    /// <summary>Inverse of <see cref="Read"/>.</summary>
+    public void Write(JxlBitWriter bw)
+    {
+        bw.WriteBit(FloatingPoint);
+        if (!FloatingPoint)
+        {
+            bw.WriteU32((uint)BitsPerSample, (8, 0), (10, 0), (12, 0), (1, 6));
+            return;
+        }
+        bw.WriteU32((uint)BitsPerSample, (32, 0), (16, 0), (24, 0), (1, 6));
+        bw.WriteBits((uint)(ExponentBits - 1), 4);
+    }
 }
