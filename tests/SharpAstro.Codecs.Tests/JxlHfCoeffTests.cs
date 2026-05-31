@@ -99,6 +99,39 @@ public sealed class JxlHfCoeffTests
     }
 
     [Fact]
+    public void HfGlobal_DrivesPassGroupDecode_RoundTrips()
+    {
+        // The real 5j+5k integration: encode HF coeffs -> symbols; HfGlobal carries the header +
+        // hf_dist entropy config; the PassGroup carries the coded symbols; HfGlobal.Read's parsed
+        // decoder drives JxlHfCoeff.Decode back to the exact coefficient planes.
+        JxlHfCoeff.Params p = MakeParams(4, 4);
+        int[][] planes = MakeCoeffPlanes(4, 4);
+        List<(int Ctx, uint Value)> stream = JxlHfCoeff.Encode(p, planes);
+
+        byte[] contextMap = new byte[CtxSize];
+        JxlIntegerConfig[] configs = [JxlIntegerConfig.Create(4, 0, 0)];
+        var enc = new JxlEntropyEncoder(contextMap, configs);
+        JxlEntropyEncoder.Plan plan = enc.Prepare(stream);
+
+        var hfgBw = new JxlBitWriter();
+        JxlHfGlobal.Write(hfgBw, numGroups: 1, numHfPresets: 1, enc, plan);
+        var passBw = new JxlBitWriter();
+        enc.WriteData(passBw, plan, stream);
+
+        var hfgBr = new JxlBitReader(hfgBw.ToArray());
+        JxlHfGlobal hf = JxlHfGlobal.Read(ref hfgBr, numGroups: 1, numBlockClusters: NumBlockClusters);
+
+        var passBr = new JxlBitReader(passBw.ToArray());
+        var outPlanes = new int[3][];
+        for (int c = 0; c < 3; c++)
+            outPlanes[c] = new int[4 * 8 * 4 * 8];
+        JxlHfCoeff.Decode(ref passBr, hf.HfDist, hf.HfDist.ClusterMap, hf.NumHfPresets, p, outPlanes);
+
+        for (int c = 0; c < 3; c++)
+            outPlanes[c].ShouldBe(planes[c], $"channel {c}");
+    }
+
+    [Fact]
     public void HfCoeff_DenseBlock_RoundTrips()
     {
         // A fully-dense block (every AC coefficient non-zero) drives non_zeros to its max and walks

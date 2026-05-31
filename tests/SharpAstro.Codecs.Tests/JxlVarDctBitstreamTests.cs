@@ -40,6 +40,47 @@ public sealed class JxlVarDctBitstreamTests
     }
 
     [Theory]
+    [InlineData(1, 1)]   // num_groups=1 -> 0 preset bits -> num_hf_presets forced to 1
+    [InlineData(4, 3)]   // num_groups=4 -> 2 preset bits -> presets in [1,4]
+    [InlineData(16, 7)]  // num_groups=16 -> 4 preset bits
+    public void HfGlobal_Header_RoundTrips(int numGroups, int numHfPresets)
+    {
+        const int numBlockClusters = 15;
+        int ctxSize = 495 * numHfPresets * numBlockClusters;
+
+        // A synthetic hf_dist symbol stream so the entropy config carried by HfGlobal is non-trivial.
+        var stream = new List<(int Ctx, uint Value)>();
+        uint s = 0x1234;
+        for (int k = 0; k < 200; k++)
+        {
+            s = s * 1664525 + 1013904223;
+            stream.Add(((int)(s % (uint)ctxSize), s % 50));
+        }
+
+        byte[] contextMap = new byte[ctxSize]; // all -> 1 cluster
+        JxlIntegerConfig[] configs = [JxlIntegerConfig.Create(4, 0, 0)];
+        var enc = new JxlEntropyEncoder(contextMap, configs);
+        JxlEntropyEncoder.Plan plan = enc.Prepare(stream);
+
+        var bw = new JxlBitWriter();
+        JxlHfGlobal.Write(bw, numGroups, numHfPresets, enc, plan);
+        var dataBw = new JxlBitWriter();
+        enc.WriteData(dataBw, plan, stream);
+
+        var br = new JxlBitReader(bw.ToArray());
+        JxlHfGlobal hf = JxlHfGlobal.Read(ref br, numGroups, numBlockClusters);
+        hf.NumHfPresets.ShouldBe(numHfPresets);
+        hf.DequantMatrices.ShouldNotBeNull();
+
+        // The hf_dist config parsed out of HfGlobal must decode the (separate) PassGroup-style data.
+        var dataBr = new JxlBitReader(dataBw.ToArray());
+        hf.HfDist.Begin(ref dataBr);
+        foreach ((int ctx, uint value) in stream)
+            hf.HfDist.ReadVarintClustered(ref dataBr, hf.HfDist.ClusterMap[ctx], 0).ShouldBe(value);
+        hf.HfDist.Finish();
+    }
+
+    [Theory]
     [InlineData(0, 8, 8)]   // Dct8: 64 single-cell blocks
     [InlineData(4, 4, 4)]   // Dct16: 4 blocks, 2x2 cells each
     [InlineData(4, 8, 8)]   // Dct16: 16 blocks
