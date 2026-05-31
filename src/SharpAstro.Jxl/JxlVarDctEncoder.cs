@@ -91,7 +91,8 @@ internal static class JxlVarDctEncoder
         bwr.WriteBits(0xFF, 8);
         bwr.WriteBits(0x0A, 8); // codestream signature FF 0A
         WriteSizeHeader(bwr, width, height);
-        bwr.WriteBit(true); // ImageMetadata all_default => xyb_encoded, 8-bit, sRGB, default opsin
+        bwr.WriteBit(true); // ImageMetadata all_default => xyb_encoded, 8-bit, sRGB
+        bwr.WriteBit(true); // default_m = true (read unconditionally, even when all_default) => default opsin matrix
         WriteFrameHeader(bwr);
         WriteToc(bwr, section.Length);
         bwr.WriteBytes(section);

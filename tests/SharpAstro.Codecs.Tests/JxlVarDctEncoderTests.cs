@@ -6,10 +6,12 @@ using Xunit;
 namespace SharpAstro.Codecs.Tests;
 
 /// <summary>
-/// VarDCT 5m — the capstone: our assembled lossy VarDCT .jxl must be decoded by libjxl (via Magick),
-/// and the reconstruction must be close (lossy, so RMSE not bit-exact). This is the end-to-end proof
-/// that the frame framing (ImageMetadata/FrameHeader/TOC) + all four sections compose into a file the
-/// reference decoder accepts.
+/// VarDCT 5m — the capstone: our assembled lossy VarDCT .jxl is decoded by libjxl (via Magick), and
+/// the reconstruction matches within RMSE (lossy). End-to-end proof that the frame framing
+/// (ImageMetadata incl. the unconditional <c>default_m</c> bit / FrameHeader / TOC) + all four sections
+/// (LfGlobal / LfGroup / HfGlobal / PassGroup) compose into a file the reference decoder accepts and
+/// reconstructs correctly. (Independently confirmed against a from-source jxl-oxide build during
+/// bring-up.) <see cref="OurDecoder_ParsesLibjxlVarDctOutput"/> checks the reverse direction.
 /// </summary>
 public sealed class JxlVarDctEncoderTests
 {
@@ -91,12 +93,7 @@ public sealed class JxlVarDctEncoderTests
         recon[0].Length.ShouldBe(w * h);
     }
 
-    // libjxl-acceptance of OUR VarDCT frame is the last mile and is currently blocked: the frame
-    // self-round-trips (SelfRoundTrip_Gradient) and our readers parse libjxl's own VarDCT output
-    // (OurDecoder_ParsesLibjxlVarDctOutput), yet libjxl rejects ours with an opaque
-    // "unable to read image data". Isolating it needs a verbose libjxl/jxl-oxide decoder (no
-    // cargo/djxl in this environment) to surface the actual parse error. Re-enable once isolated.
-    [Fact(Skip = "VarDCT->libjxl interop: frame self-round-trips but libjxl rejects (opaque); needs a verbose decoder to isolate.")]
+    [Fact]
     public void Solid_DecodesInLibjxl_LowRmse()
     {
         const int w = 32, h = 32;
@@ -109,7 +106,7 @@ public sealed class JxlVarDctEncoderTests
         Rmse(rgb, img, w, h).ShouldBeLessThan(0.03);
     }
 
-    [Fact(Skip = "VarDCT->libjxl interop: frame self-round-trips but libjxl rejects (opaque); needs a verbose decoder to isolate.")]
+    [Fact]
     public void Gradient_DecodesInLibjxl_LowRmse()
     {
         const int w = 64, h = 48;
