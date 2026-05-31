@@ -16,16 +16,21 @@ namespace SharpAstro.Jxl;
 /// </code>
 ///
 /// <para>
-/// Requires width and height to be multiples of 8 and ≤ 256 (VarDCT fixes the group dim at 256, so this
-/// stays a single group / single LF group). XYB + the default opsin matrix come from the all-default
-/// ImageMetadata; chroma is full-resolution; Gabor/EPF restoration is disabled so the reconstruction is
-/// pure inverse-DCT (matching <see cref="JxlVarDctImage.Decode"/>). The two entropy distributions are
-/// split per the 5i config/data discipline: the Modular sample config rides in GlobalModular's tree and
-/// its data in LfGroup; the hf_dist config rides in HfGlobal and its symbols in the PassGroup.
+/// Requires width and height to be multiples of 8 and ≤ 2048 (one LF group). Up to a single 256-px
+/// group it emits a single-entry TOC (everything bit-contiguous); larger images get a multi-entry TOC
+/// with one byte-aligned PassGroup section per 256×256 region (the HF coefficients are split per group,
+/// which is safe because a varblock never crosses a 256-px border). XYB + the default opsin matrix come
+/// from the all-default ImageMetadata; chroma is full-resolution; Gabor/EPF restoration is disabled so
+/// the reconstruction is pure inverse-DCT. The two entropy distributions are split per the 5i config/
+/// data discipline: the Modular sample config rides in GlobalModular's tree and its data in LfGroup; the
+/// hf_dist config rides in HfGlobal and its symbols are split across the PassGroups.
 /// </para>
 /// </summary>
 internal static class JxlVarDctEncoder
 {
+    /// <summary>Blocks per group edge — VarDCT fixes the group dim at 256 px = 32 blocks.</summary>
+    private const int GroupBlocks = 32;
+
     /// <summary>
     /// Encode 8-bit RGB (<paramref name="rgb"/> = three row-major <c>w·h</c> planes, values 0..255) as a
     /// lossy VarDCT .jxl. The quantizer knobs default to a high-quality setting.
@@ -38,8 +43,10 @@ internal static class JxlVarDctEncoder
             throw new ArgumentException("Expected 3 RGB channels.", nameof(rgb));
         if (width % 8 != 0 || height % 8 != 0)
             throw new NotSupportedException("JPEG XL VarDCT encoder: width/height must be multiples of 8.");
-        if (width > 256 || height > 256)
-            throw new NotSupportedException("JPEG XL VarDCT encoder: only single-group images (≤ 256) are supported.");
+        // ≤ 2048 keeps the whole image inside one LF group (lf_group_dim = 2048); multiple PassGroups
+        // (one per 256×256 region) are produced for anything larger than a single 256-px group.
+        if (width > 2048 || height > 2048)
+            throw new NotSupportedException("JPEG XL VarDCT encoder: images larger than 2048 (multi-LF-group) are not yet supported.");
 
         var srgb = new float[3][];
         for (int c = 0; c < 3; c++)
@@ -57,7 +64,8 @@ internal static class JxlVarDctEncoder
         for (int i = 0; i < blockGrid.Length; i++)
             blockGrid[i] = JxlBlockInfo.Data(JxlVarDctTransform.Dct8, hfMul);
 
-        // LfGroup: LF-DC in modular channel order [Y, X, B]; CfL grids zero (default kx=0, kb=1).
+        // LfGroup (one, covering the whole ≤2048 image): LF-DC in modular channel order [Y, X, B];
+        // CfL grids zero (default kx=0, kb=1).
         int cfW = CeilDiv(width, 64), cfH = CeilDiv(height, 64);
         var lfGroup = new JxlLfGroup
         {
@@ -67,25 +75,21 @@ internal static class JxlVarDctEncoder
             CfW = cfW, CfH = cfH,
             XFromY = new int[cfW * cfH], BFromY = new int[cfW * cfH],
         };
-
-        // HF coefficient symbol stream (physical channel order [X, Y, B], DC positions 0).
-        var hfParams = new JxlHfCoeff.Params
-        {
-            Bw = bw, Bh = bh, BlockGrid = blockGrid,
-            NumBlockClusters = 15, BlockCtxMap = JxlLfGlobalVarDct.DefaultBlockCtxMap,
-        };
-        List<(int Ctx, uint Value)> hfStream = JxlHfCoeff.Encode(hfParams, enc.HfQuant);
-
-        // Entropy plans: the Modular sample distribution (lf + hf_meta) and the hf_dist distribution.
         (List<(int Ctx, uint Value)> lfStream, List<(int Ctx, uint Value)> hfMetaStream) = lfGroup.BuildStreams();
         JxlEntropyEncoder sampleEnc = JxlModularSubimage.NewSampleEncoder();
         JxlEntropyEncoder.Plan samplePlan = sampleEnc.Prepare(lfStream, hfMetaStream);
 
+        // HF coefficients, split into one symbol stream per 32×32-block PassGroup region. A varblock
+        // never crosses a 256-px border, so each group's coefficients are self-contained.
+        int gpr = CeilDiv(bw, GroupBlocks), gpc = CeilDiv(bh, GroupBlocks);
+        int numGroups = gpr * gpc;
+        var hfStreams = new List<(int Ctx, uint Value)>[numGroups];
+        for (int g = 0; g < numGroups; g++)
+            hfStreams[g] = BuildGroupHfStream(enc, blockGrid, bw, gpr, hfMul, g);
+
         const int ctxSize = 495 * 15;
         var hfDistEnc = new JxlEntropyEncoder(new byte[ctxSize], [JxlIntegerConfig.Create(4, 0, 0)]);
-        JxlEntropyEncoder.Plan hfDistPlan = hfDistEnc.Prepare(hfStream);
-
-        byte[] section = BuildSection(globalScale, quantLf, lfGroup, sampleEnc, samplePlan, lfStream, hfMetaStream, hfDistEnc, hfDistPlan, hfStream);
+        JxlEntropyEncoder.Plan hfDistPlan = hfDistEnc.Prepare(hfStreams); // one shared distribution over all groups
 
         var bwr = new JxlBitWriter();
         bwr.WriteBits(0xFF, 8);
@@ -94,38 +98,99 @@ internal static class JxlVarDctEncoder
         bwr.WriteBit(true); // ImageMetadata all_default => xyb_encoded, 8-bit, sRGB
         bwr.WriteBit(true); // default_m = true (read unconditionally, even when all_default) => default opsin matrix
         WriteFrameHeader(bwr);
-        WriteToc(bwr, section.Length);
-        bwr.WriteBytes(section);
+
+        if (numGroups == 1)
+        {
+            // num_groups == 1 && num_passes == 1: a single TOC entry holds the whole body bit-contiguously.
+            var sec = new JxlBitWriter();
+            WriteLfGlobalPart(sec, globalScale, quantLf, sampleEnc, samplePlan);
+            lfGroup.Write(sec, sampleEnc, samplePlan, lfStream, hfMetaStream);
+            JxlHfGlobal.Write(sec, numGroups: 1, numHfPresets: 1, hfDistEnc, hfDistPlan);
+            WritePassGroupPart(sec, hfDistEnc, hfDistPlan, hfStreams[0], numHfPresets: 1);
+            byte[] body = sec.ToArray();
+            WriteToc(bwr, body.Length);
+            bwr.WriteBytes(body);
+        }
+        else
+        {
+            // Multi-entry TOC: LfGlobal, LfGroup(s), HfGlobal, then one PassGroup per group — each a
+            // separate byte-aligned section.
+            var lfGlobalSec = new JxlBitWriter();
+            WriteLfGlobalPart(lfGlobalSec, globalScale, quantLf, sampleEnc, samplePlan);
+            var lfGroupSec = new JxlBitWriter();
+            lfGroup.Write(lfGroupSec, sampleEnc, samplePlan, lfStream, hfMetaStream);
+            var hfGlobalSec = new JxlBitWriter();
+            JxlHfGlobal.Write(hfGlobalSec, numGroups, numHfPresets: 1, hfDistEnc, hfDistPlan);
+
+            var sections = new List<byte[]> { lfGlobalSec.ToArray(), lfGroupSec.ToArray(), hfGlobalSec.ToArray() };
+            for (int g = 0; g < numGroups; g++)
+            {
+                var passSec = new JxlBitWriter();
+                WritePassGroupPart(passSec, hfDistEnc, hfDistPlan, hfStreams[g], numHfPresets: 1);
+                sections.Add(passSec.ToArray());
+            }
+
+            WriteTocMulti(bwr, sections.Select(s => s.Length).ToArray());
+            foreach (byte[] s in sections)
+                bwr.WriteBytes(s);
+        }
+
         return bwr.ToArray();
     }
 
-    private static byte[] BuildSection(
-        int globalScale, int quantLf, JxlLfGroup lfGroup,
-        JxlEntropyEncoder sampleEnc, JxlEntropyEncoder.Plan samplePlan,
-        List<(int Ctx, uint Value)> lfStream, List<(int Ctx, uint Value)> hfMetaStream,
-        JxlEntropyEncoder hfDistEnc, JxlEntropyEncoder.Plan hfDistPlan, List<(int Ctx, uint Value)> hfStream)
+    /// <summary>Build the HF symbol stream for PassGroup <paramref name="g"/> (a ≤32×32-block region).</summary>
+    private static List<(int Ctx, uint Value)> BuildGroupHfStream(
+        JxlVarDctImage.Encoded enc, JxlBlockInfo[] blockGrid, int bw, int gpr, int hfMul, int g)
     {
-        var sec = new JxlBitWriter();
+        int gcol = g % gpr, grow = g / gpr;
+        int bx0 = gcol * GroupBlocks, by0 = grow * GroupBlocks;
+        int bwG = Math.Min(GroupBlocks, bw - bx0);
+        int bhG = Math.Min(GroupBlocks, enc.Bh - by0);
 
+        var subGrid = new JxlBlockInfo[bwG * bhG];
+        for (int y = 0; y < bhG; y++)
+            for (int x = 0; x < bwG; x++)
+                subGrid[y * bwG + x] = blockGrid[(by0 + y) * bw + (bx0 + x)];
+
+        int gridW = bw * 8, subW = bwG * 8;
+        var subCoeff = new int[3][];
+        for (int c = 0; c < 3; c++)
+        {
+            subCoeff[c] = new int[subW * (bhG * 8)];
+            for (int py = 0; py < bhG * 8; py++)
+                for (int px = 0; px < bwG * 8; px++)
+                    subCoeff[c][py * subW + px] = enc.HfQuant[c][(by0 * 8 + py) * gridW + bx0 * 8 + px];
+        }
+
+        var p = new JxlHfCoeff.Params
+        {
+            Bw = bwG, Bh = bhG, BlockGrid = subGrid,
+            NumBlockClusters = 15, BlockCtxMap = JxlLfGlobalVarDct.DefaultBlockCtxMap,
+        };
+        return JxlHfCoeff.Encode(p, subCoeff);
+    }
+
+    private static void WriteLfGlobalPart(
+        JxlBitWriter bw, int globalScale, int quantLf, JxlEntropyEncoder sampleEnc, JxlEntropyEncoder.Plan samplePlan)
+    {
         // LfGlobal: no patches/splines/noise (frame flags = 0); LfChannelDequantization all_default.
-        sec.WriteBit(true); // LfChannelDequantization all_default
-        new JxlLfGlobalVarDct { GlobalScale = globalScale, QuantLf = quantLf }.Write(sec);
+        bw.WriteBit(true); // LfChannelDequantization all_default
+        new JxlLfGlobalVarDct { GlobalScale = globalScale, QuantLf = quantLf }.Write(bw);
 
         // GlobalModular: a global tree (used by the LfGroup sub-images) and no colour channels, so the
         // empty stream-0 modular carries no header at all (jxl-modular Modular::parse short-circuits).
-        sec.WriteBit(true); // global_tree_present
-        JxlModularSubimage.WriteSharedTree(sec, sampleEnc, samplePlan);
+        bw.WriteBit(true); // global_tree_present
+        JxlModularSubimage.WriteSharedTree(bw, sampleEnc, samplePlan);
+    }
 
-        // LfGroup (LfCoeff + HfMetadata).
-        lfGroup.Write(sec, sampleEnc, samplePlan, lfStream, hfMetaStream);
-
-        // HfGlobal.
-        JxlHfGlobal.Write(sec, numGroups: 1, numHfPresets: 1, hfDistEnc, hfDistPlan);
-
-        // PassGroup: num_hf_presets == 1 => no hfp bits; then the HF coefficient data.
-        hfDistEnc.WriteData(sec, hfDistPlan, hfStream);
-
-        return sec.ToArray();
+    private static void WritePassGroupPart(
+        JxlBitWriter bw, JxlEntropyEncoder hfDistEnc, JxlEntropyEncoder.Plan hfDistPlan,
+        List<(int Ctx, uint Value)> hfStream, int numHfPresets)
+    {
+        int hfpBits = JxlHfGlobal.CeilLog2(numHfPresets);
+        if (hfpBits > 0)
+            bw.WriteBits(0, hfpBits); // select HF preset 0
+        hfDistEnc.WriteData(bw, hfDistPlan, hfStream);
     }
 
     // ---- codestream header chain (VarDct variants of the JxlModularEncoder writers) ----
@@ -168,11 +233,14 @@ internal static class JxlVarDctEncoder
         bw.WriteU64(0);     // frame-header extensions (none)
     }
 
-    private static void WriteToc(JxlBitWriter bw, int sectionLength)
+    private static void WriteToc(JxlBitWriter bw, int sectionLength) => WriteTocMulti(bw, [sectionLength]);
+
+    private static void WriteTocMulti(JxlBitWriter bw, int[] sectionLengths)
     {
         bw.WriteBit(false); // permuted = false
         bw.ZeroPadToByte();
-        bw.WriteU32((uint)sectionLength, (0, 10), (1024, 14), (17408, 22), (4211712, 30));
+        foreach (int len in sectionLengths)
+            bw.WriteU32((uint)len, (0, 10), (1024, 14), (17408, 22), (4211712, 30));
         bw.ZeroPadToByte();
     }
 

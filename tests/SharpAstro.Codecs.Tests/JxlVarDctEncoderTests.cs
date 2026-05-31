@@ -36,6 +36,21 @@ public sealed class JxlVarDctEncoderTests
         return ch;
     }
 
+    // A gradient that varies smoothly across the whole image (every 256-px group sees a different
+    // sub-ramp), so a scrambled / mis-offset PassGroup would blow up the RMSE.
+    private static int[][] FullGradient(int w, int h)
+    {
+        var ch = new int[3][];
+        for (int c = 0; c < 3; c++)
+        {
+            ch[c] = new int[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    ch[c][y * w + x] = Math.Clamp(x * 200 / w + y * 40 / h + c * 15, 0, 255);
+        }
+        return ch;
+    }
+
     private static double Rmse(int[][] rgb, MagickImage img, int w, int h)
     {
         using IPixelCollection<float> px = img.GetPixels();
@@ -73,6 +88,42 @@ public sealed class JxlVarDctEncoderTests
                 sumSq += e * e;
             }
         Math.Sqrt(sumSq / (3.0 * w * h)).ShouldBeLessThan(0.03);
+    }
+
+    [Theory]
+    [InlineData(384, 320)] // 2x2 groups
+    [InlineData(520, 264)] // 3x2 groups, partial last column
+    public void MultiGroup_SelfRoundTrip_ReconstructsWithinTolerance(int w, int h)
+    {
+        int[][] rgb = FullGradient(w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+
+        int[][] recon = JxlVarDctFrame.DecodeToRgb24(jxl);
+
+        double sumSq = 0;
+        for (int c = 0; c < 3; c++)
+            for (int i = 0; i < w * h; i++)
+            {
+                double e = (rgb[c][i] - recon[c][i]) / 255.0;
+                sumSq += e * e;
+            }
+        Math.Sqrt(sumSq / (3.0 * w * h)).ShouldBeLessThan(0.05);
+    }
+
+    [Theory]
+    [InlineData(264, 264)] // 2x2 groups (just over one 256-px group)
+    [InlineData(512, 256)] // 2x1 groups
+    [InlineData(384, 320)] // 2x2 groups
+    [InlineData(520, 520)] // 3x3 groups (last group partial: 520 = 2*256 + 8)
+    public void MultiGroup_DecodesInLibjxl_LowRmse(int w, int h)
+    {
+        int[][] rgb = FullGradient(w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+
+        using var img = new MagickImage(jxl); // libjxl decode — throws if malformed
+        img.Width.ShouldBe((uint)w);
+        img.Height.ShouldBe((uint)h);
+        Rmse(rgb, img, w, h).ShouldBeLessThan(0.05);
     }
 
     [Fact]
