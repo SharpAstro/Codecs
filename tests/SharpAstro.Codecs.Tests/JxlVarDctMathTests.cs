@@ -361,4 +361,39 @@ public sealed class JxlVarDctMathTests
         for (int i = 0; i < width * height; i++)
             recon[i].ShouldBe(pixels[i], tolerance: 3e-4f);
     }
+
+    [Theory]
+    [InlineData(0, 8, 8)]
+    [InlineData(1, 8, 8)]
+    [InlineData(2, 16, 16)]
+    [InlineData(3, 32, 32)]
+    [InlineData(4, 16, 8)]
+    [InlineData(5, 32, 8)]
+    [InlineData(6, 32, 16)]
+    [InlineData(7, 64, 64)]
+    [InlineData(8, 64, 32)]
+    [InlineData(9, 128, 128)]
+    [InlineData(10, 128, 64)]
+    [InlineData(11, 256, 256)]
+    [InlineData(12, 256, 128)]
+    public void CoeffOrder_NaturalOrder_IsBijectionOntoGrid(int orderId, int w, int h)
+    {
+        (int X, int Y)[] order = JxlCoeffOrder.NaturalOrder(orderId);
+        order.Length.ShouldBe(w * h);
+
+        var seen = new HashSet<int>(w * h);
+        foreach ((int x, int y) in order)
+        {
+            x.ShouldBeInRange(0, w - 1);
+            y.ShouldBeInRange(0, h - 1);
+            seen.Add(y * w + x).ShouldBeTrue(); // each position exactly once
+        }
+        seen.Count.ShouldBe(w * h);
+    }
+
+    [Fact]
+    public void CoeffOrder_Dct8_StartsAtDc()
+    {
+        JxlCoeffOrder.NaturalOrder(0)[0].ShouldBe((0, 0)); // the DC coefficient leads the scan
+    }
 }
