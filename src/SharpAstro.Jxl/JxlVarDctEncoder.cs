@@ -37,6 +37,42 @@ internal static class JxlVarDctEncoder
     private const int LfGroupBlocks = 256;
 
     /// <summary>
+    /// Calibrated (libjxl Butteraugli) distance → <c>global_scale</c> curve. Derived by a one-shot
+    /// sweep that matched our reconstruction RMSE to libjxl's own RMSE at the same nominal distance
+    /// (photo-like 256×256, <c>quant_lf = hf_mul = 32</c>). <c>global_scale</c> scales LF+HF quant
+    /// together, so it is the single fidelity knob. The mapping is approximate — we lack libjxl's
+    /// adaptive quantization and restoration filters, so equal RMSE ≠ equal perceptual distance — but
+    /// it gives the right ballpark and a monotone size/quality trade-off.
+    /// </summary>
+    private static readonly (double Distance, int GlobalScale)[] DistanceCurve =
+    [
+        (0.3, 9080), (0.5, 5743), (0.75, 2925), (1.0, 2025), (1.5, 1371),
+        (2.0, 1019), (3.0, 797), (4.0, 649), (6.0, 535),
+    ];
+
+    private const int MinGlobalScale = 256;    // coarsest we allow (extreme distance) — still decodable
+    private const int MaxGlobalScale = 73728;  // bitstream max (finest / near-lossless)
+
+    /// <summary>
+    /// Maps a libjxl-style Butteraugli <paramref name="distance"/> (≈0.1 = near-lossless, 1.0 = high
+    /// quality / libjxl's default, larger = lossier) to the <c>global_scale</c> quantizer knob, via
+    /// log-log interpolation on <see cref="DistanceCurve"/> (end segments extrapolate). Monotone:
+    /// larger distance → smaller global_scale → coarser quantization.
+    /// </summary>
+    public static int GlobalScaleForDistance(double distance)
+    {
+        if (distance <= 0) return MaxGlobalScale; // VarDCT isn't truly lossless; this is just the finest setting
+        (double Distance, int GlobalScale)[] c = DistanceCurve;
+        int i = 0;
+        while (i < c.Length - 2 && distance > c[i + 1].Distance) i++; // segment (or end segment to extrapolate)
+        (double d0, int g0) = c[i];
+        (double d1, int g1) = c[i + 1];
+        double t = (Math.Log(distance) - Math.Log(d0)) / (Math.Log(d1) - Math.Log(d0));
+        double lg = Math.Log(g0) + t * (Math.Log(g1) - Math.Log(g0));
+        return Math.Clamp((int)Math.Round(Math.Exp(lg)), MinGlobalScale, MaxGlobalScale);
+    }
+
+    /// <summary>
     /// Encode 8-bit RGB (<paramref name="rgb"/> = three row-major <c>w·h</c> planes, values 0..255) as a
     /// lossy VarDCT .jxl. The quantizer knobs default to a high-quality setting.
     /// </summary>
