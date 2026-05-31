@@ -207,6 +207,118 @@ public sealed class JxlModularTests
         }
     }
 
+    [Fact]
+    public void Encoder_SelfRoundTrip_PixelExact()
+    {
+        // RGB patterns at 8- and 16-bit precision.
+        AssertRoundTrip(Solid(32, 24, 3, 200, 50, 120), 32, 24, bits: 8, gray: false, "solid-rgb");
+        AssertRoundTrip(Gradient(40, 30, 3, scale: 6), 40, 30, bits: 8, gray: false, "gradient-rgb");
+        AssertRoundTrip(Noise(40, 30, 3, max: 256), 40, 30, bits: 8, gray: false, "noise-rgb8");
+        AssertRoundTrip(Noise(48, 33, 3, max: 65536), 48, 33, bits: 16, gray: false, "noise-rgb16");
+
+        // Grayscale.
+        AssertRoundTrip(Solid(32, 24, 1, 77), 32, 24, bits: 8, gray: true, "solid-gray");
+        AssertRoundTrip(Gradient(50, 40, 1, scale: 5), 50, 40, bits: 8, gray: true, "gradient-gray");
+
+        // Non-8-aligned dimensions, and a width that crosses no group boundary but isn't square.
+        AssertRoundTrip(Noise(17, 23, 3, max: 256), 17, 23, bits: 8, gray: false, "noise-odd");
+        // 1xN and Nx1 edge geometries.
+        AssertRoundTrip(Gradient(1, 64, 3, scale: 4), 1, 64, bits: 8, gray: false, "col");
+        AssertRoundTrip(Gradient(64, 1, 3, scale: 4), 64, 1, bits: 8, gray: false, "row");
+    }
+
+    [Fact]
+    public void Encoder_OutputDecodesInLibjxl_PixelExact()
+    {
+        // The strongest check: libjxl (via Magick) must decode our .jxl, and the pixels must match.
+        // Sample values must stay within the declared bit-depth range (libjxl honours bit_depth).
+        AssertLibjxlDecodes(Solid(32, 24, 3, 200, 50, 120), 32, 24, bits: 8, gray: false, "solid-rgb");
+        AssertLibjxlDecodes(Gradient(40, 30, 3, scale: 3), 40, 30, bits: 8, gray: false, "gradient-rgb"); // max 246
+        AssertLibjxlDecodes(Noise(40, 30, 3, max: 256), 40, 30, bits: 8, gray: false, "noise-rgb");
+        AssertLibjxlDecodes(Solid(32, 24, 1, 77), 32, 24, bits: 8, gray: true, "solid-gray");
+        AssertLibjxlDecodes(Gradient(50, 40, 1, scale: 2), 50, 40, bits: 8, gray: true, "gradient-gray"); // max 176
+        AssertLibjxlDecodes(Noise(17, 23, 3, max: 256), 17, 23, bits: 8, gray: false, "noise-odd");
+
+        // 16-bit: a distinct libjxl bit-depth path. Q16 maps the sample directly (no scaling).
+        AssertLibjxlDecodes(Noise(40, 30, 3, max: 65536), 40, 30, bits: 16, gray: false, "noise-rgb16");
+        AssertLibjxlDecodes(Gradient(64, 48, 3, scale: 400), 64, 48, bits: 16, gray: false, "gradient-rgb16"); // max (63+47+14)*400=49600
+    }
+
+    private static void AssertLibjxlDecodes(int[][] channels, int w, int h, int bits, bool gray, string label)
+    {
+        byte[] jxl = JxlModularEncoder.Encode(channels, w, h, bitsPerSample: bits, grayscale: gray);
+
+        using var img = new MagickImage(jxl); // libjxl decode — throws if our bytes are malformed
+        img.Width.ShouldBe((uint)w, label);
+        img.Height.ShouldBe((uint)h, label);
+
+        // Magick is Q16: an n-bit sample v maps to v * (65535 / (2^n - 1)).
+        int max = (1 << bits) - 1;
+        using IPixelCollection<float> px = img.GetPixels();
+        int magickChannels = (int)px.Channels;
+        float[] values = px.GetValues()!;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                for (int c = 0; c < channels.Length; c++)
+                {
+                    int sample = channels[c][y * w + x];
+                    int expected = (int)Math.Round(sample * 65535.0 / max);
+                    int actual = (int)Math.Round(values[(y * w + x) * magickChannels + c]);
+                    actual.ShouldBe(expected, $"{label} ({x},{y}) ch{c}");
+                }
+    }
+
+    private static void AssertRoundTrip(int[][] channels, int w, int h, int bits, bool gray, string label)
+    {
+        byte[] jxl = JxlModularEncoder.Encode(channels, w, h, bits, gray);
+
+        JxlModularDecodeResult result = JxlModularFrame.Decode(jxl);
+        result.Width.ShouldBe(w, label);
+        result.Height.ShouldBe(h, label);
+        result.ColorChannels.ShouldBe(channels.Length, label);
+        result.BitsPerSample.ShouldBe(bits, label);
+        for (int c = 0; c < channels.Length; c++)
+            result.Channels[c].ShouldBe(channels[c], $"{label} ch{c}");
+    }
+
+    private static int[][] Solid(int w, int h, int nc, params int[] values)
+    {
+        var ch = new int[nc][];
+        for (int c = 0; c < nc; c++)
+        {
+            ch[c] = new int[w * h];
+            Array.Fill(ch[c], values[c]);
+        }
+        return ch;
+    }
+
+    private static int[][] Gradient(int w, int h, int nc, int scale)
+    {
+        var ch = new int[nc][];
+        for (int c = 0; c < nc; c++)
+        {
+            ch[c] = new int[w * h];
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    ch[c][y * w + x] = (x + y + c * 7) * scale;
+        }
+        return ch;
+    }
+
+    private static int[][] Noise(int w, int h, int nc, int max)
+    {
+        var ch = new int[nc][];
+        uint state = 0x9e3779b9;
+        uint Next() { state ^= state << 13; state ^= state >> 17; state ^= state << 5; return state; }
+        for (int c = 0; c < nc; c++)
+        {
+            ch[c] = new int[w * h];
+            for (int i = 0; i < w * h; i++)
+                ch[c][i] = (int)(Next() % (uint)max);
+        }
+        return ch;
+    }
+
     private static void AssertDecodeMatches(MagickImage image, string label, int colorChannels)
     {
         image.Quality = 100; // lossless -> Modular

@@ -12,11 +12,10 @@ namespace SharpAstro.Jxl;
 /// </summary>
 internal sealed class JxlEntropyEncoder
 {
-    private const int Las = 8; // log_alphabet_size -> ANS table size 256
-
     private readonly byte[] _contextMap; // context -> cluster
     private readonly int _numClusters;
     private readonly JxlIntegerConfig[] _configs; // per cluster
+    private int _las; // log_alphabet_size, chosen per Encode call
 
     public JxlEntropyEncoder(byte[] contextMap, JxlIntegerConfig[] configsPerCluster)
     {
@@ -43,18 +42,32 @@ internal sealed class JxlEntropyEncoder
         }
 
         var alphabet = new int[_numClusters];
-        var hist = new JxlAnsHistogram[_numClusters];
+        int maxAlphabet = 1;
         for (int c = 0; c < _numClusters; c++)
         {
             alphabet[c] = maxToken[c] + 1; // tokens 0..maxToken occur
-            if (alphabet[c] > (1 << Las))
-                throw new InvalidOperationException(
-                    $"JPEG XL encoder: token alphabet {alphabet[c]} exceeds ANS table size {1 << Las}.");
+            maxAlphabet = Math.Max(maxAlphabet, alphabet[c]);
+        }
+
+        // log_alphabet_size is shared by all clusters; pick the smallest in [5,8] that fits the
+        // widest alphabet. Smaller tables leave fewer zero-frequency buckets, which keeps the
+        // alias spreading aligned with libjxl's decoder.
+        int las = 5;
+        while (las < 8 && (1 << las) < maxAlphabet)
+            las++;
+        if (maxAlphabet > (1 << las))
+            throw new InvalidOperationException(
+                $"JPEG XL encoder: token alphabet {maxAlphabet} exceeds ANS table size {1 << las}.");
+
+        var hist = new JxlAnsHistogram[_numClusters];
+        for (int c = 0; c < _numClusters; c++)
+        {
             var hw = new JxlBitWriter();
             WriteEvenHeader(hw, alphabet[c]);
             var hr = new JxlBitReader(hw.ToArray());
-            hist[c] = JxlAnsHistogram.Parse(ref hr, Las);
+            hist[c] = JxlAnsHistogram.Parse(ref hr, las);
         }
+        _las = las;
 
         // Reverse rANS pass: collect each symbol's renorm word (0 or 1).
         uint state = JxlAnsHistogram.InitialState;
@@ -93,10 +106,10 @@ internal sealed class JxlEntropyEncoder
                 bw.WriteBits(c, nbits);
         }
 
-        bw.WriteBit(false);               // use_prefix_code = false (ANS)
-        bw.WriteBits((uint)(Las - 5), 2); // log_alphabet_size
+        bw.WriteBit(false);                // use_prefix_code = false (ANS)
+        bw.WriteBits((uint)(_las - 5), 2); // log_alphabet_size
         for (int c = 0; c < _numClusters; c++)
-            _configs[c].Write(bw, Las);
+            _configs[c].Write(bw, _las);
         for (int c = 0; c < _numClusters; c++)
             WriteEvenHeader(bw, alphabet[c]);
     }
