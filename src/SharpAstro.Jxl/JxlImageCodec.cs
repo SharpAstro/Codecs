@@ -12,10 +12,20 @@ public sealed record JxlImage
     /// <summary>Number of colour channels: 1 (grey) or 3 (RGB).</summary>
     public required int ColorChannels { get; init; }
 
-    /// <summary>Declared integer sample precision (e.g. 8 or 16).</summary>
+    /// <summary>Declared sample precision in bits (e.g. 8/16 integer, or 16/32 for float).</summary>
     public required int BitsPerSample { get; init; }
 
-    /// <summary>Row-major samples, <c>[ColorChannels][Width*Height]</c>.</summary>
+    /// <summary>True when the samples are IEEE floats stored as their bit pattern (see <see cref="Channels"/>).</summary>
+    public required bool FloatingPoint { get; init; }
+
+    /// <summary>Exponent-bit count for float samples (8 for F32, 5 for F16); 0 for integer.</summary>
+    public required int ExponentBits { get; init; }
+
+    /// <summary>
+    /// Row-major samples, <c>[ColorChannels][Width*Height]</c>. For integer images these are the
+    /// pixel values; for float images each entry is the IEEE bit pattern reinterpreted as a signed
+    /// integer (F32 = 32-bit pattern, F16 = the 16-bit half pattern sign-extended).
+    /// </summary>
     public required int[][] Channels { get; init; }
 }
 
@@ -44,6 +54,8 @@ public static class JxlImageCodec
             Height = result.Height,
             ColorChannels = result.ColorChannels,
             BitsPerSample = result.BitsPerSample,
+            FloatingPoint = result.FloatingPoint,
+            ExponentBits = result.ExponentBits,
             Channels = result.Channels,
         };
     }
@@ -133,5 +145,147 @@ public static class JxlImageCodec
         if (img.ColorChannels != 1)
             throw new InvalidDataException($"Expected a grayscale JPEG XL image, but it has {img.ColorChannels} colour channel(s).");
         return (img.Width, img.Height, img.Channels[0]);
+    }
+
+    // ---- IEEE float / HDR ----
+    //
+    // JPEG XL stores float samples as their IEEE bit pattern reinterpreted as a signed integer in a
+    // Modular channel (no zigzag remap): F32 = the 32-bit pattern as i32, F16 = the 16-bit half
+    // pattern as i16. These façade methods do that reinterpretation around the integer Modular
+    // codec — the codec itself is bit-exact, so float values round-trip exactly (lossless).
+
+    private static readonly JxlBitDepth F32Depth = new() { FloatingPoint = true, BitsPerSample = 32, ExponentBits = 8 };
+    private static readonly JxlBitDepth F16Depth = new() { FloatingPoint = true, BitsPerSample = 16, ExponentBits = 5 };
+
+    /// <summary>Encodes a 32-bit-float grayscale image (values stored verbatim, not normalised) as a lossless <c>.jxl</c>.</summary>
+    public static byte[] EncodeGrayF32(ReadOnlySpan<float> y, int width, int height)
+    {
+        int[] bits = F32ToBits(y, width * height);
+        return JxlModularEncoder.Encode([bits], width, height, F32Depth, grayscale: true);
+    }
+
+    /// <summary>Decodes a lossless 32-bit-float grayscale <c>.jxl</c> into one channel.</summary>
+    public static (int Width, int Height, float[] Y) DecodeGrayF32(ReadOnlySpan<byte> jxl)
+    {
+        JxlImage img = DecodeFloat(jxl, channels: 1, bits: 32);
+        return (img.Width, img.Height, BitsToF32(img.Channels[0]));
+    }
+
+    /// <summary>Encodes a 16-bit half-float grayscale image as a lossless <c>.jxl</c>.</summary>
+    public static byte[] EncodeGrayF16(ReadOnlySpan<Half> y, int width, int height)
+    {
+        int[] bits = F16ToBits(y, width * height);
+        return JxlModularEncoder.Encode([bits], width, height, F16Depth, grayscale: true);
+    }
+
+    /// <summary>Decodes a lossless 16-bit half-float grayscale <c>.jxl</c> into one channel.</summary>
+    public static (int Width, int Height, Half[] Y) DecodeGrayF16(ReadOnlySpan<byte> jxl)
+    {
+        JxlImage img = DecodeFloat(jxl, channels: 1, bits: 16);
+        return (img.Width, img.Height, BitsToF16(img.Channels[0]));
+    }
+
+    /// <summary>
+    /// Encodes a 16-bit half-float RGB image from an <b>interleaved</b> <c>Half[width*height*3]</c>
+    /// (RGBRGB…) — the consumer's HDR RGB shape — as a lossless <c>.jxl</c>.
+    /// </summary>
+    public static byte[] EncodeRgbF16(ReadOnlySpan<Half> rgb, int width, int height)
+    {
+        int n = width * height;
+        if (rgb.Length < n * 3)
+            throw new ArgumentException("Interleaved RGB half buffer must hold width*height*3 samples.", nameof(rgb));
+        int[] r = new int[n], g = new int[n], b = new int[n];
+        for (int i = 0; i < n; i++) { r[i] = HalfBits(rgb[i * 3]); g[i] = HalfBits(rgb[i * 3 + 1]); b[i] = HalfBits(rgb[i * 3 + 2]); }
+        return JxlModularEncoder.Encode([r, g, b], width, height, F16Depth, grayscale: false);
+    }
+
+    /// <summary>Decodes a lossless 16-bit half-float RGB <c>.jxl</c> into an interleaved <c>Half[width*height*3]</c> buffer.</summary>
+    public static (int Width, int Height, Half[] Rgb) DecodeRgbF16(ReadOnlySpan<byte> jxl)
+    {
+        JxlImage img = DecodeFloat(jxl, channels: 3, bits: 16);
+        int n = img.Width * img.Height;
+        var rgb = new Half[n * 3];
+        for (int i = 0; i < n; i++)
+        {
+            rgb[i * 3] = HalfFromBits(img.Channels[0][i]);
+            rgb[i * 3 + 1] = HalfFromBits(img.Channels[1][i]);
+            rgb[i * 3 + 2] = HalfFromBits(img.Channels[2][i]);
+        }
+        return (img.Width, img.Height, rgb);
+    }
+
+    /// <summary>
+    /// Encodes a 32-bit-float RGB image from an <b>interleaved</b> <c>float[width*height*3]</c>
+    /// (RGBRGB…), values verbatim, as a lossless <c>.jxl</c>.
+    /// </summary>
+    public static byte[] EncodeRgbF32(ReadOnlySpan<float> rgb, int width, int height)
+    {
+        int n = width * height;
+        if (rgb.Length < n * 3)
+            throw new ArgumentException("Interleaved RGB float buffer must hold width*height*3 samples.", nameof(rgb));
+        int[] r = new int[n], g = new int[n], b = new int[n];
+        for (int i = 0; i < n; i++) { r[i] = SingleBits(rgb[i * 3]); g[i] = SingleBits(rgb[i * 3 + 1]); b[i] = SingleBits(rgb[i * 3 + 2]); }
+        return JxlModularEncoder.Encode([r, g, b], width, height, F32Depth, grayscale: false);
+    }
+
+    /// <summary>Decodes a lossless 32-bit-float RGB <c>.jxl</c> into an interleaved <c>float[width*height*3]</c> buffer.</summary>
+    public static (int Width, int Height, float[] Rgb) DecodeRgbF32(ReadOnlySpan<byte> jxl)
+    {
+        JxlImage img = DecodeFloat(jxl, channels: 3, bits: 32);
+        int n = img.Width * img.Height;
+        var rgb = new float[n * 3];
+        for (int i = 0; i < n; i++)
+        {
+            rgb[i * 3] = SingleFromBits(img.Channels[0][i]);
+            rgb[i * 3 + 1] = SingleFromBits(img.Channels[1][i]);
+            rgb[i * 3 + 2] = SingleFromBits(img.Channels[2][i]);
+        }
+        return (img.Width, img.Height, rgb);
+    }
+
+    private static JxlImage DecodeFloat(ReadOnlySpan<byte> jxl, int channels, int bits)
+    {
+        JxlImage img = Decode(jxl);
+        if (!img.FloatingPoint || img.BitsPerSample != bits)
+            throw new InvalidDataException($"Expected a {bits}-bit float JPEG XL image (float={img.FloatingPoint}, bits={img.BitsPerSample}).");
+        if (img.ColorChannels != channels)
+            throw new InvalidDataException($"Expected {channels} colour channel(s), but the image has {img.ColorChannels}.");
+        return img;
+    }
+
+    // IEEE reinterpretation. F16 patterns are stored sign-extended so they fit a 16-bit sample buffer.
+    private static int SingleBits(float f) => unchecked((int)BitConverter.SingleToUInt32Bits(f));
+    private static float SingleFromBits(int sample) => BitConverter.UInt32BitsToSingle(unchecked((uint)sample));
+    private static int HalfBits(Half h) => (short)BitConverter.HalfToUInt16Bits(h);
+    private static Half HalfFromBits(int sample) => BitConverter.UInt16BitsToHalf(unchecked((ushort)sample));
+
+    private static int[] F32ToBits(ReadOnlySpan<float> values, int n)
+    {
+        if (values.Length < n) throw new ArgumentException("Channel must hold width*height samples.");
+        var bits = new int[n];
+        for (int i = 0; i < n; i++) bits[i] = SingleBits(values[i]);
+        return bits;
+    }
+
+    private static float[] BitsToF32(int[] samples)
+    {
+        var values = new float[samples.Length];
+        for (int i = 0; i < samples.Length; i++) values[i] = SingleFromBits(samples[i]);
+        return values;
+    }
+
+    private static int[] F16ToBits(ReadOnlySpan<Half> values, int n)
+    {
+        if (values.Length < n) throw new ArgumentException("Channel must hold width*height samples.");
+        var bits = new int[n];
+        for (int i = 0; i < n; i++) bits[i] = HalfBits(values[i]);
+        return bits;
+    }
+
+    private static Half[] BitsToF16(int[] samples)
+    {
+        var values = new Half[samples.Length];
+        for (int i = 0; i < samples.Length; i++) values[i] = HalfFromBits(samples[i]);
+        return values;
     }
 }
