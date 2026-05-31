@@ -396,4 +396,38 @@ public sealed class JxlVarDctMathTests
     {
         JxlCoeffOrder.NaturalOrder(0)[0].ShouldBe((0, 0)); // the DC coefficient leads the scan
     }
+
+    [Fact]
+    public void ChromaFromLuma_DefaultFactors_AreZeroAndOne()
+    {
+        (float kx, float kb) = JxlChromaFromLuma.LfFactors(
+            JxlChromaFromLuma.DefaultFactorLf, JxlChromaFromLuma.DefaultFactorLf,
+            JxlChromaFromLuma.DefaultColourFactor,
+            JxlChromaFromLuma.DefaultBaseCorrelationX, JxlChromaFromLuma.DefaultBaseCorrelationB);
+        kx.ShouldBe(0f);
+        kb.ShouldBe(1f);
+    }
+
+    [Theory]
+    [InlineData(128, 128)] // default
+    [InlineData(100, 160)]
+    [InlineData(200, 64)]
+    public void ChromaFromLuma_DecorrelateThenRestore_IsIdentity(int xFactor, int bFactor)
+    {
+        float[] x = Random(64, xFactor * 3 + 1);
+        float[] y = Random(64, bFactor * 5 + 7);
+        float[] b = Random(64, xFactor + bFactor + 11);
+        var x0 = (float[])x.Clone();
+        var b0 = (float[])b.Clone();
+
+        (float kx, float kb) = JxlChromaFromLuma.LfFactors(xFactor, bFactor, 84, 0f, 1f);
+        JxlChromaFromLuma.Decorrelate(x, y, b, kx, kb);
+        JxlChromaFromLuma.Restore(x, y, b, kx, kb);
+
+        for (int i = 0; i < 64; i++)
+        {
+            x[i].ShouldBe(x0[i], tolerance: 1e-5f);
+            b[i].ShouldBe(b0[i], tolerance: 1e-5f);
+        }
+    }
 }
