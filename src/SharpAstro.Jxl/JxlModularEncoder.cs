@@ -5,9 +5,10 @@ namespace SharpAstro.Jxl;
 /// inverse of <see cref="JxlModularFrame"/>. Emits the minimal valid structure libjxl accepts:
 /// SizeHeader → ImageMetadata → FrameHeader (Modular, single group, single pass) → TOC → one
 /// section holding LfGlobal + GlobalModular with a <b>single-leaf MA tree</b> (Gradient
-/// predictor, multiplier 1, offset 0) and one even-distribution sample stream. No RCT/Palette
-/// yet (channels stored directly), so correctness — not ratio — is the goal. The tree and the
-/// sample residuals both ride on the validated <see cref="JxlEntropyEncoder"/>.
+/// predictor, multiplier 1, offset 0) and one even-distribution sample stream. Integer RGB is
+/// decorrelated with YCoCg-R (RCT type 6); grey and float skip it. Supports integer (8/16-bit)
+/// and IEEE-float (F16/F32) bit depths — float channels carry the bit pattern as a signed
+/// integer. The tree and sample residuals both ride on the validated <see cref="JxlEntropyEncoder"/>.
 /// </summary>
 internal static class JxlModularEncoder
 {
@@ -19,11 +20,21 @@ internal static class JxlModularEncoder
     private const int RctType = 6; // permutation 0, transform 6 = YCoCg-R
 
     /// <summary>
-    /// Encodes <paramref name="channels"/> (one row-major integer grid per colour channel, length
+    /// Encodes integer <paramref name="channels"/> (one row-major grid per colour channel, length
     /// <c>width*height</c>) as a bare .jxl codestream. <paramref name="grayscale"/> selects 1 vs 3
     /// colour channels; <paramref name="bitsPerSample"/> is the integer sample precision.
     /// </summary>
-    public static byte[] Encode(int[][] channels, int width, int height, int bitsPerSample, bool grayscale)
+    public static byte[] Encode(int[][] channels, int width, int height, int bitsPerSample, bool grayscale) =>
+        Encode(channels, width, height,
+            new JxlBitDepth { FloatingPoint = false, BitsPerSample = bitsPerSample, ExponentBits = 0 }, grayscale);
+
+    /// <summary>
+    /// Encodes Modular <paramref name="channels"/> with an explicit <paramref name="bitDepth"/>.
+    /// For float bit depths the channel samples are the IEEE bit patterns reinterpreted as signed
+    /// integers (the caller does that conversion; see <see cref="JxlImageCodec"/>) — no colour
+    /// transform is applied, since YCoCg-R on raw float bits is meaningless and overflow-prone.
+    /// </summary>
+    public static byte[] Encode(int[][] channels, int width, int height, JxlBitDepth bitDepth, bool grayscale)
     {
         int colorChannels = grayscale ? 1 : 3;
         if (channels.Length != colorChannels)
@@ -39,11 +50,10 @@ internal static class JxlModularEncoder
         while (groupSizeShift < 3 && (128 << groupSizeShift) < Math.Max(width, height))
             groupSizeShift++;
 
-        // RGB is decorrelated with the reversible YCoCg-R colour transform (RCT type 6) before
-        // prediction — the same transform libjxl applies for lossless RGB. Grey has nothing to
-        // decorrelate. The YCoCg-R domain needs ~1 extra bit of headroom, so 16-bit sample buffers
-        // only suffice up to 14-bit input; wider inputs force 32-bit modular buffers.
-        bool useRct = !grayscale;
+        // RGB integer is decorrelated with the reversible YCoCg-R colour transform (RCT type 6)
+        // before prediction — the same transform libjxl applies for lossless RGB. Grey has nothing
+        // to decorrelate; float channels hold bit patterns (no colour meaning) so RCT is skipped.
+        bool useRct = !grayscale && !bitDepth.FloatingPoint;
         int[][] encChannels = channels;
         if (useRct)
         {
@@ -58,7 +68,7 @@ internal static class JxlModularEncoder
         bw.WriteBits(0x0A, 8); // codestream signature FF 0A
 
         WriteSizeHeader(bw, width, height);
-        WriteImageMetadata(bw, bitsPerSample, grayscale, useRct);
+        WriteImageMetadata(bw, bitDepth, grayscale, useRct);
         WriteFrameHeader(bw, groupSizeShift);
         WriteToc(bw, section.Length);
 
@@ -79,14 +89,17 @@ internal static class JxlModularEncoder
     private static void WriteDimension(JxlBitWriter bw, int value) =>
         bw.WriteU32((uint)(value - 1), (0, 9), (0, 13), (0, 18), (0, 30));
 
-    private static void WriteImageMetadata(JxlBitWriter bw, int bitsPerSample, bool grayscale, bool useRct)
+    private static void WriteImageMetadata(JxlBitWriter bw, JxlBitDepth bitDepth, bool grayscale, bool useRct)
     {
         bw.WriteBit(false); // all_default = false (we are not XYB)
         bw.WriteBit(false); // extra_fields = false
 
-        new JxlBitDepth { FloatingPoint = false, BitsPerSample = bitsPerSample, ExponentBits = 0 }.Write(bw);
-        int maxBufferBits = useRct ? 14 : 16;    // RCT (YCoCg-R) needs ~1 extra bit of headroom
-        bw.WriteBit(bitsPerSample <= maxBufferBits); // modular_16bit_buffers
+        bitDepth.Write(bw);
+        // modular_16bit_buffers: 16-bit sample buffers must hold every Modular value. Integer RCT
+        // (YCoCg-R) needs ~1 extra bit, so caps at 14-bit input; plain integer caps at 16; float
+        // stores the IEEE bit pattern, so 16-bit buffers only fit the 16-bit half format.
+        int maxBufferBits = useRct ? 14 : 16;
+        bw.WriteBit(bitDepth.BitsPerSample <= maxBufferBits); // modular_16bit_buffers
         bw.WriteU32(0, (0, 0), (1, 0), (2, 4), (1, 12)); // num_extra_channels = 0
         bw.WriteBit(false);                       // xyb_encoded = false
 
@@ -222,7 +235,9 @@ internal static class JxlModularEncoder
 
                     int pred = JxlModular.GradClamped(n, w, nw); // Gradient predictor
                     int sample = grid[y * width + x];
-                    stream.Add((0, PackSigned(sample - pred)));
+                    // unchecked: float bit-pattern samples span the whole i32 range, so the residual
+                    // can wrap — decode adds (residual + pred) the same way, so it stays lossless.
+                    stream.Add((0, PackSigned(unchecked(sample - pred))));
                 }
         }
 

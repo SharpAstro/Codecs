@@ -7,6 +7,8 @@ internal sealed class JxlModularDecodeResult
     public required int Height { get; init; }
     public required int ColorChannels { get; init; }
     public required int BitsPerSample { get; init; }
+    public required bool FloatingPoint { get; init; }
+    public required int ExponentBits { get; init; }
     public required int[][] Channels { get; init; } // [colorChannels][width*height]
 }
 
@@ -95,6 +97,8 @@ internal static class JxlModularFrame
             Height = colorHeight,
             ColorChannels = colorChannels,
             BitsPerSample = meta.BitDepth.BitsPerSample,
+            FloatingPoint = meta.BitDepth.FloatingPoint,
+            ExponentBits = meta.BitDepth.ExponentBits,
             Channels = grids,
         };
     }
