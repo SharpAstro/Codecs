@@ -242,4 +242,92 @@ public sealed class JxlVarDctMathTests
                 transposed.ShouldBe(raster); // transpose preserves the value multiset
             }
     }
+
+    [Fact]
+    public void Quantizer_Hf_RoundTrips_WithinOneStep()
+    {
+        const float weight = 1f / 560f; // a representative luma DCT weight
+        const float scale = 0.5f;
+        float step = weight * scale;
+        for (float c = -2f; c <= 2f; c += 0.013f)
+        {
+            int q = JxlQuantizer.QuantizeHf(c, weight, scale);
+            float d = JxlQuantizer.DequantizeHf(q, weight, scale, channel: 1);
+            Math.Abs(d - c).ShouldBeLessThan(step + 1e-6f);
+        }
+    }
+
+    [Fact]
+    public void VarDct_Dct8Block_FullPipeline_RoundTripsWithinTolerance()
+    {
+        // An 8x8 RGB block taken all the way through the VarDCT math stack and back:
+        //   sRGB → linear → XYB → DCT8 → quantize → dequantize → IDCT8 → XYB → linear → sRGB.
+        // This is the lossy analogue of the lossless Modular round-trip — it proves the colour
+        // transform, separable DCT, default dequant matrix and quantizer all compose correctly.
+        const int n = 8;
+        var dq = JxlDequantMatrices.BuildDefault();
+        var quant = new JxlQuantizer(globalScale: 4096, quantLf: 32);
+        float scale = quant.HfScale(hfMul: 32, qmScale: 1f); // 65536 / (4096*32) = 0.5
+
+        // Smooth gradient content (the kind of low-frequency energy real images carry).
+        var srgb = new float[3][];
+        for (int c = 0; c < 3; c++) srgb[c] = new float[n * n];
+        for (int y = 0; y < n; y++)
+            for (int x = 0; x < n; x++)
+            {
+                int i = y * n + x;
+                srgb[0][i] = Math.Clamp((40 + x * 18 + y * 6) / 255f, 0f, 1f);
+                srgb[1][i] = Math.Clamp((90 + x * 8 + y * 14) / 255f, 0f, 1f);
+                srgb[2][i] = Math.Clamp((150 - x * 5 + y * 9) / 255f, 0f, 1f);
+            }
+
+        // sRGB → linear → XYB planes (X, Y, B).
+        var plane = new float[3][];
+        for (int c = 0; c < 3; c++) plane[c] = new float[n * n];
+        for (int i = 0; i < n * n; i++)
+        {
+            float lr = JxlXyb.SrgbToLinear(srgb[0][i]);
+            float lg = JxlXyb.SrgbToLinear(srgb[1][i]);
+            float lb = JxlXyb.SrgbToLinear(srgb[2][i]);
+            (float xx, float yy, float bb) = JxlXyb.LinearToXyb(lr, lg, lb);
+            plane[0][i] = xx; plane[1][i] = yy; plane[2][i] = bb;
+        }
+
+        // Forward DCT, quantize + dequantize each coefficient, inverse DCT.
+        for (int c = 0; c < 3; c++)
+        {
+            JxlDct.Dct2d(plane[c], n, n, JxlDctDirection.Forward);
+            float[] w = dq.Get(c, JxlVarDctTransform.Dct8);
+            for (int i = 0; i < n * n; i++)
+            {
+                int q = JxlQuantizer.QuantizeHf(plane[c][i], w[i], scale);
+                plane[c][i] = JxlQuantizer.DequantizeHf(q, w[i], scale, c);
+            }
+            JxlDct.Dct2d(plane[c], n, n, JxlDctDirection.Inverse);
+        }
+
+        // XYB → linear → sRGB and measure the reconstruction error.
+        double sumSq = 0;
+        float maxErr = 0;
+        for (int i = 0; i < n * n; i++)
+        {
+            (float r, float g, float b) = JxlXyb.XybToLinear(plane[0][i], plane[1][i], plane[2][i]);
+            float[] outSrgb =
+            {
+                Math.Clamp(JxlXyb.LinearToSrgb(r), 0f, 1f),
+                Math.Clamp(JxlXyb.LinearToSrgb(g), 0f, 1f),
+                Math.Clamp(JxlXyb.LinearToSrgb(b), 0f, 1f),
+            };
+            for (int c = 0; c < 3; c++)
+            {
+                float e = Math.Abs(outSrgb[c] - srgb[c][i]);
+                maxErr = Math.Max(maxErr, e);
+                sumSq += e * (double)e;
+            }
+        }
+        double rmse = Math.Sqrt(sumSq / (3 * n * n));
+
+        rmse.ShouldBeLessThan(0.02);
+        maxErr.ShouldBeLessThan(0.08f);
+    }
 }
