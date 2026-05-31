@@ -15,6 +15,7 @@ exactly the formats they need.
 | [`SharpAstro.Tiff`](src/SharpAstro.Tiff/) | TIFF | TIFF | Full pure-managed TIFF reader/writer. Multi-page, 8/16/32-bit uint + IEEE-Float, Uncompressed / Deflate / Zlib, II + MM byte order, SampleFormat/SMin/SMax/ICC round-trip. |
 | [`SharpAstro.Jxr`](src/SharpAstro.Jxr/) | JXR | JXR | Faithful, table-exact C# re-port of Microsoft's **jxrlib** C reference codec (the earlier spec-derived codec was retired). BD8/BD16/BD16F/BD32F × grayscale (Y-only) + RGB, single-tile **spatial** mode, Photo Overlap Transform (OL_NONE / OL_ONE / OL_TWO), lossy quantization, **arbitrary (non-16-aligned) dimensions** (pad-then-crop), full `.jxr` file container. RGB automatically uses YCoCg-R + InternalClrFmt=YUV444 internally for Windows Photo / WIC interop; BD32F is mono-only (T.832 has no Table A.6 GUID for BD32F RGB). **Validated bit-exact against the jxrlib reference binaries** — codestream byte-match vs `JxrEncApp` plus both decode directions. Frequency mode, multi-tile / `INDEX_TABLE` tiles, and alpha plane are out of scope. |
 | [`SharpAstro.Exr`](src/SharpAstro.Exr/) | EXR | EXR | Pure-managed OpenEXR (`.exr`) reader/writer. Single-part scanline images, HALF/FLOAT/UINT channels, mono + RGB. Compression: NONE / RLE / ZIP / ZIPS / PIZ (the wavelet+Huffman default) — all lossless. `ExrImageCodec` façade for HDR float (mono FLOAT / RGB HALF, verbatim scene-linear values). **Validated value-exact against OpenEXR** via Magick.NET (self round-trip bit-exact; both decode directions). Tiled / multi-part / deep, and the lossy PXR24 / B44 / DWA schemes, are out of scope. |
+| [`SharpAstro.Jxl`](src/SharpAstro.Jxl/) | JXL | JXL | Pure-managed **clean-room** JPEG XL (ISO/IEC 18181) — spec-as-judge + Magick.NET (libjxl) as the empirical oracle + jxl-oxide as a read-only bit-layout reference. **Lossless Modular** path: 8/16-bit grey + RGB, single group (each dimension ≤ 1024), RGB decorrelated with the reversible YCoCg-R colour transform. `JxlImageCodec` façade (`EncodeRgb24`/`Gray8`/`Rgb48`/`Gray16` + `Decode`); `JxlFile.ReadInfo` for header probing. **Validated pixel-exact both directions** — our decode of real libjxl images, and libjxl/Magick decode of our output. Full hybrid-integer / ANS / prefix entropy stack, MA decision tree, 14 predictors (incl. the self-correcting weighted predictor), and RCT/Palette transforms on decode. Lossy **VarDCT**, float/HDR samples, multi-group, alpha, and `do_ycbcr` are not yet supported. |
 | [`SharpAstro.Color.Icc`](src/SharpAstro.Color.Icc/) | — | — | Bundled sRGB v4 ICC blob (588 bytes, lazily loaded) for embedding into TIFF/PNG/JPEG via the codec packages above. Not a codec. |
 | [`SharpAstro.Exif`](src/SharpAstro.Exif/) | EXIF | — | Pure-managed EXIF metadata reader. Parses EXIF blobs from JPEG (APP1), TIFF (sub-IFD), and PNG (eXIf chunk). |
 
@@ -50,6 +51,9 @@ The packages are independent — pull only what your project actually needs:
 
 <!-- HDR-master OpenEXR (mono FLOAT / RGB HALF, lossless) -->
 <PackageReference Include="SharpAstro.Exr" />
+
+<!-- Lossless JPEG XL (8/16-bit RGB/grey) -->
+<PackageReference Include="SharpAstro.Jxl" />
 
 <!-- Embedding sRGB profiles -->
 <PackageReference Include="SharpAstro.Color.Icc" />
