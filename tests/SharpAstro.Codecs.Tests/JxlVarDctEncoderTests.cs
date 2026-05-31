@@ -160,6 +160,50 @@ public sealed class JxlVarDctEncoderTests
         Math.Sqrt(sumSq / (3.0 * w * h)).ShouldBeLessThan(0.05);
     }
 
+    // Past the old 4096 wall: a 4×4 LF-group grid (8192) and partial LF-group tiling. Validates that the
+    // LF-group reassembly + per-group PassGroup offsets stay correct at scale, against libjxl itself.
+    [Theory]
+    [InlineData(8192, 512)]   // 4×1 LF groups wide
+    [InlineData(512, 8192)]   // 1×4 LF groups tall
+    [InlineData(4352, 4352)]  // 3×3 LF groups, partial last row/col (4352 = 2·2048 + 256)
+    public void BigImage_DecodesInLibjxl_LowRmse(int w, int h)
+    {
+        int[][] rgb = FullGradient(w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+
+        using var img = new MagickImage(jxl); // libjxl decode — throws if malformed
+        img.Width.ShouldBe((uint)w);
+        img.Height.ShouldBe((uint)h);
+        Rmse(rgb, img, w, h).ShouldBeLessThan(0.05);
+    }
+
+    [Fact]
+    public void BigImage_SelfRoundTrip_8192Square()
+    {
+        // 4×4 LF groups, 32×32 = 1024 PassGroups (~67 MP). The heaviest self-consistency check.
+        const int w = 8192, h = 8192;
+        int[][] rgb = FullGradient(w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+
+        int[][] recon = JxlVarDctFrame.DecodeToRgb24(jxl);
+
+        double sumSq = 0;
+        for (int c = 0; c < 3; c++)
+            for (int i = 0; i < w * h; i++)
+            {
+                double e = (rgb[c][i] - recon[c][i]) / 255.0;
+                sumSq += e * e;
+            }
+        Math.Sqrt(sumSq / (3.0 * (double)w * h)).ShouldBeLessThan(0.05);
+    }
+
+    [Fact]
+    public void Cap_RejectsOversizedDimensions()
+    {
+        int[][] rgb = Solid(8, 8, 0, 0, 0);
+        Should.Throw<NotSupportedException>(() => JxlVarDctEncoder.EncodeRgb24(rgb, 16392, 8));
+    }
+
     [Fact]
     public void OurDecoder_ParsesLibjxlVarDctOutput_EndToEnd()
     {

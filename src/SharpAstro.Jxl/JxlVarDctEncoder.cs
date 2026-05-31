@@ -16,10 +16,12 @@ namespace SharpAstro.Jxl;
 /// </code>
 ///
 /// <para>
-/// Requires width and height to be multiples of 8 and ≤ 2048 (one LF group). Up to a single 256-px
-/// group it emits a single-entry TOC (everything bit-contiguous); larger images get a multi-entry TOC
-/// with one byte-aligned PassGroup section per 256×256 region (the HF coefficients are split per group,
-/// which is safe because a varblock never crosses a 256-px border). XYB + the default opsin matrix come
+/// Requires width and height to be multiples of 8 and ≤ 16384 (a memory/int-index sanity guard, not a
+/// format limit). Up to a single 256-px group it emits a single-entry TOC (everything bit-contiguous);
+/// larger images get a multi-entry TOC with one byte-aligned LfGroup section per 2048×2048 region and
+/// one byte-aligned PassGroup section per 256×256 region (the LF-DC/block grid is split per LF group and
+/// the HF coefficients per group, which is safe because a varblock never crosses a 256-px border).
+/// XYB + the default opsin matrix come
 /// from the all-default ImageMetadata; chroma is full-resolution; Gabor/EPF restoration is disabled so
 /// the reconstruction is pure inverse-DCT. The two entropy distributions are split per the 5i config/
 /// data discipline: the Modular sample config rides in GlobalModular's tree and its data in LfGroup; the
@@ -46,8 +48,8 @@ internal static class JxlVarDctEncoder
             throw new ArgumentException("Expected 3 RGB channels.", nameof(rgb));
         if (width % 8 != 0 || height % 8 != 0)
             throw new NotSupportedException("JPEG XL VarDCT encoder: width/height must be multiples of 8.");
-        if (width > 4096 || height > 4096)
-            throw new NotSupportedException("JPEG XL VarDCT encoder: images larger than 4096 are not yet supported.");
+        if (width > 16384 || height > 16384)
+            throw new NotSupportedException("JPEG XL VarDCT encoder: dimensions are capped at 16384 (a memory/int-index sanity guard, not a format limit).");
 
         var srgb = new float[3][];
         for (int c = 0; c < 3; c++)
