@@ -25,8 +25,8 @@ namespace SharpAstro.Jxl;
 /// </summary>
 internal static class JxlVarDctImage
 {
-    private static readonly float[] MLfUnscaled =
-        { JxlQuantizer.MxLfUnscaled, JxlQuantizer.MyLfUnscaled, JxlQuantizer.MbLfUnscaled };
+    private static readonly float[] MLf =
+        { JxlQuantizer.MxLf, JxlQuantizer.MyLf, JxlQuantizer.MbLf };
 
     // qm_scale per channel (X, Y, B). The minimal default leaves every channel at 1.
     private static readonly float[] QmScale = { 1f, 1f, 1f };
@@ -144,7 +144,7 @@ internal static class JxlVarDctImage
         int extraPrecision, int hfMul, int[] lfQuant, int[] hfQuant)
     {
         bool isLuma = channel == 1;
-        float lfScale = quant.LfScale(MLfUnscaled[channel], extraPrecision);
+        float lfScale = quant.LfScale(MLf[channel], extraPrecision);
         float hfScale = quant.HfScale(hfMul, QmScale[channel]);
         float[] weights = dq.Get(channel, JxlVarDctTransform.Dct8);
 
@@ -186,7 +186,7 @@ internal static class JxlVarDctImage
         int width, int height, int bw, int bh, JxlQuantizer quant, JxlDequantMatrices dq,
         int extraPrecision, int hfMul)
     {
-        float lfScale = quant.LfScale(MLfUnscaled[channel], extraPrecision);
+        float lfScale = quant.LfScale(MLf[channel], extraPrecision);
         float hfScale = quant.HfScale(hfMul, QmScale[channel]);
         float[] weights = dq.Get(channel, JxlVarDctTransform.Dct8);
 

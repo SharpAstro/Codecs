@@ -31,6 +31,12 @@ internal readonly struct JxlImageMetadata
         bool allDefault = br.ReadBit();
         if (allDefault)
         {
+            // default_m is read unconditionally (it is NOT gated by all_default — see jxl-image
+            // ImageMetadata); when false it is followed by the opsin inverse matrix / upsampling
+            // weights, which we don't support. Omitting this read desyncs everything after it.
+            if (!br.ReadBit()) // default_m
+                throw new NotSupportedException(
+                    "JPEG XL custom opsin matrix / upsampling weights (default_m = false) are not yet supported.");
             return new JxlImageMetadata
             {
                 BitDepth = JxlBitDepth.Default,

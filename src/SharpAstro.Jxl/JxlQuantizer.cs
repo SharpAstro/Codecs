@@ -19,10 +19,12 @@ internal sealed class JxlQuantizer
     /// <summary>Default OpsinInverseMatrix <c>quant_bias_numerator</c>, for |q| &gt; 1.</summary>
     public const float DefaultQuantBiasNumerator = 0.145f;
 
-    // LfChannelDequantization defaults, already divided by 128 (the *_unscaled form the decoder uses).
-    public const float MxLfUnscaled = (1f / 32f) / 128f;
-    public const float MyLfUnscaled = (1f / 4f) / 128f;
-    public const float MbLfUnscaled = (1f / 2f) / 128f;
+    // LfChannelDequantization defaults — the RAW m_*_lf the LF dequant uses. NOTE: copy_lf_dequant
+    // (jxl-render) multiplies by the raw m_x_lf, NOT the /128 "unscaled" form (that /128 value is only
+    // used for the "weight too small" validation). Using /128 here makes the dequant 128× too small.
+    public const float MxLf = 1f / 32f;
+    public const float MyLf = 1f / 4f;
+    public const float MbLf = 1f / 2f;
 
     public int GlobalScale { get; }
     public int QuantLf { get; }
@@ -60,8 +62,9 @@ internal sealed class JxlQuantizer
 
     /// <summary>
     /// The LF (DC) dequant scale: <c>m_lf · 2^(9−extra_precision) / (global_scale · quant_lf)</c>,
-    /// where <paramref name="mLfUnscaled"/> is the <c>m_*_lf / 128</c> value.
+    /// where <paramref name="mLf"/> is the raw <c>m_*_lf</c> (e.g. 1/4 for Y) — matching jxl-render
+    /// <c>copy_lf_dequant</c>.
     /// </summary>
-    public float LfScale(float mLfUnscaled, int extraPrecision)
-        => (float)((double)mLfUnscaled * (1 << (9 - extraPrecision)) / ((double)GlobalScale * QuantLf));
+    public float LfScale(float mLf, int extraPrecision)
+        => (float)((double)mLf * (1 << (9 - extraPrecision)) / ((double)GlobalScale * QuantLf));
 }
