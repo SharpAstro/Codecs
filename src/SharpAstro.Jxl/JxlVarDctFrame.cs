@@ -16,7 +16,8 @@ namespace SharpAstro.Jxl;
 /// </summary>
 internal static class JxlVarDctFrame
 {
-    private const int GroupBlocks = 32; // 256-px group edge in 8×8 blocks
+    private const int GroupBlocks = 32;    // 256-px group edge in 8×8 blocks
+    private const int LfGroupBlocks = 256; // 2048-px LF-group edge in 8×8 blocks
 
     public static int[][] DecodeToRgb24(byte[] containerOrCodestream)
     {
@@ -28,35 +29,41 @@ internal static class JxlVarDctFrame
         JxlFrameHeader frame = JxlFrameHeader.Read(ref br, meta, width, height);
         if (frame.Encoding != JxlFrameEncoding.VarDct)
             throw new NotSupportedException("JPEG XL: expected a VarDCT frame.");
-        if (frame.NumLfGroups != 1)
-            throw new NotSupportedException("JPEG XL: only single-LF-group VarDCT frames are supported.");
         JxlToc toc = JxlToc.Read(ref br, frame);
 
         int bw = (width + 7) / 8, bh = (height + 7) / 8;
-        int cfW = (width + 63) / 64, cfH = (height + 63) / 64;
         int gpr = (bw + GroupBlocks - 1) / GroupBlocks;
+        int lfgpr = (bw + LfGroupBlocks - 1) / LfGroupBlocks;
         int numGroups = frame.NumGroups;
+        int numLfGroups = frame.NumLfGroups;
         int numChannels = 3 + meta.NumExtraChannels;
         int nodeLimit = (int)Math.Min(1 << 22, 1024 + (long)width * height * numChannels / 16);
 
         var hfGrid = new int[3][];
+        var fullLfMod = new int[3][]; // modular channel order [Y, X, B], full bw×bh
         for (int c = 0; c < 3; c++)
+        {
             hfGrid[c] = new int[width * height];
+            fullLfMod[c] = new int[bw * bh];
+        }
+        var fullBlockGrid = new JxlBlockInfo[bw * bh];
 
         JxlLfGlobalVarDct lfVarDct;
-        JxlLfGroup lfGroup;
+        int extraPrecision;
 
         if (toc.EntryCount == 1)
         {
-            // Single combined section: everything is bit-contiguous from the current position.
+            // Single combined section (one LF group, one PassGroup): everything is bit-contiguous.
             (lfVarDct, JxlMaConfig tree) = ParseLfGlobal(ref br, nodeLimit);
-            lfGroup = JxlLfGroup.Read(ref br, tree, bw, bh, cfW, cfH, lfStreamIndex: 1, hfStreamIndex: 3);
+            JxlLfGroup lg = ReadLfGroupRegion(ref br, tree, bw, bh, lfgpr, l: 0, numLfGroups: 1);
+            extraPrecision = lg.ExtraPrecision;
+            PlaceLfGroup(lg, 0, lfgpr, bw, fullLfMod, fullBlockGrid);
             JxlHfGlobal hfGlobal = JxlHfGlobal.Read(ref br, numGroups, lfVarDct.NumBlockClusters);
-            DecodePassGroup(ref br, hfGlobal, lfGroup.BlockGrid, bw, groupIdx: 0, gpr: 1, hfGrid);
+            DecodePassGroup(ref br, hfGlobal, fullBlockGrid, bw, groupIdx: 0, gpr: 1, hfGrid);
         }
         else
         {
-            // Multi-entry TOC: LfGlobal, LfGroup, HfGlobal, then one PassGroup per group — each a
+            // Multi-entry TOC: LfGlobal, LfGroup×num_lf_groups, HfGlobal, PassGroup×num_groups — each a
             // separate byte-aligned section. Slice the codestream at the cumulative offsets.
             int secStart = 2 + (int)br.BytesRead;
             var offsets = new int[toc.EntryCount];
@@ -66,28 +73,36 @@ internal static class JxlVarDctFrame
             var lfgBr = new JxlBitReader(cs.AsSpan(offsets[0], (int)toc.Sizes[0]));
             (lfVarDct, JxlMaConfig tree) = ParseLfGlobal(ref lfgBr, nodeLimit);
 
-            var lggBr = new JxlBitReader(cs.AsSpan(offsets[1], (int)toc.Sizes[1]));
-            lfGroup = JxlLfGroup.Read(ref lggBr, tree, bw, bh, cfW, cfH, lfStreamIndex: 1, hfStreamIndex: 3);
+            extraPrecision = 0;
+            for (int l = 0; l < numLfGroups; l++)
+            {
+                int idx = 1 + l;
+                var lggBr = new JxlBitReader(cs.AsSpan(offsets[idx], (int)toc.Sizes[idx]));
+                JxlLfGroup lg = ReadLfGroupRegion(ref lggBr, tree, bw, bh, lfgpr, l, numLfGroups);
+                extraPrecision = lg.ExtraPrecision;
+                PlaceLfGroup(lg, l, lfgpr, bw, fullLfMod, fullBlockGrid);
+            }
 
-            var hfgBr = new JxlBitReader(cs.AsSpan(offsets[2], (int)toc.Sizes[2]));
+            int hfgIdx = 1 + numLfGroups;
+            var hfgBr = new JxlBitReader(cs.AsSpan(offsets[hfgIdx], (int)toc.Sizes[hfgIdx]));
             JxlHfGlobal hfGlobal = JxlHfGlobal.Read(ref hfgBr, numGroups, lfVarDct.NumBlockClusters);
 
             for (int g = 0; g < numGroups; g++)
             {
-                int idx = 3 + g;
+                int idx = hfgIdx + 1 + g;
                 var pgBr = new JxlBitReader(cs.AsSpan(offsets[idx], (int)toc.Sizes[idx]));
-                DecodePassGroup(ref pgBr, hfGlobal, lfGroup.BlockGrid, bw, g, gpr, hfGrid);
+                DecodePassGroup(ref pgBr, hfGlobal, fullBlockGrid, bw, g, gpr, hfGrid);
             }
         }
 
-        // Reconstruct pixels. LfQuant is in modular order [Y, X, B]; map back to physical [X, Y, B].
-        int hfMul = lfGroup.BlockGrid[0].HfMul;
+        // Reconstruct pixels. LfQuant is modular order [Y, X, B]; map back to physical [X, Y, B].
+        int hfMul = fullBlockGrid[0].HfMul;
         var encoded = new JxlVarDctImage.Encoded
         {
             Width = width, Height = height, Bw = bw, Bh = bh,
             GlobalScale = lfVarDct.GlobalScale, QuantLf = lfVarDct.QuantLf,
-            HfMul = hfMul, ExtraPrecision = lfGroup.ExtraPrecision,
-            LfQuant = [lfGroup.LfQuant[1], lfGroup.LfQuant[0], lfGroup.LfQuant[2]],
+            HfMul = hfMul, ExtraPrecision = extraPrecision,
+            LfQuant = [fullLfMod[1], fullLfMod[0], fullLfMod[2]],
             HfQuant = hfGrid,
         };
         float[][] srgb = JxlVarDctImage.Decode(encoded);
@@ -112,6 +127,34 @@ internal static class JxlVarDctFrame
             throw new NotSupportedException("JPEG XL: VarDCT frame without a global tree is not supported.");
         JxlMaConfig tree = JxlMaConfig.Parse(ref br, nodeLimit);
         return (lfVarDct, tree);
+    }
+
+    /// <summary>Read LF group <paramref name="l"/> (a ≤256×256-block region) using the shared tree.</summary>
+    private static JxlLfGroup ReadLfGroupRegion(
+        ref JxlBitReader br, JxlMaConfig tree, int bw, int bh, int lfgpr, int l, int numLfGroups)
+    {
+        int lcol = l % lfgpr, lrow = l / lfgpr;
+        int bwL = Math.Min(LfGroupBlocks, bw - lcol * LfGroupBlocks);
+        int bhL = Math.Min(LfGroupBlocks, bh - lrow * LfGroupBlocks);
+        int cfW = (bwL * 8 + 63) / 64, cfH = (bhL * 8 + 63) / 64;
+        return JxlLfGroup.Read(
+            ref br, tree, bwL, bhL, cfW, cfH,
+            lfStreamIndex: (uint)(1 + l), hfStreamIndex: (uint)(1 + 2 * numLfGroups + l));
+    }
+
+    /// <summary>Place a decoded LF-group region's LF-DC + block grid into the full-image arrays.</summary>
+    private static void PlaceLfGroup(JxlLfGroup lg, int l, int lfgpr, int bw, int[][] fullLfMod, JxlBlockInfo[] fullBlockGrid)
+    {
+        int lcol = l % lfgpr, lrow = l / lfgpr;
+        int lx0 = lcol * LfGroupBlocks, ly0 = lrow * LfGroupBlocks;
+        for (int y = 0; y < lg.Bh; y++)
+            for (int x = 0; x < lg.Bw; x++)
+            {
+                int fi = (ly0 + y) * bw + lx0 + x;
+                fullBlockGrid[fi] = lg.BlockGrid[y * lg.Bw + x];
+                for (int mc = 0; mc < 3; mc++)
+                    fullLfMod[mc][fi] = lg.LfQuant[mc][y * lg.Bw + x];
+            }
     }
 
     /// <summary>Decode one PassGroup's HF coefficients (a ≤32×32-block region) into the full grid.</summary>

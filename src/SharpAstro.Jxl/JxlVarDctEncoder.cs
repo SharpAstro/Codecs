@@ -31,6 +31,9 @@ internal static class JxlVarDctEncoder
     /// <summary>Blocks per group edge — VarDCT fixes the group dim at 256 px = 32 blocks.</summary>
     private const int GroupBlocks = 32;
 
+    /// <summary>Blocks per LF-group edge — lf_group_dim = 2048 px = 256 blocks (8 groups).</summary>
+    private const int LfGroupBlocks = 256;
+
     /// <summary>
     /// Encode 8-bit RGB (<paramref name="rgb"/> = three row-major <c>w·h</c> planes, values 0..255) as a
     /// lossy VarDCT .jxl. The quantizer knobs default to a high-quality setting.
@@ -43,10 +46,8 @@ internal static class JxlVarDctEncoder
             throw new ArgumentException("Expected 3 RGB channels.", nameof(rgb));
         if (width % 8 != 0 || height % 8 != 0)
             throw new NotSupportedException("JPEG XL VarDCT encoder: width/height must be multiples of 8.");
-        // ≤ 2048 keeps the whole image inside one LF group (lf_group_dim = 2048); multiple PassGroups
-        // (one per 256×256 region) are produced for anything larger than a single 256-px group.
-        if (width > 2048 || height > 2048)
-            throw new NotSupportedException("JPEG XL VarDCT encoder: images larger than 2048 (multi-LF-group) are not yet supported.");
+        if (width > 4096 || height > 4096)
+            throw new NotSupportedException("JPEG XL VarDCT encoder: images larger than 4096 are not yet supported.");
 
         var srgb = new float[3][];
         for (int c = 0; c < 3; c++)
@@ -64,23 +65,26 @@ internal static class JxlVarDctEncoder
         for (int i = 0; i < blockGrid.Length; i++)
             blockGrid[i] = JxlBlockInfo.Data(JxlVarDctTransform.Dct8, hfMul);
 
-        // LfGroup (one, covering the whole ≤2048 image): LF-DC in modular channel order [Y, X, B];
-        // CfL grids zero (default kx=0, kb=1).
-        int cfW = CeilDiv(width, 64), cfH = CeilDiv(height, 64);
-        var lfGroup = new JxlLfGroup
+        // LF groups: one per 2048×2048 (256×256-block) region. Each carries the LF-DC + block grid for
+        // its region; the Modular sample distribution is shared across all of them.
+        int lfgpr = CeilDiv(bw, LfGroupBlocks);
+        int numLfGroups = lfgpr * CeilDiv(bh, LfGroupBlocks);
+        var lfGroups = new JxlLfGroup[numLfGroups];
+        var lfStreams = new List<(int Ctx, uint Value)>[numLfGroups];
+        var hfMetaStreams = new List<(int Ctx, uint Value)>[numLfGroups];
+        var modularStreams = new List<List<(int Ctx, uint Value)>>(numLfGroups * 2);
+        for (int l = 0; l < numLfGroups; l++)
         {
-            Bw = bw, Bh = bh, ExtraPrecision = extraPrecision,
-            LfQuant = [enc.LfQuant[1], enc.LfQuant[0], enc.LfQuant[2]],
-            BlockGrid = blockGrid,
-            CfW = cfW, CfH = cfH,
-            XFromY = new int[cfW * cfH], BFromY = new int[cfW * cfH],
-        };
-        (List<(int Ctx, uint Value)> lfStream, List<(int Ctx, uint Value)> hfMetaStream) = lfGroup.BuildStreams();
+            lfGroups[l] = BuildLfGroupRegion(enc, blockGrid, bw, bh, lfgpr, extraPrecision, l);
+            (lfStreams[l], hfMetaStreams[l]) = lfGroups[l].BuildStreams();
+            modularStreams.Add(lfStreams[l]);
+            modularStreams.Add(hfMetaStreams[l]);
+        }
         JxlEntropyEncoder sampleEnc = JxlModularSubimage.NewSampleEncoder();
-        JxlEntropyEncoder.Plan samplePlan = sampleEnc.Prepare(lfStream, hfMetaStream);
+        JxlEntropyEncoder.Plan samplePlan = sampleEnc.Prepare(modularStreams.ToArray());
 
-        // HF coefficients, split into one symbol stream per 32×32-block PassGroup region. A varblock
-        // never crosses a 256-px border, so each group's coefficients are self-contained.
+        // HF coefficients, split into one symbol stream per 32×32-block PassGroup region (full-grid
+        // coordinates). A varblock never crosses a 256-px border, so each group is self-contained.
         int gpr = CeilDiv(bw, GroupBlocks), gpc = CeilDiv(bh, GroupBlocks);
         int numGroups = gpr * gpc;
         var hfStreams = new List<(int Ctx, uint Value)>[numGroups];
@@ -104,7 +108,7 @@ internal static class JxlVarDctEncoder
             // num_groups == 1 && num_passes == 1: a single TOC entry holds the whole body bit-contiguously.
             var sec = new JxlBitWriter();
             WriteLfGlobalPart(sec, globalScale, quantLf, sampleEnc, samplePlan);
-            lfGroup.Write(sec, sampleEnc, samplePlan, lfStream, hfMetaStream);
+            lfGroups[0].Write(sec, sampleEnc, samplePlan, lfStreams[0], hfMetaStreams[0]);
             JxlHfGlobal.Write(sec, numGroups: 1, numHfPresets: 1, hfDistEnc, hfDistPlan);
             WritePassGroupPart(sec, hfDistEnc, hfDistPlan, hfStreams[0], numHfPresets: 1);
             byte[] body = sec.ToArray();
@@ -113,16 +117,23 @@ internal static class JxlVarDctEncoder
         }
         else
         {
-            // Multi-entry TOC: LfGlobal, LfGroup(s), HfGlobal, then one PassGroup per group — each a
-            // separate byte-aligned section.
+            // Multi-entry TOC, in order: LfGlobal, LfGroup×num_lf_groups, HfGlobal, PassGroup×num_groups
+            // — each a separate byte-aligned section.
             var lfGlobalSec = new JxlBitWriter();
             WriteLfGlobalPart(lfGlobalSec, globalScale, quantLf, sampleEnc, samplePlan);
-            var lfGroupSec = new JxlBitWriter();
-            lfGroup.Write(lfGroupSec, sampleEnc, samplePlan, lfStream, hfMetaStream);
+            var sections = new List<byte[]> { lfGlobalSec.ToArray() };
+
+            for (int l = 0; l < numLfGroups; l++)
+            {
+                var lfGroupSec = new JxlBitWriter();
+                lfGroups[l].Write(lfGroupSec, sampleEnc, samplePlan, lfStreams[l], hfMetaStreams[l]);
+                sections.Add(lfGroupSec.ToArray());
+            }
+
             var hfGlobalSec = new JxlBitWriter();
             JxlHfGlobal.Write(hfGlobalSec, numGroups, numHfPresets: 1, hfDistEnc, hfDistPlan);
+            sections.Add(hfGlobalSec.ToArray());
 
-            var sections = new List<byte[]> { lfGlobalSec.ToArray(), lfGroupSec.ToArray(), hfGlobalSec.ToArray() };
             for (int g = 0; g < numGroups; g++)
             {
                 var passSec = new JxlBitWriter();
@@ -136,6 +147,42 @@ internal static class JxlVarDctEncoder
         }
 
         return bwr.ToArray();
+    }
+
+    /// <summary>Build the LfGroup (LF-DC + block grid) for one 2048×2048 (≤256×256-block) LF-group region.</summary>
+    private static JxlLfGroup BuildLfGroupRegion(
+        JxlVarDctImage.Encoded enc, JxlBlockInfo[] blockGrid, int bw, int bh, int lfgpr, int extraPrecision, int l)
+    {
+        int lcol = l % lfgpr, lrow = l / lfgpr;
+        int lx0 = lcol * LfGroupBlocks, ly0 = lrow * LfGroupBlocks;
+        int bwL = Math.Min(LfGroupBlocks, bw - lx0);
+        int bhL = Math.Min(LfGroupBlocks, bh - ly0);
+
+        // LF-DC sub-region in modular channel order [Y, X, B] (enc.LfQuant is physical [X, Y, B]).
+        int[] modToPhys = [1, 0, 2];
+        var lfQuant = new int[3][];
+        for (int mc = 0; mc < 3; mc++)
+        {
+            int[] phys = enc.LfQuant[modToPhys[mc]];
+            lfQuant[mc] = new int[bwL * bhL];
+            for (int y = 0; y < bhL; y++)
+                for (int x = 0; x < bwL; x++)
+                    lfQuant[mc][y * bwL + x] = phys[(ly0 + y) * bw + lx0 + x];
+        }
+
+        var subGrid = new JxlBlockInfo[bwL * bhL];
+        for (int y = 0; y < bhL; y++)
+            for (int x = 0; x < bwL; x++)
+                subGrid[y * bwL + x] = blockGrid[(ly0 + y) * bw + lx0 + x];
+
+        int cfW = CeilDiv(bwL * 8, 64), cfH = CeilDiv(bhL * 8, 64);
+        return new JxlLfGroup
+        {
+            Bw = bwL, Bh = bhL, ExtraPrecision = extraPrecision,
+            LfQuant = lfQuant, BlockGrid = subGrid,
+            CfW = cfW, CfH = cfH,
+            XFromY = new int[cfW * cfH], BFromY = new int[cfW * cfH],
+        };
     }
 
     /// <summary>Build the HF symbol stream for PassGroup <paramref name="g"/> (a ≤32×32-block region).</summary>
