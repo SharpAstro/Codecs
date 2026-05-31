@@ -245,6 +245,130 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
+    // Multi-tile (SOFT tiles) — the strongest check: our entire multi-tile codestream must be
+    // byte-for-byte identical to what the reference JxrEncApp emits with the same uniform tiling
+    // (-U cols rows). Evenly-divisible MB grids keep the uniform split unambiguous. Exercises the
+    // tiling IMAGE_HEADER fields, per-tile packet headers, INDEX_TABLE_TILES, and per-tile entropy.
+    [Theory]
+    [InlineData(64, 32, "gradient", 0, 2, 1)]   // 4x2 MB -> 2 cols of 2 MB
+    [InlineData(64, 64, "gradient", 0, 2, 2)]   // 4x4 MB -> 2x2 tiles of 2x2 MB
+    [InlineData(128, 64, "random", 0, 4, 2)]    // 8x4 MB -> 4x2 tiles of 2x2 MB
+    [InlineData(544, 16, "gradient", 0, 2, 1)]  // 34x1 MB -> 2 tiles of 17 MB (spans the 16-MB group boundary)
+    [InlineData(64, 32, "gradient", 1, 2, 1)]   // overlap OL_ONE
+    [InlineData(64, 64, "random", 1, 2, 2)]
+    [InlineData(128, 64, "gradient", 2, 4, 2)]  // overlap OL_TWO
+    public void OurEncode_Tiled_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap, int cols, int rows)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x7E5 + w * 31 + h) : Gradient(w, h);
+
+        int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
+        var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
+        var ours = JxrCodestream.Encode(r, g, b, w, h, overlap: overlap, tiles: layout);
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_tile_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            // JxrEncApp -U takes (rows, cols): the first count is horizontal slices (rows), the second
+            // vertical slices (columns) — the opposite of our JxrTileLayout.Uniform(.., cols, rows).
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l {overlap} -U {rows} {cols} -f");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the tiled BMP");
+
+            var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
+            int n = Math.Min(ours.Length, theirs.Length);
+            int firstDiff = -1;
+            for (var i = 0; i < n; i++) if (ours[i] != theirs[i]) { firstDiff = i; break; }
+            string ctx = firstDiff < 0 ? "" :
+                $" ours[{firstDiff}..]={BitConverter.ToString(ours[firstDiff..Math.Min(firstDiff + 8, ours.Length)])}" +
+                $" theirs[{firstDiff}..]={BitConverter.ToString(theirs[firstDiff..Math.Min(firstDiff + 8, theirs.Length)])}";
+            _out.WriteLine($"ours={ours.Length} theirs={theirs.Length} firstDiff={firstDiff}{ctx}");
+            firstDiff.ShouldBe(-1, $"first differing byte 0x{(firstDiff < 0 ? 0 : firstDiff):X} (tiled {cols}x{rows} OL{overlap} {kind} {w}x{h}){ctx}");
+            ours.Length.ShouldBe(theirs.Length, $"codestream length (tiled {cols}x{rows} OL{overlap} {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // Multi-tile decode: a tiled .jxr produced by the reference JxrEncApp (-U) must decode losslessly
+    // through our container reader + multi-tile codestream decoder (INDEX_TABLE_TILES + per-tile
+    // entropy + whole-image inverse overlap). The complement of the encode byte-match.
+    [Theory]
+    [InlineData(64, 32, "gradient", 0, 2, 1)]
+    [InlineData(64, 64, "gradient", 0, 2, 2)]
+    [InlineData(128, 64, "random", 0, 4, 2)]
+    [InlineData(544, 16, "gradient", 0, 2, 1)]
+    [InlineData(64, 64, "random", 1, 2, 2)]
+    [InlineData(128, 64, "gradient", 2, 4, 2)]
+    public void JxrlibEncode_Tiled_DecodedByUs_IsLossless(int w, int h, string kind, int overlap, int cols, int rows)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x7E5 + w * 31 + h) : Gradient(w, h);
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_tdec_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            // -U takes (rows, cols) — see OurEncode_Tiled_CodestreamMatchesJxrlib.
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l {overlap} -U {rows} {cols} -f");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the tiled BMP");
+
+            var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(File.ReadAllBytes(jxrPath));
+            dw.ShouldBe(w);
+            dh.ShouldBe(h);
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(r[i], $"R[{i}] (tiled {cols}x{rows} OL{overlap} {kind} {w}x{h})");
+                dg[i].ShouldBe(g[i], $"G[{i}] (tiled {cols}x{rows} OL{overlap} {kind} {w}x{h})");
+                db[i].ShouldBe(b[i], $"B[{i}] (tiled {cols}x{rows} OL{overlap} {kind} {w}x{h})");
+            }
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // Multi-tile self round-trip (no oracle needed): our tiled encode → our tiled decode is lossless.
+    [Theory]
+    [InlineData(64, 32, 2, 1, 0)]
+    [InlineData(64, 64, 2, 2, 1)]
+    [InlineData(128, 64, 4, 2, 2)]
+    [InlineData(544, 16, 2, 1, 0)]
+    [InlineData(96, 80, 4, 3, 1)] // uneven uniform split: 6 MB / 4 cols = [1,1,1,3], 5 MB / 3 rows = [1,1,3]
+    public void OurEncode_Tiled_OurDecode_RoundTrips(int w, int h, int cols, int rows, int overlap)
+    {
+        var (r, g, b) = Gradient(w, h);
+        int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
+        var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
+
+        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: overlap, tiles: layout);
+        var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(jxr);
+
+        dw.ShouldBe(w);
+        dh.ShouldBe(h);
+        for (var i = 0; i < w * h; i++)
+        {
+            dr[i].ShouldBe(r[i], $"R[{i}] (self {cols}x{rows} OL{overlap} {w}x{h})");
+            dg[i].ShouldBe(g[i], $"G[{i}] (self {cols}x{rows} OL{overlap} {w}x{h})");
+            db[i].ShouldBe(b[i], $"B[{i}] (self {cols}x{rows} OL{overlap} {w}x{h})");
+        }
+    }
+
     /// <summary>
     /// Rung 7e.4 — the Windows-Photo milestone: our encoded <c>.jxr</c> must open in
     /// WIC (<c>System.Windows.Media.Imaging.BitmapDecoder</c>, what Windows Photo /

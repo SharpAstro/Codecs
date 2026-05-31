@@ -37,8 +37,10 @@ internal static class JxrCodestream
     /// </summary>
     public static byte[] Encode(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
                                 int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
-                                JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8)
+                                JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8, JxrTileLayout? tiles = null)
     {
+        if (tiles is { } layout && (layout.NumVerTiles > 1 || layout.NumHorTiles > 1))
+            return EncodeMultiTile(r, g, b, width, height, layout, qpDc, qpLp, qpHp, overlap, bd);
         RequirePositiveDims(width, height);
         int mbCols = MbCount(width), mbRows = MbCount(height);
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
@@ -84,6 +86,196 @@ internal static class JxrCodestream
 
         FillToByte(w);
         return w.ToArray();
+    }
+
+    // Multi-tile SPATIAL encode (SOFT tiles — jxrlib's default). The overlap/PCT runs over the whole
+    // image exactly as single-tile (soft tiling does NOT gate the overlap at tile edges), then each
+    // tile is entropy-coded independently: a fresh CodingContext + TileCoder over the tile's MB
+    // sub-rectangle in LOCAL coordinates, so DC/LP/CBP prediction and the adaptive contexts reset at
+    // every tile edge (mirroring jxrlib's per-column context reset at tile-row boundaries — the MB
+    // visiting order is identical). Tiles are concatenated in raster order behind an INDEX_TABLE_TILES
+    // of cumulative byte offsets. Ports jxrlib strenc.c encodeMB / writeIndexTable / getTilePos.
+    private static byte[] EncodeMultiTile(
+        ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
+        int width, int height, JxrTileLayout layout, int qpDc, int qpLp, int qpHp, int overlap, JxrOutputBitDepth bd)
+    {
+        RequirePositiveDims(width, height);
+        int mbCols = MbCount(width), mbRows = MbCount(height);
+        bool scaled = ScaledArith(qpDc, qpLp, qpHp);
+        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        int bias = LumaBias(bd);
+
+        int[] tileX = TileBoundaries(layout.TileWidthInMb, mbCols);
+        int[] tileY = TileBoundaries(layout.TileHeightInMb, mbRows);
+        int numCols = tileX.Length - 1, numRows = tileY.Length - 1;
+
+        // Whole-image colour load + overlap — byte-identical to the single-tile path.
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
+        var (mr, mg, mb) = (new int[256], new int[256], new int[256]);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                ExtractMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
+                SignalTransform.LoadColor(mr, mg, mb, planes[0], planes[1], planes[2],
+                                          OverlapTransform.MbBase(mbCols, mbR, mbC), bias);
+            }
+        OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
+
+        // Entropy-code each tile independently into its own byte-aligned buffer.
+        var tileBytes = new byte[numRows * numCols][];
+        for (var tr = 0; tr < numRows; tr++)
+            for (var tc = 0; tc < numCols; tc++)
+            {
+                int tileIdx = tr * numCols + tc;
+                int tmbW = tileX[tc + 1] - tileX[tc], tmbH = tileY[tr + 1] - tileY[tr];
+                var tw = new BitWriter();
+                WritePacketHeaderTile(tw, tileIdx);
+
+                var ctx = new CodingContext(ColorFormat.Yuv444, 3);
+                var tile = new TileCoder(tmbW);
+                for (var ly = 0; ly < tmbH; ly++)
+                {
+                    for (var lx = 0; lx < tmbW; lx++)
+                    {
+                        int baseOff = OverlapTransform.MbBase(mbCols, tileY[tr] + ly, tileX[tc] + lx);
+                        var block = new Macroblock(3);
+                        for (var ch = 0; ch < 3; ch++)
+                            SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch, qDc, qLp, qHp);
+                        tile.EncodeMacroblock(ctx, block, lx, ly, tw, tw, tw, tw);
+                    }
+                    tile.AdvanceRow();
+                }
+                FillToByte(tw);
+                tileBytes[tileIdx] = tw.ToArray();
+            }
+
+        // Header (image header with tiling + plane header) + INDEX_TABLE_TILES, then the tiles.
+        var hw = new BitWriter();
+        WriteImageHeaderTiled(hw, width, height, overlap, layout, JxrOutputColorFormat.Rgb, bd);
+        WritePlaneHeader(hw, qpDc, qpLp, qpHp, scaled, bd);
+        WriteIndexTable(hw, tileBytes);
+        return Concat(hw.ToArray(), tileBytes);
+    }
+
+    // Cumulative MB boundaries [0, …, totalMb] from per-tile sizes that EXCLUDE the last tile (its
+    // extent is implicit; T.832 §8.3.10). Result length = numTiles + 1.
+    private static int[] TileBoundaries(int[] sizesExclLast, int totalMb)
+    {
+        var b = new int[sizesExclLast.Length + 2];
+        int acc = 0;
+        for (var i = 0; i < sizesExclLast.Length; i++) { b[i] = acc; acc += sizesExclLast[i]; }
+        b[sizesExclLast.Length] = acc;
+        b[sizesExclLast.Length + 1] = totalMb;
+        return b;
+    }
+
+    private static void WritePacketHeaderTile(BitWriter w, int tileIndex)
+    {
+        // jxrlib writePacketHeader: 00 00 01 [(pID<<3)|type]; SPATIAL type=0, pID = tileIndex & 0x1F.
+        int pID = tileIndex & 0x1F;
+        w.WriteBits(0, 8); w.WriteBits(0, 8); w.WriteBits(1, 8); w.WriteBits((uint)(pID << 3), 8);
+    }
+
+    private static void WriteImageHeaderTiled(BitWriter w, int width, int height, int overlap,
+                                              JxrTileLayout layout, JxrOutputColorFormat clrFmt, JxrOutputBitDepth bitDepth)
+    {
+        int mbW = MbCount(width), mbH = MbCount(height);
+        var ih = new ImageHeader
+        {
+            HardTilingFlag = false,            // SOFT tiles (jxrlib default): overlap spans tile edges
+            TilingFlag = true,
+            FrequencyModeCodestreamFlag = false,
+            SpatialXfrmSubordinate = 0,
+            IndexTablePresentFlag = true,      // required for multi-tile (strenc.c StrIOEncInit)
+            OverlapMode = overlap,
+            ShortHeaderFlag = mbW <= 255 && mbH <= 255,
+            LongWordFlag = true,
+            WindowingFlag = false,
+            TrimFlexBitsFlag = false,
+            RedBlueNotSwappedFlag = false,
+            PremultipliedAlphaFlag = false,
+            AlphaImagePlaneFlag = false,
+            OutputClrFmt = clrFmt,
+            OutputBitDepth = bitDepth,
+            WidthMinus1 = (uint)(width - 1),
+            HeightMinus1 = (uint)(height - 1),
+            NumVerTilesMinus1 = layout.NumVerTiles - 1,
+            NumHorTilesMinus1 = layout.NumHorTiles - 1,
+            TileWidthInMb = layout.TileWidthInMb,
+            TileHeightInMb = layout.TileHeightInMb,
+        };
+        ih.Write(w);
+    }
+
+    // INDEX_TABLE_TILES (T.832 §8.7.1.3): start code 0x0001, one cumulative-byte-offset entry per tile
+    // (raster order, first entry = 0), then jxrlib's single 0xFF end escape — read back as a vlw_esc
+    // "subsequent bytes = 0", so NO PROFILE_LEVEL_INFO block follows (unlike the single-tile
+    // writeIndexTableNull path). All tiles here are far larger than MINIMUM_PACKET_LENGTH, so every
+    // entry uses the plain (escByte 0) vlw_esc form.
+    private static void WriteIndexTable(BitWriter w, byte[][] tileBytes)
+    {
+        w.WriteBits(IndexTableTiles.IndexTableStartCode, 16);
+        long cum = 0;
+        foreach (byte[] t in tileBytes) { WriteVlwEsc(w, cum); cum += t.Length; }
+        w.WriteBits(0xFF, 8); // PutVLWordEsc(0xff, 0) end escape
+        FillToByte(w);
+    }
+
+    private static byte[] Concat(byte[] header, byte[][] parts)
+    {
+        int total = header.Length;
+        foreach (byte[] p in parts) total += p.Length;
+        var outBuf = new byte[total];
+        int pos = 0;
+        Array.Copy(header, 0, outBuf, pos, header.Length); pos += header.Length;
+        foreach (byte[] p in parts) { Array.Copy(p, 0, outBuf, pos, p.Length); pos += p.Length; }
+        return outBuf;
+    }
+
+    // Multi-tile SPATIAL decode (inverse of EncodeMultiTile): consume INDEX_TABLE_TILES, then decode
+    // each tile in raster order from its own packet — a fresh CodingContext + TileCoder over the tile's
+    // MB sub-rectangle in LOCAL coordinates — dequantizing into the whole-image YUV planes. Tiles are
+    // byte-aligned, so align the reader before each packet header. The whole-image inverse overlap runs
+    // in the caller afterwards (soft tiling — the overlap spans tile edges).
+    private static void DecodeTilesIntoPlanes(
+        ref BitReader reader, ImageHeader ih, int[][] planes, int mbCols, int mbRows,
+        JxrQuantizer qDc, JxrQuantizer qLp, JxrQuantizer qHp)
+    {
+        int[] tileX = TileBoundaries(ih.TileWidthInMb, mbCols);
+        int[] tileY = TileBoundaries(ih.TileHeightInMb, mbRows);
+        int numCols = tileX.Length - 1, numRows = tileY.Length - 1;
+
+        // INDEX_TABLE_TILES: start code 0x0001, one cumulative-offset entry per tile, then the 0xFF end
+        // escape (a vlw_esc that reads back as 0 ⇒ no PROFILE_LEVEL_INFO). We decode sequentially, so
+        // the offsets themselves are unused. The plane header left the reader byte-aligned.
+        uint startCode = reader.ReadBits(16);
+        if (startCode != IndexTableTiles.IndexTableStartCode)
+            throw new InvalidDataException($"INDEX_TABLE_TILES start code mismatch: got 0x{startCode:X4}.");
+        for (var i = 0; i < numCols * numRows; i++) ReadVlwEsc(ref reader);
+        ReadVlwEsc(ref reader); // 0xFF end escape
+        AlignToByte(ref reader);
+
+        for (var tr = 0; tr < numRows; tr++)
+            for (var tc = 0; tc < numCols; tc++)
+            {
+                ReadPacketHeader(ref reader);
+                int tmbW = tileX[tc + 1] - tileX[tc], tmbH = tileY[tr + 1] - tileY[tr];
+                var ctx = new CodingContext(ColorFormat.Yuv444, 3);
+                var tile = new TileCoder(tmbW);
+                for (var ly = 0; ly < tmbH; ly++)
+                {
+                    for (var lx = 0; lx < tmbW; lx++)
+                    {
+                        var block = new Macroblock(3);
+                        tile.DecodeMacroblock(ctx, block, lx, ly, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
+                        int baseOff = OverlapTransform.MbBase(mbCols, tileY[tr] + ly, tileX[tc] + lx);
+                        for (var ch = 0; ch < 3; ch++)
+                            SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, qDc.Qp, qLp.Qp);
+                    }
+                    tile.AdvanceRow();
+                }
+                AlignToByte(ref reader); // each tile is byte-aligned (FillToByte on encode)
+            }
     }
 
     /// <summary>
@@ -214,8 +406,6 @@ internal static class JxrCodestream
         var bd = ih.OutputBitDepth;
         int bias = LumaBias(bd), max = SampleMax(bd);
         var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, bd);
-        ReadProfileLevelInfo(ref reader);
-        ReadPacketHeader(ref reader);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int mbCols = MbCount(width), mbRows = MbCount(height);
@@ -224,20 +414,29 @@ internal static class JxrCodestream
         // Per-MB entropy decode + dequantize into the whole-image YUV planes, then
         // run the inverse overlap + 2-stage PCT across the grid, then color-store.
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
-        var ctx = new CodingContext(ColorFormat.Yuv444, 3);
-        var tile = new TileCoder(mbCols);
-        for (var mbR = 0; mbR < mbRows; mbR++)
+        if (ih.TilingFlag)
         {
-            for (var mbC = 0; mbC < mbCols; mbC++)
+            DecodeTilesIntoPlanes(ref reader, ih, planes, mbCols, mbRows, qDc, qLp, qHp);
+        }
+        else
+        {
+            ReadProfileLevelInfo(ref reader);
+            ReadPacketHeader(ref reader);
+            var ctx = new CodingContext(ColorFormat.Yuv444, 3);
+            var tile = new TileCoder(mbCols);
+            for (var mbR = 0; mbR < mbRows; mbR++)
             {
-                var block = new Macroblock(3);
-                // SPATIAL: alias one reader to all four band slots (BitReader is a ref struct).
-                tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
-                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                for (var ch = 0; ch < 3; ch++)
-                    SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, qDc.Qp, qLp.Qp);
+                for (var mbC = 0; mbC < mbCols; mbC++)
+                {
+                    var block = new Macroblock(3);
+                    // SPATIAL: alias one reader to all four band slots (BitReader is a ref struct).
+                    tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
+                    int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                    for (var ch = 0; ch < 3; ch++)
+                        SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, qDc.Qp, qLp.Qp);
+                }
+                tile.AdvanceRow();
             }
-            tile.AdvanceRow();
         }
 
         OverlapTransform.Inverse(planes, mbCols, mbRows, overlap, scaled);

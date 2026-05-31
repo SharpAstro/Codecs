@@ -14,12 +14,15 @@ public static class JxrImageCodec
     /// (each channel <c>width*height</c> samples in raster order, values 0..255)
     /// into a <c>.jxr</c> byte stream. Arbitrary dimensions are allowed (partial macroblocks
     /// edge-replicated). QP indices default to 0 (lossless). <paramref name="overlap"/> is the Photo
-    /// Overlap level (0 = none, 1 = one level — jxrlib's default, 2 = two levels).
+    /// Overlap level (0 = none, 1 = one level — jxrlib's default, 2 = two levels). <paramref name="tiles"/>
+    /// optionally splits the image into a grid of independently-coded tiles (SPATIAL soft tiling);
+    /// <c>null</c> ⇒ a single tile.
     /// </summary>
     public static byte[] EncodeRgb24(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
-                                     int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                     int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                     JxrTileLayout? tiles = null)
     {
-        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap);
+        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, tiles: tiles);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,
