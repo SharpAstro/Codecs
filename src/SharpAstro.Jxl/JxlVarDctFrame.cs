@@ -8,10 +8,11 @@ namespace SharpAstro.Jxl;
 /// (<see cref="JxlHfCoeff"/>) — then reconstructs pixels via <see cref="JxlVarDctImage"/>.
 ///
 /// <para>
-/// Handles single-group frames (one combined TOC section, ≤256 px) and multi-group frames (one LF
-/// group, ≤2048 px, with one byte-aligned PassGroup section per 256×256 region). It does not apply
+/// Handles single-group frames (one combined TOC section, ≤256 px) and multi-entry frames of arbitrary
+/// size (one byte-aligned LfGroup section per 2048×2048 region, reassembled into the full LF-DC + block
+/// grid, plus one byte-aligned PassGroup section per 256×256 region). It does not apply
 /// adaptive-LF-smoothing or the restoration filters, so it matches our own (filter-free) encode but is
-/// not a general libjxl-compatible VarDCT decoder. All-DCT8, single LF group, xyb path only.
+/// not a general libjxl-compatible VarDCT decoder. All-DCT8, xyb path only.
 /// </para>
 /// </summary>
 internal static class JxlVarDctFrame
