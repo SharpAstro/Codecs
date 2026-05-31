@@ -30,24 +30,48 @@ public sealed record JxlImage
 }
 
 /// <summary>
-/// Top-level façade: integer pixels ⟷ a lossless Modular <c>.jxl</c> codestream. Wraps
-/// <see cref="JxlModularEncoder"/> / <see cref="JxlModularFrame"/> to produce bare codestreams
-/// (the 0xFF 0x0A form, valid per ISO/IEC 18181-2) that libjxl / Magick / browsers decode.
+/// Top-level façade: pixels ⟷ a <c>.jxl</c> codestream (the 0xFF 0x0A form, valid per
+/// ISO/IEC 18181-2; decoded by libjxl / Magick / browsers).
 ///
-/// Scope: still-image lossless Modular — 8/16-bit grey or RGB, single group (each dimension
-/// ≤ 1024), no alpha. RGB is decorrelated with the reversible YCoCg-R colour transform. Lossy
-/// VarDCT and float/HDR samples are not yet supported (a future rung).
+/// <para><b>Lossless Modular</b> (<see cref="JxlModularEncoder"/> / <see cref="JxlModularFrame"/>):
+/// 8/16-bit integer or IEEE-float (F16/F32) grey or RGB, single group (each dimension ≤ 1024), no
+/// alpha; RGB is decorrelated with the reversible YCoCg-R colour transform; float samples are stored
+/// verbatim (HDR-safe, not normalised).</para>
+///
+/// <para><b>Lossy VarDCT</b> (<see cref="JxlVarDctEncoder"/> / <see cref="JxlVarDctFrame"/>) via
+/// <see cref="EncodeRgb24Lossy"/>: 8-bit RGB at a fixed high-quality setting (DCT8, XYB colour,
+/// full-resolution chroma), dimensions multiples of 8 and ≤ 16384 px. <see cref="Decode"/>
+/// auto-detects the encoding and handles both. A tunable quality/distance knob, grayscale-lossy and
+/// arbitrary lossy dimensions remain follow-ups.</para>
 /// </summary>
 public static class JxlImageCodec
 {
     /// <summary>
-    /// Decodes any still-image lossless Modular <c>.jxl</c> (bare codestream or ISOBMFF container;
-    /// grey or RGB; 8/16-bit) into integer channels. Throws <see cref="NotSupportedException"/> for
-    /// constructs outside the supported scope (VarDCT, multi-group, alpha, float, …).
+    /// Decodes a <c>.jxl</c> (bare codestream or ISOBMFF container) into channels, dispatching on the
+    /// frame encoding: lossless Modular (grey/RGB, 8/16-bit integer or F16/F32 float) or our lossy
+    /// VarDCT output (returned as 8-bit RGB). Throws <see cref="NotSupportedException"/> for constructs
+    /// outside the supported scope (multi-group Modular, alpha, …).
     /// </summary>
     public static JxlImage Decode(ReadOnlySpan<byte> jxl)
     {
-        JxlModularDecodeResult result = JxlModularFrame.Decode(jxl.ToArray());
+        byte[] bytes = jxl.ToArray();
+        if (PeekEncoding(bytes, out int vw, out int vh) == JxlFrameEncoding.VarDct)
+        {
+            // Lossy VarDCT (our DCT8 path): reconstructs to 8-bit integer RGB.
+            int[][] rgb = JxlVarDctFrame.DecodeToRgb24(bytes);
+            return new JxlImage
+            {
+                Width = vw,
+                Height = vh,
+                ColorChannels = 3,
+                BitsPerSample = 8,
+                FloatingPoint = false,
+                ExponentBits = 0,
+                Channels = rgb,
+            };
+        }
+
+        JxlModularDecodeResult result = JxlModularFrame.Decode(bytes);
         return new JxlImage
         {
             Width = result.Width,
@@ -63,6 +87,17 @@ public static class JxlImageCodec
     /// <inheritdoc cref="Decode(ReadOnlySpan{byte})"/>
     public static JxlImage Decode(byte[] jxl) => Decode(jxl.AsSpan());
 
+    /// <summary>Reads just the headers to learn the frame encoding (+ dimensions) so <see cref="Decode"/> can dispatch.</summary>
+    private static JxlFrameEncoding PeekEncoding(byte[] containerOrCodestream, out int width, out int height)
+    {
+        byte[] cs = JxlContainer.ExtractCodestream(containerOrCodestream);
+        var br = new JxlBitReader(cs.AsSpan(2)); // skip FF 0A
+        (width, height) = JxlSizeHeader.Read(ref br);
+        JxlImageMetadata meta = JxlImageMetadata.Read(ref br);
+        JxlFrameHeader frame = JxlFrameHeader.Read(ref br, meta, width, height);
+        return frame.Encoding;
+    }
+
     // ---- 8-bit ----
 
     /// <summary>
@@ -75,6 +110,22 @@ public static class JxlImageCodec
     /// <summary>Decodes a lossless 8-bit RGB <c>.jxl</c> into three channels (values 0..255).</summary>
     public static (int Width, int Height, int[] R, int[] G, int[] B) DecodeRgb24(ReadOnlySpan<byte> jxl) =>
         DecodeRgb(jxl);
+
+    /// <summary>
+    /// Encodes a <paramref name="width"/>×<paramref name="height"/> 8-bit RGB image (each channel
+    /// <c>width*height</c> samples, raster order, values 0..255) as a <b>lossy</b> VarDCT <c>.jxl</c>
+    /// at a fixed high-quality setting (DCT8, XYB colour, full-resolution chroma).
+    /// <paramref name="width"/>/<paramref name="height"/> must be multiples of 8 and ≤ 16384.
+    /// Decode with <see cref="Decode(ReadOnlySpan{byte})"/>, which auto-detects the VarDCT encoding.
+    /// </summary>
+    public static byte[] EncodeRgb24Lossy(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b, int width, int height)
+    {
+        int n = width * height;
+        if (r.Length < n || g.Length < n || b.Length < n)
+            throw new ArgumentException("Each RGB channel must hold width*height samples.");
+        int[][] rgb = [r[..n].ToArray(), g[..n].ToArray(), b[..n].ToArray()];
+        return JxlVarDctEncoder.EncodeRgb24(rgb, width, height);
+    }
 
     /// <summary>
     /// Encodes a <paramref name="width"/>×<paramref name="height"/> 8-bit grayscale image

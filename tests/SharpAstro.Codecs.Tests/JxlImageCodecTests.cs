@@ -230,6 +230,48 @@ public sealed class JxlImageCodecTests
     }
 
     [Fact]
+    public void Rgb24Lossy_RoundTrips_WithinTolerance()
+    {
+        const int w = 64, h = 48; // multiples of 8
+        (int[] r, int[] g, int[] b) = SmoothRgb(w, h);
+
+        byte[] jxl = JxlImageCodec.EncodeRgb24Lossy(r, g, b, w, h);
+
+        // The general Decode auto-detects VarDCT and returns 8-bit RGB.
+        JxlImage img = JxlImageCodec.Decode(jxl);
+        img.ColorChannels.ShouldBe(3);
+        img.BitsPerSample.ShouldBe(8);
+        img.Width.ShouldBe(w);
+        img.Height.ShouldBe(h);
+        Rmse8(img.Channels, [r, g, b], w, h).ShouldBeLessThan(0.03);
+    }
+
+    [Fact]
+    public void EncodedRgb24Lossy_DecodesInLibjxl()
+    {
+        const int w = 64, h = 48;
+        (int[] r, int[] g, int[] b) = SmoothRgb(w, h);
+
+        byte[] jxl = JxlImageCodec.EncodeRgb24Lossy(r, g, b, w, h);
+
+        using var img = new MagickImage(jxl); // libjxl decode of our lossy façade output
+        img.Width.ShouldBe((uint)w);
+        img.Height.ShouldBe((uint)h);
+        using IPixelCollection<float> px = img.GetPixels();
+        int mc = (int)px.Channels;
+        float[] v = px.GetValues()!;
+        int[][] src = [r, g, b];
+        double sumSq = 0;
+        for (int i = 0; i < w * h; i++)
+            for (int c = 0; c < 3; c++)
+            {
+                double e = src[c][i] / 255.0 - v[i * mc + c] / 65535.0;
+                sumSq += e * e;
+            }
+        Math.Sqrt(sumSq / (3.0 * w * h)).ShouldBeLessThan(0.05);
+    }
+
+    [Fact]
     public void DecodeGrayF32_OnIntegerImage_Throws()
     {
         byte[] integer = JxlImageCodec.EncodeGray8(MakeGray(16, 16, max: 256), 16, 16);
@@ -262,5 +304,35 @@ public sealed class JxlImageCodecTests
         uint Next() { state ^= state << 13; state ^= state >> 17; state ^= state << 5; return state; }
         for (int i = 0; i < w * h; i++) y[i] = (int)(Next() % (uint)max);
         return y;
+    }
+
+    // A smooth gradient — DCT-friendly, so the lossy reconstruction stays within a tight RMSE
+    // (random noise would not compress well and isn't representative of lossy use).
+    private static (int[] R, int[] G, int[] B) SmoothRgb(int w, int h)
+    {
+        var r = new int[w * h];
+        var g = new int[w * h];
+        var b = new int[w * h];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                int i = y * w + x;
+                r[i] = Math.Clamp(x * 255 / w, 0, 255);
+                g[i] = Math.Clamp(y * 255 / h, 0, 255);
+                b[i] = Math.Clamp((x + y) * 255 / (w + h), 0, 255);
+            }
+        return (r, g, b);
+    }
+
+    private static double Rmse8(int[][] a, int[][] b, int w, int h)
+    {
+        double sumSq = 0;
+        for (int c = 0; c < 3; c++)
+            for (int i = 0; i < w * h; i++)
+            {
+                double e = (a[c][i] - b[c][i]) / 255.0;
+                sumSq += e * e;
+            }
+        return Math.Sqrt(sumSq / (3.0 * w * h));
     }
 }
