@@ -44,14 +44,61 @@ internal sealed class JxlLfGlobalVarDct
         int quantLf = (int)br.ReadU32((16, 0), (1, 5), (1, 8), (1, 16));
 
         // HfBlockContext.
-        if (!br.ReadBit())
-            throw new NotSupportedException("JPEG XL: custom HfBlockContext is not yet supported.");
+        int numBlockClusters = 15;
+        byte[] blockCtxMap = DefaultBlockCtxMap;
+        var qfThresholds = Array.Empty<int>();
+        int[][] lfThresholds = [[], [], []];
+        if (!br.ReadBit()) // not all_default: custom thresholds + cluster map
+        {
+            int bsize = 1;
+            for (int c = 0; c < 3; c++)
+            {
+                int numLf = (int)br.ReadBits(4);
+                var thr = new int[numLf];
+                for (int i = 0; i < numLf; i++)
+                    thr[i] = JxlModular.UnpackSigned(br.ReadU32((0, 4), (16, 8), (272, 16), (65808, 32)));
+                lfThresholds[c] = thr;
+                bsize *= numLf + 1;
+            }
+            int numQf = (int)br.ReadBits(4);
+            qfThresholds = new int[numQf];
+            for (int i = 0; i < numQf; i++)
+                qfThresholds[i] = 1 + (int)br.ReadU32((0, 2), (4, 3), (12, 5), (44, 8));
+            bsize *= numQf + 1;
+
+            (uint numClusters, byte[] map) = JxlEntropyDecoder.ReadClusterMap(ref br, (uint)(bsize * 39));
+            numBlockClusters = (int)numClusters;
+            blockCtxMap = map;
+        }
 
         // LfChannelCorrelation.
-        if (!br.ReadBit())
-            throw new NotSupportedException("JPEG XL: custom LfChannelCorrelation is not yet supported.");
+        int colourFactor = JxlChromaFromLuma.DefaultColourFactor;
+        float baseCorrelationX = JxlChromaFromLuma.DefaultBaseCorrelationX;
+        float baseCorrelationB = JxlChromaFromLuma.DefaultBaseCorrelationB;
+        int xFactorLf = JxlChromaFromLuma.DefaultFactorLf, bFactorLf = JxlChromaFromLuma.DefaultFactorLf;
+        if (!br.ReadBit()) // not all_default
+        {
+            colourFactor = (int)br.ReadU32((84, 0), (256, 0), (2, 8), (258, 16));
+            baseCorrelationX = (float)BitConverter.UInt16BitsToHalf((ushort)br.ReadBits(16));
+            baseCorrelationB = (float)BitConverter.UInt16BitsToHalf((ushort)br.ReadBits(16));
+            xFactorLf = (int)br.ReadBits(8);
+            bFactorLf = (int)br.ReadBits(8);
+        }
 
-        return new JxlLfGlobalVarDct { GlobalScale = globalScale, QuantLf = quantLf };
+        return new JxlLfGlobalVarDct
+        {
+            GlobalScale = globalScale,
+            QuantLf = quantLf,
+            NumBlockClusters = numBlockClusters,
+            BlockCtxMap = blockCtxMap,
+            QfThresholds = qfThresholds,
+            LfThresholds = lfThresholds,
+            ColourFactor = colourFactor,
+            BaseCorrelationX = baseCorrelationX,
+            BaseCorrelationB = baseCorrelationB,
+            XFactorLf = xFactorLf,
+            BFactorLf = bFactorLf,
+        };
     }
 
     public void Write(JxlBitWriter bw)

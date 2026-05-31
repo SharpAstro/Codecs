@@ -119,6 +119,14 @@ internal sealed class JxlEntropyDecoder
             lz77Enabled, lzMinSymbol, lzMinLength, lzLenConfig);
     }
 
+    /// <summary>
+    /// Reads a standalone distribution-clustering context map of <paramref name="numDist"/> entries
+    /// (jxl-coding <c>read_clusters</c>) — used by HfBlockContext's custom form, separate from a full
+    /// <see cref="Parse"/>. Returns the cluster count and the per-context cluster indices.
+    /// </summary>
+    public static (uint NumClusters, byte[] Clusters) ReadClusterMap(ref JxlBitReader br, uint numDist)
+        => ReadClusters(ref br, numDist);
+
     private static (uint NumClusters, byte[] Clusters) ReadClusters(ref JxlBitReader br, uint numDist)
     {
         if (numDist == 1)
