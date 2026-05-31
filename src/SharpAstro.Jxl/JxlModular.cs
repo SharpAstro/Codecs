@@ -9,6 +9,9 @@ internal static class JxlModular
     /// </summary>
     public static int UnpackSigned(uint u) => (int)(u >> 1) ^ -(int)(u & 1);
 
+    /// <summary>Inverse of <see cref="UnpackSigned"/> (zigzag encode): 0→0, -1→1, 1→2, -2→3, …</summary>
+    public static uint PackSigned(int value) => (uint)((value << 1) ^ (value >> 31));
+
     /// <summary>
     /// Clamped gradient: <c>clamp(n + w - nw, min(n,w), max(n,w))</c> (i64 intermediate to avoid
     /// overflow). Used by the Gradient predictor and the cross-channel error properties.
