@@ -74,4 +74,17 @@ internal static class JxlModularSubimage
 
     /// <summary>A sample encoder for the single-leaf tree: one cluster, the proven sample config.</summary>
     public static JxlEntropyEncoder NewSampleEncoder() => new([0], [SampleConfig]);
+
+    /// <summary>
+    /// Write a sub-image's local Modular header (ISO/IEC 18181-1 §H.2, jxl-modular <c>ModularHeader</c>):
+    /// use the frame's global tree, default weighted-predictor params, and no transforms. Every
+    /// non-empty Modular sub-image (LfCoeff, HfMetadata) carries this header right before its sample
+    /// data — <c>Modular::parse</c> reads it (only the empty GlobalModular stream-0 skips it).
+    /// </summary>
+    public static void WriteLocalHeader(JxlBitWriter bw)
+    {
+        bw.WriteBit(true);                               // use_global_tree = true
+        bw.WriteBit(true);                               // wp_params: default_wp = true
+        bw.WriteU32(0, (0, 0), (1, 0), (2, 4), (18, 8)); // nb_transforms = 0
+    }
 }

@@ -83,15 +83,17 @@ internal sealed class JxlLfGroup
         JxlBitWriter bw, JxlEntropyEncoder sampleEnc, JxlEntropyEncoder.Plan plan,
         List<(int Ctx, uint Value)> lfStream, List<(int Ctx, uint Value)> hfStream)
     {
-        // LfCoeff: extra_precision + lf_quant sample data.
+        // LfCoeff: extra_precision + a 3-channel Modular sub-image (local header + sample data).
         bw.WriteBits((uint)ExtraPrecision, 2);
+        JxlModularSubimage.WriteLocalHeader(bw);
         sampleEnc.WriteData(bw, plan, lfStream);
 
-        // HfMetadata: nb_blocks - 1 then hf_meta sample data.
+        // HfMetadata: nb_blocks - 1 then a 4-channel Modular sub-image (local header + sample data).
         int nb = JxlBlockLayout.Encode(BlockGrid, Bw, Bh).DctSelect.Length;
         int nbBits = JxlHfGlobal.CeilLog2(Bw * Bh);
         if (nbBits > 0)
             bw.WriteBits((uint)(nb - 1), nbBits);
+        JxlModularSubimage.WriteLocalHeader(bw);
         sampleEnc.WriteData(bw, plan, hfStream);
     }
 
@@ -100,23 +102,25 @@ internal sealed class JxlLfGroup
         ref JxlBitReader br, JxlMaConfig tree, int bw, int bh, int cfW, int cfH,
         uint lfStreamIndex, uint hfStreamIndex)
     {
-        // LfCoeff.
+        // LfCoeff: extra_precision + a 3-channel Modular sub-image (local header + sample data).
         int extraPrecision = (int)br.ReadBits(2);
+        JxlModularHeader lfHeader = JxlModularHeader.Parse(ref br);
         var lfChannels = new[]
         {
             new JxlModularChannel(bw, bh), new JxlModularChannel(bw, bh), new JxlModularChannel(bw, bh),
         };
-        JxlModularImage.Decode(ref br, tree, lfChannels, JxlWpHeader.Default, lfStreamIndex);
+        JxlModularImage.Decode(ref br, tree, lfChannels, lfHeader.Wp, lfStreamIndex);
 
-        // HfMetadata.
+        // HfMetadata: nb_blocks then a 4-channel Modular sub-image (local header + sample data).
         int nbBits = JxlHfGlobal.CeilLog2(bw * bh);
         int nb = (int)(nbBits == 0 ? 0u : br.ReadBits(nbBits)) + 1;
+        JxlModularHeader hfHeader = JxlModularHeader.Parse(ref br);
         var hfChannels = new[]
         {
             new JxlModularChannel(cfW, cfH), new JxlModularChannel(cfW, cfH),
             new JxlModularChannel(nb, 2), new JxlModularChannel(bw, bh),
         };
-        JxlModularImage.Decode(ref br, tree, hfChannels, JxlWpHeader.Default, hfStreamIndex);
+        JxlModularImage.Decode(ref br, tree, hfChannels, hfHeader.Wp, hfStreamIndex);
 
         int[] raw = hfChannels[2].Data;
         var dctSelect = new int[nb];
