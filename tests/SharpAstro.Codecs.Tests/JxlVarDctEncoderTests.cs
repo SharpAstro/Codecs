@@ -126,6 +126,40 @@ public sealed class JxlVarDctEncoderTests
         Rmse(rgb, img, w, h).ShouldBeLessThan(0.05);
     }
 
+    [Theory]
+    [InlineData(2304, 264)]  // 2 LF groups wide (just over 2048)
+    [InlineData(4096, 512)]  // 2 LF groups wide, the literal "4096" case
+    [InlineData(2304, 2176)] // 2x2 LF groups (both dims > 2048)
+    public void MultiLfGroup_DecodesInLibjxl_LowRmse(int w, int h)
+    {
+        int[][] rgb = FullGradient(w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+
+        using var img = new MagickImage(jxl); // libjxl decode — throws if malformed
+        img.Width.ShouldBe((uint)w);
+        img.Height.ShouldBe((uint)h);
+        Rmse(rgb, img, w, h).ShouldBeLessThan(0.05);
+    }
+
+    [Fact]
+    public void MultiLfGroup_SelfRoundTrip_ReconstructsWithinTolerance()
+    {
+        const int w = 2304, h = 264; // 2 LF groups
+        int[][] rgb = FullGradient(w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+
+        int[][] recon = JxlVarDctFrame.DecodeToRgb24(jxl);
+
+        double sumSq = 0;
+        for (int c = 0; c < 3; c++)
+            for (int i = 0; i < w * h; i++)
+            {
+                double e = (rgb[c][i] - recon[c][i]) / 255.0;
+                sumSq += e * e;
+            }
+        Math.Sqrt(sumSq / (3.0 * w * h)).ShouldBeLessThan(0.05);
+    }
+
     [Fact]
     public void OurDecoder_ParsesLibjxlVarDctOutput_EndToEnd()
     {
