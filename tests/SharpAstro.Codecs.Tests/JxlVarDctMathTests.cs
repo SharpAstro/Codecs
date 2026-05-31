@@ -330,4 +330,35 @@ public sealed class JxlVarDctMathTests
         rmse.ShouldBeLessThan(0.02);
         maxErr.ShouldBeLessThan(0.08f);
     }
+
+    [Theory]
+    [InlineData(1, 1)]  // Dct8
+    [InlineData(2, 2)]  // Dct16
+    [InlineData(4, 4)]  // Dct32
+    [InlineData(2, 1)]  // Dct8x16
+    [InlineData(1, 2)]  // Dct16x8
+    [InlineData(4, 1)]  // Dct8x32
+    [InlineData(1, 4)]  // Dct32x8
+    [InlineData(4, 2)]  // Dct16x32
+    [InlineData(2, 4)]  // Dct32x16
+    [InlineData(8, 8)]  // Dct64
+    public void VarDctBlock_DctFamily_ForwardThenInverse_IsIdentity(int bw, int bh)
+    {
+        int width = bw * 8, height = bh * 8;
+        float[] pixels = Random(width * height, bw * 911 + bh * 17 + 1);
+
+        var block = (float[])pixels.Clone();
+        float[] lf = JxlVarDctBlock.ForwardTransform(block, bw, bh); // block = full coeffs, lf = DC
+
+        // Transmit HF (the block, with its LLF top-left) + the separate LF DC values, then rebuild:
+        // overwrite the top-left bw×bh with the LF DC values and run the inverse.
+        var recon = (float[])block.Clone();
+        for (int y = 0; y < bh; y++)
+            for (int x = 0; x < bw; x++)
+                recon[y * width + x] = lf[y * bw + x];
+        JxlVarDctBlock.InverseTransform(recon, bw, bh);
+
+        for (int i = 0; i < width * height; i++)
+            recon[i].ShouldBe(pixels[i], tolerance: 3e-4f);
+    }
 }
