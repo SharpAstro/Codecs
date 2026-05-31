@@ -137,6 +137,63 @@ public sealed class JxlEntropyTests
     }
 
     [Fact]
+    public void EntropyEncoder_SplitConfigAndData_RoundTrips()
+    {
+        // VarDCT writes the entropy config (histograms) in HfGlobal and the coded symbols in each
+        // PassGroup — distinct bitstream locations. Validate the encoder's Prepare/WriteConfig/
+        // WriteData split against the decoder's Parse (config reader) + Begin/ReadVarint (data
+        // reader) split, with two independent data streams sharing one config (the multi-pass-group
+        // shape). Each data blob carries its own 32-bit initial rANS state.
+        JxlIntegerConfig[] configs =
+        [
+            JxlIntegerConfig.Create(splitExponent: 7, msbInToken: 0, lsbInToken: 0),
+            JxlIntegerConfig.Create(splitExponent: 6, msbInToken: 1, lsbInToken: 1),
+        ];
+        byte[] contextMap = [0, 1, 0, 1];
+
+        static List<(int Ctx, uint Value)> MakeStream(uint seed)
+        {
+            var s = new List<(int Ctx, uint Value)>();
+            uint x = seed;
+            for (int k = 0; k < 400; k++)
+            {
+                x = x * 1664525 + 1013904223;
+                s.Add((k % 4, x % 30000));
+            }
+            return s;
+        }
+        List<(int Ctx, uint Value)> streamA = MakeStream(0x99);
+        List<(int Ctx, uint Value)> streamB = MakeStream(0x4242);
+
+        var enc = new JxlEntropyEncoder(contextMap, configs);
+        JxlEntropyEncoder.Plan plan = enc.Prepare(streamA, streamB);
+
+        var configBw = new JxlBitWriter();
+        enc.WriteConfig(configBw, plan);
+        var dataABw = new JxlBitWriter();
+        enc.WriteData(dataABw, plan, streamA);
+        var dataBBw = new JxlBitWriter();
+        enc.WriteData(dataBBw, plan, streamB);
+
+        // Decode: parse the config from its own reader, then each data blob from its own reader,
+        // reusing the single decoder (just as a frame holds one HfGlobal across many PassGroups).
+        var configBr = new JxlBitReader(configBw.ToArray());
+        JxlEntropyDecoder dec = JxlEntropyDecoder.Parse(ref configBr, (uint)contextMap.Length);
+
+        var brA = new JxlBitReader(dataABw.ToArray());
+        dec.Begin(ref brA);
+        foreach ((int ctx, uint value) in streamA)
+            dec.ReadVarint(ref brA, (uint)ctx).ShouldBe(value);
+        dec.Finish();
+
+        var brB = new JxlBitReader(dataBBw.ToArray());
+        dec.Begin(ref brB);
+        foreach ((int ctx, uint value) in streamB)
+            dec.ReadVarint(ref brB, (uint)ctx).ShouldBe(value);
+        dec.Finish();
+    }
+
+    [Fact]
     public void EntropyEncoder_SingleContext_RoundTrips()
     {
         // num_dist == 1 path (no context map written). split_exponent < log_alphabet_size(8) so
