@@ -193,4 +193,53 @@ public sealed class JxlVarDctMathTests
             JxlXyb.LinearToSrgb(JxlXyb.SrgbToLinear(c)).ShouldBe(c, tolerance: 1e-5f);
         }
     }
+
+    [Fact]
+    public void DequantMatrices_BuildDefault_AllPositiveAndFinite()
+    {
+        var dq = JxlDequantMatrices.BuildDefault();
+        foreach (JxlVarDctTransform t in Enum.GetValues<JxlVarDctTransform>())
+            for (int c = 0; c < 3; c++)
+            {
+                float[] m = dq.Get(c, t);
+                (int w, int h) = t.DequantMatrixSize();
+                m.Length.ShouldBe(w * h);
+                foreach (float v in m)
+                {
+                    v.ShouldBeGreaterThan(0f);
+                    v.ShouldBeLessThan(1e8f);
+                }
+            }
+    }
+
+    [Fact]
+    public void DequantMatrices_Dct8Luma_DcWeight_IsReciprocalOfFirstBand()
+    {
+        var dq = JxlDequantMatrices.BuildDefault();
+        // The DC (radial distance 0) interpolates to the first band 3150; reciprocated on build.
+        dq.Get(0, JxlVarDctTransform.Dct8)[0].ShouldBe(1f / 3150f, tolerance: 1e-9f);
+    }
+
+    [Fact]
+    public void DequantMatrices_Hornuss_DcWeight_IsOne()
+    {
+        var dq = JxlDequantMatrices.BuildDefault();
+        dq.Get(0, JxlVarDctTransform.Hornuss)[0].ShouldBe(1f, tolerance: 1e-6f);
+    }
+
+    [Fact]
+    public void DequantMatrices_Transpose_IsValuePermutation()
+    {
+        var dq = JxlDequantMatrices.BuildDefault();
+        foreach (JxlVarDctTransform t in new[]
+                 { JxlVarDctTransform.Dct8, JxlVarDctTransform.Dct8x16, JxlVarDctTransform.Dct16x32 })
+            for (int c = 0; c < 3; c++)
+            {
+                var raster = (float[])dq.Get(c, t).Clone();
+                var transposed = (float[])dq.GetTransposed(c, t).Clone();
+                Array.Sort(raster);
+                Array.Sort(transposed);
+                transposed.ShouldBe(raster); // transpose preserves the value multiset
+            }
+    }
 }
