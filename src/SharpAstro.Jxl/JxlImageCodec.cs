@@ -39,10 +39,10 @@ public sealed record JxlImage
 /// verbatim (HDR-safe, not normalised).</para>
 ///
 /// <para><b>Lossy VarDCT</b> (<see cref="JxlVarDctEncoder"/> / <see cref="JxlVarDctFrame"/>) via
-/// <see cref="EncodeRgb24Lossy"/>: 8-bit RGB at a fixed high-quality setting (DCT8, XYB colour,
-/// full-resolution chroma), dimensions multiples of 8 and ≤ 16384 px. <see cref="Decode"/>
-/// auto-detects the encoding and handles both. A tunable quality/distance knob, grayscale-lossy and
-/// arbitrary lossy dimensions remain follow-ups.</para>
+/// <see cref="EncodeRgb24Lossy"/>: 8-bit RGB with a libjxl-style Butteraugli <c>distance</c> knob
+/// (default 1.0; DCT8, XYB colour, full-resolution chroma), dimensions multiples of 8 and ≤ 16384 px.
+/// <see cref="Decode"/> auto-detects the encoding and handles both. Grayscale-lossy and arbitrary
+/// lossy dimensions remain follow-ups.</para>
 /// </summary>
 public static class JxlImageCodec
 {
@@ -114,17 +114,23 @@ public static class JxlImageCodec
     /// <summary>
     /// Encodes a <paramref name="width"/>×<paramref name="height"/> 8-bit RGB image (each channel
     /// <c>width*height</c> samples, raster order, values 0..255) as a <b>lossy</b> VarDCT <c>.jxl</c>
-    /// at a fixed high-quality setting (DCT8, XYB colour, full-resolution chroma).
-    /// <paramref name="width"/>/<paramref name="height"/> must be multiples of 8 and ≤ 16384.
-    /// Decode with <see cref="Decode(ReadOnlySpan{byte})"/>, which auto-detects the VarDCT encoding.
+    /// (DCT8, XYB colour, full-resolution chroma). <paramref name="distance"/> is a libjxl-style
+    /// Butteraugli distance: ≈0.1 = near-lossless, <b>1.0 (default) = high quality</b>, larger =
+    /// smaller file / more loss (calibrated against libjxl; see <see cref="JxlVarDctEncoder.GlobalScaleForDistance"/>).
+    /// <paramref name="width"/>/<paramref name="height"/> must be multiples of 8 and ≤ 16384. For truly
+    /// lossless output use <see cref="EncodeRgb24"/> (Modular). Decode with
+    /// <see cref="Decode(ReadOnlySpan{byte})"/>, which auto-detects the VarDCT encoding.
     /// </summary>
-    public static byte[] EncodeRgb24Lossy(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b, int width, int height)
+    public static byte[] EncodeRgb24Lossy(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b, int width, int height, double distance = 1.0)
     {
+        if (distance <= 0)
+            throw new ArgumentOutOfRangeException(nameof(distance), "distance must be > 0 (VarDCT is not lossless; use EncodeRgb24 for lossless Modular).");
         int n = width * height;
         if (r.Length < n || g.Length < n || b.Length < n)
             throw new ArgumentException("Each RGB channel must hold width*height samples.");
         int[][] rgb = [r[..n].ToArray(), g[..n].ToArray(), b[..n].ToArray()];
-        return JxlVarDctEncoder.EncodeRgb24(rgb, width, height);
+        int globalScale = JxlVarDctEncoder.GlobalScaleForDistance(distance);
+        return JxlVarDctEncoder.EncodeRgb24(rgb, width, height, globalScale);
     }
 
     /// <summary>

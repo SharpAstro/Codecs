@@ -272,6 +272,57 @@ public sealed class JxlImageCodecTests
     }
 
     [Fact]
+    public void Lossy_Distance_TradesQualityForSize_Monotonically()
+    {
+        // Larger distance must shrink the file and raise the reconstruction error — the core contract
+        // of the quality knob. Use a textured image (a pure gradient is too compressible to separate).
+        const int w = 128, h = 128;
+        int[][] src = Textured(w, h);
+
+        double[] distances = [0.5, 1.0, 2.0, 4.0, 8.0];
+        var sizes = new int[distances.Length];
+        var rmses = new double[distances.Length];
+        for (int i = 0; i < distances.Length; i++)
+        {
+            byte[] jxl = JxlImageCodec.EncodeRgb24Lossy(src[0], src[1], src[2], w, h, distances[i]);
+            JxlImage img = JxlImageCodec.Decode(jxl);
+            sizes[i] = jxl.Length;
+            rmses[i] = Rmse8(img.Channels, src, w, h);
+        }
+
+        for (int i = 1; i < distances.Length; i++)
+        {
+            sizes[i].ShouldBeLessThan(sizes[i - 1], $"size at d={distances[i]} should be < d={distances[i - 1]}");
+            rmses[i].ShouldBeGreaterThan(rmses[i - 1], $"error at d={distances[i]} should be > d={distances[i - 1]}");
+        }
+        // A low distance is genuinely high fidelity; a high distance is genuinely lossy.
+        rmses[0].ShouldBeLessThan(0.02);
+        rmses[^1].ShouldBeGreaterThan(rmses[0] * 2);
+    }
+
+    [Theory]
+    [InlineData(0.3)]
+    [InlineData(1.0)]
+    [InlineData(4.0)]
+    [InlineData(10.0)]
+    public void Lossy_AnyDistance_DecodesInLibjxl(double distance)
+    {
+        const int w = 96, h = 64;
+        int[][] src = Textured(w, h);
+
+        byte[] jxl = JxlImageCodec.EncodeRgb24Lossy(src[0], src[1], src[2], w, h, distance);
+
+        using var img = new MagickImage(jxl); // libjxl must accept every quality setting
+        img.Width.ShouldBe((uint)w);
+        img.Height.ShouldBe((uint)h);
+    }
+
+    [Fact]
+    public void Lossy_NonPositiveDistance_Throws() =>
+        Should.Throw<ArgumentOutOfRangeException>(() =>
+            JxlImageCodec.EncodeRgb24Lossy(new int[64], new int[64], new int[64], 8, 8, distance: 0));
+
+    [Fact]
     public void DecodeGrayF32_OnIntegerImage_Throws()
     {
         byte[] integer = JxlImageCodec.EncodeGray8(MakeGray(16, 16, max: 256), 16, 16);
@@ -334,5 +385,24 @@ public sealed class JxlImageCodecTests
                 sumSq += e * e;
             }
         return Math.Sqrt(sumSq / (3.0 * w * h));
+    }
+
+    // Gradient + sinusoidal texture: has real high-frequency content, so the quantizer knob actually
+    // changes the file size and error (a pure gradient compresses near-perfectly at every distance).
+    private static int[][] Textured(int w, int h)
+    {
+        var ch = new int[3][];
+        for (int c = 0; c < 3; c++) ch[c] = new int[w * h];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                int i = y * w + x;
+                double grad = x * 180.0 / w + y * 40.0 / h;
+                double tex = 28 * Math.Sin(x * 0.7) * Math.Cos(y * 0.5) + 14 * Math.Sin((x + y) * 1.1);
+                ch[0][i] = Math.Clamp((int)Math.Round(grad + tex), 0, 255);
+                ch[1][i] = Math.Clamp((int)Math.Round(grad * 0.7 + tex * 0.6 + 50), 0, 255);
+                ch[2][i] = Math.Clamp((int)Math.Round(150 - grad * 0.4 + tex), 0, 255);
+            }
+        return ch;
     }
 }
