@@ -12,6 +12,9 @@ internal readonly struct JxlToc
 
     public int EntryCount { get; init; }
 
+    /// <summary>Per-entry byte sizes, in bitstream (non-permuted) order. Length == <see cref="EntryCount"/>.</summary>
+    public long[] Sizes { get; init; }
+
     public static JxlToc Read(ref JxlBitReader br, in JxlFrameHeader frame)
     {
         int entryCount = frame.NumGroups == 1 && frame.NumPasses == 1
@@ -27,10 +30,14 @@ internal readonly struct JxlToc
 
         br.ZeroPadToByte();
         long total = 0;
+        var sizes = new long[entryCount];
         for (int i = 0; i < entryCount; i++)
-            total += br.ReadU32((0, 10), (1024, 14), (17408, 22), (4211712, 30));
+        {
+            sizes[i] = br.ReadU32((0, 10), (1024, 14), (17408, 22), (4211712, 30));
+            total += sizes[i];
+        }
         br.ZeroPadToByte();
 
-        return new JxlToc { TotalSize = total, EntryCount = entryCount };
+        return new JxlToc { TotalSize = total, EntryCount = entryCount, Sizes = sizes };
     }
 }
