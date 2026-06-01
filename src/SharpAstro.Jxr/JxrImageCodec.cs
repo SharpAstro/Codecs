@@ -51,9 +51,9 @@ public static class JxrImageCodec
     /// <paramref name="overlap"/> is the Photo Overlap level (0 = none, 1 = jxrlib's default, 2 = two levels).
     /// </summary>
     public static byte[] EncodeGray8(ReadOnlySpan<int> y, int width, int height,
-                                     int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                     int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0, JxrTileLayout? tiles = null)
     {
-        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap);
+        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, tiles: tiles);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,
@@ -77,9 +77,10 @@ public static class JxrImageCodec
     /// Arbitrary dimensions are allowed (partial macroblocks edge-replicated); QP indices default to 0 (lossless).
     /// </summary>
     public static byte[] EncodeGray16(ReadOnlySpan<int> y, int width, int height,
-                                      int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0, bool noFlexBits = false)
+                                      int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0, bool noFlexBits = false,
+                                      JxrTileLayout? tiles = null)
     {
-        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16, noFlexBits);
+        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16, noFlexBits, tiles);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,
