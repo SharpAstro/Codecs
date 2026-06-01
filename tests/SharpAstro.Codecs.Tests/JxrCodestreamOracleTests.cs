@@ -537,6 +537,93 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
+    // NO_FLEXBITS (jxrlib -s 1) for BD8 RGB: the flexbits refinement plane is omitted. Since
+    // sbSubband != SB_ALL, jxrlib forces scaled-arithmetic even at QP 1 — so this is the first
+    // exercise of the scaled-444 path (<<3 colour load + chroma ×2 NormalizeEnc + >>3 output). Our
+    // codestream must be byte-for-byte identical to JxrEncApp -s 1.
+    [Theory]
+    [InlineData(16, 16, "gradient", 0)]
+    [InlineData(32, 32, "gradient", 0)]
+    [InlineData(48, 32, "gradient", 0)]
+    [InlineData(64, 48, "random", 0)]
+    [InlineData(80, 80, "gradient", 0)]
+    [InlineData(64, 48, "random", 1)]   // OL_ONE
+    [InlineData(80, 80, "gradient", 1)]
+    [InlineData(64, 48, "random", 2)]   // OL_TWO
+    [InlineData(48, 32, "gradient", 2)]
+    [InlineData(17, 13, "random", 0)]   // non-16-aligned
+    [InlineData(33, 40, "random", 1)]
+    public void OurEncode_NoFlexBits_CodestreamMatchesJxrlib(int w, int h, string kind, int ol)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x4F + w * 17 + h + ol) : Gradient(w, h);
+        var ours = JxrCodestream.Encode(r, g, b, w, h, overlap: ol, noFlexBits: true);
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_nf{ol}_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -s 1 -l {ol} -f");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the BMP");
+
+            var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
+            _out.WriteLine($"ours={ours.Length} theirs={theirs.Length}");
+            ours.Length.ShouldBe(theirs.Length, $"codestream length (NoFlex OL{ol} {kind} {w}x{h})");
+            for (var i = 0; i < ours.Length; i++)
+                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (NoFlex OL{ol} {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // NO_FLEXBITS decode (scaled-444): our decode of our NO_FLEXBITS RGB file must match JxrDecApp's.
+    [Theory]
+    [InlineData(64, 48, "random", 0)]
+    [InlineData(80, 80, "random", 1)]
+    [InlineData(48, 32, "random", 2)]
+    [InlineData(33, 40, "random", 1)]
+    public void OurEncode_NoFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int ol)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0xC3 + w * 5 + h + ol) : Gradient(w, h);
+        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: ol, noFlexBits: true);
+        var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(jxr);
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_nfdec{ol}_{Guid.NewGuid():N}");
+        var jxrPath = tmp + ".jxr";
+        var refPath = tmp + "_ref.bmp";
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (e, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{refPath}\" -c 0");
+            _out.WriteLine($"JxrDecApp exit={e}\n{so}\n{se}");
+            e.ShouldBe(0, "JxrDecApp must decode our NO_FLEXBITS file");
+            var (rw, rh, rr, rg, rb) = ReadBmp24(refPath);
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(rr[i], $"R[{i}] (NoFlex OL{ol} {w}x{h})");
+                dg[i].ShouldBe(rg[i], $"G[{i}]");
+                db[i].ShouldBe(rb[i], $"B[{i}]");
+            }
+        }
+        finally
+        {
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+            if (File.Exists(refPath)) File.Delete(refPath);
+        }
+    }
+
     // TRIM_FLEXBITS decode: a trimmed .jxr we produce must decode identically through our own
     // DecodeRgb24 and the reference JxrDecApp (exercises the decode-side flexbits-trim path, which
     // — like the encode side — was unreached until now).
