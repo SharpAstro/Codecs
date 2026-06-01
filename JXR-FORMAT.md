@@ -97,8 +97,8 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 |---|---|:---:|
 | `YOnly` | grayscale | ✅ |
 | `YUV444` | colour, full chroma (4:4:4) | ✅ |
-| `YUV422` | colour, 4:2:2 (½ chroma) | 🚧 decode ✅ (OL_NONE / OL_ONE / OL_TWO); encode pending |
-| `YUV420` | colour, 4:2:0 (¼ chroma) | 🚧 decode ✅ (OL_NONE / OL_ONE / OL_TWO); encode pending |
+| `YUV422` | colour, 4:2:2 (½ chroma) | ✅ encode + decode (OL_NONE / OL_ONE / OL_TWO), lossless |
+| `YUV420` | colour, 4:2:0 (¼ chroma) | ✅ encode + decode (OL_NONE / OL_ONE / OL_TWO), lossless |
 | `YUVK` | CMYK | ⬜ |
 | `NComponent` | arbitrary N channels, no colour transform | ⬜ |
 | `Rgb` | RGB without the YCoCg transform | ⬜ |
@@ -138,10 +138,11 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | Internal colour format | `YUV444` (or `YUV420` if the app subsampled) — Axis 3 |
 | Structure | SPATIAL, soft-tiled, overlap OL_ONE, all bands, lossy QP — Axis 4 |
 
-`SharpAstro.Jxr` decodes this today whether it's 4:4:4 or **4:2:0 / 4:2:2 at any overlap level
-(OL_NONE / OL_ONE / OL_TWO)** — bit-exact vs `JxrDecApp` (note jxrlib always runs subsampled
-chroma in scaled-arithmetic mode, even at QP 1). The chroma **encode** track (downsampling +
-byte-matching `JxrEncApp`) is the remaining chroma work.
+`SharpAstro.Jxr` round-trips this today whether it's 4:4:4 or **4:2:0 / 4:2:2 at any overlap
+level (OL_NONE / OL_ONE / OL_TWO)** — decode bit-exact vs `JxrDecApp`, encode byte-for-byte
+identical to `JxrEncApp` (5-tap `[1,4,6,4,1]/16` chroma downsample; jxrlib runs all subsampled
+chroma in scaled-arithmetic mode, even at QP 1). Lossy subsampled chroma (the per-band UV-shift
+quantizer) is the one remaining chroma item.
 
 ## Validation discipline
 

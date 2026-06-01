@@ -376,4 +376,300 @@ internal static class ChromaOverlapTransform
                 PostStage1SplitAlt(buf, p0 + j + 48, p1 + j + 0, 0);
         }
     }
+
+    // ===================================================================== forward
+
+    /// <summary>
+    /// Forward transform (chroma POT pre-filter + first-level core forward + chroma second stage)
+    /// every reduced-chroma macroblock in <paramref name="planes"/> (U,V) in place, for
+    /// <paramref name="overlap"/> ∈ {1,2} — the encode counterpart of <see cref="Inverse"/>.
+    /// Like the luma <see cref="OverlapTransform.Forward"/>, the order is overlap → stage-1 → second
+    /// overlap → second stage, and the second stage finalizes the <b>lagged</b> MB at
+    /// <c>(cCol−1, cRow−1)</c>.
+    /// </summary>
+    public static void Forward(int[][] planes, int mbCols, int mbRows, int overlap, ColorFormat cf)
+    {
+        int mb = Mb(cf);
+        int rowStride = RowStride(mbCols, cf);
+
+        var predBefore = new int[planes.Length][];
+        var predAfter = new int[planes.Length][];
+        for (var c = 0; c < planes.Length; c++) { predBefore[c] = new int[2]; predAfter[c] = new int[2]; }
+
+        for (var cRow = 0; cRow <= mbRows; cRow++)
+        {
+            for (var cCol = 0; cCol <= mbCols; cCol++)
+            {
+                bool left = cCol == 0, right = cCol == mbCols, top = cRow == 0, bottom = cRow == mbRows;
+                bool leftAdj = cCol == 1, rightAdj = cCol == mbCols - 1;
+                int p1 = cRow * rowStride + cCol * mb;
+                int p0 = p1 - rowStride;
+                for (var ch = 0; ch < planes.Length; ch++)
+                {
+                    if (cf == ColorFormat.Yuv420)
+                        ForwardMb420(planes[ch], p0, p1, left, right, top, bottom, leftAdj, rightAdj, overlap, predBefore[ch], predAfter[ch]);
+                    else
+                        ForwardMb422(planes[ch], p0, p1, left, right, top, bottom, leftAdj, rightAdj, overlap, predBefore[ch], predAfter[ch]);
+                }
+            }
+        }
+    }
+
+    // strFwdTransform.c:745-911 — forward 420 chroma MB at the (p0,p1) window position.
+    private static void ForwardMb420(int[] b, int p0, int p1, bool left, bool right, bool top, bool bottom,
+                                     bool leftAdj, bool rightAdj, int overlap, int[] predBefore, int[] predAfter)
+    {
+        var buf = b.AsSpan();
+        bool topORbottom = top || bottom, leftORright = left || right;
+
+        // ---- first level overlap ----
+        if (overlap != 0)
+            FirstLevelOverlapEnc420(buf, p0, p1, left, right, top, bottom);
+
+        // ---- first level transform (strDCT4x4Stage1, staggered) ----
+        if (!top)
+            for (var j = left ? 16 : -16; j < (right ? 16 : 48); j += 32)
+                PhotoCoreTransform.ForwardStage1(buf.Slice(p0 + j, 16));
+        if (!bottom)
+            for (var j = left ? 0 : -32; j < (right ? 0 : 32); j += 32)
+                PhotoCoreTransform.ForwardStage1(buf.Slice(p1 + j, 16));
+
+        // ---- second level overlap (OL_TWO) ----
+        if (overlap == 2)
+        {
+            if (leftAdj && top) buf[p1 - 64 + 0] -= buf[p1 - 64 + 32];
+            if (rightAdj && top) predBefore[0] = buf[p1 + 0];
+            if (right && top) buf[p1 - 64 + 32] -= predBefore[0];
+            if (leftAdj && bottom) buf[p0 - 64 + 16] -= buf[p0 - 64 + 48];
+            if (rightAdj && bottom) predBefore[1] = buf[p0 + 16];
+            if (right && bottom) buf[p0 - 64 + 48] -= predBefore[1];
+
+            if (leftORright && !topORbottom)
+            {
+                if (left) Pre2(ref buf[p0 + 0 + 16], ref buf[p1 + 0]);
+                if (right) Pre2(ref buf[p0 + -32 + 16], ref buf[p1 + -32]);
+            }
+            if (!leftORright)
+            {
+                if (topORbottom)
+                {
+                    if (top) Pre2(ref buf[p1 - 32], ref buf[p1]);
+                    if (bottom) Pre2(ref buf[p0 + 16 - 32], ref buf[p0 + 16]);
+                }
+                else
+                {
+                    Pre2x2(ref buf[p0 - 16], ref buf[p0 + 16], ref buf[p1 - 32], ref buf[p1]);
+                }
+            }
+
+            if (leftAdj && top) buf[p1 - 64 + 0] += buf[p1 - 64 + 32];
+            if (rightAdj && top) predAfter[0] = buf[p1 + 0];
+            if (right && top) buf[p1 - 64 + 32] += predAfter[0];
+            if (leftAdj && bottom) buf[p0 - 64 + 16] += buf[p0 - 64 + 48];
+            if (rightAdj && bottom) predAfter[1] = buf[p0 + 16];
+            if (right && bottom) buf[p0 - 64 + 48] += predAfter[1];
+        }
+
+        // ---- second level transform (lagged MB at p0-64) ----
+        if (!(top || left))
+            PhotoCoreTransform.ChromaForwardStage2_420(buf.Slice(p0 - 64, 64));
+    }
+
+    // strFwdTransform.c:752-826 — forward 420 first-level overlap, single-tile.
+    private static void FirstLevelOverlapEnc420(Span<int> b, int p0, int p1, bool left, bool right, bool top, bool bottom)
+    {
+        int p;
+        if (top && left) Pre4(ref b[p1 + 0], ref b[p1 + 1], ref b[p1 + 2], ref b[p1 + 3]);
+        if (top && right) Pre4(ref b[p1 - 27], ref b[p1 - 28], ref b[p1 - 25], ref b[p1 - 26]);
+        if (bottom && left) Pre4(ref b[p0 + 16 + 10], ref b[p0 + 16 + 11], ref b[p0 + 16 + 8], ref b[p0 + 16 + 9]);
+        if (bottom && right) Pre4(ref b[p0 - 1], ref b[p0 - 2], ref b[p0 - 3], ref b[p0 - 4]);
+
+        if (!right && !bottom)
+        {
+            if (top)
+                for (var j = left ? 0 : -32; j < 32; j += 32)
+                {
+                    p = p1 + j;
+                    Pre4(ref b[p + 5], ref b[p + 4], ref b[p + 32], ref b[p + 33]);
+                    Pre4(ref b[p + 7], ref b[p + 6], ref b[p + 34], ref b[p + 35]);
+                }
+            else
+                for (var j = left ? 0 : -32; j < 32; j += 32)
+                    PreStage1Split(b, p0 + 16 + j, p1 + j, 32);
+
+            if (left)
+            {
+                if (!top)
+                {
+                    Pre4(ref b[p0 + 26], ref b[p0 + 24], ref b[p1 + 0], ref b[p1 + 2]);
+                    Pre4(ref b[p0 + 27], ref b[p0 + 25], ref b[p1 + 1], ref b[p1 + 3]);
+                }
+                Pre4(ref b[p1 + 10], ref b[p1 + 8], ref b[p1 + 16], ref b[p1 + 18]);
+                Pre4(ref b[p1 + 11], ref b[p1 + 9], ref b[p1 + 17], ref b[p1 + 19]);
+            }
+            else
+            {
+                PreStage1(b, p1 - 32, 32);
+            }
+            PreStage1(b, p1, 32);
+        }
+
+        if (bottom)
+            for (var j = left ? 16 : -16; j < (right ? -16 : 32); j += 32)
+            {
+                p = p0 + j;
+                Pre4(ref b[p + 15], ref b[p + 14], ref b[p + 42], ref b[p + 43]);
+                Pre4(ref b[p + 13], ref b[p + 12], ref b[p + 40], ref b[p + 41]);
+            }
+
+        if (right && !bottom)
+        {
+            if (!top)
+            {
+                Pre4(ref b[p0 - 1], ref b[p0 - 3], ref b[p1 - 27], ref b[p1 - 25]);
+                Pre4(ref b[p0 - 2], ref b[p0 - 4], ref b[p1 - 28], ref b[p1 - 26]);
+            }
+            Pre4(ref b[p1 - 17], ref b[p1 - 19], ref b[p1 - 11], ref b[p1 - 9]);
+            Pre4(ref b[p1 - 18], ref b[p1 - 20], ref b[p1 - 12], ref b[p1 - 10]);
+        }
+    }
+
+    // strFwdTransform.c:914-1119 — forward 422 chroma MB at the (p0,p1) window position.
+    private static void ForwardMb422(int[] b, int p0, int p1, bool left, bool right, bool top, bool bottom,
+                                     bool leftAdj, bool rightAdj, int overlap, int[] predBefore, int[] predAfter)
+    {
+        var buf = b.AsSpan();
+        bool topORbottom = top || bottom, leftORright = left || right;
+
+        // ---- first level overlap ----
+        if (overlap != 0)
+            FirstLevelOverlapEnc422(buf, p0, p1, left, right, top, bottom);
+
+        // ---- first level transform (staggered) ----
+        if (!top)
+            for (var j = left ? 48 : -16; j < (right ? 48 : 112); j += 64)
+                PhotoCoreTransform.ForwardStage1(buf.Slice(p0 + j, 16));
+        if (!bottom)
+            for (var j = left ? 0 : -64; j < (right ? 0 : 64); j += 64)
+            {
+                PhotoCoreTransform.ForwardStage1(buf.Slice(p1 + j + 0, 16));
+                PhotoCoreTransform.ForwardStage1(buf.Slice(p1 + j + 16, 16));
+                PhotoCoreTransform.ForwardStage1(buf.Slice(p1 + j + 32, 16));
+            }
+
+        // ---- second level overlap (OL_TWO) ----
+        if (overlap == 2)
+        {
+            if (leftAdj && top) buf[p1 - 128 + 0] -= buf[p1 - 128 + 64];
+            if (rightAdj && top) predBefore[0] = buf[p1 + 0];
+            if (right && top) buf[p1 - 128 + 64] -= predBefore[0];
+            if (leftAdj && bottom) buf[p0 - 128 + 48] -= buf[p0 - 128 + 112];
+            if (rightAdj && bottom) predBefore[1] = buf[p0 + 48];
+            if (right && bottom) buf[p0 - 128 + 112] -= predBefore[1];
+
+            if (!bottom)
+            {
+                if (leftORright)
+                {
+                    if (!top)
+                    {
+                        if (left) Pre2(ref buf[p0 + 48 + 0], ref buf[p1 + 0]);
+                        if (right) Pre2(ref buf[p0 + 48 + -64], ref buf[p1 + -64]);
+                    }
+                    if (left) Pre2(ref buf[p1 + 16], ref buf[p1 + 16 + 16]);
+                    if (right) Pre2(ref buf[p1 + -48], ref buf[p1 + -48 + 16]);
+                }
+                if (!leftORright)
+                {
+                    if (top) Pre2(ref buf[p1 - 64], ref buf[p1]);
+                    else Pre2x2(ref buf[p0 - 16], ref buf[p0 + 48], ref buf[p1 - 64], ref buf[p1]);
+                    Pre2x2(ref buf[p1 - 48], ref buf[p1 + 16], ref buf[p1 - 32], ref buf[p1 + 32]);
+                }
+            }
+            if (bottom && !leftORright)
+                Pre2(ref buf[p0 - 16], ref buf[p0 + 48]);
+
+            if (leftAdj && top) buf[p1 - 128 + 0] += buf[p1 - 128 + 64];
+            if (rightAdj && top) predAfter[0] = buf[p1 + 0];
+            if (right && top) buf[p1 - 128 + 64] += predAfter[0];
+            if (leftAdj && bottom) buf[p0 - 128 + 48] += buf[p0 - 128 + 112];
+            if (rightAdj && bottom) predAfter[1] = buf[p0 + 48];
+            if (right && bottom) buf[p0 - 128 + 112] += predAfter[1];
+        }
+
+        // ---- second level transform (lagged MB at p0-128) ----
+        if (!(top || left))
+            PhotoCoreTransform.ChromaForwardStage2_422(buf.Slice(p0 - 128, 128));
+    }
+
+    // strFwdTransform.c:921-1009 — forward 422 first-level overlap, single-tile.
+    private static void FirstLevelOverlapEnc422(Span<int> b, int p0, int p1, bool left, bool right, bool top, bool bottom)
+    {
+        int p;
+        if (top && left) Pre4(ref b[p1 + 0], ref b[p1 + 1], ref b[p1 + 2], ref b[p1 + 3]);
+        if (top && right) Pre4(ref b[p1 - 59], ref b[p1 - 60], ref b[p1 - 57], ref b[p1 - 58]);
+        if (bottom && left) Pre4(ref b[p0 + 48 + 10], ref b[p0 + 48 + 11], ref b[p0 + 48 + 8], ref b[p0 + 48 + 9]);
+        if (bottom && right) Pre4(ref b[p0 - 1], ref b[p0 - 2], ref b[p0 - 3], ref b[p0 - 4]);
+
+        if (!right && !bottom)
+        {
+            if (top)
+                for (var j = left ? 0 : -64; j < 64; j += 64)
+                {
+                    p = p1 + j;
+                    Pre4(ref b[p + 5], ref b[p + 4], ref b[p + 64], ref b[p + 65]);
+                    Pre4(ref b[p + 7], ref b[p + 6], ref b[p + 66], ref b[p + 67]);
+                }
+            else
+                for (var j = left ? 0 : -64; j < 64; j += 64)
+                    PreStage1Split(b, p0 + 48 + j, p1 + j, 0);
+
+            if (left)
+            {
+                if (!top)
+                {
+                    Pre4(ref b[p0 + 58], ref b[p0 + 56], ref b[p1 + 0], ref b[p1 + 2]);
+                    Pre4(ref b[p0 + 59], ref b[p0 + 57], ref b[p1 + 1], ref b[p1 + 3]);
+                }
+                for (var j = 0; j < 48; j += 16)
+                {
+                    p = p1 + j;
+                    Pre4(ref b[p + 10], ref b[p + 8], ref b[p + 16], ref b[p + 18]);
+                    Pre4(ref b[p + 11], ref b[p + 9], ref b[p + 17], ref b[p + 19]);
+                }
+            }
+            else
+            {
+                for (var j = -64; j < -16; j += 16)
+                    PreStage1(b, p1 + j, 0);
+            }
+
+            PreStage1(b, p1 + 0, 0);
+            PreStage1(b, p1 + 16, 0);
+            PreStage1(b, p1 + 32, 0);
+        }
+
+        if (bottom)
+            for (var j = left ? 48 : -16; j < (right ? -16 : 112); j += 64)
+            {
+                p = p0 + j;
+                Pre4(ref b[p + 15], ref b[p + 14], ref b[p + 74], ref b[p + 75]);
+                Pre4(ref b[p + 13], ref b[p + 12], ref b[p + 72], ref b[p + 73]);
+            }
+
+        if (right && !bottom)
+        {
+            if (!top)
+            {
+                Pre4(ref b[p0 - 1], ref b[p0 - 3], ref b[p1 - 59], ref b[p1 - 57]);
+                Pre4(ref b[p0 - 2], ref b[p0 - 4], ref b[p1 - 60], ref b[p1 - 58]);
+            }
+            for (var j = -64; j < -16; j += 16)
+            {
+                p = p1 + j;
+                Pre4(ref b[p + 15], ref b[p + 13], ref b[p + 21], ref b[p + 23]);
+                Pre4(ref b[p + 14], ref b[p + 12], ref b[p + 20], ref b[p + 22]);
+            }
+        }
+    }
 }
