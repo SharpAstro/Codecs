@@ -278,10 +278,15 @@ internal static class SignalTransform
     /// channels are right-shifted by <paramref name="shift"/> (so the encode-side <c>&lt;&lt;cShift</c> input
     /// scaling is undone). The rounding bias <c>(1&lt;&lt;(shift-1))-1</c> matches jxrlib's iBias2.</para></summary>
     public static void StoreColor(int[] planeY, int[] planeU, int[] planeV, int mbBase,
-                                  Span<int> r, Span<int> g, Span<int> b, int bias = Bias, int max = 255, int shift = 0)
+                                  Span<int> r, Span<int> g, Span<int> b, int bias = Bias, int max = 255, int shift = 0,
+                                  bool bd16Round = false)
     {
-        // jxrlib iBias = (128 << iShift) + iBias2; iBias2 = scaled ? (1<<(iShift-1))-1 : 0.
-        int iBias = (bias << shift) + (shift > 0 ? (1 << (shift - 1)) - 1 : 0);
+        // jxrlib iBias = (level << iShift) + iBias2. For BD8 (strdec.c:989) iBias2 = scaled ?
+        // (1<<(iShift-1))-1 : 0; BD16-integer (strdec.c:1183) uses (1<<(iShift-1)) — the same half but
+        // WITHOUT the -1. (The level <<nLen post-shift is a no-op at our nLen=0.) Only differs when
+        // scaled (shift>0), so BD16 lossless is unaffected.
+        int round = shift > 0 ? (1 << (shift - 1)) - (bd16Round ? 0 : 1) : 0;
+        int iBias = (bias << shift) + round;
         for (var px = 0; px < 256; px++)
         {
             int pos = mbBase + IdxCc[px];
@@ -312,10 +317,13 @@ internal static class SignalTransform
     /// <summary>idxCC unload of one MB from the whole-image Y plane at <paramref name="mbBase"/>
     /// back into grayscale samples, adding the bias and clamping to <c>[0, <paramref name="max"/>]</c>.
     /// No color transform. <paramref name="bias"/> = 128/32768 for BD8/BD16.</summary>
-    public static void StoreGray(int[] planeY, int mbBase, Span<int> y, int bias = Bias, int max = 255, int shift = 0)
+    public static void StoreGray(int[] planeY, int mbBase, Span<int> y, int bias = Bias, int max = 255, int shift = 0,
+                                 bool bd16Round = false)
     {
-        // jxrlib iBias = (bias << iShift) + (scaled ? (1<<(iShift-1))-1 : 0), then >> iShift (same as luma).
-        int iBias = (bias << shift) + (shift > 0 ? (1 << (shift - 1)) - 1 : 0);
+        // jxrlib iBias = (bias << iShift) + round, then >> iShift (same level/rounding as luma): BD8 uses
+        // round = (1<<(iShift-1))-1, BD16-integer uses (1<<(iShift-1)) (no -1). Only differs when scaled.
+        int round = shift > 0 ? (1 << (shift - 1)) - (bd16Round ? 0 : 1) : 0;
+        int iBias = (bias << shift) + round;
         for (var px = 0; px < 256; px++)
             y[px] = Clip((planeY[mbBase + IdxCc[px]] + iBias) >> shift, max);
     }

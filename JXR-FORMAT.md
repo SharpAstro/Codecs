@@ -122,10 +122,10 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | multi-tile, **hard** (overlap stops at tile edge) | ⬜ |
 | **Bands present** | all bands | ✅ |
 | | `TRIM_FLEXBITS` (drop N low bits of the flexbits plane, N=1..15) | ✅ (encode + decode, byte-exact) |
-| | `NO_FLEXBITS` (omit the flexbits refinement plane) | ✅ BD8 RGB (byte-exact), BD32F mono + BD16F RGB (round-trip vs `JxrDecApp`) — the consumer's HDR-master mode; BD16-int pending (different scaled rounding) |
+| | `NO_FLEXBITS` (omit the flexbits refinement plane) | ✅ BD8 RGB / gray (byte-exact); BD16-int gray/RGB, BD16F RGB, BD32F mono (round-trip vs `JxrDecApp`) — the consumer's HDR-master mode |
 | | `NO_HIGHPASS` / `DC_ONLY` (progressive truncation) | ⬜ |
 | **Quantization** | lossless (QP 0) | ✅ |
-| | uniform lossy QP (per-band DC/LP/HP index) | ✅ (RGB 4:4:4 / 4:2:0 / 4:2:2 + BD8 gray byte-exact vs `JxrEncApp -q N`; BD16F gray/RGB + BD32F gray lossy round-trip vs `JxrDecApp`; BD16-int lossy pending) |
+| | uniform lossy QP (per-band DC/LP/HP index) | ✅ (RGB 4:4:4 / 4:2:0 / 4:2:2 + BD8 gray byte-exact vs `JxrEncApp -q N`; BD16-int gray/RGB, BD16F gray/RGB, BD32F gray lossy round-trip vs `JxrDecApp`) |
 | | non-uniform / per-band-reuse QP | ⬜ |
 | **Dimensions** | arbitrary, non-16-aligned (pad-then-crop) | ✅ |
 | | hard `WINDOWING_FLAG` | ⬜ |
