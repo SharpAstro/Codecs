@@ -52,6 +52,7 @@ internal static class JxrCodestream
         // BD32F float path is a separate encoder.)
         bool scaled = ScaledArith(qpDc, qpLp, qpHp) || noFlexBits;
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled); // half-step chroma DC/LP in scaled mode
         int bias = LumaBias(bd);
         int shift = scaled ? SignalTransform.ScaledShift : 0; // <<3 scaled-arith input scaling
         var bands = noFlexBits ? JxrBandsPresent.NoFlexbits : JxrBandsPresent.AllBands;
@@ -87,7 +88,8 @@ internal static class JxrCodestream
                 var block = new Macroblock(3);
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 for (var ch = 0; ch < 3; ch++)
-                    SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch, qDc, qLp, qHp);
+                    SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch,
+                                                    ch == 0 ? qDc : qDcUV, ch == 0 ? qLp : qLpUV, qHp);
                 tile.EncodeMacroblock(ctx, block, mbC, mbR, w, w, w, w);
             }
             tile.AdvanceRow();
@@ -112,6 +114,7 @@ internal static class JxrCodestream
         int mbCols = MbCount(width), mbRows = MbCount(height);
         bool scaled = true; // jxrlib m_bUVResolutionChange forces bScaledArith for subsampled chroma
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled); // half-step chroma DC/LP in scaled mode
         int bias = LumaBias(bd);
         int shift = SignalTransform.ScaledShift; // <<3 input scaling (SHIFTZERO + QPFRACBITS)
         int chromaBlocks = MacroblockLayout.ChromaBlocks(cf);
@@ -161,8 +164,8 @@ internal static class JxrCodestream
                 int lumaBase = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 int rb = ChromaOverlapTransform.MbBase(mbCols, mbR, mbC, cf);
                 SignalTransform.QuantizeExtract(luma, lumaBase, block, 0, qDc, qLp, qHp);
-                SignalTransform.QuantizeExtractChroma(reduced[0], rb, block, 1, qDc, qLp, qHp, cf);
-                SignalTransform.QuantizeExtractChroma(reduced[1], rb, block, 2, qDc, qLp, qHp, cf);
+                SignalTransform.QuantizeExtractChroma(reduced[0], rb, block, 1, qDcUV, qLpUV, qHp, cf);
+                SignalTransform.QuantizeExtractChroma(reduced[1], rb, block, 2, qDcUV, qLpUV, qHp, cf);
                 tile.EncodeMacroblock(ctx, block, mbC, mbR, w, w, w, w);
             }
             tile.AdvanceRow();
@@ -187,6 +190,7 @@ internal static class JxrCodestream
         int mbCols = MbCount(width), mbRows = MbCount(height);
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled); // half-step chroma DC/LP in scaled mode
         int bias = LumaBias(bd);
 
         int[] tileX = TileBoundaries(layout.TileWidthInMb, mbCols);
@@ -224,7 +228,8 @@ internal static class JxrCodestream
                         int baseOff = OverlapTransform.MbBase(mbCols, tileY[tr] + ly, tileX[tc] + lx);
                         var block = new Macroblock(3);
                         for (var ch = 0; ch < 3; ch++)
-                            SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch, qDc, qLp, qHp);
+                            SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch,
+                                                            ch == 0 ? qDc : qDcUV, ch == 0 ? qLp : qLpUV, qHp);
                         tile.EncodeMacroblock(ctx, block, lx, ly, tw, tw, tw, tw);
                     }
                     tile.AdvanceRow();
@@ -323,7 +328,7 @@ internal static class JxrCodestream
     // in the caller afterwards (soft tiling — the overlap spans tile edges).
     private static void DecodeTilesIntoPlanes(
         ref BitReader reader, ImageHeader ih, int[][] planes, int mbCols, int mbRows,
-        JxrQuantizer qDc, JxrQuantizer qLp, JxrQuantizer qHp)
+        JxrQuantizer qDc, JxrQuantizer qLp, JxrQuantizer qHp, JxrQuantizer qDcUV, JxrQuantizer qLpUV)
     {
         int[] tileX = TileBoundaries(ih.TileWidthInMb, mbCols);
         int[] tileY = TileBoundaries(ih.TileHeightInMb, mbRows);
@@ -354,7 +359,8 @@ internal static class JxrCodestream
                         tile.DecodeMacroblock(ctx, block, lx, ly, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
                         int baseOff = OverlapTransform.MbBase(mbCols, tileY[tr] + ly, tileX[tc] + lx);
                         for (var ch = 0; ch < 3; ch++)
-                            SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, qDc.Qp, qLp.Qp);
+                            SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff,
+                                                              ch == 0 ? qDc.Qp : qDcUV.Qp, ch == 0 ? qLp.Qp : qLpUV.Qp);
                     }
                     tile.AdvanceRow();
                 }
@@ -495,12 +501,13 @@ internal static class JxrCodestream
         var (clrFmt, qpDc, qpLp, qpHp, scaled, bands) = ReadPlaneHeader(ref reader, bd);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled); // half-step chroma DC/LP in scaled mode
         int mbCols = MbCount(width), mbRows = MbCount(height);
         if (clrFmt is JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422)
         {
             if (ih.TilingFlag) throw new NotSupportedException("Multi-tile YUV420/422 decode is not yet supported.");
             if (bands != JxrBandsPresent.AllBands) throw new NotSupportedException("YUV420/422 decode supports all-bands codestreams only.");
-            return DecodeChroma(ref reader, clrFmt, mbCols, mbRows, width, height, bias, max, overlap, scaled, qDc, qLp, qHp);
+            return DecodeChroma(ref reader, clrFmt, mbCols, mbRows, width, height, bias, max, overlap, scaled, qDc, qLp, qHp, qDcUV, qLpUV);
         }
         bool noFlexBits = bands == JxrBandsPresent.NoFlexbits;
         int outShift = scaled ? SignalTransform.ScaledShift : 0; // scaled-arith output >>3 (e.g. NO_FLEXBITS BD8/16)
@@ -511,7 +518,7 @@ internal static class JxrCodestream
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
         if (ih.TilingFlag)
         {
-            DecodeTilesIntoPlanes(ref reader, ih, planes, mbCols, mbRows, qDc, qLp, qHp);
+            DecodeTilesIntoPlanes(ref reader, ih, planes, mbCols, mbRows, qDc, qLp, qHp, qDcUV, qLpUV);
         }
         else
         {
@@ -528,7 +535,8 @@ internal static class JxrCodestream
                     tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
                     int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                     for (var ch = 0; ch < 3; ch++)
-                        SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, qDc.Qp, qLp.Qp);
+                        SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff,
+                                                          ch == 0 ? qDc.Qp : qDcUV.Qp, ch == 0 ? qLp.Qp : qLpUV.Qp);
                 }
                 tile.AdvanceRow();
             }
@@ -554,7 +562,7 @@ internal static class JxrCodestream
     private static (int width, int height, int[] r, int[] g, int[] b) DecodeChroma(
         ref BitReader reader, JxrInternalColorFormat clrFmt, int mbCols, int mbRows,
         int width, int height, int bias, int max, int overlap, bool scaled,
-        JxrQuantizer qDc, JxrQuantizer qLp, JxrQuantizer qHp)
+        JxrQuantizer qDc, JxrQuantizer qLp, JxrQuantizer qHp, JxrQuantizer qDcUV, JxrQuantizer qLpUV)
     {
         var cf = clrFmt == JxrInternalColorFormat.YUV420 ? ColorFormat.Yuv420 : ColorFormat.Yuv422;
         int chromaBlocks = MacroblockLayout.ChromaBlocks(cf);
@@ -580,8 +588,8 @@ internal static class JxrCodestream
                 int lumaBase = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 int reducedBase = ChromaOverlapTransform.MbBase(mbCols, mbR, mbC, cf);
                 SignalTransform.DequantizeRestore(block, 0, luma, lumaBase, qDc.Qp, qLp.Qp);
-                SignalTransform.DequantizeRestoreChroma(block, 1, reducedU, reducedBase, qDc.Qp, qLp.Qp, cf);
-                SignalTransform.DequantizeRestoreChroma(block, 2, reducedV, reducedBase, qDc.Qp, qLp.Qp, cf);
+                SignalTransform.DequantizeRestoreChroma(block, 1, reducedU, reducedBase, qDcUV.Qp, qLpUV.Qp, cf);
+                SignalTransform.DequantizeRestoreChroma(block, 2, reducedV, reducedBase, qDcUV.Qp, qLpUV.Qp, cf);
             }
             tile.AdvanceRow();
         }
@@ -841,6 +849,7 @@ internal static class JxrCodestream
         // NO_FLEXBITS (sbSubband != SB_ALL) forces scaled-arith for BD16F (jxrlib strenc.c).
         bool scaled = ScaledArith(qpDc, qpLp, qpHp) || noFlexBits;
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled);
         int shift = scaled ? SignalTransform.ScaledShift : 0;
         var bands = noFlexBits ? JxrBandsPresent.NoFlexbits : JxrBandsPresent.AllBands;
 
@@ -873,7 +882,8 @@ internal static class JxrCodestream
                 var block = new Macroblock(3);
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 for (var ch = 0; ch < 3; ch++)
-                    SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch, qDc, qLp, qHp);
+                    SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch,
+                                                    ch == 0 ? qDc : qDcUV, ch == 0 ? qLp : qLpUV, qHp);
                 tile.EncodeMacroblock(ctx, block, mbC, mbR, w, w, w, w);
             }
             tile.AdvanceRow();
@@ -905,6 +915,7 @@ internal static class JxrCodestream
         ReadPacketHeader(ref reader);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled); // half-step chroma DC/LP in scaled mode
         int mbCols = MbCount(width), mbRows = MbCount(height);
         int outShift = scaled ? SignalTransform.ScaledShift : 0;
         var (r, g, b) = (new Half[width * height], new Half[width * height], new Half[width * height]);
@@ -920,7 +931,8 @@ internal static class JxrCodestream
                 tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 for (var ch = 0; ch < 3; ch++)
-                    SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, qDc.Qp, qLp.Qp);
+                    SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff,
+                                                      ch == 0 ? qDc.Qp : qDcUV.Qp, ch == 0 ? qLp.Qp : qLpUV.Qp);
             }
             tile.AdvanceRow();
         }
@@ -1194,7 +1206,25 @@ internal static class JxrCodestream
     // ---------------------------------------------------------------- helpers
 
     private static (JxrQuantizer dc, JxrQuantizer lp, JxrQuantizer hp) Quantizers(int qpDc, int qpLp, int qpHp, bool scaled)
-        => (Quantization.Resolve(qpDc, scaled), Quantization.Resolve(qpLp, scaled), Quantization.Resolve(qpHp, scaled));
+        => (WithDcOffset(Quantization.Resolve(qpDc, scaled)), Quantization.Resolve(qpLp, scaled), Quantization.Resolve(qpHp, scaled));
+
+    // jxrlib StrEncInit (strenc.c:1033) overrides the DC quantizer's forward-quantize rounding offset
+    // to iQP>>1 — a wider deadzone than remapQP's (iQP*3+1)>>3 default, which LP and HP keep. This is
+    // an encoder-only choice (the offset is the deadzone added before the reciprocal-multiply; the
+    // decoder's DEQUANT is just raw*iQP and never reads iOffset), so applying it here is safe for the
+    // shared decode paths too. At QP index ≤ 1 (lossless) iQP=1 ⇒ 1>>1=0 == remapQP's offset, so this
+    // is a no-op outside lossy QP. Applies to every channel's DC band (luma and chroma).
+    private static JxrQuantizer WithDcOffset(JxrQuantizer dc) { dc.Offset = dc.Qp >> 1; return dc; }
+
+    // jxrlib formatQuantizer (strcodec.c:872) gives the chroma (U,V) channels' DC and LP quantizers
+    // shift SHIFTZERO-1 in scaled-arith mode (bShiftedUV=TRUE) — a half step relative to luma —
+    // while luma (channel 0) DC/LP and *every* channel's HP (bShiftedUV=FALSE) use SHIFTZERO. So only
+    // the chroma DC/LP quantizers differ; HP is shared with luma. The shift is consulted only in the
+    // scaled branch of remapQP, and QP index ≤ 1 is the lossless branch (which ignores it), so outside
+    // scaled lossy QP these equal the luma quantizers — i.e. a no-op for lossless / NO_FLEXBITS paths.
+    private const int ShiftZeroMinusOne = 0; // SHIFTZERO - 1 (SHIFTZERO == 1)
+    private static (JxrQuantizer dc, JxrQuantizer lp) ChromaDcLpQuantizers(int qpDc, int qpLp, bool scaled)
+        => (WithDcOffset(Quantization.Resolve(qpDc, scaled, ShiftZeroMinusOne)), Quantization.Resolve(qpLp, scaled, ShiftZeroMinusOne));
 
     // jxrlib StrEncInit: lossless (all bands QP index ≤ 1) ⇒ bScaledArith == FALSE.
     private static bool ScaledArith(int qpDc, int qpLp, int qpHp) => qpDc > 1 || qpLp > 1 || qpHp > 1;
