@@ -242,6 +242,73 @@ public sealed class JxrBd16OracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // BD16-integer multi-tile (gray + RGB): our tiled file decoded by JxrDecApp must match our decode.
+    [Theory]
+    [InlineData(64, 64, "gradient", 0, 2, 2)]
+    [InlineData(128, 64, "random", 0, 4, 2)]
+    [InlineData(64, 64, "random", 1, 2, 2)]
+    [InlineData(128, 64, "gradient", 2, 4, 2)]
+    public void OurEncodeGray16_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap, int cols, int rows)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var y = JxrBd16Tests.Pattern(w, h, kind, 7);
+        int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
+        var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
+        var jxr = JxrImageCodec.EncodeGray16(y, w, h, overlap: overlap, tiles: layout);
+        var (dw, dh, dy) = JxrImageCodec.DecodeGray16(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 3");
+            exit.ShouldBe(0, "JxrDecApp must decode our tiled BD16 gray file");
+            var (rw, rh, samples) = ReadTiffSamples(tif);
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+                dy[i].ShouldBe(samples[i], $"Y[{i}] (tiled {cols}x{rows} gray16 OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
+    [Theory]
+    [InlineData(64, 64, "gradient", 0, 2, 2)]
+    [InlineData(128, 64, "random", 0, 4, 2)]
+    [InlineData(64, 64, "random", 1, 2, 2)]
+    [InlineData(128, 64, "gradient", 2, 4, 2)]
+    public void OurEncodeRgb48_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap, int cols, int rows)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var r = JxrBd16Tests.Pattern(w, h, kind, 1);
+        var g = JxrBd16Tests.Pattern(w, h, kind, 2);
+        var b = JxrBd16Tests.Pattern(w, h, kind, 3);
+        int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
+        var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
+        var jxr = JxrImageCodec.EncodeRgb48(r, g, b, w, h, overlap: overlap, tiles: layout);
+        var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb48(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 10");
+            exit.ShouldBe(0, "JxrDecApp must decode our tiled BD16 RGB file");
+            var (rw, rh, samples) = ReadTiffSamples(tif);
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(samples[i * 3 + 0], $"R[{i}] (tiled {cols}x{rows} rgb48 OL{overlap} {kind} {w}x{h})");
+                dg[i].ShouldBe(samples[i * 3 + 1], $"G[{i}]");
+                db[i].ShouldBe(samples[i * 3 + 2], $"B[{i}]");
+            }
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     /// <summary>Read a 16-bit TIFF via SharpAstro.Tiff and return its samples as ints,

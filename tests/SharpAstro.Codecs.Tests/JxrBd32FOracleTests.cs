@@ -142,6 +142,42 @@ public sealed class JxrBd32FOracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // BD32F mono multi-tile (large FITS mosaics, bounded-memory / random-access decode): our tiled
+    // file, decoded by JxrDecApp, must reproduce the requantized floats; and our own decode must
+    // agree. Exercises the generalized multi-tile core driving the single-channel BD32F path.
+    [Theory]
+    [InlineData(64, 64, "hdr", 13, 0, 2, 2)]
+    [InlineData(128, 64, "gradient", 8, 0, 4, 2)]
+    [InlineData(64, 64, "hdr", 13, 1, 2, 2)]
+    [InlineData(128, 64, "hdr", 8, 2, 4, 2)]
+    public void OurEncodeGrayF32_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int lenMantissa, int overlap, int cols, int rows)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        const int expBias = 0;
+        var y = JxrBd32FTests.Pattern(w, h, kind);
+        int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
+        var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
+        var jxr = JxrImageCodec.EncodeGrayF32(y, w, h, lenMantissa, expBias, overlap: overlap, tiles: layout);
+        var (dw, dh, ours) = JxrImageCodec.DecodeGrayF32(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 8");
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our tiled BD32F file");
+
+            var (rw, rh, refFloats) = ReadFloatTiff(tif);
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+                BitsOf(ours[i]).ShouldBe(BitsOf(refFloats[i]), $"Y[{i}] (tiled {cols}x{rows} f32 OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     private static (int w, int h, float[] floats) ReadFloatTiff(string path)

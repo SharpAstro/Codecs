@@ -193,6 +193,67 @@ public sealed class JxrBd16FOracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // BD16F multi-tile (gray + RGB): our tiled file decoded by JxrDecApp must match our own decode.
+    [Theory]
+    [InlineData(64, 64, "hdr", 0, 2, 2)]
+    [InlineData(128, 64, "gradient", 0, 4, 2)]
+    [InlineData(64, 64, "hdr", 1, 2, 2)]
+    [InlineData(128, 64, "hdr", 2, 4, 2)]
+    public void OurEncodeGrayF16_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap, int cols, int rows)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+
+        var y = JxrBd16FTests.GrayPattern(w, h, kind);
+        int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
+        var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
+        var jxr = JxrImageCodec.EncodeGrayF16(y, w, h, overlap: overlap, tiles: layout);
+        var (dw, dh, ours) = JxrImageCodec.DecodeGrayF16(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 5");
+            exit.ShouldBe(0, "JxrDecApp must decode our tiled BD16F gray file");
+            var (rw, rh, bits) = ReadHalfTiff(tif);
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+                HBits(ours[i]).ShouldBe(bits[i], $"Y[{i}] (tiled {cols}x{rows} f16 gray OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
+    [Theory]
+    [InlineData(64, 64, "hdr", 0, 2, 2)]
+    [InlineData(128, 64, "gradient", 0, 4, 2)]
+    [InlineData(64, 64, "hdr", 1, 2, 2)]
+    [InlineData(128, 64, "hdr", 2, 4, 2)]
+    public void OurEncodeRgbF16_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap, int cols, int rows)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+
+        var rgb = JxrBd16FTests.RgbPattern(w, h, kind);
+        int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
+        var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
+        var jxr = JxrImageCodec.EncodeRgbF16(rgb, w, h, overlap: overlap, tiles: layout);
+        var (dw, dh, ours) = JxrImageCodec.DecodeRgbF16(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 12");
+            exit.ShouldBe(0, "JxrDecApp must decode our tiled BD16F RGB file");
+            var (rw, rh, bits) = ReadHalfTiff(tif);
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h * 3; i++)
+                HBits(ours[i]).ShouldBe(bits[i], $"RGB[{i}] (tiled {cols}x{rows} f16 OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     /// <summary>Read a 16-bit-sample TIFF and return its samples as raw 16-bit (half) bit patterns.</summary>

@@ -119,7 +119,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | scaled-arith (lossy QP, or NO_FLEXBITS / chroma subsampling) | ✅ (byte-exact vs `JxrEncApp`: lossy QP + NO_FLEXBITS BD8 RGB + subsampled chroma) |
 | **Overlap (POT)** | OL_NONE / OL_ONE / OL_TWO | ✅ |
 | **Tiling** | single-tile | ✅ |
-| | multi-tile, **soft** (+ `INDEX_TABLE`) | ✅ (RGB) |
+| | multi-tile, **soft** (+ `INDEX_TABLE`) | ✅ (all formats — RGB + grayscale × BD8/16/16F/32F + signed) |
 | | multi-tile, **hard** (overlap stops at tile edge) | ⬜ |
 | **Bands present** | all bands | ✅ |
 | | `TRIM_FLEXBITS` (drop N low bits of the flexbits plane, N=1..15) | ✅ (encode + decode, byte-exact) |

@@ -105,9 +105,10 @@ public static class JxrImageCodec
     /// flexbits plane (a deterministic-loss HDR-master mode).
     /// </summary>
     public static byte[] EncodeGray16S(ReadOnlySpan<int> y, int width, int height,
-                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0, bool noFlexBits = false)
+                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0, bool noFlexBits = false,
+                                       JxrTileLayout? tiles = null)
     {
-        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16S, noFlexBits);
+        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16S, noFlexBits, tiles);
         var file = new JxrFile((uint)width, (uint)height, JxrPixelFormat.GrayFixedPoint16Bpp, codestream);
         return JxrContainer.Write(file);
     }
@@ -124,9 +125,9 @@ public static class JxrImageCodec
     /// uses non-scaled arithmetic. Arbitrary dimensions; QP indices default to 0 (lossless).
     /// </summary>
     public static byte[] EncodeGray32S(ReadOnlySpan<int> y, int width, int height,
-                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0, JxrTileLayout? tiles = null)
     {
-        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd32S);
+        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd32S, tiles: tiles);
         var file = new JxrFile((uint)width, (uint)height, JxrPixelFormat.GrayFixedPoint32Bpp, codestream);
         return JxrContainer.Write(file);
     }
@@ -144,10 +145,10 @@ public static class JxrImageCodec
     /// </summary>
     public static byte[] EncodeRgb48(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
                                      int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
-                                     bool noFlexBits = false)
+                                     bool noFlexBits = false, JxrTileLayout? tiles = null)
     {
         var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16,
-                                              noFlexBits: noFlexBits);
+                                              tiles: tiles, noFlexBits: noFlexBits);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,
@@ -176,9 +177,9 @@ public static class JxrImageCodec
     public static byte[] EncodeGrayF32(ReadOnlySpan<float> y, int width, int height,
                                        int lenMantissa = 13, int expBias = 4,
                                        int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
-                                       bool noFlexBits = false)
+                                       bool noFlexBits = false, JxrTileLayout? tiles = null)
     {
-        var codestream = JxrCodestream.EncodeGrayF32(y, width, height, lenMantissa, expBias, qpDc, qpLp, qpHp, overlap, noFlexBits);
+        var codestream = JxrCodestream.EncodeGrayF32(y, width, height, lenMantissa, expBias, qpDc, qpLp, qpHp, overlap, noFlexBits, tiles);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,
@@ -201,9 +202,9 @@ public static class JxrImageCodec
     /// preserved bit-exact (no mantissa quantization). Arbitrary dimensions are allowed (partial macroblocks edge-replicated); lossless.
     /// </summary>
     public static byte[] EncodeGrayF16(ReadOnlySpan<Half> y, int width, int height,
-                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0, JxrTileLayout? tiles = null)
     {
-        var codestream = JxrCodestream.EncodeGrayHalf(y, width, height, qpDc, qpLp, qpHp, overlap);
+        var codestream = JxrCodestream.EncodeGrayHalf(y, width, height, qpDc, qpLp, qpHp, overlap, tiles);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,
@@ -227,14 +228,14 @@ public static class JxrImageCodec
     /// </summary>
     public static byte[] EncodeRgbF16(ReadOnlySpan<Half> rgb, int width, int height,
                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
-                                      bool noFlexBits = false)
+                                      bool noFlexBits = false, JxrTileLayout? tiles = null)
     {
         int n = width * height;
         if (rgb.Length < n * 3) throw new ArgumentException("Interleaved RGB half buffer must hold width*height*3 samples.", nameof(rgb));
         var (r, g, b) = (new Half[n], new Half[n], new Half[n]);
         for (var i = 0; i < n; i++) { r[i] = rgb[i * 3]; g[i] = rgb[i * 3 + 1]; b[i] = rgb[i * 3 + 2]; }
 
-        var codestream = JxrCodestream.EncodeRgbHalf(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, noFlexBits);
+        var codestream = JxrCodestream.EncodeRgbHalf(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, noFlexBits, tiles);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,

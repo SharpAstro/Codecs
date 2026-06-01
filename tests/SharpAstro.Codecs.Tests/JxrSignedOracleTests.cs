@@ -125,6 +125,40 @@ public sealed class JxrSignedOracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // Signed multi-tile (BD16S / BD32S): our tiled file decoded by JxrDecApp must match our decode.
+    [Theory]
+    [InlineData(64, 64, "gradient", 16, 4, 0, 2, 2)]
+    [InlineData(128, 64, "random", 16, 4, 1, 4, 2)]
+    [InlineData(64, 64, "random", 32, 7, 0, 2, 2)]   // BD32S
+    [InlineData(128, 64, "gradient", 32, 7, 2, 4, 2)]
+    public void Signed_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int bd, int decCode, int overlap, int cols, int rows)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+
+        int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
+        var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
+        var y = SignedPattern(w, h, kind, bd == 16 ? 16 : 24);
+        var jxr = bd == 16
+            ? JxrImageCodec.EncodeGray16S(y, w, h, overlap: overlap, tiles: layout)
+            : JxrImageCodec.EncodeGray32S(y, w, h, overlap: overlap, tiles: layout);
+        var (dw, dh, dy) = bd == 16 ? JxrImageCodec.DecodeGray16S(jxr) : JxrImageCodec.DecodeGray32S(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c {decCode}");
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, $"JxrDecApp must decode our tiled BD{bd}S file");
+            var (rw, rh, samples) = ReadSignedTiff(tif);
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+                dy[i].ShouldBe(samples[i], $"Y[{i}] (tiled {cols}x{rows} bd{bd}s OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     /// <summary>Signed test pattern with values in roughly [-2^(bits-1), 2^(bits-1)).</summary>
