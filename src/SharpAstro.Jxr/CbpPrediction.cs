@@ -113,4 +113,71 @@ internal static class CbpPrediction
         UpdateModel(model, c1, NumOnes(cbp));
         return cbp;
     }
+
+    // ---------------------------------------------------------- chroma 420/422 (reduced CBP)
+    // predCBPC420Enc/Dec (4-bit chroma CBP) and predCBPC422Enc/Dec (8-bit) — strPredQuantEnc.c
+    // / strPredQuantDec.c. The two subsampled chroma planes share the chroma model slot (1); the
+    // spatial prediction is the low-bit causal cascade of the reduced pattern, and the model
+    // counter is driven by NumOnes(cbp) scaled to the 16-block range (×4 for 420, ×2 for 422).
+
+    /// <summary>Encode-side reduced chroma CBP prediction (YUV420 if <paramref name="is420"/>, else YUV422).</summary>
+    public static int PredictEncChroma(int cbp, bool ctxLeft, bool ctxTop, int topCbp, int leftCbp, bool is420, CbpModel model)
+    {
+        int mask = is420 ? 0xf : 0xff;
+        int nOrig = NumOnes(cbp) * (is420 ? 4 : 2);
+
+        int pred;
+        if (ctxLeft) pred = ctxTop ? 1 : ((topCbp >> (is420 ? 2 : 6)) & 1);
+        else pred = (leftCbp >> 1) & 1;
+
+        pred |= (cbp & 0x1) << 1; // [0]->[1]
+        pred |= (cbp & 0x3) << 2; // [0 1]->[2 3]
+        if (!is420)
+        {
+            pred |= (cbp & 0xc) << 2;  // [2 3]->[4 5]
+            pred |= (cbp & 0x30) << 2; // [4 5]->[6 7]
+        }
+
+        int retval = model.State[1] switch
+        {
+            0 => pred ^ cbp,
+            1 => cbp,
+            _ => cbp ^ mask,
+        };
+
+        UpdateModel(model, 1, nOrig);
+        return retval;
+    }
+
+    /// <summary>Decode-side reduced chroma CBP prediction — exact inverse of <see cref="PredictEncChroma"/>.</summary>
+    public static int PredictDecChroma(int cbp, bool ctxLeft, bool ctxTop, int topCbp, int leftCbp, bool is420, CbpModel model)
+    {
+        int mask = is420 ? 0xf : 0xff;
+
+        if (model.State[1] == 0)
+        {
+            if (ctxLeft) cbp ^= ctxTop ? 1 : ((topCbp >> (is420 ? 2 : 6)) & 1);
+            else cbp ^= (leftCbp >> 1) & 1;
+
+            if (is420)
+            {
+                cbp ^= 0x02 & (cbp << 1);   // 0 => 1
+                cbp ^= (cbp & 0x3) << 2;    // [0 1] -> [2 3]
+            }
+            else
+            {
+                cbp ^= (cbp & 0x1) << 1;    // [0]->[1]
+                cbp ^= (cbp & 0x3) << 2;    // [0 1]->[2 3]
+                cbp ^= (cbp & 0xc) << 2;    // [2 3]->[4 5]
+                cbp ^= (cbp & 0x30) << 2;   // [4 5]->[6 7]
+            }
+        }
+        else if (model.State[1] == 2)
+        {
+            cbp ^= mask;
+        }
+
+        UpdateModel(model, 1, NumOnes(cbp) * (is420 ? 4 : 2));
+        return cbp;
+    }
 }
