@@ -367,58 +367,125 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
-    // Chroma ENCODE byte-match (E1, OL_NONE): our entire codestream for a subsampled image must be
-    // byte-for-byte identical to what the reference JxrEncApp emits (-d 1 = YUV420, -d 2 = YUV422,
-    // -q 1 lossless, -l 0). Exercises the <<3-scaled colour load, the 5-tap chroma downsample, the
-    // reduced-grid forward PCT, and the YUV420/422 plane header.
+    // Chroma ENCODE byte-match: our entire codestream for a subsampled image must be byte-for-byte
+    // identical to what the reference JxrEncApp emits (-d 1 = YUV420, -d 2 = YUV422, -q 1 lossless,
+    // -l {ol}). Exercises the <<3-scaled colour load, the 5-tap chroma downsample, the reduced-grid
+    // forward PCT + POT pre-filter (OL_ONE/OL_TWO), and the YUV420/422 plane header.
     [Theory]
-    [InlineData(16, 16, "gradient", 1)]
-    [InlineData(32, 16, "gradient", 1)]
-    [InlineData(32, 32, "gradient", 1)]
-    [InlineData(48, 32, "gradient", 1)]
-    [InlineData(64, 48, "random", 1)]
-    [InlineData(80, 80, "gradient", 1)]
-    [InlineData(16, 16, "gradient", 2)]
-    [InlineData(32, 16, "gradient", 2)]
-    [InlineData(32, 32, "gradient", 2)]
-    [InlineData(48, 32, "gradient", 2)]
-    [InlineData(64, 48, "random", 2)]
-    [InlineData(80, 80, "gradient", 2)]
-    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
-    [InlineData(17, 13, "gradient", 1)]
-    [InlineData(34, 30, "random", 1)]
-    [InlineData(33, 40, "random", 2)]
-    [InlineData(100, 60, "gradient", 2)]
-    public void OurEncode_Chroma_CodestreamMatchesJxrlib(int w, int h, string kind, int sub)
+    [InlineData(16, 16, "gradient", 1, 0)]
+    [InlineData(32, 16, "gradient", 1, 0)]
+    [InlineData(32, 32, "gradient", 1, 0)]
+    [InlineData(48, 32, "gradient", 1, 0)]
+    [InlineData(64, 48, "random", 1, 0)]
+    [InlineData(80, 80, "gradient", 1, 0)]
+    [InlineData(16, 16, "gradient", 2, 0)]
+    [InlineData(48, 32, "gradient", 2, 0)]
+    [InlineData(64, 48, "random", 2, 0)]
+    [InlineData(80, 80, "gradient", 2, 0)]
+    [InlineData(17, 13, "gradient", 1, 0)] // sub-MB / non-16-aligned
+    [InlineData(34, 30, "random", 1, 0)]
+    [InlineData(33, 40, "random", 2, 0)]
+    [InlineData(100, 60, "gradient", 2, 0)]
+    // OL_ONE
+    [InlineData(16, 16, "gradient", 1, 1)]
+    [InlineData(32, 32, "gradient", 1, 1)]
+    [InlineData(48, 32, "gradient", 1, 1)]
+    [InlineData(64, 48, "random", 1, 1)]
+    [InlineData(80, 80, "gradient", 1, 1)]
+    [InlineData(16, 16, "gradient", 2, 1)]
+    [InlineData(48, 32, "gradient", 2, 1)]
+    [InlineData(64, 48, "random", 2, 1)]
+    [InlineData(80, 80, "gradient", 2, 1)]
+    [InlineData(34, 30, "random", 1, 1)]
+    [InlineData(33, 40, "gradient", 2, 1)]
+    // OL_TWO (jxlib requires >= 2 MB wide for subsampled + 2 levels of overlap)
+    [InlineData(32, 32, "gradient", 1, 2)]
+    [InlineData(48, 32, "gradient", 1, 2)]
+    [InlineData(64, 48, "random", 1, 2)]
+    [InlineData(80, 80, "gradient", 1, 2)]
+    [InlineData(32, 32, "gradient", 2, 2)]
+    [InlineData(48, 32, "gradient", 2, 2)]
+    [InlineData(64, 48, "random", 2, 2)]
+    [InlineData(80, 80, "gradient", 2, 2)]
+    [InlineData(34, 30, "random", 1, 2)]
+    [InlineData(96, 64, "gradient", 2, 2)]
+    public void OurEncode_Chroma_CodestreamMatchesJxrlib(int w, int h, string kind, int sub, int ol)
     {
         var encApp = FindOracle("JxrEncApp.exe");
         if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
 
-        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x7E5 + w * 31 + h + sub) : Gradient(w, h);
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x7E5 + w * 31 + h + sub * 7 + ol) : Gradient(w, h);
 
-        var ours = JxrCodestream.Encode(r, g, b, w, h,
+        var ours = JxrCodestream.Encode(r, g, b, w, h, overlap: ol,
             internalClrFmt: sub == 1 ? JxrInternalColorFormat.YUV420 : JxrInternalColorFormat.YUV422);
 
-        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_chenc{sub}_{Guid.NewGuid():N}");
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_chenc{sub}_{ol}_{Guid.NewGuid():N}");
         var bmpPath = tmp + ".bmp";
         var jxrPath = tmp + ".jxr";
         WriteBmp24(bmpPath, w, h, r, g, b);
         try
         {
-            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d {sub} -q 1 -l 0 -f");
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d {sub} -q 1 -l {ol} -f");
             _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
             exit.ShouldBe(0, "JxrEncApp must encode the BMP");
 
             var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
             _out.WriteLine($"ours={ours.Length} theirs={theirs.Length}");
-            ours.Length.ShouldBe(theirs.Length, $"codestream length (d{sub} {kind} {w}x{h})");
+            ours.Length.ShouldBe(theirs.Length, $"codestream length (d{sub} OL{ol} {kind} {w}x{h})");
             for (var i = 0; i < ours.Length; i++)
-                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (d{sub} {kind} {w}x{h})");
+                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (d{sub} OL{ol} {kind} {w}x{h})");
         }
         finally
         {
             if (File.Exists(bmpPath)) File.Delete(bmpPath);
             if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // Facade end-to-end: a subsampled .jxr we produce via JxrImageCodec.EncodeRgb24 (container write +
+    // codestream) must decode identically through our own JxrImageCodec.DecodeRgb24 and through the
+    // reference JxrDecApp. (Codestream byte-equality is proven separately; this pins the .jxr container
+    // write for the subsampled path and the public facade round-trip.)
+    [Theory]
+    [InlineData(64, 48, "gradient", 1, 0)]
+    [InlineData(64, 48, "random", 2, 1)]
+    [InlineData(80, 80, "gradient", 1, 2)]
+    [InlineData(34, 30, "random", 2, 1)]
+    public void JxrImageCodec_Chroma_RoundTripsViaJxrDecApp(int w, int h, string kind, int sub, int ol)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x33 + w * 7 + h + sub + ol) : Gradient(w, h);
+        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: ol,
+            internalClrFmt: sub == 1 ? JxrInternalColorFormat.YUV420 : JxrInternalColorFormat.YUV422);
+
+        var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(jxr); // our decode of our file
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_fac{sub}_{ol}_{Guid.NewGuid():N}");
+        var jxrPath = tmp + ".jxr";
+        var refPath = tmp + "_ref.bmp";
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (e, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{refPath}\" -c 0");
+            _out.WriteLine($"JxrDecApp exit={e}\n{so}\n{se}");
+            e.ShouldBe(0, "JxrDecApp must decode our subsampled file");
+            var (rw, rh, rr, rg, rb) = ReadBmp24(refPath);
+
+            (dw, dh).ShouldBe((w, h));
+            (rw, rh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(rr[i], $"R[{i}] (facade d{sub} OL{ol} {kind} {w}x{h})");
+                dg[i].ShouldBe(rg[i], $"G[{i}]");
+                db[i].ShouldBe(rb[i], $"B[{i}]");
+            }
+        }
+        finally
+        {
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+            if (File.Exists(refPath)) File.Delete(refPath);
         }
     }
 

@@ -96,14 +96,11 @@ internal static class JxrCodestream
     // disqualifies the lossless fast-path), so the colour load scales the RGB input <<3 and the chroma
     // is downsampled (5-tap [1,4,6,4,1]/16, in the YCoCg-R domain) to the reduced grid before the
     // transform. Luma is a full 444-style plane. Ports strenc.c inputMBRow + downsampleUV + the 420_UV
-    // / 422_UV forward transform loops. (Forward overlap OL_ONE/OL_TWO is a follow-on rung.)
+    // / 422_UV forward transform loops (incl. the forward POT pre-filter for OL_ONE/OL_TWO).
     private static byte[] EncodeChroma(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
                                        int width, int height, JxrInternalColorFormat clrFmt,
                                        int qpDc, int qpLp, int qpHp, int overlap, JxrOutputBitDepth bd)
     {
-        if (overlap != 0)
-            throw new NotSupportedException("YUV420/422 encode currently supports OL_NONE only (chroma forward overlap is pending).");
-
         RequirePositiveDims(width, height);
         var cf = clrFmt == JxrInternalColorFormat.YUV420 ? ColorFormat.Yuv420 : ColorFormat.Yuv422;
         int mbCols = MbCount(width), mbRows = MbCount(height);
@@ -136,13 +133,16 @@ internal static class JxrCodestream
         ChromaDownsample.Downsample(cf, full[0], full[1], reduced[0], reduced[1], mbCols, mbRows);
 
         OverlapTransform.Forward(new[] { luma }, mbCols, mbRows, overlap, scaled);
-        for (var mbR = 0; mbR < mbRows; mbR++)
-            for (var mbC = 0; mbC < mbCols; mbC++)
-            {
-                int rb = ChromaOverlapTransform.MbBase(mbCols, mbR, mbC, cf);
-                ChromaTransform.ForwardMbNoOverlap(reduced[0], rb, cf);
-                ChromaTransform.ForwardMbNoOverlap(reduced[1], rb, cf);
-            }
+        if (overlap == 0)
+            for (var mbR = 0; mbR < mbRows; mbR++)
+                for (var mbC = 0; mbC < mbCols; mbC++)
+                {
+                    int rb = ChromaOverlapTransform.MbBase(mbCols, mbR, mbC, cf);
+                    ChromaTransform.ForwardMbNoOverlap(reduced[0], rb, cf);
+                    ChromaTransform.ForwardMbNoOverlap(reduced[1], rb, cf);
+                }
+        else
+            ChromaOverlapTransform.Forward(reduced, mbCols, mbRows, overlap, cf);
 
         // Per-MB quantize (luma full, chroma reduced) + entropy code.
         var ctx = new CodingContext(cf, 3);

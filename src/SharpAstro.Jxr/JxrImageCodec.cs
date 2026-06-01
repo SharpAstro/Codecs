@@ -16,13 +16,16 @@ public static class JxrImageCodec
     /// edge-replicated). QP indices default to 0 (lossless). <paramref name="overlap"/> is the Photo
     /// Overlap level (0 = none, 1 = one level — jxrlib's default, 2 = two levels). <paramref name="tiles"/>
     /// optionally splits the image into a grid of independently-coded tiles (SPATIAL soft tiling);
-    /// <c>null</c> ⇒ a single tile.
+    /// <c>null</c> ⇒ a single tile. <paramref name="internalClrFmt"/> selects the internal colour
+    /// format: <c>YUV444</c> (default, full chroma) or <c>YUV420</c> / <c>YUV422</c> for chroma
+    /// subsampling (smaller files; chroma is downsampled, so lossy for colour even at QP 0).
     /// </summary>
     public static byte[] EncodeRgb24(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
                                      int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
-                                     JxrTileLayout? tiles = null)
+                                     JxrTileLayout? tiles = null,
+                                     JxrInternalColorFormat internalClrFmt = JxrInternalColorFormat.YUV444)
     {
-        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, tiles: tiles);
+        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, tiles: tiles, internalClrFmt: internalClrFmt);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,
