@@ -23,9 +23,10 @@ public static class JxrImageCodec
     public static byte[] EncodeRgb24(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
                                      int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
                                      JxrTileLayout? tiles = null,
-                                     JxrInternalColorFormat internalClrFmt = JxrInternalColorFormat.YUV444)
+                                     JxrInternalColorFormat internalClrFmt = JxrInternalColorFormat.YUV444,
+                                     int trimFlexBits = 0)
     {
-        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, tiles: tiles, internalClrFmt: internalClrFmt);
+        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, tiles: tiles, internalClrFmt: internalClrFmt, trimFlexBits: trimFlexBits);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,

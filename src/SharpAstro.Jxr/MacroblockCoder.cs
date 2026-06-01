@@ -964,7 +964,7 @@ internal static class MacroblockCoder
                     {
                         int n = mbits == 0
                             ? ScanZero(coeffs, off, scan, localCoef)
-                            : ScanCoefficients(coeffs, off, residual, scan, mbits, localCoef);
+                            : ScanCoefficients(coeffs, off, residual, scan, mbits, localCoef, trim);
                         lapMean[chroma ? 1 : 0] += n;
                         EncodeBlock(chroma, localCoef, n, ctx, CtHp, w, 1);
                         if (flex > 0)
@@ -1070,7 +1070,7 @@ internal static class MacroblockCoder
                 {
                     int n = mbits == 0
                         ? ScanZero(coeffs, off, scan, localCoef)
-                        : ScanCoefficients(coeffs, off, residual, scan, mbits, localCoef);
+                        : ScanCoefficients(coeffs, off, residual, scan, mbits, localCoef, trim);
                     lapMean[chroma ? 1 : 0] += n;
                     EncodeBlock(chroma, localCoef, n, ctx, CtHp, w, 1);
                     if (flex > 0)
@@ -1211,7 +1211,10 @@ internal static class MacroblockCoder
     // block base <paramref name="off"/> into a run/level "high" part and a per-coefficient
     // residual "low" part (residual is within-block indexed, 0..15). Used by both LP (off=0,
     // coeffs=BlockDc) and HP (off=blkOffset, coeffs=plane).
-    private static int ScanCoefficients(int[] coeffs, int off, int[] residual, AdaptiveScan scan, int mbits, int[] rl)
+    // <paramref name="trim"/> is TRIM_FLEXBITS: the low <c>trim</c> bits of every coefficient's
+    // flexbits refinement are dropped (jxrlib iTrimBits), folded into the residual exactly as
+    // segenc.c scanACEnc — the run-level high part is unaffected, only the flexbits residual.
+    private static int ScanCoefficients(int[] coeffs, int off, int[] residual, AdaptiveScan scan, int mbits, int[] rl, int trim = 0)
     {
         int thOff = (1 << mbits) - 1, th = thOff * 2 + 1;
         int run = 0, n = 0;
@@ -1220,11 +1223,11 @@ internal static class MacroblockCoder
         if ((uint)(level + thOff) >= (uint)th)
         {
             int abs = Math.Abs(level), hi = abs >> mbits;
-            residual[s1] = (abs & thOff) * 2;
+            residual[s1] = ((abs & thOff) >> trim) * 2;
             scan.Visit(1);
             rl[0] = run; rl[1] = level < 0 ? -hi : hi; n = 1; run = 0;
         }
-        else { run++; residual[s1] = Residual(level); }
+        else { run++; residual[s1] = Residual(TrimLevel(level, trim)); }
 
         for (var k = 2; k < 16; k++)
         {
@@ -1234,13 +1237,21 @@ internal static class MacroblockCoder
             {
                 int sign = -(level < 0 ? 1 : 0);
                 int abs = (sign ^ level) - sign, hi = abs >> mbits;
-                residual[sk] = (abs & thOff) * 2;
+                residual[sk] = ((abs & thOff) >> trim) * 2;
                 scan.Visit(k);
                 rl[n * 2] = run; rl[n * 2 + 1] = (hi ^ sign) - sign; n++; run = 0;
             }
-            else { run++; residual[sk] = Residual(level); }
+            else { run++; residual[sk] = Residual(TrimLevel(level, trim)); }
         }
         return n;
+    }
+
+    // segenc.c: round a sub-threshold level toward zero by TRIM_FLEXBITS before packing the
+    // flexbits residual — iTemp = -(level<0); ((level + iTemp) >> trim) - iTemp.
+    private static int TrimLevel(int level, int trim)
+    {
+        int temp = -(level < 0 ? 1 : 0);
+        return ((level + temp) >> trim) - temp;
     }
 
     // ----------------------------------------------------------- block coders (context-pool)

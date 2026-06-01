@@ -38,7 +38,8 @@ internal static class JxrCodestream
     public static byte[] Encode(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
                                 int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
                                 JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8, JxrTileLayout? tiles = null,
-                                JxrInternalColorFormat internalClrFmt = JxrInternalColorFormat.YUV444)
+                                JxrInternalColorFormat internalClrFmt = JxrInternalColorFormat.YUV444,
+                                int trimFlexBits = 0)
     {
         if (internalClrFmt is JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422)
             return EncodeChroma(r, g, b, width, height, internalClrFmt, qpDc, qpLp, qpHp, overlap, bd);
@@ -51,10 +52,10 @@ internal static class JxrCodestream
         int bias = LumaBias(bd);
 
         var w = new BitWriter();
-        WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.Rgb, bd);
+        WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.Rgb, bd, trimFlexBits);
         WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled, bd);
         WriteProfileLevelInfo(w);
-        WritePacketHeader(w);
+        WritePacketHeader(w, trimFlexBits);
 
         // Color-transform + load every macroblock into the whole-image YUV planes,
         // then run the overlap + 2-stage PCT across the grid (jxrlib's sliding
@@ -72,7 +73,7 @@ internal static class JxrCodestream
         OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
 
         // SPATIAL: all four band streams alias one writer (BitWriter is a class).
-        var ctx = new CodingContext(ColorFormat.Yuv444, 3);
+        var ctx = new CodingContext(ColorFormat.Yuv444, 3) { TrimFlexBits = trimFlexBits };
         var tile = new TileCoder(mbCols);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
@@ -504,8 +505,8 @@ internal static class JxrCodestream
         else
         {
             ReadProfileLevelInfo(ref reader);
-            ReadPacketHeader(ref reader);
-            var ctx = new CodingContext(ColorFormat.Yuv444, 3);
+            int trim = ReadPacketHeader(ref reader, ih.TrimFlexBitsFlag);
+            var ctx = new CodingContext(ColorFormat.Yuv444, 3) { TrimFlexBits = trim };
             var tile = new TileCoder(mbCols);
             for (var mbR = 0; mbR < mbRows; mbR++)
             {
@@ -927,7 +928,8 @@ internal static class JxrCodestream
 
     private static void WriteImageHeader(BitWriter w, int width, int height, int overlap,
                                          JxrOutputColorFormat clrFmt = JxrOutputColorFormat.Rgb,
-                                         JxrOutputBitDepth bitDepth = JxrOutputBitDepth.Bd8)
+                                         JxrOutputBitDepth bitDepth = JxrOutputBitDepth.Bd8,
+                                         int trimFlexBits = 0)
     {
         int mbW = (width + 15) / 16, mbH = (height + 15) / 16;
         var ih = new ImageHeader
@@ -941,7 +943,7 @@ internal static class JxrCodestream
             ShortHeaderFlag = mbW <= 255 && mbH <= 255,     // jxrlib bAbbreviatedHeader
             LongWordFlag = true,                            // jxrlib always writes 1 here
             WindowingFlag = false,
-            TrimFlexBitsFlag = false,
+            TrimFlexBitsFlag = trimFlexBits > 0,            // jxrlib bTrimFlexbitsFlag = (uiTrimFlexBits > 0)
             RedBlueNotSwappedFlag = false,
             PremultipliedAlphaFlag = false,
             AlphaImagePlaneFlag = false,
@@ -1136,17 +1138,22 @@ internal static class JxrCodestream
         r.SkipBits((int)subsequent * 8);
     }
 
-    private static void WritePacketHeader(BitWriter w)
+    private static void WritePacketHeader(BitWriter w, int trimFlexBits = 0)
     {
         // writePacketHeader(pIO, ptPacketType=0 spatial, pID=0): 00 00 01 00.
         w.WriteBits(0, 8); w.WriteBits(0, 8); w.WriteBits(1, 8); w.WriteBits(0, 8);
+        // jxrlib encodeMB: a 4-bit TRIM_FLEXBITS follows the SPATIAL packet header when the
+        // image-header TRIM_FLEXBITS_FLAG is set (before the — here empty — tile band headers).
+        if (trimFlexBits > 0) w.WriteBits((uint)trimFlexBits, 4);
     }
 
-    private static void ReadPacketHeader(ref BitReader r)
+    // Returns the per-tile TRIM_FLEXBITS (0 when the image-header flag is clear).
+    private static int ReadPacketHeader(ref BitReader r, bool trimFlexBitsFlag = false)
     {
         uint b0 = r.ReadBits(8), b1 = r.ReadBits(8), b2 = r.ReadBits(8), b3 = r.ReadBits(8);
         if (b0 != 0 || b1 != 0 || b2 != 1)
             throw new InvalidDataException($"Bad spatial packet header {b0:X2} {b1:X2} {b2:X2} {b3:X2} (expected 00 00 01 xx).");
+        return trimFlexBitsFlag ? (int)r.ReadBits(4) : 0;
     }
 
     // ---------------------------------------------------------------- vlw_esc (T.832 §8.2.4)
