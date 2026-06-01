@@ -536,10 +536,12 @@ internal static class JxrCodestream
         RequirePositiveDims(width, height);
         var bd = ih.OutputBitDepth;
         int bias = LumaBias(bd), max = SampleMax(bd);
-        var (clrFmt, qpDc, qpLp, qpHp, scaled, bands) = ReadPlaneHeader(ref reader, bd);
+        var (clrFmt, dcIdx, lpIdx, hpIdx, scaled, bands) = ReadPlaneHeader(ref reader, bd);
 
-        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
-        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled); // half-step chroma DC/LP in scaled mode
+        // Uniform (channel-0) quantizers drive the chroma-subsampled + multi-tile paths unchanged; the
+        // single-tile YUV444 loop below uses the full per-channel arrays (distinct U/V from quality mode).
+        var (qDc, qLp, qHp) = Quantizers(dcIdx[0], lpIdx[0], hpIdx[0], scaled);
+        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(dcIdx[0], lpIdx[0], scaled); // half-step chroma DC/LP in scaled mode
         int mbCols = MbCount(width), mbRows = MbCount(height);
         if (clrFmt is JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422)
         {
@@ -564,17 +566,17 @@ internal static class JxrCodestream
             int trim = ReadPacketHeader(ref reader, ih.TrimFlexBitsFlag);
             var ctx = new CodingContext(ColorFormat.Yuv444, 3) { TrimFlexBits = trim, NoFlexBits = noFlexBits };
             var tile = new TileCoder(mbCols);
+            var (dcQp, lpQp, hpQp) = PerChannelQp(dcIdx, lpIdx, hpIdx, scaled, 3); // distinct Y/U/V (quality mode)
             for (var mbR = 0; mbR < mbRows; mbR++)
             {
                 for (var mbC = 0; mbC < mbCols; mbC++)
                 {
                     var block = new Macroblock(3);
                     // SPATIAL: alias one reader to all four band slots (BitReader is a ref struct).
-                    tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
+                    tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, hpQp[0], hpQp);
                     int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                     for (var ch = 0; ch < 3; ch++)
-                        SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff,
-                                                          ch == 0 ? qDc.Qp : qDcUV.Qp, ch == 0 ? qLp.Qp : qLpUV.Qp);
+                        SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, dcQp[ch], lpQp[ch]);
                 }
                 tile.AdvanceRow();
             }
@@ -988,12 +990,12 @@ internal static class JxrCodestream
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
         RequirePositiveDims(width, height);
-        var (clrFmt, qpDc, qpLp, qpHp, scaled, bands) = ReadPlaneHeader(ref reader, ih.OutputBitDepth);
+        var (clrFmt, dcIdx, lpIdx, hpIdx, scaled, bands) = ReadPlaneHeader(ref reader, ih.OutputBitDepth);
         if (clrFmt != JxrInternalColorFormat.YUV444)
             throw new NotSupportedException($"BD16F RGB decode supports YUV444 only (got {clrFmt}); chroma-subsampled BD16F is not yet wired.");
 
-        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
-        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled); // half-step chroma DC/LP in scaled mode
+        var (qDc, qLp, qHp) = Quantizers(dcIdx[0], lpIdx[0], hpIdx[0], scaled);
+        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(dcIdx[0], lpIdx[0], scaled); // half-step chroma DC/LP in scaled mode
         int mbCols = MbCount(width), mbRows = MbCount(height);
         int outShift = scaled ? SignalTransform.ScaledShift : 0;
         var (r, g, b) = (new Half[width * height], new Half[width * height], new Half[width * height]);
@@ -1009,16 +1011,16 @@ internal static class JxrCodestream
             ReadPacketHeader(ref reader);
             var ctx = new CodingContext(ColorFormat.Yuv444, 3) { NoFlexBits = bands == JxrBandsPresent.NoFlexbits };
             var tile = new TileCoder(mbCols);
+            var (dcQp, lpQp, hpQp) = PerChannelQp(dcIdx, lpIdx, hpIdx, scaled, 3); // distinct Y/U/V (quality mode)
             for (var mbR = 0; mbR < mbRows; mbR++)
             {
                 for (var mbC = 0; mbC < mbCols; mbC++)
                 {
                     var block = new Macroblock(3);
-                    tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
+                    tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, hpQp[0], hpQp);
                     int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                     for (var ch = 0; ch < 3; ch++)
-                        SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff,
-                                                          ch == 0 ? qDc.Qp : qDcUV.Qp, ch == 0 ? qLp.Qp : qLpUV.Qp);
+                        SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, dcQp[ch], lpQp[ch]);
                 }
                 tile.AdvanceRow();
             }
@@ -1101,7 +1103,12 @@ internal static class JxrCodestream
         FillToByte(w);
     }
 
-    private static (JxrInternalColorFormat clrFmt, int qpDc, int qpLp, int qpHp, bool scaled, JxrBandsPresent bands) ReadPlaneHeader(ref BitReader r, JxrOutputBitDepth bd)
+    // Reads the YUV plane header into PER-CHANNEL QP index arrays (Y,U,V). Our encoder writes uniform
+    // (all channels equal, LP/HP with their own QP), but a foreign file — notably anything from jxrlib's
+    // quality mode (`-q 0.x`) — carries distinct U/V indices and may reuse the DC quantizer for LP and
+    // the LP quantizer for HP (the USE_DC_QP / USE_LP_QP flags). We honour all of those so we can decode
+    // real photographic .jxr. (DC_UNIFORM=0, i.e. per-tile/per-MB QP, is still unsupported.)
+    private static (JxrInternalColorFormat clrFmt, int[] dcIdx, int[] lpIdx, int[] hpIdx, bool scaled, JxrBandsPresent bands) ReadPlaneHeader(ref BitReader r, JxrOutputBitDepth bd)
     {
         var clrFmt = (JxrInternalColorFormat)r.ReadBits(3);
         if (clrFmt is not (JxrInternalColorFormat.YUV444 or JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422))
@@ -1115,19 +1122,27 @@ internal static class JxrCodestream
         r.SkipBits(8);
         ReadBitDepthParams(ref r, bd); // SHIFT_BITS for BD16 (RGB int path ignores the value)
 
-        if (!r.ReadBit()) throw new NotSupportedException("Non-uniform DC quantization not supported.");
-        int qpDc = ReadQuantizer(ref r);
+        if (!r.ReadBit()) throw new NotSupportedException("Non-uniform (per-tile) DC quantization not supported.");
+        int[] dcIdx = ReadQuantizer3(ref r);
 
-        if (r.ReadBit()) throw new NotSupportedException("LP reusing DC quantizer not supported by this writer's mirror.");
-        if (!r.ReadBit()) throw new NotSupportedException("Non-uniform LP quantization not supported.");
-        int qpLp = ReadQuantizer(ref r);
+        int[] lpIdx;
+        if (r.ReadBit()) lpIdx = dcIdx;                  // USE_DC_QP: LP reuses the DC quantizer
+        else
+        {
+            if (!r.ReadBit()) throw new NotSupportedException("Non-uniform (per-tile) LP quantization not supported.");
+            lpIdx = ReadQuantizer3(ref r);
+        }
 
-        if (r.ReadBit()) throw new NotSupportedException("HP reusing LP quantizer not supported by this writer's mirror.");
-        if (!r.ReadBit()) throw new NotSupportedException("Non-uniform HP quantization not supported.");
-        int qpHp = ReadQuantizer(ref r);
+        int[] hpIdx;
+        if (r.ReadBit()) hpIdx = lpIdx;                  // USE_LP_QP: HP reuses the LP quantizer
+        else
+        {
+            if (!r.ReadBit()) throw new NotSupportedException("Non-uniform (per-tile) HP quantization not supported.");
+            hpIdx = ReadQuantizer3(ref r);
+        }
 
         AlignToByte(ref r);
-        return (clrFmt, qpDc, qpLp, qpHp, scaled, bands);
+        return (clrFmt, dcIdx, lpIdx, hpIdx, scaled, bands);
     }
 
     // jxrlib WriteImagePlaneHeader bit-depth params (strenc.c:777): BD16/BD16S write an 8-bit
@@ -1177,14 +1192,17 @@ internal static class JxrCodestream
         w.WriteBits((uint)qpIndex, 8);           // V
     }
 
-    private static int ReadQuantizer(ref BitReader r)
+    // jxrlib readQuantizer for 3 channels: cChMode(2) then the per-channel QP indices. chMode 0
+    // (UNIFORM) shares Y across U,V; chMode 1 (MIXED) writes one chroma index for both U,V; chMode 2
+    // (INDEPENDENT) writes Y, U, V separately. Returns the resolved 3 per-channel indices — distinct
+    // U/V indices are what jxrlib's quality mode (`-q 0.x`) emits from the DPK_QPS tables.
+    private static int[] ReadQuantizer3(ref BitReader r)
     {
         int chMode = (int)r.ReadBits(2);
         int y = (int)r.ReadBits(8);
-        if (chMode == 1) { r.SkipBits(8); }              // MIXED: one chroma value
-        else if (chMode == 2) { r.SkipBits(8); r.SkipBits(8); } // INDEPENDENT: U, V
-        // chMode 0 (UNIFORM): no extra. We only consume Y; bands share one index in our codec.
-        return y;
+        if (chMode == 0) return [y, y, y];                                  // UNIFORM
+        if (chMode == 1) { int uv = (int)r.ReadBits(8); return [y, uv, uv]; } // MIXED
+        return [y, (int)r.ReadBits(8), (int)r.ReadBits(8)];                 // INDEPENDENT: Y, U, V
     }
 
     // Faithful port of WriteImagePlaneHeader for the YONLY / BD8 / all-bands / uQPMode==0x750
@@ -1316,6 +1334,23 @@ internal static class JxrCodestream
     private const int ShiftZeroMinusOne = 0; // SHIFTZERO - 1 (SHIFTZERO == 1)
     private static (JxrQuantizer dc, JxrQuantizer lp) ChromaDcLpQuantizers(int qpDc, int qpLp, bool scaled)
         => (WithDcOffset(Quantization.Resolve(qpDc, scaled, ShiftZeroMinusOne)), Quantization.Resolve(qpLp, scaled, ShiftZeroMinusOne));
+
+    // Resolve per-channel dequant step sizes (.Qp) from per-channel QP index arrays — the decode side of
+    // jxrlib's quality mode, where Y/U/V carry distinct indices. Luma (ch 0) and every channel's HP use
+    // SHIFTZERO; chroma (ch>0) DC/LP use SHIFTZERO-1 (the bShiftedUV half step). The forward-quantize
+    // deadzone is irrelevant on decode (DEQUANT = raw*iQP), so only .Qp matters here.
+    private static (int[] dcQp, int[] lpQp, int[] hpQp) PerChannelQp(int[] dcIdx, int[] lpIdx, int[] hpIdx, bool scaled, int channels)
+    {
+        var (dcQp, lpQp, hpQp) = (new int[channels], new int[channels], new int[channels]);
+        for (var ch = 0; ch < channels; ch++)
+        {
+            // luma + HP use the default SHIFTZERO; chroma DC/LP use SHIFTZERO-1 (the half step).
+            dcQp[ch] = (ch == 0 ? Quantization.Resolve(dcIdx[ch], scaled) : Quantization.Resolve(dcIdx[ch], scaled, ShiftZeroMinusOne)).Qp;
+            lpQp[ch] = (ch == 0 ? Quantization.Resolve(lpIdx[ch], scaled) : Quantization.Resolve(lpIdx[ch], scaled, ShiftZeroMinusOne)).Qp;
+            hpQp[ch] = Quantization.Resolve(hpIdx[ch], scaled).Qp;
+        }
+        return (dcQp, lpQp, hpQp);
+    }
 
     // jxrlib StrEncInit: lossless (all bands QP index ≤ 1) ⇒ bScaledArith == FALSE.
     private static bool ScaledArith(int qpDc, int qpLp, int qpHp) => qpDc > 1 || qpLp > 1 || qpHp > 1;

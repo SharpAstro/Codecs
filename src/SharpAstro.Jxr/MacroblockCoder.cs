@@ -538,7 +538,8 @@ internal static class MacroblockCoder
     }
 
     internal static void DecodeHighpass(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp,
-                                        bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp, bool resetContext, bool resetTotals)
+                                        bool ctxLeft, bool ctxTop, int[]? leftCbp, int[]? topCbp, bool resetContext, bool resetTotals,
+                                        int[]? hpQpCh = null)
     {
         if (resetTotals) { ctx.ScanHoriz.Reset(); ctx.ScanVert.Reset(); } // jxrlib m_bResetRGITotals — START of HP band
         DecodeCbp(ctx, mb, ref r);
@@ -549,7 +550,7 @@ internal static class MacroblockCoder
             mb.Cbp[i] = subC && i > 0
                 ? CbpPrediction.PredictDecChroma(mb.DiffCbp[i], ctxLeft, ctxTop, topCbp?[i] ?? 0, leftCbp?[i] ?? 0, is420C, ctx.Cbp)
                 : CbpPrediction.PredictDec(mb.DiffCbp[i], ctxLeft, ctxTop, topCbp?[i] ?? 0, leftCbp?[i] ?? 0, i, ctx.Cbp);
-        DecodeCoeffs(ctx, mb, ref r, ref fl, hpQp);
+        DecodeCoeffs(ctx, mb, ref r, ref fl, hpQp, hpQpCh);
         if (resetContext) ctx.AdaptHighpass();
     }
 
@@ -987,11 +988,11 @@ internal static class MacroblockCoder
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, ctx.ModelAc);
     }
 
-    private static void DecodeCoeffs(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp)
+    private static void DecodeCoeffs(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp, int[]? hpQpCh = null)
     {
         if (ctx.ColorFormat is ColorFormat.Yuv420 or ColorFormat.Yuv422)
         {
-            DecodeCoeffsChroma(ctx, mb, ref r, ref fl, hpQp, ctx.ColorFormat == ColorFormat.Yuv420);
+            DecodeCoeffsChroma(ctx, mb, ref r, ref fl, hpQp, ctx.ColorFormat == ColorFormat.Yuv420, hpQpCh);
             return;
         }
         var scan = mb.Orientation == 1 ? ctx.ScanVert : ctx.ScanHoriz;
@@ -1003,6 +1004,7 @@ internal static class MacroblockCoder
 
         for (var i = 0; i < ctx.Channels; i++)
         {
+            int chHp = hpQpCh?[i] ?? hpQp; // per-channel HP step (quality mode); else the shared step
             for (var iBlock = 0; iBlock < 4; iBlock++)
             {
                 for (var sub = 0; sub < 4; sub++, cbp >>= 1)
@@ -1010,7 +1012,7 @@ internal static class MacroblockCoder
                     int iIndex = iBlock * 4 + sub;
                     var coeffs = mb.Plane[i];
                     int off = MacroblockLayout.BlkOffset[iIndex];
-                    int n = DecodeBlockAdaptive((cbp & 1) != 0, chroma, ctx, ref r, ref fl, coeffs, off, scan, mbits, trim, hpQp);
+                    int n = DecodeBlockAdaptive((cbp & 1) != 0, chroma, ctx, ref r, ref fl, coeffs, off, scan, mbits, trim, chHp);
                     lapMean[chroma ? 1 : 0] += n;
                 }
                 if (iBlock == 3) { mbits = ctx.ModelAc.FlcBits[1]; chroma = true; }
@@ -1093,7 +1095,7 @@ internal static class MacroblockCoder
     }
 
     // segdec.c DecodeMacroblockHighpass, YUV420/422 branch — exact mirror of CodeCoeffsChroma.
-    private static void DecodeCoeffsChroma(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp, bool is420)
+    private static void DecodeCoeffsChroma(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp, bool is420, int[]? hpQpCh = null)
     {
         var scan = mb.Orientation == 1 ? ctx.ScanVert : ctx.ScanHoriz;
         int trim = ctx.TrimFlexBits;
@@ -1112,11 +1114,12 @@ internal static class MacroblockCoder
             {
                 int[] coeffs;
                 int off;
-                if (iBlock < 4) { coeffs = mb.Plane[0]; off = MacroblockLayout.BlkOffset[iBlock * 4 + sub]; }
-                else if (is420) { coeffs = mb.Plane[iBlock - 3]; off = off420[sub]; }
-                else { coeffs = mb.Plane[1 + ((iBlock - 4) >> 1)]; off = off422[(iBlock & 1) * 4 + sub]; }
+                int chIdx;
+                if (iBlock < 4) { coeffs = mb.Plane[0]; off = MacroblockLayout.BlkOffset[iBlock * 4 + sub]; chIdx = 0; }
+                else if (is420) { chIdx = iBlock - 3; coeffs = mb.Plane[chIdx]; off = off420[sub]; }
+                else { chIdx = 1 + ((iBlock - 4) >> 1); coeffs = mb.Plane[chIdx]; off = off422[(iBlock & 1) * 4 + sub]; }
 
-                int n = DecodeBlockAdaptive((pattern & 1) != 0, chroma, ctx, ref r, ref fl, coeffs, off, scan, mbits, trim, hpQp);
+                int n = DecodeBlockAdaptive((pattern & 1) != 0, chroma, ctx, ref r, ref fl, coeffs, off, scan, mbits, trim, hpQpCh?[chIdx] ?? hpQp);
                 lapMean[chroma ? 1 : 0] += n;
             }
             if (iBlock == 3) { mbits = ctx.ModelAc.FlcBits[1]; chroma = true; }

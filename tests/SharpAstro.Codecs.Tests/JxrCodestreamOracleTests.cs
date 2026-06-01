@@ -854,6 +854,59 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
+    // Non-uniform / per-channel QP (decode robustness): jxrlib's QUALITY mode (-q 0.x, a fractional
+    // value) maps quality → six DPK_QPS table entries giving DISTINCT Y/U/V QP indices per band (and the
+    // LP band reuses the DC quantizer). Our encoder only emits uniform QP, but real photographic .jxr use
+    // this. We now read the per-channel indices + USE_DC_QP/USE_LP_QP reuse flags and dequant per channel,
+    // so our decode of a quality-mode file must agree pixel-for-pixel with JxrDecApp's decode of it.
+    [Theory]
+    [InlineData(64, 48, "random", "0.3", 1)]
+    [InlineData(80, 80, "gradient", "0.5", 1)]
+    [InlineData(64, 48, "random", "0.7", 1)]
+    [InlineData(80, 80, "random", "0.9", 1)]
+    [InlineData(64, 48, "random", "0.5", 0)]   // OL_NONE
+    [InlineData(48, 32, "random", "0.6", 2)]   // OL_TWO
+    [InlineData(33, 40, "random", "0.5", 1)]   // non-16-aligned
+    public void JxrlibQualityMode_DecodedByUs_MatchesJxrDecApp(int w, int h, string kind, string quality, int ol)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (encApp is null || decApp is null) { _out.WriteLine("oracle not found — skipping."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x4A + w * 3 + h + ol) : Gradient(w, h);
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_qual_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        var refPath = tmp + "_ref.bmp";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            // -d 3 forces YUV444 (so quality mode doesn't auto-subsample); -q 0.x is the quality knob.
+            var (e1, so1, se1) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q {quality} -l {ol} -f");
+            _out.WriteLine($"JxrEncApp exit={e1}\n{so1}\n{se1}");
+            e1.ShouldBe(0, "JxrEncApp must encode the quality-mode file");
+
+            var jxr = File.ReadAllBytes(jxrPath);
+            var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(jxr); // OUR decode of the quality-mode file
+
+            var (e2, so2, se2) = Run(decApp, $"-i \"{jxrPath}\" -o \"{refPath}\" -c 0");
+            e2.ShouldBe(0, "JxrDecApp must decode the quality-mode file");
+            var (rw, rh, rr, rg, rb) = ReadBmp24(refPath);
+
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(rr[i], $"R[{i}] (quality {quality} OL{ol} {kind} {w}x{h})");
+                dg[i].ShouldBe(rg[i], $"G[{i}]");
+                db[i].ShouldBe(rb[i], $"B[{i}]");
+            }
+        }
+        finally
+        {
+            foreach (var p in new[] { bmpPath, jxrPath, refPath }) if (File.Exists(p)) File.Delete(p);
+        }
+    }
+
     // Rung 7f.2/7f.3 — the strongest overlap check: our entire codestream must be byte-for-byte
     // identical to what the reference JxrEncApp emits for the same image and settings.
     [Theory]
