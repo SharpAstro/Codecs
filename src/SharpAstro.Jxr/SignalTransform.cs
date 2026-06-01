@@ -301,19 +301,23 @@ internal static class SignalTransform
     /// <summary>idxCC load of one grayscale macroblock (256 samples, raster order) into the
     /// whole-image Y plane at <paramref name="mbBase"/> with the level shift. No color transform.
     /// <paramref name="bias"/> = 128/32768 for BD8/BD16.</summary>
-    public static void LoadGray(ReadOnlySpan<int> y, int[] planeY, int mbBase, int bias = Bias)
+    public static void LoadGray(ReadOnlySpan<int> y, int[] planeY, int mbBase, int bias = Bias, int shift = 0)
     {
+        // Scaled-arith (lossy QP) scales the sample <<cShift before the level shift, exactly like
+        // the RGB luma load: pY = (src << cShift) - (bias << cShift) = (src - bias) << cShift.
         for (var px = 0; px < 256; px++)
-            planeY[mbBase + IdxCc[px]] = y[px] - bias;
+            planeY[mbBase + IdxCc[px]] = (y[px] - bias) << shift;
     }
 
     /// <summary>idxCC unload of one MB from the whole-image Y plane at <paramref name="mbBase"/>
     /// back into grayscale samples, adding the bias and clamping to <c>[0, <paramref name="max"/>]</c>.
     /// No color transform. <paramref name="bias"/> = 128/32768 for BD8/BD16.</summary>
-    public static void StoreGray(int[] planeY, int mbBase, Span<int> y, int bias = Bias, int max = 255)
+    public static void StoreGray(int[] planeY, int mbBase, Span<int> y, int bias = Bias, int max = 255, int shift = 0)
     {
+        // jxrlib iBias = (bias << iShift) + (scaled ? (1<<(iShift-1))-1 : 0), then >> iShift (same as luma).
+        int iBias = (bias << shift) + (shift > 0 ? (1 << (shift - 1)) - 1 : 0);
         for (var px = 0; px < 256; px++)
-            y[px] = Clip(planeY[mbBase + IdxCc[px]] + bias, max);
+            y[px] = Clip((planeY[mbBase + IdxCc[px]] + iBias) >> shift, max);
     }
 
     // ---------------------------------------------------------------- grayscale float (BD32F/BD16F)
@@ -341,19 +345,22 @@ internal static class SignalTransform
     // and for RGB the YCoCg-R color transform runs on those reinterpreted integers (reversibly).
 
     /// <summary>idxCC load of one BD16F grayscale macroblock (256 halves) into the Y plane via
-    /// <see cref="FloatPixel.HalfToPixel"/>. No color transform, no bias.</summary>
-    public static void LoadGrayHalf(ReadOnlySpan<Half> y, int[] planeY, int mbBase)
+    /// <see cref="FloatPixel.HalfToPixel"/>. No color transform, no bias. In scaled-arith mode
+    /// (<paramref name="shift"/>=3, lossy QP) the pixel is scaled <c>&lt;&lt;cShift</c>.</summary>
+    public static void LoadGrayHalf(ReadOnlySpan<Half> y, int[] planeY, int mbBase, int shift = 0)
     {
         for (var px = 0; px < 256; px++)
-            planeY[mbBase + IdxCc[px]] = FloatPixel.HalfToPixel(y[px]);
+            planeY[mbBase + IdxCc[px]] = FloatPixel.HalfToPixel(y[px]) << shift;
     }
 
     /// <summary>idxCC unload of one MB from the Y plane back into BD16F halves via
-    /// <see cref="FloatPixel.PixelToHalf"/>.</summary>
-    public static void StoreGrayHalf(int[] planeY, int mbBase, Span<Half> y)
+    /// <see cref="FloatPixel.PixelToHalf"/>. In scaled-arith mode adds the rounding bias
+    /// <c>(1&lt;&lt;(shift-1))-1</c> (no level bias) then right-shifts by <paramref name="shift"/>.</summary>
+    public static void StoreGrayHalf(int[] planeY, int mbBase, Span<Half> y, int shift = 0)
     {
+        int iBias = shift > 0 ? (1 << (shift - 1)) - 1 : 0;
         for (var px = 0; px < 256; px++)
-            y[px] = FloatPixel.PixelToHalf(planeY[mbBase + IdxCc[px]]);
+            y[px] = FloatPixel.PixelToHalf((planeY[mbBase + IdxCc[px]] + iBias) >> shift);
     }
 
     /// <summary>HalfToPixel + color transform (<c>_CC</c>) + idxCC load of one BD16F RGB macroblock
