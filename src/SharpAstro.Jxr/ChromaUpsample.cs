@@ -46,26 +46,30 @@ internal static class ChromaUpsample
     /// (<paramref name="dstU"/>/<paramref name="dstV"/>, 256 ints per MB, <c>idxCC</c> layout)
     /// over an <paramref name="mbCols"/> × <paramref name="mbRows"/> macroblock grid.
     /// </summary>
+    /// <param name="dstRowStride">Ints per destination MB-row. 0 ⇒ the simple/packed layout
+    /// (<c>mbCols*256</c>); pass <c>(mbCols+1)*256</c> for the <see cref="OverlapTransform"/>
+    /// slack layout so the upsampled chroma aligns with the luma plane for <c>StoreColor</c>.</param>
     public static void Interpolate(ColorFormat cf, int[] srcU, int[] srcV, int[] dstU, int[] dstV,
-                                   int mbCols, int mbRows)
+                                   int mbCols, int mbRows, int dstRowStride = 0)
     {
+        int ds = dstRowStride == 0 ? mbCols * 256 : dstRowStride;
         switch (cf)
         {
-            case ColorFormat.Yuv422: Interpolate422(srcU, srcV, dstU, dstV, mbCols, mbRows); break;
-            case ColorFormat.Yuv420: Interpolate420(srcU, srcV, dstU, dstV, mbCols, mbRows); break;
+            case ColorFormat.Yuv422: Interpolate422(srcU, srcV, dstU, dstV, mbCols, mbRows, ds); break;
+            case ColorFormat.Yuv420: Interpolate420(srcU, srcV, dstU, dstV, mbCols, mbRows, ds); break;
             default: throw new NotSupportedException($"Chroma upsampling only applies to YUV420/422 (got {cf}).");
         }
     }
 
     // 422 => 444: interpolate horizontally. strdec.c:522-547.
-    private static void Interpolate422(int[] srcU, int[] srcV, int[] dstU, int[] dstV, int mbCols, int mbRows)
+    private static void Interpolate422(int[] srcU, int[] srcV, int[] dstU, int[] dstV, int mbCols, int mbRows, int dstStride)
     {
         var idx = SignalTransform.IdxCc;
         int cWidth = mbCols * 16; // full luma-resolution pixel width of one MB row
         for (var mbRow = 0; mbRow < mbRows; mbRow++)
         {
             int srcBase = mbRow * mbCols * 128;
-            int dstBase = mbRow * mbCols * 256;
+            int dstBase = mbRow * dstStride;
             for (var iRow = 0; iRow < 16; iRow++)
             {
                 int iIdxD = 0;
@@ -95,7 +99,7 @@ internal static class ChromaUpsample
 
     // 420 => 444: interpolate vertically (peeking the next MB row at the bottom edge),
     // then horizontally. strdec.c:548-603 with cShift = 4 (444 output).
-    private static void Interpolate420(int[] srcU, int[] srcV, int[] dstU, int[] dstV, int mbCols, int mbRows)
+    private static void Interpolate420(int[] srcU, int[] srcV, int[] dstU, int[] dstV, int mbCols, int mbRows, int dstStride)
     {
         var idx = SignalTransform.IdxCc;
         var idx420 = IdxCc420;
@@ -104,7 +108,7 @@ internal static class ChromaUpsample
         {
             int srcBase = mbRow * mbCols * 64;
             int nextSrcBase = (mbRow + 1) * mbCols * 64; // next MB row (a1MBbuffer)
-            int dstBase = mbRow * mbCols * 256;
+            int dstBase = mbRow * dstStride;
             bool bottom = mbRow == mbRows - 1;
 
             // --- vertical pass: fill even rows from reduced source, interpolate odd rows ---

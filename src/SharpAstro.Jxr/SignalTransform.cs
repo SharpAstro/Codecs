@@ -210,6 +210,25 @@ internal static class SignalTransform
             plane[mbBase + DcIndex[i]] = Quantization.Dequantize(mb.BlockDc[ch][i], lpQp);
     }
 
+    /// <summary>
+    /// Reduced-chroma counterpart of <see cref="DequantizeRestore"/> for YUV420/422: write one
+    /// decoded chroma MB into the reduced whole-image plane (stride 64/128) at <paramref name="mbBase"/>.
+    /// HP is already dequantized in <see cref="Macroblock.Plane"/>; the DC + LP from
+    /// <see cref="Macroblock.BlockDc"/> dequantize to the block-DC positions
+    /// (<see cref="MacroblockLayout.ChromaBlkOffset"/>, jxrlib <c>dequantizeBlock2x2/4x2</c>:
+    /// BlockDc[i] → plane[blkOffsetUV[i]]).
+    /// </summary>
+    public static void DequantizeRestoreChroma(Macroblock mb, int ch, int[] plane, int mbBase, int dcQp, int lpQp, ColorFormat cf)
+    {
+        int blocks = MacroblockLayout.ChromaBlocks(cf);
+        int stride = blocks * 16;
+        var off = MacroblockLayout.ChromaBlkOffset(cf);
+        mb.Plane[ch].AsSpan(0, stride).CopyTo(plane.AsSpan(mbBase, stride));
+        plane[mbBase + off[0]] = Quantization.Dequantize(mb.BlockDc[ch][0], dcQp);
+        for (var i = 1; i < blocks; i++)
+            plane[mbBase + off[i]] = Quantization.Dequantize(mb.BlockDc[ch][i], lpQp);
+    }
+
     /// <summary>Inverse color (<c>_ICC</c>) + idxCC unload of one MB from the three whole-image
     /// YUV planes at <paramref name="mbBase"/> into RGB samples, clamped to <c>[0, <paramref name="max"/>]</c>
     /// (jxrlib's output _CLIP). <paramref name="bias"/> = 128/32768 for BD8/BD16. Inverse half 2.</summary>
