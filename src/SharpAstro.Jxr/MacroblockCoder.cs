@@ -63,10 +63,10 @@ internal static class MacroblockCoder
 
     private static void RequireSupported(CodingContext ctx)
     {
-        bool yuv444 = ctx.ColorFormat == ColorFormat.Yuv444 && ctx.Channels == 3;
+        bool yuv = IsYuv(ctx.ColorFormat) && ctx.Channels == 3; // 444 / 422 / 420
         bool yOnly = ctx.ColorFormat == ColorFormat.YOnly && ctx.Channels == 1;
-        if (!yuv444 && !yOnly)
-            throw new NotSupportedException("MacroblockCoder currently supports YUV444 (3 channels) and Y-only (1 channel).");
+        if (!yuv && !yOnly)
+            throw new NotSupportedException("MacroblockCoder supports YUV444/422/420 (3 channels) and Y-only (1 channel).");
     }
 
     // ===================================================================== DC band
@@ -543,9 +543,12 @@ internal static class MacroblockCoder
         if (resetTotals) { ctx.ScanHoriz.Reset(); ctx.ScanVert.Reset(); } // jxrlib m_bResetRGITotals — START of HP band
         DecodeCbp(ctx, mb, ref r);
         // predCBPDec reconstructs the actual CBP from the transmitted residual + neighbors.
+        bool subC = ctx.ColorFormat is ColorFormat.Yuv420 or ColorFormat.Yuv422;
+        bool is420C = ctx.ColorFormat == ColorFormat.Yuv420;
         for (var i = 0; i < ctx.Channels; i++)
-            mb.Cbp[i] = CbpPrediction.PredictDec(mb.DiffCbp[i], ctxLeft, ctxTop,
-                topCbp?[i] ?? 0, leftCbp?[i] ?? 0, i, ctx.Cbp);
+            mb.Cbp[i] = subC && i > 0
+                ? CbpPrediction.PredictDecChroma(mb.DiffCbp[i], ctxLeft, ctxTop, topCbp?[i] ?? 0, leftCbp?[i] ?? 0, is420C, ctx.Cbp)
+                : CbpPrediction.PredictDec(mb.DiffCbp[i], ctxLeft, ctxTop, topCbp?[i] ?? 0, leftCbp?[i] ?? 0, i, ctx.Cbp);
         DecodeCoeffs(ctx, mb, ref r, ref fl, hpQp);
         if (resetContext) ctx.AdaptHighpass();
     }
@@ -566,22 +569,28 @@ internal static class MacroblockCoder
         // transmitted residual via the adaptive prediction model + neighbors.
         int acThreshold0 = (1 << ctx.ModelAc.FlcBits[0]) - 1;
         int acThreshold1 = (1 << ctx.ModelAc.FlcBits[1]) - 1;
+        bool is420 = ctx.ColorFormat == ColorFormat.Yuv420;
+        bool reduced = ctx.ColorFormat is ColorFormat.Yuv420 or ColorFormat.Yuv422; // subsampled chroma
         for (var ch = 0; ch < ctx.Channels; ch++)
         {
             int threshold = ch == 0 ? acThreshold0 : acThreshold1, threshold2 = threshold * 2 + 1;
+            int blocks = ch == 0 ? 16 : MacroblockLayout.ChromaBlocks(ctx.ColorFormat);
+            int[] offsets = ch == 0 ? MacroblockLayout.BlkOffset : MacroblockLayout.ChromaBlkOffset(ctx.ColorFormat);
             int cbp = 0;
-            for (var j = 0; j < 16; j++)
+            for (var j = 0; j < blocks; j++)
             {
-                int off = MacroblockLayout.BlkOffset[j];
+                int off = offsets[j];
                 for (var i = 1; i < 16; i++)
                     if ((uint)(mb.Plane[ch][off + i] + threshold) >= (uint)threshold2) { cbp |= 1 << j; break; }
             }
             mb.Cbp[ch] = cbp;
-            mb.DiffCbp[ch] = CbpPrediction.PredictEnc(cbp, ctxLeft, ctxTop,
-                topCbp?[ch] ?? 0, leftCbp?[ch] ?? 0, ch, ctx.Cbp);
+            mb.DiffCbp[ch] = reduced && ch > 0
+                ? CbpPrediction.PredictEncChroma(cbp, ctxLeft, ctxTop, topCbp?[ch] ?? 0, leftCbp?[ch] ?? 0, is420, ctx.Cbp)
+                : CbpPrediction.PredictEnc(cbp, ctxLeft, ctxTop, topCbp?[ch] ?? 0, leftCbp?[ch] ?? 0, ch, ctx.Cbp);
         }
 
-        if (ctx.ColorFormat != ColorFormat.Yuv444) { CodeCbpYOnly(ctx, mb, w); return; }
+        if (!IsYuv(ctx.ColorFormat)) { CodeCbpYOnly(ctx, mb, w); return; }
+        if (reduced) { CodeCbpChromaSub(ctx, mb, w, is420); return; }
 
         int diffY = mb.DiffCbp[0], diffU = mb.DiffCbp[1], diffV = mb.DiffCbp[2];
 
@@ -679,15 +688,106 @@ internal static class MacroblockCoder
         }
     }
 
+    // segenc.c CodeCBP, YUV420/422 branch. The luma DiffCBP plus the two reduced chroma DiffCBPs
+    // are PackCBP-interleaved into one word of 4 super-block chunks (6 bits for 420 = 4Y+1U+1V,
+    // 8 bits for 422 = 4Y+2U+2V); each chunk is then coded with the shared luma-nibble symbol
+    // (CbpCy / gTab0) plus the chroma flags. The super-block presence pattern is sent first (CbpCy1).
+    private static void CodeCbpChromaSub(CodingContext ctx, Macroblock mb, BitWriter w, bool is420)
+    {
+        int diffY = mb.DiffCbp[0], diffU = mb.DiffCbp[1], diffV = mb.DiffCbp[2];
+
+        int packed = is420
+            ? (diffY & 0xf) + ((diffU & 1) << 4) + ((diffV & 1) << 5)
+              + ((diffY & 0x00f0) << 2) + ((diffU & 2) << 9) + ((diffV & 2) << 10)
+              + ((diffY & 0x0f00) << 4) + ((diffU & 4) << 14) + ((diffV & 4) << 15)
+              + ((diffY & 0xf000) << 6) + ((diffU & 8) << 19) + ((diffV & 8) << 20)
+            : (diffY & 0xf) + ((diffU & 1) << 4) + ((diffU & 4) << 3)
+              + ((diffV & 1) << 6) + ((diffV & 4) << 5)
+              + ((diffY & 0x00f0) << 4) + ((diffU & 2) << 11) + ((diffU & 8) << 10)
+              + ((diffV & 2) << 13) + ((diffV & 8) << 12)
+              + ((diffY & 0x0f00) << 8) + ((diffU & 16) << 16) + ((diffU & 64) << 15)
+              + ((diffV & 16) << 18) + ((diffV & 64) << 17)
+              + ((diffY & 0xf000) << 12) + ((diffU & 32) << 23) + ((diffU & 128) << 22)
+              + ((diffV & 32) << 25) + ((diffV & 128) << 24);
+
+        int chunkBits = is420 ? 6 : 8;
+        int chunkMask = is420 ? 0x3f : 0xff;
+
+        // super-block presence pattern
+        int pattern = 0, dy = packed;
+        for (var iBlock = 0; iBlock < 4; iBlock++)
+        {
+            pattern |= (dy & chunkMask) != 0 ? 0x10 : 0;
+            dy >>= chunkBits;
+            pattern >>= 1;
+        }
+
+        int count = CbpNumOnes[pattern];
+        ctx.CbpCy1.Encode(w, count);
+        ctx.CbpCy1.Discriminant += ctx.CbpCy1.Delta(count);
+        if (CbpTabLen[pattern] != 0) w.WriteBits((uint)CbpTabCode[pattern], CbpTabLen[pattern]);
+
+        for (var iBlock = 0; iBlock < 4; iBlock++)
+        {
+            int code = packed & chunkMask;
+            packed >>= chunkBits;
+            if (code == 0) continue;
+
+            int chroma = code >> 4;
+            code &= 0xf;
+            int codeU = 0, codeV = 0;
+            if (!is420)
+            {
+                codeU = chroma & 3;
+                codeV = (chroma >> 2) & 3;
+                chroma = codeU == 0 ? 0 : 1;
+                if (codeV != 0) chroma += 2;
+            }
+
+            int val = chroma != 0 ? (CbpGTab0[code] > 2 ? 8 : CbpGTab0[code] + 6 - 1) : CbpGTab0[code] - 1;
+            ctx.CbpCy.Encode(w, val);
+            ctx.CbpCy.Discriminant += ctx.CbpCy.Delta(val);
+
+            if (chroma != 0)
+            {
+                if (chroma == 1) w.WriteBits(1, 1);
+                else w.WriteBits((uint)(3 - chroma), 2);
+            }
+            if (val == 8)
+            {
+                if (CbpGTab0[code] == 3) w.WriteBits(1, 1);
+                else w.WriteBits((uint)(5 - CbpGTab0[code]), 2);
+            }
+            if (CbpGFl0[code] != 0) w.WriteBits((uint)CbpGCode0[code], CbpGFl0[code]);
+
+            // 422 carries a per-plane 2-bit chroma row pattern; 420 has none (U/V are single bits).
+            if (!is420)
+            {
+                int patt = codeU;
+                for (var k = 0; k < 2; k++)
+                {
+                    if (patt != 0)
+                    {
+                        if (patt == 1) w.WriteBits(1, 1);
+                        else w.WriteBits((uint)(3 - patt), 2);
+                    }
+                    patt = codeV;
+                }
+            }
+        }
+    }
+
     // ----------------------------------------------------------- CBP (decode)
 
     private static readonly int[] CbpGFlc0 = { 0, 2, 1, 2, 2, 0 };
     private static readonly int[] CbpGOff0 = { 0, 4, 2, 8, 12, 1 };
     private static readonly int[] CbpGOut0 = { 0, 15, 3, 12, 1, 2, 4, 8, 5, 6, 9, 10, 7, 11, 13, 14 };
 
+    private static readonly int[] CbpShift422 = { 0, 1, 4, 5 };
+
     private static void DecodeCbp(CodingContext ctx, Macroblock mb, ref BitReader r)
     {
-        if (ctx.ColorFormat != ColorFormat.Yuv444) { DecodeCbpYOnly(ctx, mb, ref r); return; }
+        if (!IsYuv(ctx.ColorFormat)) { DecodeCbpYOnly(ctx, mb, ref r); return; }
 
         int cbpY = 0, cbpU = 0, cbpV = 0;
 
@@ -720,12 +820,33 @@ internal static class MacroblockCoder
             blockCbp += CbpGOut0[code1];
 
             cbpY |= (blockCbp & 0xf) << (iBlock * 4);
-            for (var k = 0; k < 2; k++)
+            if (ctx.ColorFormat == ColorFormat.Yuv444)
             {
-                if (((blockCbp >> (k + 4)) & 1) == 0) continue;
-                int code = ExpandChromaSubCbp(ctx.AHexpt[1].Decode(ref r), ref r);
-                if (k == 0) cbpU |= code << (iBlock * 4);
-                else cbpV |= code << (iBlock * 4);
+                for (var k = 0; k < 2; k++)
+                {
+                    if (((blockCbp >> (k + 4)) & 1) == 0) continue;
+                    int code = ExpandChromaSubCbp(ctx.AHexpt[1].Decode(ref r), ref r);
+                    if (k == 0) cbpU |= code << (iBlock * 4);
+                    else cbpV |= code << (iBlock * 4);
+                }
+            }
+            else if (ctx.ColorFormat == ColorFormat.Yuv420)
+            {
+                cbpU |= ((blockCbp >> 4) & 1) << iBlock;
+                cbpV |= ((blockCbp >> 5) & 1) << iBlock;
+            }
+            else // Yuv422: a per-plane 2-bit row pattern coded 1/4/5, placed via CbpShift422
+            {
+                for (var k = 0; k < 2; k++)
+                {
+                    if (((blockCbp >> (k + 4)) & 1) == 0) continue;
+                    int code = 5;
+                    if (r.ReadBit()) code = 1;
+                    else if (r.ReadBit()) code = 4;
+                    code <<= CbpShift422[iBlock];
+                    if (k == 0) cbpU |= code;
+                    else cbpV |= code;
+                }
             }
         }
 
@@ -800,6 +921,11 @@ internal static class MacroblockCoder
 
     private static void CodeCoeffs(CodingContext ctx, Macroblock mb, BitWriter w, BitWriter fl)
     {
+        if (ctx.ColorFormat is ColorFormat.Yuv420 or ColorFormat.Yuv422)
+        {
+            CodeCoeffsChroma(ctx, mb, w, fl, ctx.ColorFormat == ColorFormat.Yuv420);
+            return;
+        }
         var scan = mb.Orientation == 1 ? ctx.ScanVert : ctx.ScanHoriz;
         var order = MacroblockLayout.DctIndex; // flexbits emit/read order within a block
         int trim = ctx.TrimFlexBits;           // 0 in the default profile
@@ -863,6 +989,11 @@ internal static class MacroblockCoder
 
     private static void DecodeCoeffs(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp)
     {
+        if (ctx.ColorFormat is ColorFormat.Yuv420 or ColorFormat.Yuv422)
+        {
+            DecodeCoeffsChroma(ctx, mb, ref r, ref fl, hpQp, ctx.ColorFormat == ColorFormat.Yuv420);
+            return;
+        }
         var scan = mb.Orientation == 1 ? ctx.ScanVert : ctx.ScanHoriz;
         int trim = ctx.TrimFlexBits;
         int mbits = ctx.ModelAc.FlcBits[0];
@@ -885,6 +1016,110 @@ internal static class MacroblockCoder
                 if (iBlock == 3) { mbits = ctx.ModelAc.FlcBits[1]; chroma = true; }
             }
             if (i + 1 < ctx.Channels) cbp = mb.Cbp[i + 1]; // jxrlib iCBP[(i+1)&0xf]; final read is unused
+        }
+
+        ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, ctx.ModelAc);
+    }
+
+    // segenc.c EncodeMacroblockHighpass, YUV420/422 branch: a single pass over iNBlocks super-blocks
+    // (6 = 4Y+1U+1V for 420, 8 = 4Y+2U+2V for 422) driven by the combined CBP pattern
+    // (luma 16 bits + chroma U/V packed at <<16 / <<20|24). Luma blocks index Plane[0]/BlkOffset;
+    // chroma blocks index the reduced Plane[1]/[2] via BlkOffsetUV. The luma→chroma model switch is
+    // after iBlock==3, exactly as 444.
+    private static void CodeCoeffsChroma(CodingContext ctx, Macroblock mb, BitWriter w, BitWriter fl, bool is420)
+    {
+        var scan = mb.Orientation == 1 ? ctx.ScanVert : ctx.ScanHoriz;
+        var order = MacroblockLayout.DctIndex;
+        int trim = ctx.TrimFlexBits;
+        int mbits = ctx.ModelAc.FlcBits[0];
+        int flex = mbits >= trim ? mbits - trim : 0;
+        int mask = (1 << flex) - 1;
+        var lapMean = new int[2];
+        var localCoef = new int[32];
+        var residual = new int[16];
+        bool chroma = false;
+
+        int iNBlocks = is420 ? 6 : 8;
+        int pattern = mb.Cbp[0] + (mb.Cbp[1] << 16) + (mb.Cbp[2] << (is420 ? 20 : 24));
+        var off420 = MacroblockLayout.BlkOffsetUV420;
+        var off422 = MacroblockLayout.BlkOffsetUV422;
+
+        for (var iBlock = 0; iBlock < iNBlocks; iBlock++)
+        {
+            for (var sub = 0; sub < 4; sub++, pattern >>= 1)
+            {
+                int[] coeffs;
+                int off;
+                if (iBlock < 4) { coeffs = mb.Plane[0]; off = MacroblockLayout.BlkOffset[iBlock * 4 + sub]; }
+                else if (is420) { coeffs = mb.Plane[iBlock - 3]; off = off420[sub]; }
+                else { coeffs = mb.Plane[1 + ((iBlock - 4) >> 1)]; off = off422[(iBlock & 1) * 4 + sub]; }
+
+                if ((pattern & 1) == 0)
+                {
+                    if (flex > 0)
+                        for (var k = 1; k < 16; k++)
+                        {
+                            int data = coeffs[off + order[k]];
+                            int atdata = Math.Abs(data) >> trim;
+                            int word = atdata & mask, len = flex;
+                            if (atdata != 0) { word += word + (data < 0 ? 1 : 0); len++; }
+                            fl.WriteBits((uint)word, len);
+                        }
+                }
+                else
+                {
+                    int n = mbits == 0
+                        ? ScanZero(coeffs, off, scan, localCoef)
+                        : ScanCoefficients(coeffs, off, residual, scan, mbits, localCoef);
+                    lapMean[chroma ? 1 : 0] += n;
+                    EncodeBlock(chroma, localCoef, n, ctx, CtHp, w, 1);
+                    if (flex > 0)
+                        for (var k = 1; k < 16; k++)
+                        {
+                            int p = order[k];
+                            fl.WriteBits((uint)(residual[p] >> 1), flex + (residual[p] & 1));
+                        }
+                }
+            }
+            if (iBlock == 3)
+            {
+                mbits = ctx.ModelAc.FlcBits[1]; chroma = true;
+                flex = mbits >= trim ? mbits - trim : 0;
+                mask = (1 << flex) - 1;
+            }
+        }
+
+        ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, ctx.ModelAc);
+    }
+
+    // segdec.c DecodeMacroblockHighpass, YUV420/422 branch — exact mirror of CodeCoeffsChroma.
+    private static void DecodeCoeffsChroma(CodingContext ctx, Macroblock mb, ref BitReader r, ref BitReader fl, int hpQp, bool is420)
+    {
+        var scan = mb.Orientation == 1 ? ctx.ScanVert : ctx.ScanHoriz;
+        int trim = ctx.TrimFlexBits;
+        int mbits = ctx.ModelAc.FlcBits[0];
+        var lapMean = new int[2];
+        bool chroma = false;
+
+        int iNBlocks = is420 ? 6 : 8;
+        int pattern = mb.Cbp[0] + (mb.Cbp[1] << 16) + (mb.Cbp[2] << (is420 ? 20 : 24));
+        var off420 = MacroblockLayout.BlkOffsetUV420;
+        var off422 = MacroblockLayout.BlkOffsetUV422;
+
+        for (var iBlock = 0; iBlock < iNBlocks; iBlock++)
+        {
+            for (var sub = 0; sub < 4; sub++, pattern >>= 1)
+            {
+                int[] coeffs;
+                int off;
+                if (iBlock < 4) { coeffs = mb.Plane[0]; off = MacroblockLayout.BlkOffset[iBlock * 4 + sub]; }
+                else if (is420) { coeffs = mb.Plane[iBlock - 3]; off = off420[sub]; }
+                else { coeffs = mb.Plane[1 + ((iBlock - 4) >> 1)]; off = off422[(iBlock & 1) * 4 + sub]; }
+
+                int n = DecodeBlockAdaptive((pattern & 1) != 0, chroma, ctx, ref r, ref fl, coeffs, off, scan, mbits, trim, hpQp);
+                lapMean[chroma ? 1 : 0] += n;
+            }
+            if (iBlock == 3) { mbits = ctx.ModelAc.FlcBits[1]; chroma = true; }
         }
 
         ModelBits.UpdateMb(ctx.ColorFormat, ctx.Channels, lapMean, ctx.ModelAc);
