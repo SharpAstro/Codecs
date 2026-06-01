@@ -39,7 +39,7 @@ internal static class JxrCodestream
                                 int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
                                 JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8, JxrTileLayout? tiles = null,
                                 JxrInternalColorFormat internalClrFmt = JxrInternalColorFormat.YUV444,
-                                int trimFlexBits = 0)
+                                int trimFlexBits = 0, bool noFlexBits = false)
     {
         if (internalClrFmt is JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422)
             return EncodeChroma(r, g, b, width, height, internalClrFmt, qpDc, qpLp, qpHp, overlap, bd);
@@ -47,13 +47,18 @@ internal static class JxrCodestream
             return EncodeMultiTile(r, g, b, width, height, layout, qpDc, qpLp, qpHp, overlap, bd);
         RequirePositiveDims(width, height);
         int mbCols = MbCount(width), mbRows = MbCount(height);
-        bool scaled = ScaledArith(qpDc, qpLp, qpHp);
+        // jxrlib forces scaled-arith unless (lossless QP ≤ 1 AND all bands present); NO_FLEXBITS
+        // (sbSubband != SB_ALL) therefore scales BD8/BD16. (BD32* would override FALSE, but the
+        // BD32F float path is a separate encoder.)
+        bool scaled = ScaledArith(qpDc, qpLp, qpHp) || noFlexBits;
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int bias = LumaBias(bd);
+        int shift = scaled ? SignalTransform.ScaledShift : 0; // <<3 scaled-arith input scaling
+        var bands = noFlexBits ? JxrBandsPresent.NoFlexbits : JxrBandsPresent.AllBands;
 
         var w = new BitWriter();
         WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.Rgb, bd, trimFlexBits);
-        WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled, bd);
+        WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled, bd, bands: bands);
         WriteProfileLevelInfo(w);
         WritePacketHeader(w, trimFlexBits);
 
@@ -67,13 +72,13 @@ internal static class JxrCodestream
             {
                 ExtractMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
                 SignalTransform.LoadColor(mr, mg, mb, planes[0], planes[1], planes[2],
-                                          OverlapTransform.MbBase(mbCols, mbR, mbC), bias);
+                                          OverlapTransform.MbBase(mbCols, mbR, mbC), bias, shift);
             }
 
         OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
 
         // SPATIAL: all four band streams alias one writer (BitWriter is a class).
-        var ctx = new CodingContext(ColorFormat.Yuv444, 3) { TrimFlexBits = trimFlexBits };
+        var ctx = new CodingContext(ColorFormat.Yuv444, 3) { TrimFlexBits = trimFlexBits, NoFlexBits = noFlexBits };
         var tile = new TileCoder(mbCols);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
@@ -487,15 +492,18 @@ internal static class JxrCodestream
         RequirePositiveDims(width, height);
         var bd = ih.OutputBitDepth;
         int bias = LumaBias(bd), max = SampleMax(bd);
-        var (clrFmt, qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, bd);
+        var (clrFmt, qpDc, qpLp, qpHp, scaled, bands) = ReadPlaneHeader(ref reader, bd);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int mbCols = MbCount(width), mbRows = MbCount(height);
         if (clrFmt is JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422)
         {
             if (ih.TilingFlag) throw new NotSupportedException("Multi-tile YUV420/422 decode is not yet supported.");
+            if (bands != JxrBandsPresent.AllBands) throw new NotSupportedException("YUV420/422 decode supports all-bands codestreams only.");
             return DecodeChroma(ref reader, clrFmt, mbCols, mbRows, width, height, bias, max, overlap, scaled, qDc, qLp, qHp);
         }
+        bool noFlexBits = bands == JxrBandsPresent.NoFlexbits;
+        int outShift = scaled ? SignalTransform.ScaledShift : 0; // scaled-arith output >>3 (e.g. NO_FLEXBITS BD8/16)
         var (r, g, b) = (new int[width * height], new int[width * height], new int[width * height]);
 
         // Per-MB entropy decode + dequantize into the whole-image YUV planes, then
@@ -509,7 +517,7 @@ internal static class JxrCodestream
         {
             ReadProfileLevelInfo(ref reader);
             int trim = ReadPacketHeader(ref reader, ih.TrimFlexBitsFlag);
-            var ctx = new CodingContext(ColorFormat.Yuv444, 3) { TrimFlexBits = trim };
+            var ctx = new CodingContext(ColorFormat.Yuv444, 3) { TrimFlexBits = trim, NoFlexBits = noFlexBits };
             var tile = new TileCoder(mbCols);
             for (var mbR = 0; mbR < mbRows; mbR++)
             {
@@ -533,7 +541,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb, bias, max);
+                SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb, bias, max, outShift);
                 StoreMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
             }
         return (width, height, r, g, b);
@@ -886,9 +894,11 @@ internal static class JxrCodestream
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
         RequirePositiveDims(width, height);
-        var (clrFmt, qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, ih.OutputBitDepth);
+        var (clrFmt, qpDc, qpLp, qpHp, scaled, bands) = ReadPlaneHeader(ref reader, ih.OutputBitDepth);
         if (clrFmt != JxrInternalColorFormat.YUV444)
             throw new NotSupportedException($"BD16F RGB decode supports YUV444 only (got {clrFmt}); chroma-subsampled BD16F is not yet wired.");
+        if (bands != JxrBandsPresent.AllBands)
+            throw new NotSupportedException("BD16F RGB decode supports all-bands codestreams only (scaled-arith NO_FLEXBITS not yet wired).");
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
@@ -963,11 +973,12 @@ internal static class JxrCodestream
     // plane-uniform quantizer in channel-mode INDEPENDENT (2), three equal QP indices.
     private static void WritePlaneHeader(BitWriter w, int qpDc, int qpLp, int qpHp, bool scaled, JxrOutputBitDepth bd,
                                          int lenMantissaOrShift = 0, int expBias = 0,
-                                         JxrInternalColorFormat clrFmt = JxrInternalColorFormat.YUV444)
+                                         JxrInternalColorFormat clrFmt = JxrInternalColorFormat.YUV444,
+                                         JxrBandsPresent bands = JxrBandsPresent.AllBands)
     {
         w.WriteBits((uint)clrFmt, 3);                        // internal color format (YUV444 / YUV420 / YUV422)
         w.WriteBit(scaled);                                  // bScaledArith
-        w.WriteBits((uint)JxrBandsPresent.AllBands, 4);      // SB_ALL
+        w.WriteBits((uint)bands, 4);                         // SB_ALL / SB_NO_FLEXBITS
         w.WriteBits(0, 4); w.WriteBits(0, 4);                // YUV: RESERVED_F, RESERVED_H
         WriteBitDepthParams(w, bd, lenMantissaOrShift, expBias); // SHIFT_BITS/LEN_MANTISSA+EXP_BIAS
 
@@ -988,15 +999,15 @@ internal static class JxrCodestream
         FillToByte(w);
     }
 
-    private static (JxrInternalColorFormat clrFmt, int qpDc, int qpLp, int qpHp, bool scaled) ReadPlaneHeader(ref BitReader r, JxrOutputBitDepth bd)
+    private static (JxrInternalColorFormat clrFmt, int qpDc, int qpLp, int qpHp, bool scaled, JxrBandsPresent bands) ReadPlaneHeader(ref BitReader r, JxrOutputBitDepth bd)
     {
         var clrFmt = (JxrInternalColorFormat)r.ReadBits(3);
         if (clrFmt is not (JxrInternalColorFormat.YUV444 or JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422))
             throw new NotSupportedException($"JxrCodestream decodes YUV444 / YUV420 / YUV422 internal formats (got {clrFmt}).");
         bool scaled = r.ReadBit();
         var bands = (JxrBandsPresent)r.ReadBits(4);
-        if (bands != JxrBandsPresent.AllBands)
-            throw new NotSupportedException($"JxrCodestream decodes all-bands codestreams only (got {bands}).");
+        if (bands is not (JxrBandsPresent.AllBands or JxrBandsPresent.NoFlexbits))
+            throw new NotSupportedException($"JxrCodestream decodes all-bands / no-flexbits codestreams only (got {bands}).");
         // 8 bits of colour params: 444 = RESERVED_F(4)+RESERVED_H(4); 422/420 pack CHROMA_CENTERING_X/Y
         // into the same 8 bits — the encoder writes zeros for all, so we just skip them.
         r.SkipBits(8);
@@ -1014,7 +1025,7 @@ internal static class JxrCodestream
         int qpHp = ReadQuantizer(ref r);
 
         AlignToByte(ref r);
-        return (clrFmt, qpDc, qpLp, qpHp, scaled);
+        return (clrFmt, qpDc, qpLp, qpHp, scaled, bands);
     }
 
     // jxrlib WriteImagePlaneHeader bit-depth params (strenc.c:777): BD16/BD16S write an 8-bit
