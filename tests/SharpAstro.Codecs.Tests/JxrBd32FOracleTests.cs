@@ -104,6 +104,44 @@ public sealed class JxrBd32FOracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // BD32F mono with lossy QP: BD32* forces NON-scaled arithmetic (strenc.c:962), so this exercises
+    // the non-scaled quantizer path (incl. the DC iQP>>1 deadzone) on floats. Lossy but deterministic:
+    // our decode of our file must agree bit-for-bit with the reference JxrDecApp's decode of it.
+    [Theory]
+    [InlineData(48, 32, "hdr", 8, 5, 0)]
+    [InlineData(64, 48, "hdr", 13, 16, 0)]
+    [InlineData(80, 80, "gradient", 8, 8, 0)]
+    [InlineData(64, 48, "hdr", 8, 32, 1)]   // OL_ONE
+    [InlineData(48, 32, "hdr", 10, 16, 2)]  // OL_TWO
+    [InlineData(33, 40, "hdr", 8, 8, 0)]    // non-16-aligned
+    public void OurEncodeGrayF32_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int lenMantissa, int qp, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        const int expBias = 0;
+        var y = JxrBd32FTests.Pattern(w, h, kind);
+        var jxr = JxrImageCodec.EncodeGrayF32(y, w, h, lenMantissa, expBias, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
+        var (dw, dh, ours) = JxrImageCodec.DecodeGrayF32(jxr); // our decode of our lossy file
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 8"); // 32bppGrayFloat
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our lossy BD32F file");
+
+            var (rw, rh, refFloats) = ReadFloatTiff(tif);
+            (dw, dh).ShouldBe((w, h));
+            (rw, rh).ShouldBe((w, h));
+            ours.Length.ShouldBe(w * h);
+            for (var i = 0; i < w * h; i++)
+                BitsOf(ours[i]).ShouldBe(BitsOf(refFloats[i]), $"Y[{i}] (lossy QP{qp} f32 OL{overlap} {kind} {w}x{h} lm{lenMantissa})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     private static (int w, int h, float[] floats) ReadFloatTiff(string path)

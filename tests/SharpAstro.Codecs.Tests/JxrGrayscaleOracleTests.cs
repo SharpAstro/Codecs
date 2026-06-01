@@ -73,6 +73,92 @@ public sealed class JxrGrayscaleOracleTests
         }
     }
 
+    // Grayscale lossy QP (BD8 Y-only, uniform index N): JxrEncApp -c 2 -q N (N ≥ 2) ⇒ scaled-arith
+    // CF_YONLY at uniform QP index N. Exercises the scaled gray path (Y input <<3 + the DC iQP>>1
+    // deadzone). Our codestream must be byte-for-byte identical to JxrEncApp.
+    [Theory]
+    [InlineData(16, 16, "gradient", 2, 0)]
+    [InlineData(32, 32, "gradient", 5, 0)]
+    [InlineData(48, 32, "random", 8, 0)]
+    [InlineData(64, 48, "random", 16, 0)]
+    [InlineData(80, 80, "random", 32, 0)]
+    [InlineData(64, 48, "random", 48, 0)]
+    [InlineData(48, 32, "random", 64, 0)]
+    [InlineData(64, 48, "random", 5, 1)]   // OL_ONE
+    [InlineData(80, 80, "random", 16, 1)]
+    [InlineData(64, 48, "random", 8, 2)]   // OL_TWO
+    [InlineData(48, 32, "random", 32, 2)]
+    [InlineData(17, 13, "random", 5, 0)]   // non-16-aligned
+    [InlineData(33, 40, "random", 16, 1)]
+    public void OurEncodeGray_LossyQp_CodestreamMatchesJxrlib(int w, int h, string kind, int qp, int overlap)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var y = JxrGrayscaleTests.Pattern(w, h, kind);
+        var ours = JxrCodestream.EncodeGray(y, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxrg_q{qp}_{overlap}_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp8Gray(bmpPath, w, h, y);
+        try
+        {
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 2 -q {qp} -l {overlap} -f");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the gray BMP");
+
+            var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
+            _out.WriteLine($"ours={ours.Length} theirs={theirs.Length}");
+            ours.Length.ShouldBe(theirs.Length, $"codestream length (gray QP{qp} OL{overlap} {kind} {w}x{h})");
+            for (var i = 0; i < ours.Length; i++)
+                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (gray QP{qp} OL{overlap} {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // Grayscale lossy QP decode: our decode of our BD8 Y-only lossy file must agree with JxrDecApp's.
+    [Theory]
+    [InlineData(64, 48, "random", 8, 0)]
+    [InlineData(80, 80, "random", 16, 1)]
+    [InlineData(48, 32, "random", 32, 2)]
+    [InlineData(33, 40, "random", 5, 0)]
+    public void OurEncodeGray_LossyQp_DecodedByJxrDecApp(int w, int h, string kind, int qp, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var y = JxrGrayscaleTests.Pattern(w, h, kind);
+        var jxr = JxrImageCodec.EncodeGray8(y, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
+        var (dw, dh, dy) = JxrImageCodec.DecodeGray8(jxr); // our decode of our lossy file
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxrg_qdec{qp}_{overlap}_{Guid.NewGuid():N}");
+        var jxrPath = tmp + ".jxr";
+        var bmpPath = tmp + ".bmp";
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, stdout, stderr) = Run(decApp, $"-i \"{jxrPath}\" -o \"{bmpPath}\" -c 2");
+            _out.WriteLine($"JxrDecApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrDecApp must decode our lossy gray file");
+
+            var (rw, rh, ry) = ReadBmp8Gray(bmpPath);
+            dw.ShouldBe(w);
+            dh.ShouldBe(h);
+            for (var i = 0; i < w * h; i++)
+                dy[i].ShouldBe(ry[i], $"Y[{i}] (gray QP{qp} OL{overlap} {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+        }
+    }
+
     // Decoder conformance: a lossless Y-only file from JxrEncApp must decode losslessly
     // through our container reader + DecodeGray (also proves we parse real jxrlib gray files).
     [Theory]

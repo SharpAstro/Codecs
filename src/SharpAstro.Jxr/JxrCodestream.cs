@@ -383,6 +383,7 @@ internal static class JxrCodestream
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int bias = LumaBias(bd);
+        int shift = scaled ? SignalTransform.ScaledShift : 0; // <<3 scaled-arith input scaling (lossy QP)
 
         var w = new BitWriter();
         WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.YOnly, bd);
@@ -396,7 +397,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 ExtractMbGray(y, width, height, mbR, mbC, my);
-                SignalTransform.LoadGray(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC), bias);
+                SignalTransform.LoadGray(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC), bias, shift);
             }
 
         OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
@@ -434,8 +435,9 @@ internal static class JxrCodestream
     {
         RequirePositiveDims(width, height);
         int mbCols = MbCount(width), mbRows = MbCount(height);
-        // BD32F forces bScaledArith FALSE (strenc.c), even with NO_FLEXBITS.
-        bool scaled = ScaledArith(qpDc, qpLp, qpHp);
+        // BD32* forces bScaledArith FALSE unconditionally (strenc.c:962) — even with NO_FLEXBITS or
+        // lossy QP. So BD32F lossy uses the non-scaled quantizer and no <<cShift input scaling.
+        bool scaled = false;
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         var bands = noFlexBits ? JxrBandsPresent.NoFlexbits : JxrBandsPresent.AllBands;
 
@@ -650,6 +652,7 @@ internal static class JxrCodestream
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int mbCols = MbCount(width), mbRows = MbCount(height);
+        int outShift = scaled ? SignalTransform.ScaledShift : 0; // scaled-arith output >>3 (lossy QP)
         var y = new int[width * height];
 
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
@@ -674,7 +677,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreGray(planes[0], baseOff, my, bias, max);
+                SignalTransform.StoreGray(planes[0], baseOff, my, bias, max, outShift);
                 StoreMbGray(y, width, height, mbR, mbC, my);
             }
         return (width, height, y);
@@ -748,6 +751,7 @@ internal static class JxrCodestream
         int mbCols = MbCount(width), mbRows = MbCount(height);
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        int shift = scaled ? SignalTransform.ScaledShift : 0; // <<3 scaled-arith input scaling (lossy QP)
 
         var w = new BitWriter();
         WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd16F);
@@ -761,7 +765,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 ExtractMb1(y, width, height, mbR, mbC, my);
-                SignalTransform.LoadGrayHalf(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC));
+                SignalTransform.LoadGrayHalf(my, planes[0], OverlapTransform.MbBase(mbCols, mbR, mbC), shift);
             }
 
         OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
@@ -805,6 +809,7 @@ internal static class JxrCodestream
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int mbCols = MbCount(width), mbRows = MbCount(height);
+        int outShift = scaled ? SignalTransform.ScaledShift : 0; // scaled-arith output >>3 (lossy QP)
         var y = new Half[width * height];
 
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
@@ -829,7 +834,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreGrayHalf(planes[0], baseOff, my);
+                SignalTransform.StoreGrayHalf(planes[0], baseOff, my, outShift);
                 StoreMb1(y, width, height, mbR, mbC, my);
             }
         return (width, height, y);

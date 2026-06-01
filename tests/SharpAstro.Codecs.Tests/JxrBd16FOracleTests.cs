@@ -125,6 +125,74 @@ public sealed class JxrBd16FOracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // BD16F gray + RGB with lossy QP: NO_FLEXBITS proved the scaled-444 half path; this adds the
+    // reciprocal-multiply quantizer (incl. the half-step chroma DC/LP + DC iQP>>1 deadzone) on the
+    // half pixel mapping. Lossy but deterministic — our decode must match JxrDecApp's, bit-for-bit.
+    [Theory]
+    [InlineData(64, 48, "hdr", 8, 0)]
+    [InlineData(48, 32, "gradient", 16, 0)]
+    [InlineData(80, 80, "hdr", 32, 1)]   // OL_ONE
+    [InlineData(64, 48, "hdr", 16, 2)]   // OL_TWO
+    [InlineData(33, 40, "hdr", 8, 1)]    // non-16-aligned
+    public void OurEncodeGrayF16_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var y = JxrBd16FTests.GrayPattern(w, h, kind);
+        var jxr = JxrImageCodec.EncodeGrayF16(y, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
+        var (dw, dh, ours) = JxrImageCodec.DecodeGrayF16(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 5"); // 16bppGrayHalf
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our lossy BD16F gray file");
+
+            var (rw, rh, bits) = ReadHalfTiff(tif);
+            (dw, dh).ShouldBe((w, h));
+            ours.Length.ShouldBe(w * h);
+            for (var i = 0; i < w * h; i++)
+                HBits(ours[i]).ShouldBe(bits[i], $"Y[{i}] (lossy QP{qp} f16 gray OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
+    [Theory]
+    [InlineData(64, 48, "hdr", 8, 0)]
+    [InlineData(48, 32, "gradient", 16, 0)]
+    [InlineData(80, 80, "hdr", 32, 1)]   // OL_ONE
+    [InlineData(64, 48, "hdr", 16, 2)]   // OL_TWO
+    [InlineData(33, 40, "hdr", 8, 1)]    // non-16-aligned
+    public void OurEncodeRgbF16_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var rgb = JxrBd16FTests.RgbPattern(w, h, kind);
+        var jxr = JxrImageCodec.EncodeRgbF16(rgb, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
+        var (dw, dh, ours) = JxrImageCodec.DecodeRgbF16(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 12"); // 48bppRGBHalf
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our lossy BD16F RGB file");
+
+            var (rw, rh, bits) = ReadHalfTiff(tif);
+            (dw, dh).ShouldBe((w, h));
+            ours.Length.ShouldBe(w * h * 3);
+            bits.Length.ShouldBe(w * h * 3);
+            for (var i = 0; i < w * h * 3; i++)
+                HBits(ours[i]).ShouldBe(bits[i], $"RGB[{i}] (lossy QP{qp} f16 OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     /// <summary>Read a 16-bit-sample TIFF and return its samples as raw 16-bit (half) bit patterns.</summary>

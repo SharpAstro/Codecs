@@ -95,7 +95,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 
 | Internal format | Used for | Support |
 |---|---|:---:|
-| `YOnly` | grayscale | ✅ |
+| `YOnly` | grayscale | ✅ (BD8 lossy QP byte-exact; BD16F / BD32F lossy round-trip) |
 | `YUV444` | colour, full chroma (4:4:4) | ✅ |
 | `YUV422` | colour, 4:2:2 (½ chroma) | ✅ encode + decode (OL_NONE / OL_ONE / OL_TWO), lossless **+ lossy QP** |
 | `YUV420` | colour, 4:2:0 (¼ chroma) | ✅ encode + decode (OL_NONE / OL_ONE / OL_TWO), lossless **+ lossy QP** |
@@ -125,7 +125,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | `NO_FLEXBITS` (omit the flexbits refinement plane) | ✅ BD8 RGB (byte-exact), BD32F mono + BD16F RGB (round-trip vs `JxrDecApp`) — the consumer's HDR-master mode; BD16-int pending (different scaled rounding) |
 | | `NO_HIGHPASS` / `DC_ONLY` (progressive truncation) | ⬜ |
 | **Quantization** | lossless (QP 0) | ✅ |
-| | uniform lossy QP (per-band DC/LP/HP index) | ✅ (RGB 4:4:4 / 4:2:0 / 4:2:2 byte-exact vs `JxrEncApp -q N`) |
+| | uniform lossy QP (per-band DC/LP/HP index) | ✅ (RGB 4:4:4 / 4:2:0 / 4:2:2 + BD8 gray byte-exact vs `JxrEncApp -q N`; BD16F gray/RGB + BD32F gray lossy round-trip vs `JxrDecApp`; BD16-int lossy pending) |
 | | non-uniform / per-band-reuse QP | ⬜ |
 | **Dimensions** | arbitrary, non-16-aligned (pad-then-crop) | ✅ |
 | | hard `WINDOWING_FLAG` | ⬜ |
