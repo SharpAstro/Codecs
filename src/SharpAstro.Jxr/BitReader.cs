@@ -26,6 +26,10 @@ public ref struct BitReader
     /// <summary>Total bits consumed so far.</summary>
     public readonly int BitPosition => _byteOffset * 8 + _bitOffset;
 
+    /// <summary>Current byte-aligned read position (valid after <see cref="AlignToByte"/>-style use).
+    /// Used by FREQUENCY-mode decode to anchor the per-band packet offsets from the index table.</summary>
+    public readonly int BytePosition => _byteOffset;
+
     /// <summary>True when no more bits remain to read.</summary>
     public readonly bool IsExhausted => _byteOffset >= _buffer.Length;
 

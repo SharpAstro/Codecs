@@ -116,7 +116,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | Knob | Options | Support |
 |---|---|:---:|
 | **Frequency ordering** | SPATIAL | ✅ |
-| | FREQUENCY | ⬜ |
+| | FREQUENCY (jxrlib's default — separate DC/LP/HP/FLEXBITS band packets) | ✅ (RGB 4:4:4 BD8 — byte-exact vs `JxrEncApp`; decodes jxrlib's default output) |
 | **Arithmetic** | unscaled (lossless QP ≤ 1, all bands) | ✅ |
 | | scaled-arith (lossy QP, or NO_FLEXBITS / chroma subsampling) | ✅ (byte-exact vs `JxrEncApp`: lossy QP + NO_FLEXBITS BD8 RGB + subsampled chroma) |
 | **Overlap (POT)** | OL_NONE / OL_ONE / OL_TWO | ✅ |

@@ -39,12 +39,14 @@ internal static class JxrCodestream
                                 int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
                                 JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8, JxrTileLayout? tiles = null,
                                 JxrInternalColorFormat internalClrFmt = JxrInternalColorFormat.YUV444,
-                                int trimFlexBits = 0, bool noFlexBits = false)
+                                int trimFlexBits = 0, bool noFlexBits = false, bool frequencyMode = false)
     {
         if (internalClrFmt is JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422)
             return EncodeChroma(r, g, b, width, height, internalClrFmt, qpDc, qpLp, qpHp, overlap, bd);
         if (tiles is { } layout && (layout.NumVerTiles > 1 || layout.NumHorTiles > 1))
             return EncodeMultiTile(r, g, b, width, height, layout, qpDc, qpLp, qpHp, overlap, bd);
+        if (frequencyMode)
+            return EncodeFrequency(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, bd, noFlexBits);
         RequirePositiveDims(width, height);
         int mbCols = MbCount(width), mbRows = MbCount(height);
         // jxrlib forces scaled-arith unless (lossless QP ≤ 1 AND all bands present); NO_FLEXBITS
@@ -97,6 +99,89 @@ internal static class JxrCodestream
 
         FillToByte(w);
         return w.ToArray();
+    }
+
+    // Single-tile FREQUENCY-mode YUV444 RGB encode — jxrlib's DEFAULT bitstream ordering (SPATIAL is the
+    // `-f` opt-in). The colour load + overlap + per-MB entropy are byte-identical to SPATIAL; the only
+    // difference is that the four bands are written to FOUR separate packets (DC / LP / HP / FLEXBITS,
+    // packet types 1/2/3/4) instead of interleaved into one — each band's data is unchanged because the
+    // bands use independent adaptive models. The band packets are located by a 4-entry INDEX_TABLE (same
+    // 0x0001 + cumulative-vlw_esc-offsets + 0xFF format as the multi-tile tile table).
+    private static byte[] EncodeFrequency(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
+                                          int width, int height, int qpDc, int qpLp, int qpHp, int overlap,
+                                          JxrOutputBitDepth bd, bool noFlexBits)
+    {
+        RequirePositiveDims(width, height);
+        int mbCols = MbCount(width), mbRows = MbCount(height);
+        bool scaled = (ScaledArith(qpDc, qpLp, qpHp) || noFlexBits) && bd != JxrOutputBitDepth.Bd32S;
+        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled);
+        int bias = LumaBias(bd);
+        int shift = scaled ? SignalTransform.ScaledShift : 0;
+        var bands = noFlexBits ? JxrBandsPresent.NoFlexbits : JxrBandsPresent.AllBands;
+        int cSB = noFlexBits ? 3 : 4; // number of subband packets (DC, LP, HP, [FLEXBITS])
+
+        var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
+        var (mr, mg, mb) = (new int[256], new int[256], new int[256]);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                ExtractMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
+                SignalTransform.LoadColor(mr, mg, mb, planes[0], planes[1], planes[2],
+                                          OverlapTransform.MbBase(mbCols, mbR, mbC), bias, shift);
+            }
+        OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
+
+        // One writer per band, each opening with its packet header (00 00 01 [type], type = band+1).
+        var bandW = new BitWriter[cSB];
+        for (var k = 0; k < cSB; k++) { bandW[k] = new BitWriter(); WriteBandPacketHeader(bandW[k], k + 1); }
+        var (dcW, lpW, acW) = (bandW[0], bandW[1], bandW[2 < cSB ? 2 : 0]);
+        var flW = cSB > 3 ? bandW[3] : new BitWriter(); // discarded when NO_FLEXBITS
+
+        var ctx = new CodingContext(ColorFormat.Yuv444, 3) { NoFlexBits = noFlexBits };
+        var tile = new TileCoder(mbCols);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(3);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                for (var ch = 0; ch < 3; ch++)
+                    SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch,
+                                                    ch == 0 ? qDc : qDcUV, ch == 0 ? qLp : qLpUV, qHp);
+                tile.EncodeMacroblock(ctx, block, mbC, mbR, dcW, lpW, acW, flW);
+            }
+            tile.AdvanceRow();
+        }
+
+        var bandPackets = new byte[cSB][];
+        for (var k = 0; k < cSB; k++) { FillToByte(bandW[k]); bandPackets[k] = bandW[k].ToArray(); }
+
+        var hw = new BitWriter();
+        WriteImageHeader(hw, width, height, overlap, JxrOutputColorFormat.Rgb, bd, frequencyMode: true);
+        WritePlaneHeader(hw, qpDc, qpLp, qpHp, scaled, bd, bands: bands);
+
+        // FREQUENCY band index table. A header-only (≤ MINIMUM_PACKET_LENGTH) band carries no data —
+        // jxrlib marks it 0xFF in the index, omits it from the stream, and does not advance the offset.
+        hw.WriteBits(IndexTableTiles.IndexTableStartCode, 16);
+        var emitted = new System.Collections.Generic.List<byte[]>(cSB);
+        long cum = 0;
+        foreach (byte[] pkt in bandPackets)
+        {
+            if (pkt.Length <= MinimumPacketLength) { hw.WriteBits(0xFF, 8); } // empty band marker
+            else { WriteVlwEsc(hw, cum); cum += pkt.Length; emitted.Add(pkt); }
+        }
+        hw.WriteBits(0xFF, 8); // end escape
+        FillToByte(hw);
+        return Concat(hw.ToArray(), emitted.ToArray());
+    }
+
+    private const int MinimumPacketLength = 4; // jxrlib MINIMUM_PACKET_LENGTH (a header-only packet)
+
+    // FREQUENCY packet header: 00 00 01 [type] (single tile ⇒ pID 0). type: 1=DC, 2=LP, 3=HP/AC, 4=FLEXBITS.
+    private static void WriteBandPacketHeader(BitWriter w, int type)
+    {
+        w.WriteBits(0, 8); w.WriteBits(0, 8); w.WriteBits(1, 8); w.WriteBits((uint)type, 8);
     }
 
     // Single-tile SPATIAL YUV420/422 BD8 RGB encode — the inverse of DecodeChroma. jxrlib forces
@@ -388,6 +473,51 @@ internal static class JxrCodestream
             }
     }
 
+    // Decode a single-tile FREQUENCY-mode YUV444 codestream into the whole-image planes. The four bands
+    // live in four separate packets (DC/LP/HP/FLEXBITS) located by the index table; we open one reader
+    // per band (past its 4-byte 00 00 01 [type] packet header) and run the SAME per-MB entropy decode
+    // as SPATIAL, just sourcing each band from its own reader. `padded` is the whole codestream buffer;
+    // `reader` is positioned at the index table (right after the plane header). NO_FLEXBITS ⇒ no FLEX packet.
+    private static void DecodeFrequencyIntoPlanes(ref BitReader reader, byte[] padded, int[][] planes,
+        int mbCols, int mbRows, bool noFlexBits, int[] dcQp, int[] lpQp, int[] hpQp)
+    {
+        int cSB = noFlexBits ? 3 : 4;
+        uint startCode = reader.ReadBits(16);
+        if (startCode != IndexTableTiles.IndexTableStartCode)
+            throw new InvalidDataException($"FREQUENCY index table start code mismatch: got 0x{startCode:X4}.");
+        var off = new long[cSB];
+        var empty = new bool[cSB];
+        for (var k = 0; k < cSB; k++) off[k] = ReadFreqIndexEntry(ref reader, out empty[k]); // cumulative offsets; 0xFF ⇒ empty band
+        ReadVlwEsc(ref reader); // 0xFF end escape
+        AlignToByte(ref reader);
+        int headerSize = reader.BytePosition; // band packets begin here; off[] is relative to it
+
+        // One reader per band, positioned past its 4-byte packet header. An empty (header-only, omitted)
+        // band — typically FLEXBITS on smooth images — is never read (mbits=0 ⇒ no flex), so leave its
+        // reader at 0. FLEX is also absent under NO_FLEXBITS (cSB == 3).
+        const int packetHeaderBytes = 4;
+        BitReader Band(int k) { var br = new BitReader(padded); if (!empty[k]) br.SeekToByte(headerSize + (int)off[k] + packetHeaderBytes); return br; }
+        var dcReader = Band(0);
+        var lpReader = Band(1);
+        var acReader = Band(2);
+        var flReader = cSB > 3 ? Band(3) : new BitReader(padded);
+
+        var ctx = new CodingContext(ColorFormat.Yuv444, 3) { NoFlexBits = noFlexBits };
+        var tile = new TileCoder(mbCols);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(3);
+                tile.DecodeMacroblock(ctx, block, mbC, mbR, ref dcReader, ref lpReader, ref acReader, ref flReader, hpQp[0], hpQp);
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                for (var ch = 0; ch < 3; ch++)
+                    SignalTransform.DequantizeRestore(block, ch, planes[ch], baseOff, dcQp[ch], lpQp[ch]);
+            }
+            tile.AdvanceRow();
+        }
+    }
+
     /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> BD8 grayscale image
     /// (<c>width*height</c> samples, raster order, values 0..255) into a single-tile
@@ -526,8 +656,6 @@ internal static class JxrCodestream
         codestream.CopyTo(padded);
         var reader = new BitReader(padded);
         var ih = ImageHeader.Read(ref reader);
-        if (ih.FrequencyModeCodestreamFlag)
-            throw new NotSupportedException("JxrCodestream decodes SPATIAL codestreams only.");
         if (ih.OverlapMode > 2)
             throw new NotSupportedException($"JxrCodestream decodes OL_NONE / OL_ONE / OL_TWO only (got overlap mode {ih.OverlapMode}).");
         int overlap = ih.OverlapMode;
@@ -556,9 +684,14 @@ internal static class JxrCodestream
         // Per-MB entropy decode + dequantize into the whole-image YUV planes, then
         // run the inverse overlap + 2-stage PCT across the grid, then color-store.
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
+        var (dcQp, lpQp, hpQp) = PerChannelQp(dcIdx, lpIdx, hpIdx, scaled, 3); // distinct Y/U/V (quality mode)
         if (ih.TilingFlag)
         {
             DecodeTilesIntoPlanes(ref reader, ih, planes, mbCols, mbRows, qDc, qLp, qHp, qDcUV, qLpUV);
+        }
+        else if (ih.FrequencyModeCodestreamFlag)
+        {
+            DecodeFrequencyIntoPlanes(ref reader, padded, planes, mbCols, mbRows, noFlexBits, dcQp, lpQp, hpQp);
         }
         else
         {
@@ -566,7 +699,6 @@ internal static class JxrCodestream
             int trim = ReadPacketHeader(ref reader, ih.TrimFlexBitsFlag);
             var ctx = new CodingContext(ColorFormat.Yuv444, 3) { TrimFlexBits = trim, NoFlexBits = noFlexBits };
             var tile = new TileCoder(mbCols);
-            var (dcQp, lpQp, hpQp) = PerChannelQp(dcIdx, lpIdx, hpIdx, scaled, 3); // distinct Y/U/V (quality mode)
             for (var mbR = 0; mbR < mbRows; mbR++)
             {
                 for (var mbC = 0; mbC < mbCols; mbC++)
@@ -1046,16 +1178,16 @@ internal static class JxrCodestream
     private static void WriteImageHeader(BitWriter w, int width, int height, int overlap,
                                          JxrOutputColorFormat clrFmt = JxrOutputColorFormat.Rgb,
                                          JxrOutputBitDepth bitDepth = JxrOutputBitDepth.Bd8,
-                                         int trimFlexBits = 0)
+                                         int trimFlexBits = 0, bool frequencyMode = false)
     {
         int mbW = (width + 15) / 16, mbH = (height + 15) / 16;
         var ih = new ImageHeader
         {
             HardTilingFlag = false,
             TilingFlag = false,
-            FrequencyModeCodestreamFlag = false,           // SPATIAL
+            FrequencyModeCodestreamFlag = frequencyMode,   // SPATIAL unless frequency mode
             SpatialXfrmSubordinate = 0,
-            IndexTablePresentFlag = false,
+            IndexTablePresentFlag = frequencyMode,         // single-tile frequency needs the band index table
             OverlapMode = overlap,                          // OL_NONE / OL_ONE / OL_TWO
             ShortHeaderFlag = mbW <= 255 && mbH <= 255,     // jxrlib bAbbreviatedHeader
             LongWordFlag = true,                            // jxrlib always writes 1 here
@@ -1310,6 +1442,19 @@ internal static class JxrCodestream
         if (first == 0xFB) return r.ReadBits(32);
         if (first == 0xFC) { uint hi = r.ReadBits(32), lo = r.ReadBits(32); return ((long)hi << 32) | lo; }
         return 0; // 0xFD/0xFE/0xFF parser escape
+    }
+
+    // A FREQUENCY band index entry: a 0xFF first byte is the "empty band" escape (the band packet is
+    // header-only and omitted from the stream); anything else is a real cumulative byte offset.
+    private static long ReadFreqIndexEntry(ref BitReader r, out bool empty)
+    {
+        uint first = r.ReadBits(8);
+        if (first == 0xFF) { empty = true; return 0; }
+        empty = false;
+        if (first < 0xFB) return (first << 8) | r.ReadBits(8);
+        if (first == 0xFB) return r.ReadBits(32);
+        if (first == 0xFC) { uint hi = r.ReadBits(32), lo = r.ReadBits(32); return ((long)hi << 32) | lo; }
+        return 0;
     }
 
     // ---------------------------------------------------------------- helpers
