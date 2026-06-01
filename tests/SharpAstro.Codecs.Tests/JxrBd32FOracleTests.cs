@@ -63,6 +63,47 @@ public sealed class JxrBd32FOracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // BD32F mono with NO_FLEXBITS (the consumer's Save…NoFlexbits HDR-master mode): the HP flexbits
+    // refinement plane is omitted, so the result is lossy — but deterministic. Our decode of our own
+    // NO_FLEXBITS file must agree bit-for-bit with the reference JxrDecApp's decode of the same file,
+    // proving the codestream is valid (jxrlib reads it) and our encode/decode flexbits-skip is correct.
+    // BD32F forces non-scaled arithmetic, so this is the clean Y-only path.
+    [Theory]
+    [InlineData(48, 32, "hdr", 8, 0)]
+    [InlineData(64, 48, "hdr", 13, 0)]
+    [InlineData(80, 80, "gradient", 8, 0)]
+    [InlineData(64, 48, "hdr", 8, 1)]   // OL_ONE
+    [InlineData(48, 32, "hdr", 10, 2)]  // OL_TWO
+    [InlineData(33, 40, "hdr", 8, 0)]   // non-16-aligned
+    public void OurEncodeGrayF32_NoFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int lenMantissa, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        const int expBias = 0;
+        var y = JxrBd32FTests.Pattern(w, h, kind);
+        var jxr = JxrImageCodec.EncodeGrayF32(y, w, h, lenMantissa, expBias, overlap: overlap, noFlexBits: true);
+        var (dw, dh, ours) = JxrImageCodec.DecodeGrayF32(jxr); // our decode of our NO_FLEXBITS file
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 8"); // 32bppGrayFloat
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our NO_FLEXBITS BD32F file");
+
+            var (rw, rh, refFloats) = ReadFloatTiff(tif);
+            dw.ShouldBe(w);
+            dh.ShouldBe(h);
+            (rw, rh).ShouldBe((w, h));
+            ours.Length.ShouldBe(w * h);
+            for (var i = 0; i < w * h; i++)
+                BitsOf(ours[i]).ShouldBe(BitsOf(refFloats[i]), $"Y[{i}] (NoFlexBits f32 OL{overlap} {kind} {w}x{h} lm{lenMantissa})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     private static (int w, int h, float[] floats) ReadFloatTiff(string path)

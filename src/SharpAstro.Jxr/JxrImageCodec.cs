@@ -133,9 +133,10 @@ public static class JxrImageCodec
     /// </summary>
     public static byte[] EncodeGrayF32(ReadOnlySpan<float> y, int width, int height,
                                        int lenMantissa = 13, int expBias = 4,
-                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                       bool noFlexBits = false)
     {
-        var codestream = JxrCodestream.EncodeGrayF32(y, width, height, lenMantissa, expBias, qpDc, qpLp, qpHp, overlap);
+        var codestream = JxrCodestream.EncodeGrayF32(y, width, height, lenMantissa, expBias, qpDc, qpLp, qpHp, overlap, noFlexBits);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,

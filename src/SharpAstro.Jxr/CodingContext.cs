@@ -50,8 +50,12 @@ internal sealed class CodingContext
     /// <summary>Adaptive HP-CBP prediction model (<c>m_aCBPModel</c>).</summary>
     public readonly CbpModel Cbp = new();
 
-    /// <summary>Trimmed-flexbits width (externally set; 0 for the default profile).</summary>
-    public int TrimFlexBits;
+    /// <summary>Trimmed-flexbits width (set at construction; 0 for the default profile).</summary>
+    public int TrimFlexBits { get; init; }
+
+    /// <summary>BANDS_PRESENT == NO_FLEXBITS: the HP flexbits refinement plane is omitted
+    /// entirely (the high-pass high part is still coded). Set at construction; false by default.</summary>
+    public bool NoFlexBits { get; init; }
 
     public CodingContext(ColorFormat cf, int channels)
     {

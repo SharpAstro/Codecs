@@ -418,16 +418,19 @@ internal static class JxrCodestream
     /// </summary>
     public static byte[] EncodeGrayF32(ReadOnlySpan<float> y, int width, int height,
                                        int lenMantissa = 13, int expBias = 4,
-                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                       bool noFlexBits = false)
     {
         RequirePositiveDims(width, height);
         int mbCols = MbCount(width), mbRows = MbCount(height);
+        // BD32F forces bScaledArith FALSE (strenc.c), even with NO_FLEXBITS.
         bool scaled = ScaledArith(qpDc, qpLp, qpHp);
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        var bands = noFlexBits ? JxrBandsPresent.NoFlexbits : JxrBandsPresent.AllBands;
 
         var w = new BitWriter();
         WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.YOnly, JxrOutputBitDepth.Bd32F);
-        WritePlaneHeaderGray(w, qpDc, qpLp, qpHp, scaled, JxrOutputBitDepth.Bd32F, lenMantissa, expBias);
+        WritePlaneHeaderGray(w, qpDc, qpLp, qpHp, scaled, JxrOutputBitDepth.Bd32F, lenMantissa, expBias, bands);
         WriteProfileLevelInfo(w);
         WritePacketHeader(w);
 
@@ -442,7 +445,7 @@ internal static class JxrCodestream
 
         OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
 
-        var ctx = new CodingContext(ColorFormat.YOnly, 1);
+        var ctx = new CodingContext(ColorFormat.YOnly, 1) { NoFlexBits = noFlexBits };
         var tile = new TileCoder(mbCols, 1, ColorFormat.YOnly);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
@@ -625,7 +628,7 @@ internal static class JxrCodestream
         RequirePositiveDims(width, height);
         var bd = ih.OutputBitDepth;
         int bias = LumaBias(bd), max = SampleMax(bd);
-        var (qpDc, qpLp, qpHp, scaled, _, _) = ReadPlaneHeaderGray(ref reader, bd);
+        var (qpDc, qpLp, qpHp, scaled, _, _, _) = ReadPlaneHeaderGray(ref reader, bd);
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
@@ -680,7 +683,7 @@ internal static class JxrCodestream
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
         RequirePositiveDims(width, height);
-        var (qpDc, qpLp, qpHp, scaled, lenMantissa, expBias) = ReadPlaneHeaderGray(ref reader, ih.OutputBitDepth);
+        var (qpDc, qpLp, qpHp, scaled, lenMantissa, expBias, bands) = ReadPlaneHeaderGray(ref reader, ih.OutputBitDepth);
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
@@ -689,7 +692,7 @@ internal static class JxrCodestream
         var y = new float[width * height];
 
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
-        var ctx = new CodingContext(ColorFormat.YOnly, 1);
+        var ctx = new CodingContext(ColorFormat.YOnly, 1) { NoFlexBits = bands == JxrBandsPresent.NoFlexbits };
         var tile = new TileCoder(mbCols, 1, ColorFormat.YOnly);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
@@ -780,7 +783,7 @@ internal static class JxrCodestream
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
         RequirePositiveDims(width, height);
-        var (qpDc, qpLp, qpHp, scaled, _, _) = ReadPlaneHeaderGray(ref reader, ih.OutputBitDepth);
+        var (qpDc, qpLp, qpHp, scaled, _, _, _) = ReadPlaneHeaderGray(ref reader, ih.OutputBitDepth);
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
@@ -1072,11 +1075,12 @@ internal static class JxrCodestream
     // cChannel==1): no RESERVED_F/RESERVED_H bytes, and each band's quantizer is just the 8-bit
     // Y index (writeQuantizer forces cChMode 0 and writes no channel-mode bits for one channel).
     private static void WritePlaneHeaderGray(BitWriter w, int qpDc, int qpLp, int qpHp, bool scaled, JxrOutputBitDepth bd,
-                                             int lenMantissaOrShift = 0, int expBias = 0)
+                                             int lenMantissaOrShift = 0, int expBias = 0,
+                                             JxrBandsPresent bands = JxrBandsPresent.AllBands)
     {
         w.WriteBits((uint)JxrInternalColorFormat.YOnly, 3); // internal color format = 0
         w.WriteBit(scaled);                                 // bScaledArith
-        w.WriteBits((uint)JxrBandsPresent.AllBands, 4);     // SB_ALL
+        w.WriteBits((uint)bands, 4);                        // SB_ALL / SB_NO_FLEXBITS
         // YONLY: color-params switch hits default — no RESERVED_F / RESERVED_H.
         WriteBitDepthParams(w, bd, lenMantissaOrShift, expBias); // SHIFT_BITS/LEN_MANTISSA+EXP_BIAS
 
@@ -1094,15 +1098,15 @@ internal static class JxrCodestream
         FillToByte(w);
     }
 
-    private static (int qpDc, int qpLp, int qpHp, bool scaled, int lenMantissa, int expBias) ReadPlaneHeaderGray(ref BitReader r, JxrOutputBitDepth bd)
+    private static (int qpDc, int qpLp, int qpHp, bool scaled, int lenMantissa, int expBias, JxrBandsPresent bands) ReadPlaneHeaderGray(ref BitReader r, JxrOutputBitDepth bd)
     {
         var clrFmt = (JxrInternalColorFormat)r.ReadBits(3);
         if (clrFmt != JxrInternalColorFormat.YOnly)
             throw new NotSupportedException($"JxrCodestream.DecodeGray expects YONLY internal format (got {clrFmt}).");
         bool scaled = r.ReadBit();
         var bands = (JxrBandsPresent)r.ReadBits(4);
-        if (bands != JxrBandsPresent.AllBands)
-            throw new NotSupportedException($"JxrCodestream.DecodeGray expects all-bands codestreams (got {bands}).");
+        if (bands is not (JxrBandsPresent.AllBands or JxrBandsPresent.NoFlexbits))
+            throw new NotSupportedException($"JxrCodestream.DecodeGray decodes all-bands / no-flexbits codestreams only (got {bands}).");
         // YONLY: no RESERVED bytes to skip.
         var (lenMantissa, expBias) = ReadBitDepthParams(ref r, bd); // SHIFT_BITS / LEN_MANTISSA + EXP_BIAS
 
@@ -1118,7 +1122,7 @@ internal static class JxrCodestream
         int qpHp = (int)r.ReadBits(8);
 
         AlignToByte(ref r);
-        return (qpDc, qpLp, qpHp, scaled, lenMantissa, expBias);
+        return (qpDc, qpLp, qpHp, scaled, lenMantissa, expBias, bands);
     }
 
     private static void WriteProfileLevelInfo(BitWriter w)
