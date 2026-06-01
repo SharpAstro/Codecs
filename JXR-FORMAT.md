@@ -48,8 +48,8 @@ How a single number is stored. Orthogonal to colour.
 | BD16 | 16-bit unsigned int | ✅ |
 | BD16F | 16-bit half-float | ✅ |
 | BD32F | 32-bit float | ✅ (mono only — see note) |
-| BD16S | 16-bit **signed** int | ⬜ (queued — native signed FITS) |
-| BD32S | 32-bit signed int | ⬜ (queued) |
+| BD16S | 16-bit **signed** int | ✅ (grayscale — native signed FITS, BITPIX 16) |
+| BD32S | 32-bit signed int | ✅ (grayscale — native signed FITS, BITPIX 32) |
 | BD1 (black/white) | 1 bit | ⬜ |
 | BD5 / BD10 / BD565 | packed 5 / 10 / 5-6-5 bit | ⬜ |
 
@@ -80,7 +80,8 @@ recognised), but only the grayscale + RGB subset across our four bit depths is a
 |---|---|:---:|
 | **Grayscale** | `Gray8`, `Gray16`, `GrayHalf16` (BD16F), `GrayFloat32` (BD32F) | ✅ |
 | **RGB** | `Rgb24` (BD8), `Rgb48` (BD16), `RgbHalf48` (BD16F) | ✅ |
-| Grayscale fixed-point | `GrayFixedPoint16/32`, `BlackWhite` | 📖 |
+| Grayscale signed (fixed-point) | `GrayFixedPoint16` (BD16S), `GrayFixedPoint32` (BD32S) — native FITS | ✅ |
+| Grayscale fixed-point (other) | `BlackWhite` | 📖 |
 | RGB(A) packed / 32bpp | `Bgr24`, `Bgr32`, `Bgra32`, `Pbgra32`, `Bgr555/565`, `Bgr101010` | 📖 |
 | RGB(A) deep / HDR | `Rgba64`, `RgbaHalf64`, `RgbFloat128`, `RgbaFloat128`, `…FixedPoint…` (scRGB) | 📖 |
 | CMYK | `Cmyk32/64`, `CmykAlpha40/80`, `CmykDirect…` | 📖 |

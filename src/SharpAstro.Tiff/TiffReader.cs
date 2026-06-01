@@ -176,7 +176,7 @@ public static class TiffReader
             throw new InvalidDataException("StripOffsets/StripByteCounts length mismatch");
         if (bitsPerSample != 8 && bitsPerSample != 16 && bitsPerSample != 32)
             throw new NotSupportedException($"BitsPerSample={bitsPerSample} not supported (expected 8/16/32)");
-        if (sampleFormat != TiffSampleFormat.Uint && sampleFormat != TiffSampleFormat.IeeeFloat)
+        if (sampleFormat is not (TiffSampleFormat.Uint or TiffSampleFormat.Int or TiffSampleFormat.IeeeFloat))
             throw new NotSupportedException($"SampleFormat={sampleFormat} not supported");
 
         // ---- Decode every strip into one contiguous byte buffer -----------

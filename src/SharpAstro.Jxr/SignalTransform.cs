@@ -279,12 +279,13 @@ internal static class SignalTransform
     /// scaling is undone). The rounding bias <c>(1&lt;&lt;(shift-1))-1</c> matches jxrlib's iBias2.</para></summary>
     public static void StoreColor(int[] planeY, int[] planeU, int[] planeV, int mbBase,
                                   Span<int> r, Span<int> g, Span<int> b, int bias = Bias, int max = 255, int shift = 0,
-                                  bool bd16Round = false)
+                                  bool bd16Round = false, int min = 0)
     {
         // jxrlib iBias = (level << iShift) + iBias2. For BD8 (strdec.c:989) iBias2 = scaled ?
         // (1<<(iShift-1))-1 : 0; BD16-integer (strdec.c:1183) uses (1<<(iShift-1)) — the same half but
         // WITHOUT the -1. (The level <<nLen post-shift is a no-op at our nLen=0.) Only differs when
-        // scaled (shift>0), so BD16 lossless is unaffected.
+        // scaled (shift>0), so BD16 lossless is unaffected. Signed BD16S/BD32S use level 0 + _CLIP16 /
+        // no clip (min..max). BD16S uses the BD8-style round (-1, strdec.c:1342), so bd16Round stays false.
         int round = shift > 0 ? (1 << (shift - 1)) - (bd16Round ? 0 : 1) : 0;
         int iBias = (bias << shift) + round;
         for (var px = 0; px < 256; px++)
@@ -292,11 +293,11 @@ internal static class SignalTransform
             int pos = mbBase + IdxCc[px];
             int gg = planeY[pos] + iBias, rr = -planeU[pos], bb = planeV[pos];
             ColorTransform.InverseRgb(ref rr, ref gg, ref bb);
-            r[px] = Clip(rr >> shift, max); g[px] = Clip(gg >> shift, max); b[px] = Clip(bb >> shift, max);
+            r[px] = Clip(rr >> shift, min, max); g[px] = Clip(gg >> shift, min, max); b[px] = Clip(bb >> shift, min, max);
         }
     }
 
-    private static int Clip(int v, int max) => v < 0 ? 0 : v > max ? max : v;
+    private static int Clip(int v, int min, int max) => v < min ? min : v > max ? max : v;
 
     // ---------------------------------------------------------------- grayscale (Y-only)
     // jxrlib BD8 Y_ONLY input does NO color transform (strenc.c:1921-1938): the single
@@ -318,14 +319,15 @@ internal static class SignalTransform
     /// back into grayscale samples, adding the bias and clamping to <c>[0, <paramref name="max"/>]</c>.
     /// No color transform. <paramref name="bias"/> = 128/32768 for BD8/BD16.</summary>
     public static void StoreGray(int[] planeY, int mbBase, Span<int> y, int bias = Bias, int max = 255, int shift = 0,
-                                 bool bd16Round = false)
+                                 bool bd16Round = false, int min = 0)
     {
         // jxrlib iBias = (bias << iShift) + round, then >> iShift (same level/rounding as luma): BD8 uses
-        // round = (1<<(iShift-1))-1, BD16-integer uses (1<<(iShift-1)) (no -1). Only differs when scaled.
+        // round = (1<<(iShift-1))-1, BD16-integer uses (1<<(iShift-1)) (no -1). Signed BD16S/BD32S use
+        // level 0, the BD8-style round (-1), and a signed clip (min..max). Only differs when scaled.
         int round = shift > 0 ? (1 << (shift - 1)) - (bd16Round ? 0 : 1) : 0;
         int iBias = (bias << shift) + round;
         for (var px = 0; px < 256; px++)
-            y[px] = Clip((planeY[mbBase + IdxCc[px]] + iBias) >> shift, max);
+            y[px] = Clip((planeY[mbBase + IdxCc[px]] + iBias) >> shift, min, max);
     }
 
     // ---------------------------------------------------------------- grayscale float (BD32F/BD16F)

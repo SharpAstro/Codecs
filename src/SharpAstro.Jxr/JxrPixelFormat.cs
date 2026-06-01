@@ -102,7 +102,7 @@ public readonly struct JxrPixelFormat : IEquatable<JxrPixelFormat>
     public static readonly JxrPixelFormat Pbgra32Bpp           = Std(0x10);
     public static readonly JxrPixelFormat GrayFloat32Bpp       = Std(0x11);
     public static readonly JxrPixelFormat RgbFixedPoint48Bpp   = Std(0x12);
-    public static readonly JxrPixelFormat GrayFixedPoint16Bpp  = Std(0x13);
+    public static readonly JxrPixelFormat GrayFixedPoint16Bpp  = Std(0x13);   // BD16S — signed 16-bit gray
     public static readonly JxrPixelFormat Bgr101010_32Bpp      = Std(0x14);
     public static readonly JxrPixelFormat Rgb48Bpp             = Std(0x15);
     public static readonly JxrPixelFormat Rgba64Bpp            = Std(0x16);
