@@ -62,7 +62,7 @@ How a single number is stored. Orthogonal to colour.
 |---|---|:---:|
 | Grayscale | 1 | ✅ |
 | RGB | 3 | ✅ |
-| RGBA (+ alpha plane) | 4 | ⬜ |
+| RGBA (+ alpha plane) | 4 | ✅ (BD8, planar alpha) |
 | CMYK | 4 | ⬜ |
 | CMYK + alpha | 5 | ⬜ |
 | N-channel | up to 8+ | ⬜ |
@@ -82,7 +82,8 @@ recognised), but only the grayscale + RGB subset across our four bit depths is a
 | **RGB** | `Rgb24` (BD8), `Rgb48` (BD16), `RgbHalf48` (BD16F) | ✅ |
 | Grayscale signed (fixed-point) | `GrayFixedPoint16` (BD16S), `GrayFixedPoint32` (BD32S) — native FITS | ✅ |
 | Grayscale fixed-point (other) | `BlackWhite` | 📖 |
-| RGB(A) packed / 32bpp | `Bgr24`, `Bgr32`, `Bgra32`, `Pbgra32`, `Bgr555/565`, `Bgr101010` | 📖 |
+| **RGBA 32bpp** | `Bgra32` (BD8, planar alpha) | ✅ |
+| RGB(A) packed / 32bpp | `Bgr24`, `Bgr32`, `Pbgra32`, `Bgr555/565`, `Bgr101010` | 📖 |
 | **RGB signed (fixed-point)** | `RgbFixedPoint48` (BD16S), `RgbFixedPoint96` (BD32S) | ✅ |
 | RGB(A) deep / HDR | `Rgba64`, `RgbaHalf64`, `RgbFloat128`, `RgbaFloat128`, `…FixedPoint…` (scRGB) | 📖 |
 | CMYK | `Cmyk32/64`, `CmykAlpha40/80`, `CmykDirect…` | 📖 |
@@ -132,7 +133,8 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | non-uniform per-**tile** QP | ⬜ |
 | **Dimensions** | arbitrary, non-16-aligned (pad-then-crop) | ✅ |
 | | hard `WINDOWING_FLAG` | ⬜ (the reference `JxrEncApp` always pad-then-crops and never sets `WINDOWING_FLAG`, so no oracle file exists to validate against — deliberately out of scope) |
-| **Alpha** | separate alpha plane | ⬜ |
+| **Alpha** | planar (separate) alpha plane | ✅ (BD8 32bppBGRA — colour + alpha codestreams byte-exact vs `JxrEncApp -a 2`) |
+| | interleaved alpha (4th channel in one codestream) | ⬜ |
 | **Container** | full `.jxr` TIFF-like file (IFD + pixel-format GUID + codestream) | ✅ |
 
 ---
