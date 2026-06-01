@@ -54,6 +54,38 @@ internal static class PhotoCoreTransform
         p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
     }
 
+    // strInvTransform.c strDCT2x2dnDec — the 2×2 reversible core followed by an ×2 post-scale on
+    // all four outputs. jxrlib uses this (not the plain dn) for the second-stage chroma inverse in
+    // scaled-arithmetic mode, which YUV420/422 always run in.
+    private static void Dct2x2dnDec(Span<int> p, int ia, int ib, int ic, int id)
+    {
+        int a = p[ia], b = p[ib], inC = p[ic], d = p[id];
+        a += d;
+        b -= inC;
+        int t = (a - b) >> 1;
+        int c = t - d;
+        d = t - inC;
+        a -= d;
+        b += c;
+        p[ia] = a * 2; p[ib] = b * 2; p[ic] = c * 2; p[id] = d * 2;
+    }
+
+    // strFwdTransform.c strDCT2x2dnEnc — an ×½ pre-scale (>>1) on all four inputs followed by the
+    // 2×2 core. The forward (encode) counterpart of <see cref="Dct2x2dnDec"/>; the >>1/×2 pair
+    // round-trips losslessly for the even-valued chroma DCs produced by the scaled-mode pipeline.
+    private static void Dct2x2dnEnc(Span<int> p, int ia, int ib, int ic, int id)
+    {
+        int a = p[ia] >> 1, b = p[ib] >> 1, inC = p[ic] >> 1, d = p[id] >> 1;
+        a += d;
+        b -= inC;
+        int t = (a - b) >> 1;
+        int c = t - d;
+        d = t - inC;
+        a -= d;
+        b += c;
+        p[ia] = a; p[ib] = b; p[ic] = c; p[id] = d;
+    }
+
     // strTransform.c  strDCT2x2up — same as dn but with +1 rounding on the half-sum.
     private static void Dct2x2up(Span<int> p, int ia, int ib, int ic, int id)
     {
@@ -246,33 +278,38 @@ internal static class PhotoCoreTransform
     // full 4×4 strDCT4x4SecondStage. jxrlib strInvTransform.c (420_UV / 422_UV loops).
 
     /// <summary>
-    /// YUV420 chroma second stage: a single 2×2 core on the four block DCs (offsets
-    /// {0,32,16,48} = <see cref="MacroblockLayout.BlkOffsetUV420"/>). <see cref="Dct2x2dn"/>
-    /// is self-inverse, so this is used for both the forward and inverse direction.
+    /// YUV420 chroma second stage, <b>inverse</b> (decode): a single 2×2 core on the four block DCs
+    /// (offsets {0,32,16,48} = <see cref="MacroblockLayout.BlkOffsetUV420"/>) with the ×2 post-scale
+    /// (jxrlib <c>strDCT2x2dnDec</c>) — the always-scaled YUV420 path.
     /// </summary>
-    public static void ChromaStage2_420(Span<int> mb) => Dct2x2dn(mb, 0, 32, 16, 48);
+    public static void ChromaInverseStage2_420(Span<int> mb) => Dct2x2dnDec(mb, 0, 32, 16, 48);
+
+    /// <summary>YUV420 chroma second stage, <b>forward</b> (encode): the ×½-prescale core
+    /// (jxrlib <c>strDCT2x2dnEnc</c>), the inverse of <see cref="ChromaInverseStage2_420"/>.</summary>
+    public static void ChromaForwardStage2_420(Span<int> mb) => Dct2x2dnEnc(mb, 0, 32, 16, 48);
 
     /// <summary>
     /// YUV422 chroma second stage, <b>inverse</b> (decode): a 1-D lossless Hadamard step on the
-    /// two vertically-adjacent DCs (0,32) then two 2×2 cores on {0,64,16,80} and {32,96,48,112}.
+    /// two vertically-adjacent DCs (0,32) then two ×2-post-scaled 2×2 cores on {0,64,16,80} and
+    /// {32,96,48,112} (jxrlib <c>strDCT2x2dnDec</c>) — the always-scaled YUV422 path.
     /// </summary>
     public static void ChromaInverseStage2_422(Span<int> mb)
     {
         mb[0] -= (mb[32] + 1) >> 1;
         mb[32] += mb[0];
-        Dct2x2dn(mb, 0, 64, 16, 80);
-        Dct2x2dn(mb, 32, 96, 48, 112);
+        Dct2x2dnDec(mb, 0, 64, 16, 80);
+        Dct2x2dnDec(mb, 32, 96, 48, 112);
     }
 
     /// <summary>
     /// YUV422 chroma second stage, <b>forward</b> (encode): the exact inverse of
-    /// <see cref="ChromaInverseStage2_422"/> — the two 2×2 cores (self-inverse) followed by the
+    /// <see cref="ChromaInverseStage2_422"/> — the two ×½-prescaled 2×2 cores followed by the
     /// inverted Hadamard step.
     /// </summary>
     public static void ChromaForwardStage2_422(Span<int> mb)
     {
-        Dct2x2dn(mb, 0, 64, 16, 80);
-        Dct2x2dn(mb, 32, 96, 48, 112);
+        Dct2x2dnEnc(mb, 0, 64, 16, 80);
+        Dct2x2dnEnc(mb, 32, 96, 48, 112);
         mb[32] -= mb[0];
         mb[0] += (mb[32] + 1) >> 1;
     }

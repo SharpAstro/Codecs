@@ -18,6 +18,14 @@ internal static class SignalTransform
 {
     private const int Bias = 128; // BD8 luma level shift (jxrlib iOffset, cShift=0)
 
+    // common.h SHIFTZERO=1, QPFRACBITS=2. In scaled-arithmetic mode jxrlib pre-scales the transform
+    // input by cShift = SHIFTZERO+QPFRACBITS (==3) on encode and shifts the output back down by the
+    // same amount on decode (strdec.c outputMBRow). YUV420/422 always run scaled (the chroma
+    // resolution change disqualifies the lossless fast-path), so their decode needs this output shift.
+    public const int ShiftZero = 1;
+    public const int QpFracBits = 2;
+    public const int ScaledShift = ShiftZero + QpFracBits; // 3
+
     // strcodec.c dctIndex[2] — DC-block (super-DC) layout: BlockDc[i] <-> plane[DcIndex[i]].
     private static readonly int[] DcIndex =
         { 0, 128, 64, 208, 32, 240, 48, 224, 16, 192, 80, 144, 112, 176, 96, 160 };
@@ -231,16 +239,24 @@ internal static class SignalTransform
 
     /// <summary>Inverse color (<c>_ICC</c>) + idxCC unload of one MB from the three whole-image
     /// YUV planes at <paramref name="mbBase"/> into RGB samples, clamped to <c>[0, <paramref name="max"/>]</c>
-    /// (jxrlib's output _CLIP). <paramref name="bias"/> = 128/32768 for BD8/BD16. Inverse half 2.</summary>
+    /// (jxrlib's output _CLIP). <paramref name="bias"/> = 128/32768 for BD8/BD16. Inverse half 2.
+    ///
+    /// <para><paramref name="shift"/> is jxrlib's scaled-arithmetic output shift (0 for lossless 444,
+    /// <see cref="ScaledShift"/>=3 for the always-scaled YUV420/422 path). It mirrors strdec.c
+    /// outputMBRow: the level bias is added to Y, the inverse colour transform runs, then all three
+    /// channels are right-shifted by <paramref name="shift"/> (so the encode-side <c>&lt;&lt;cShift</c> input
+    /// scaling is undone). The rounding bias <c>(1&lt;&lt;(shift-1))-1</c> matches jxrlib's iBias2.</para></summary>
     public static void StoreColor(int[] planeY, int[] planeU, int[] planeV, int mbBase,
-                                  Span<int> r, Span<int> g, Span<int> b, int bias = Bias, int max = 255)
+                                  Span<int> r, Span<int> g, Span<int> b, int bias = Bias, int max = 255, int shift = 0)
     {
+        // jxrlib iBias = (128 << iShift) + iBias2; iBias2 = scaled ? (1<<(iShift-1))-1 : 0.
+        int iBias = (bias << shift) + (shift > 0 ? (1 << (shift - 1)) - 1 : 0);
         for (var px = 0; px < 256; px++)
         {
             int pos = mbBase + IdxCc[px];
-            int gg = planeY[pos] + bias, rr = -planeU[pos], bb = planeV[pos];
+            int gg = planeY[pos] + iBias, rr = -planeU[pos], bb = planeV[pos];
             ColorTransform.InverseRgb(ref rr, ref gg, ref bb);
-            r[px] = Clip(rr, max); g[px] = Clip(gg, max); b[px] = Clip(bb, max);
+            r[px] = Clip(rr >> shift, max); g[px] = Clip(gg >> shift, max); b[px] = Clip(bb >> shift, max);
         }
     }
 
