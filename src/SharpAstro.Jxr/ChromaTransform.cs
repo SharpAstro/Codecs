@@ -30,7 +30,7 @@ internal static class ChromaTransform
         foreach (var off in Offsets(cf))
             PhotoCoreTransform.ForwardStage1(mb.Slice(off, 16));
 
-        if (cf == ColorFormat.Yuv420) PhotoCoreTransform.ChromaStage2_420(mb);
+        if (cf == ColorFormat.Yuv420) PhotoCoreTransform.ChromaForwardStage2_420(mb);
         else PhotoCoreTransform.ChromaForwardStage2_422(mb);
     }
 
@@ -43,7 +43,7 @@ internal static class ChromaTransform
     public static void InverseMbNoOverlap(int[] plane, int mbBase, ColorFormat cf)
     {
         var mb = plane.AsSpan(mbBase, ChromaUpsample.ReducedStride(cf));
-        if (cf == ColorFormat.Yuv420) PhotoCoreTransform.ChromaStage2_420(mb);
+        if (cf == ColorFormat.Yuv420) PhotoCoreTransform.ChromaInverseStage2_420(mb);
         else PhotoCoreTransform.ChromaInverseStage2_422(mb);
 
         foreach (var off in Offsets(cf))

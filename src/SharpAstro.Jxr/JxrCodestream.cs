@@ -515,7 +515,10 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreColor(luma, full[0], full[1], baseOff, mr, mg, mb, bias, max);
+                // YUV420/422 always decode in scaled-arithmetic mode (scaled == true): the transform
+                // ran on <<3-scaled input, so the output is shifted back down by ScaledShift.
+                SignalTransform.StoreColor(luma, full[0], full[1], baseOff, mr, mg, mb, bias, max,
+                                           scaled ? SignalTransform.ScaledShift : 0);
                 StoreMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
             }
         return (width, height, r, g, b);

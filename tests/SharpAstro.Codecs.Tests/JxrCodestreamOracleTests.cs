@@ -195,11 +195,11 @@ public sealed class JxrCodestreamOracleTests
     // Chroma subsampling (YUV420 = -d 1, YUV422 = -d 2), OL_NONE. A subsampled file produced by
     // the reference JxrEncApp must decode through our codec to exactly what JxrDecApp reconstructs
     // from the same codestream (chroma is lossy vs the original, so the reference decode — not the
-    // original — is the oracle). This is the first end-to-end chroma decode.
-    // WIP: the decode path is fully wired, but a chroma band read desyncs the bitstream vs jxrlib
-    // (luma comes back wrong), so the reconstruction is not yet oracle-exact — needs per-MB Trace
-    // debugging. Skipped until it passes.
-    [Theory(Skip = "WIP C4b: chroma decode wired but not yet oracle-exact (bitstream desync, needs Trace debug).")]
+    // original — is the oracle). This is the first end-to-end chroma decode (C5).
+    // Subsampled chroma always runs in jxrlib's scaled-arithmetic mode (even at QP 1): the transform
+    // input is <<3-scaled on encode and the output is >>3 (SHIFTZERO+QPFRACBITS) on decode, and the
+    // chroma 2x2 second stage uses the x2 strDCT2x2dnDec variant — both honoured by our decode path.
+    [Theory]
     [InlineData(16, 16, "gradient", 1)]
     [InlineData(32, 32, "gradient", 1)]
     [InlineData(48, 32, "gradient", 1)]
