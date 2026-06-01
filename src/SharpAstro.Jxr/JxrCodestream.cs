@@ -466,20 +466,18 @@ internal static class JxrCodestream
         int width, int height, int bias, int max, int overlap, bool scaled,
         JxrQuantizer qDc, JxrQuantizer qLp, JxrQuantizer qHp)
     {
-        if (overlap != 0)
-            throw new NotSupportedException("YUV420/422 decode currently supports OL_NONE only (chroma POT overlap is pending).");
-
         var cf = clrFmt == JxrInternalColorFormat.YUV420 ? ColorFormat.Yuv420 : ColorFormat.Yuv422;
         int chromaBlocks = MacroblockLayout.ChromaBlocks(cf);
-        int reducedStride = chromaBlocks * 16;
 
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
         var luma = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1)[0]; // 256/MB slack plane
         var full = OverlapTransform.AllocatePlanes(mbCols, mbRows, 2);    // upsampled chroma U,V (slack)
-        var reducedU = new int[mbRows * mbCols * reducedStride];
-        var reducedV = new int[mbRows * mbCols * reducedStride];
+        // Reduced-chroma U,V on the slacked ring grid (64/128 ints per MB) — the layout the
+        // chroma POT windowed inverse indexes across MB boundaries; harmless for OL_NONE too.
+        var reduced = ChromaOverlapTransform.AllocatePlanes(mbCols, mbRows, cf);
+        var (reducedU, reducedV) = (reduced[0], reduced[1]);
 
         var ctx = new CodingContext(cf, 3);
         var tile = new TileCoder(mbCols, 3, cf);
@@ -490,7 +488,7 @@ internal static class JxrCodestream
                 var block = new Macroblock(3, chromaBlocks);
                 tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
                 int lumaBase = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                int reducedBase = (mbR * mbCols + mbC) * reducedStride;
+                int reducedBase = ChromaOverlapTransform.MbBase(mbCols, mbR, mbC, cf);
                 SignalTransform.DequantizeRestore(block, 0, luma, lumaBase, qDc.Qp, qLp.Qp);
                 SignalTransform.DequantizeRestoreChroma(block, 1, reducedU, reducedBase, qDc.Qp, qLp.Qp, cf);
                 SignalTransform.DequantizeRestoreChroma(block, 2, reducedV, reducedBase, qDc.Qp, qLp.Qp, cf);
@@ -499,15 +497,19 @@ internal static class JxrCodestream
         }
 
         OverlapTransform.Inverse(new[] { luma }, mbCols, mbRows, overlap, scaled);
-        for (var mbR = 0; mbR < mbRows; mbR++)
-            for (var mbC = 0; mbC < mbCols; mbC++)
-            {
-                int reducedBase = (mbR * mbCols + mbC) * reducedStride;
-                ChromaTransform.InverseMbNoOverlap(reducedU, reducedBase, cf);
-                ChromaTransform.InverseMbNoOverlap(reducedV, reducedBase, cf);
-            }
+        if (overlap == 0)
+            for (var mbR = 0; mbR < mbRows; mbR++)
+                for (var mbC = 0; mbC < mbCols; mbC++)
+                {
+                    int reducedBase = ChromaOverlapTransform.MbBase(mbCols, mbR, mbC, cf);
+                    ChromaTransform.InverseMbNoOverlap(reducedU, reducedBase, cf);
+                    ChromaTransform.InverseMbNoOverlap(reducedV, reducedBase, cf);
+                }
+        else
+            ChromaOverlapTransform.Inverse(reduced, mbCols, mbRows, overlap, cf);
 
-        ChromaUpsample.Interpolate(cf, reducedU, reducedV, full[0], full[1], mbCols, mbRows, (mbCols + 1) * 256);
+        ChromaUpsample.Interpolate(cf, reducedU, reducedV, full[0], full[1], mbCols, mbRows,
+                                   (mbCols + 1) * 256, ChromaOverlapTransform.RowStride(mbCols, cf));
 
         var (r, g, b) = (new int[width * height], new int[width * height], new int[width * height]);
         var (mr, mg, mb) = (new int[256], new int[256], new int[256]);

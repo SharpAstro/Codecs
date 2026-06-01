@@ -272,6 +272,101 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
+    // C2b — chroma POT overlap decode. Same as the C5 chroma decode oracle but with the Photo
+    // Overlap Transform on (-l 1 = OL_ONE, -l 2 = OL_TWO): a subsampled, overlapped file from the
+    // reference JxrEncApp must decode through our codec to exactly what JxrDecApp reconstructs.
+    // This exercises the reduced-grid chroma POT post-filters (ChromaOverlapTransform), including
+    // the corner-prediction state on multi-MB grids and the non-16-aligned pad-then-crop path.
+    [Theory]
+    [InlineData(16, 16, "gradient", 1, 1)] // 1x1 MB (left==right, top==bottom degenerate)
+    [InlineData(32, 16, "gradient", 1, 1)] // 2x1
+    [InlineData(16, 32, "gradient", 1, 1)] // 1x2
+    [InlineData(32, 32, "gradient", 1, 1)] // 2x2 (first interior corner predictions)
+    [InlineData(48, 32, "gradient", 1, 1)]
+    [InlineData(64, 48, "gradient", 1, 1)]
+    [InlineData(64, 48, "random", 1, 1)]
+    [InlineData(80, 80, "gradient", 1, 1)]
+    [InlineData(17, 13, "gradient", 1, 1)] // non-16-aligned
+    [InlineData(34, 30, "random", 1, 1)]
+    [InlineData(272, 16, "gradient", 1, 1)] // 17 MB wide, single row — staggered window across many cols
+    [InlineData(96, 64, "random", 2, 2)]    // 6x4 MB, 422 OL_TWO interior
+    // OL_TWO + subsampled chroma needs ≥ 2 MB width (jxrlib refuses 16-wide), so start at 32.
+    [InlineData(32, 32, "gradient", 1, 2)]
+    [InlineData(48, 32, "gradient", 1, 2)]
+    [InlineData(64, 48, "random", 1, 2)]
+    [InlineData(80, 80, "gradient", 1, 2)]
+    [InlineData(34, 30, "gradient", 1, 2)]
+    [InlineData(16, 16, "gradient", 2, 1)]
+    [InlineData(32, 32, "gradient", 2, 1)]
+    [InlineData(48, 32, "gradient", 2, 1)]
+    [InlineData(64, 48, "random", 2, 1)]
+    [InlineData(80, 80, "gradient", 2, 1)]
+    [InlineData(34, 30, "random", 2, 1)]
+    [InlineData(32, 32, "gradient", 2, 2)]
+    [InlineData(48, 32, "gradient", 2, 2)]
+    [InlineData(64, 48, "random", 2, 2)]
+    [InlineData(80, 80, "gradient", 2, 2)]
+    [InlineData(34, 30, "gradient", 2, 2)]
+    public void JxrlibChromaEncode_Overlap_DecodedByUs_MatchesJxrDecApp(int w, int h, string kind, int sub, int ol)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (encApp is null || decApp is null) { _out.WriteLine("oracle binaries not found — skipping."); return; }
+
+        var (r, g, b) = kind switch
+        {
+            "random" => Random(w, h, seed: 0x5A + w * 31 + h + sub * 7 + ol),
+            _ => Gradient(w, h),
+        };
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_chol{sub}_{ol}_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        var refPath = tmp + "_ref.bmp";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            // -d 1 = YUV420, -d 2 = YUV422; -l {ol} overlap; -q 1 lossless coeffs; -f spatial; -c 0 24bppBGR.
+            var (e1, so1, se1) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d {sub} -q 1 -l {ol} -f");
+            _out.WriteLine($"JxrEncApp exit={e1}\n{so1}\n{se1}");
+            e1.ShouldBe(0, "JxrEncApp must encode the chroma BMP");
+
+            var jxr = File.ReadAllBytes(jxrPath);
+            var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(jxr); // our decode
+
+            var (e2, so2, se2) = Run(decApp, $"-i \"{jxrPath}\" -o \"{refPath}\" -c 0");
+            _out.WriteLine($"JxrDecApp exit={e2}\n{so2}\n{se2}");
+            e2.ShouldBe(0, "JxrDecApp must decode the chroma file");
+            var (rw, rh, rr, rg, rb) = ReadBmp24(refPath);
+
+            dw.ShouldBe(w);
+            dh.ShouldBe(h);
+            rw.ShouldBe(w);
+            rh.ShouldBe(h);
+            int diffs = 0, maxd = 0;
+            var first = new System.Collections.Generic.List<string>();
+            for (var i = 0; i < w * h; i++)
+            {
+                int er = Math.Abs(dr[i] - rr[i]), eg = Math.Abs(dg[i] - rg[i]), eb = Math.Abs(db[i] - rb[i]);
+                if (er != 0 || eg != 0 || eb != 0)
+                {
+                    diffs++;
+                    maxd = Math.Max(maxd, Math.Max(er, Math.Max(eg, eb)));
+                    if (first.Count < 12) first.Add($"({i % w},{i / w}) R {dr[i]}/{rr[i]} G {dg[i]}/{rg[i]} B {db[i]}/{rb[i]}");
+                }
+            }
+            _out.WriteLine($"d{sub} OL{ol} {kind} {w}x{h}: diffs={diffs}/{w * h} maxd={maxd}");
+            foreach (var f in first) _out.WriteLine(f);
+            diffs.ShouldBe(0, $"d{sub} OL{ol} {kind} {w}x{h}: {diffs} pixels differ, maxd={maxd}");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+            if (File.Exists(refPath)) File.Delete(refPath);
+        }
+    }
+
     // Rung 7f.2/7f.3 — the strongest overlap check: our entire codestream must be byte-for-byte
     // identical to what the reference JxrEncApp emits for the same image and settings.
     [Theory]
