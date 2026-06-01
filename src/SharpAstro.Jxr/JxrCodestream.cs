@@ -48,9 +48,9 @@ internal static class JxrCodestream
         RequirePositiveDims(width, height);
         int mbCols = MbCount(width), mbRows = MbCount(height);
         // jxrlib forces scaled-arith unless (lossless QP ≤ 1 AND all bands present); NO_FLEXBITS
-        // (sbSubband != SB_ALL) therefore scales BD8/BD16. (BD32* would override FALSE, but the
-        // BD32F float path is a separate encoder.)
-        bool scaled = ScaledArith(qpDc, qpLp, qpHp) || noFlexBits;
+        // (sbSubband != SB_ALL) therefore scales BD8/BD16/BD16S. BD32* is forced non-scaled
+        // unconditionally (strenc.c:962) — its lossy QP uses the non-scaled quantizer.
+        bool scaled = (ScaledArith(qpDc, qpLp, qpHp) || noFlexBits) && bd != JxrOutputBitDepth.Bd32S;
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         var (qDcUV, qLpUV) = ChromaDcLpQuantizers(qpDc, qpLp, scaled); // half-step chroma DC/LP in scaled mode
         int bias = LumaBias(bd);
@@ -588,7 +588,7 @@ internal static class JxrCodestream
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb, bias, max, outShift,
-                                           bd16Round: bd == JxrOutputBitDepth.Bd16);
+                                           bd16Round: bd == JxrOutputBitDepth.Bd16, min: SampleMin(bd));
                 StoreMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
             }
         return (width, height, r, g, b);

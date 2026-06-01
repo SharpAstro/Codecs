@@ -138,6 +138,45 @@ public static class JxrImageCodec
         => JxrCodestream.DecodeGray(JxrContainer.Read(jxr).Codestream);
 
     /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16S</b> (16-bit <b>signed</b>)
+    /// RGB image (each channel <c>width*height</c> samples, −32768..32767) into a <c>.jxr</c> byte
+    /// stream — 48bppRGBFixedPoint, YCoCg-R + YUV444, no level bias. Arbitrary dimensions; QP 0 lossless.
+    /// </summary>
+    public static byte[] EncodeRgb48S(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
+                                      int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                      JxrTileLayout? tiles = null)
+    {
+        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16S, tiles: tiles);
+        var file = new JxrFile((uint)width, (uint)height, JxrPixelFormat.RgbFixedPoint48Bpp, codestream);
+        return JxrContainer.Write(file);
+    }
+
+    /// <summary>Decode a <c>.jxr</c> file produced by <see cref="EncodeRgb48S"/> (or jxrlib's
+    /// 48bppRGBFixedPoint) back into BD16S signed RGB channels (−32768..32767).</summary>
+    public static (int width, int height, int[] r, int[] g, int[] b) DecodeRgb48S(ReadOnlySpan<byte> jxr)
+        => JxrCodestream.Decode(JxrContainer.Read(jxr).Codestream);
+
+    /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD32S</b> (32-bit <b>signed</b>)
+    /// RGB image (each channel <c>width*height</c> samples, full <see cref="int"/> range) into a
+    /// <c>.jxr</c> byte stream — 96bppRGBFixedPoint, YCoCg-R + YUV444, non-scaled. Arbitrary dimensions;
+    /// QP 0 lossless.
+    /// </summary>
+    public static byte[] EncodeRgb96S(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
+                                      int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                      JxrTileLayout? tiles = null)
+    {
+        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd32S, tiles: tiles);
+        var file = new JxrFile((uint)width, (uint)height, JxrPixelFormat.RgbFixedPoint96Bpp, codestream);
+        return JxrContainer.Write(file);
+    }
+
+    /// <summary>Decode a <c>.jxr</c> file produced by <see cref="EncodeRgb96S"/> (or jxrlib's
+    /// 96bppRGBFixedPoint) back into BD32S signed RGB channels (full <see cref="int"/> range).</summary>
+    public static (int width, int height, int[] r, int[] g, int[] b) DecodeRgb96S(ReadOnlySpan<byte> jxr)
+        => JxrCodestream.Decode(JxrContainer.Read(jxr).Codestream);
+
+    /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16</b> RGB image (each
     /// channel <c>width*height</c> samples, raster order, values 0..65535) into a <c>.jxr</c> byte
     /// stream — YCoCg-R + InternalClrFmt=YUV444, full-precision lossless (SHIFT_BITS 0). Arbitrary

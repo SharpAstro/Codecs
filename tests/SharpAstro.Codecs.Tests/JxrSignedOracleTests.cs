@@ -125,6 +125,66 @@ public sealed class JxrSignedOracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // ---- signed RGB (48bppRGBFixedPoint = BD16S, 96bppRGBFixedPoint = BD32S) --------------------
+
+    [Theory]
+    [InlineData(64, 48, "random", 16, 0)]
+    [InlineData(80, 80, "gradient", 16, 1)]
+    [InlineData(48, 32, "random", 24, 0)] // BD32S range
+    [InlineData(33, 40, "random", 16, 2)] // non-16-aligned
+    public void Rgb_Signed_SelfRoundTrip_Lossless(int w, int h, string kind, int bits, int overlap)
+    {
+        var (r, g, b) = (SignedPattern(w, h, kind, bits), SignedPattern(w, h, "gradient", bits), SignedPattern(w, h, kind == "random" ? "gradient" : "random", bits));
+        bool bd16 = bits <= 16;
+        var jxr = bd16
+            ? JxrImageCodec.EncodeRgb48S(r, g, b, w, h, overlap: overlap)
+            : JxrImageCodec.EncodeRgb96S(r, g, b, w, h, overlap: overlap);
+        var (dw, dh, dr, dg, db) = bd16 ? JxrImageCodec.DecodeRgb48S(jxr) : JxrImageCodec.DecodeRgb96S(jxr);
+        (dw, dh).ShouldBe((w, h));
+        for (var i = 0; i < w * h; i++)
+        {
+            dr[i].ShouldBe(r[i], $"R[{i}] (rgb signed self OL{overlap} {w}x{h})");
+            dg[i].ShouldBe(g[i], $"G[{i}]");
+            db[i].ShouldBe(b[i], $"B[{i}]");
+        }
+    }
+
+    [Theory]
+    [InlineData(64, 48, "random", 16, 11, 0)]   // BD16S RGB, -c 11
+    [InlineData(80, 80, "gradient", 16, 11, 1)]
+    [InlineData(48, 32, "random", 24, 14, 0)]   // BD32S RGB, -c 14
+    [InlineData(33, 40, "random", 16, 11, 2)]   // non-16-aligned
+    public void Rgb_Signed_DecodesLikeJxrDecApp(int w, int h, string kind, int bits, int decCode, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+
+        var (r, g, b) = (SignedPattern(w, h, kind, bits), SignedPattern(w, h, "gradient", bits), SignedPattern(w, h, kind == "random" ? "gradient" : "random", bits));
+        bool bd16 = bits <= 16;
+        var jxr = bd16
+            ? JxrImageCodec.EncodeRgb48S(r, g, b, w, h, overlap: overlap)
+            : JxrImageCodec.EncodeRgb96S(r, g, b, w, h, overlap: overlap);
+        var (dw, dh, dr, dg, db) = bd16 ? JxrImageCodec.DecodeRgb48S(jxr) : JxrImageCodec.DecodeRgb96S(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c {decCode}");
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our signed RGB file");
+            var (rw, rh, samples) = ReadSignedTiff(tif); // interleaved RGB
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(samples[i * 3 + 0], $"R[{i}] (rgb signed bits{bits} OL{overlap} {w}x{h})");
+                dg[i].ShouldBe(samples[i * 3 + 1], $"G[{i}]");
+                db[i].ShouldBe(samples[i * 3 + 2], $"B[{i}]");
+            }
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // Signed multi-tile (BD16S / BD32S): our tiled file decoded by JxrDecApp must match our decode.
     [Theory]
     [InlineData(64, 64, "gradient", 16, 4, 0, 2, 2)]
