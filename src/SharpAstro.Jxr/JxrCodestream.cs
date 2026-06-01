@@ -405,10 +405,15 @@ internal static class JxrCodestream
         RequirePositiveDims(width, height);
         var bd = ih.OutputBitDepth;
         int bias = LumaBias(bd), max = SampleMax(bd);
-        var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, bd);
+        var (clrFmt, qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, bd);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int mbCols = MbCount(width), mbRows = MbCount(height);
+        if (clrFmt is JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422)
+        {
+            if (ih.TilingFlag) throw new NotSupportedException("Multi-tile YUV420/422 decode is not yet supported.");
+            return DecodeChroma(ref reader, clrFmt, mbCols, mbRows, width, height, bias, max, overlap, scaled, qDc, qLp, qHp);
+        }
         var (r, g, b) = (new int[width * height], new int[width * height], new int[width * height]);
 
         // Per-MB entropy decode + dequantize into the whole-image YUV planes, then
@@ -447,6 +452,70 @@ internal static class JxrCodestream
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb, bias, max);
+                StoreMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
+            }
+        return (width, height, r, g, b);
+    }
+
+    // Single-tile SPATIAL YUV420/422 BD8 RGB decode. Luma is a full 444-style plane through the
+    // OverlapTransform; chroma is decoded into reduced (64/128 per MB) planes, inverse-transformed
+    // per-MB (OL_NONE), upsampled with interpolateUV into slack planes aligned with luma, then
+    // colour-stored. OL_ONE/OL_TWO chroma (POT overlap on the reduced grid) is a separate rung.
+    private static (int width, int height, int[] r, int[] g, int[] b) DecodeChroma(
+        ref BitReader reader, JxrInternalColorFormat clrFmt, int mbCols, int mbRows,
+        int width, int height, int bias, int max, int overlap, bool scaled,
+        JxrQuantizer qDc, JxrQuantizer qLp, JxrQuantizer qHp)
+    {
+        if (overlap != 0)
+            throw new NotSupportedException("YUV420/422 decode currently supports OL_NONE only (chroma POT overlap is pending).");
+
+        var cf = clrFmt == JxrInternalColorFormat.YUV420 ? ColorFormat.Yuv420 : ColorFormat.Yuv422;
+        int chromaBlocks = MacroblockLayout.ChromaBlocks(cf);
+        int reducedStride = chromaBlocks * 16;
+
+        ReadProfileLevelInfo(ref reader);
+        ReadPacketHeader(ref reader);
+
+        var luma = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1)[0]; // 256/MB slack plane
+        var full = OverlapTransform.AllocatePlanes(mbCols, mbRows, 2);    // upsampled chroma U,V (slack)
+        var reducedU = new int[mbRows * mbCols * reducedStride];
+        var reducedV = new int[mbRows * mbCols * reducedStride];
+
+        var ctx = new CodingContext(cf, 3);
+        var tile = new TileCoder(mbCols, 3, cf);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(3, chromaBlocks);
+                tile.DecodeMacroblock(ctx, block, mbC, mbR, ref reader, ref reader, ref reader, ref reader, qHp.Qp);
+                int lumaBase = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                int reducedBase = (mbR * mbCols + mbC) * reducedStride;
+                SignalTransform.DequantizeRestore(block, 0, luma, lumaBase, qDc.Qp, qLp.Qp);
+                SignalTransform.DequantizeRestoreChroma(block, 1, reducedU, reducedBase, qDc.Qp, qLp.Qp, cf);
+                SignalTransform.DequantizeRestoreChroma(block, 2, reducedV, reducedBase, qDc.Qp, qLp.Qp, cf);
+            }
+            tile.AdvanceRow();
+        }
+
+        OverlapTransform.Inverse(new[] { luma }, mbCols, mbRows, overlap, scaled);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                int reducedBase = (mbR * mbCols + mbC) * reducedStride;
+                ChromaTransform.InverseMbNoOverlap(reducedU, reducedBase, cf);
+                ChromaTransform.InverseMbNoOverlap(reducedV, reducedBase, cf);
+            }
+
+        ChromaUpsample.Interpolate(cf, reducedU, reducedV, full[0], full[1], mbCols, mbRows, (mbCols + 1) * 256);
+
+        var (r, g, b) = (new int[width * height], new int[width * height], new int[width * height]);
+        var (mr, mg, mb) = (new int[256], new int[256], new int[256]);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                SignalTransform.StoreColor(luma, full[0], full[1], baseOff, mr, mg, mb, bias, max);
                 StoreMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
             }
         return (width, height, r, g, b);
@@ -730,7 +799,9 @@ internal static class JxrCodestream
 
         int width = (int)ih.WidthMinus1 + 1, height = (int)ih.HeightMinus1 + 1;
         RequirePositiveDims(width, height);
-        var (qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, ih.OutputBitDepth);
+        var (clrFmt, qpDc, qpLp, qpHp, scaled) = ReadPlaneHeader(ref reader, ih.OutputBitDepth);
+        if (clrFmt != JxrInternalColorFormat.YUV444)
+            throw new NotSupportedException($"BD16F RGB decode supports YUV444 only (got {clrFmt}); chroma-subsampled BD16F is not yet wired.");
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
@@ -828,16 +899,18 @@ internal static class JxrCodestream
         FillToByte(w);
     }
 
-    private static (int qpDc, int qpLp, int qpHp, bool scaled) ReadPlaneHeader(ref BitReader r, JxrOutputBitDepth bd)
+    private static (JxrInternalColorFormat clrFmt, int qpDc, int qpLp, int qpHp, bool scaled) ReadPlaneHeader(ref BitReader r, JxrOutputBitDepth bd)
     {
         var clrFmt = (JxrInternalColorFormat)r.ReadBits(3);
-        if (clrFmt != JxrInternalColorFormat.YUV444)
-            throw new NotSupportedException($"JxrCodestream decodes YUV444 internal format only (got {clrFmt}).");
+        if (clrFmt is not (JxrInternalColorFormat.YUV444 or JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422))
+            throw new NotSupportedException($"JxrCodestream decodes YUV444 / YUV420 / YUV422 internal formats (got {clrFmt}).");
         bool scaled = r.ReadBit();
         var bands = (JxrBandsPresent)r.ReadBits(4);
         if (bands != JxrBandsPresent.AllBands)
             throw new NotSupportedException($"JxrCodestream decodes all-bands codestreams only (got {bands}).");
-        r.SkipBits(8); // RESERVED_F + RESERVED_H
+        // 8 bits of colour params: 444 = RESERVED_F(4)+RESERVED_H(4); 422/420 pack CHROMA_CENTERING_X/Y
+        // into the same 8 bits — the encoder writes zeros for all, so we just skip them.
+        r.SkipBits(8);
         ReadBitDepthParams(ref r, bd); // SHIFT_BITS for BD16 (RGB int path ignores the value)
 
         if (!r.ReadBit()) throw new NotSupportedException("Non-uniform DC quantization not supported.");
@@ -852,7 +925,7 @@ internal static class JxrCodestream
         int qpHp = ReadQuantizer(ref r);
 
         AlignToByte(ref r);
-        return (qpDc, qpLp, qpHp, scaled);
+        return (clrFmt, qpDc, qpLp, qpHp, scaled);
     }
 
     // jxrlib WriteImagePlaneHeader bit-depth params (strenc.c:777): BD16/BD16S write an 8-bit
