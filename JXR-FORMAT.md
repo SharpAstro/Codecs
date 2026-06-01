@@ -119,7 +119,8 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | multi-tile, **soft** (+ `INDEX_TABLE`) | ✅ (RGB) |
 | | multi-tile, **hard** (overlap stops at tile edge) | ⬜ |
 | **Bands present** | all bands | ✅ |
-| | `NO_FLEXBITS` / `NO_HIGHPASS` / `DC_ONLY` (progressive truncation) | ⬜ (`NoFlexbits` queued) |
+| | `TRIM_FLEXBITS` (drop N low bits of the flexbits plane, N=1..15) | ✅ (encode + decode, byte-exact) |
+| | `NO_FLEXBITS` / `NO_HIGHPASS` / `DC_ONLY` (progressive truncation) | ⬜ (`NO_FLEXBITS` queued — forces scaled-arith for BD8/16/16F) |
 | **Quantization** | lossless (QP 0) | ✅ |
 | | uniform lossy QP | ✅ |
 | | non-uniform / per-band-reuse QP | ⬜ |
