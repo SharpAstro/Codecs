@@ -97,8 +97,8 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 |---|---|:---:|
 | `YOnly` | grayscale | ✅ |
 | `YUV444` | colour, full chroma (4:4:4) | ✅ |
-| `YUV422` | colour, 4:2:2 (½ chroma) | ✅ encode + decode (OL_NONE / OL_ONE / OL_TWO), lossless |
-| `YUV420` | colour, 4:2:0 (¼ chroma) | ✅ encode + decode (OL_NONE / OL_ONE / OL_TWO), lossless |
+| `YUV422` | colour, 4:2:2 (½ chroma) | ✅ encode + decode (OL_NONE / OL_ONE / OL_TWO), lossless **+ lossy QP** |
+| `YUV420` | colour, 4:2:0 (¼ chroma) | ✅ encode + decode (OL_NONE / OL_ONE / OL_TWO), lossless **+ lossy QP** |
 | `YUVK` | CMYK | ⬜ |
 | `NComponent` | arbitrary N channels, no colour transform | ⬜ |
 | `Rgb` | RGB without the YCoCg transform | ⬜ |
@@ -125,7 +125,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | `NO_FLEXBITS` (omit the flexbits refinement plane) | ✅ BD8 RGB (byte-exact), BD32F mono + BD16F RGB (round-trip vs `JxrDecApp`) — the consumer's HDR-master mode; BD16-int pending (different scaled rounding) |
 | | `NO_HIGHPASS` / `DC_ONLY` (progressive truncation) | ⬜ |
 | **Quantization** | lossless (QP 0) | ✅ |
-| | uniform lossy QP (per-band DC/LP/HP index) | ✅ (RGB 444 byte-exact vs `JxrEncApp -q N`) |
+| | uniform lossy QP (per-band DC/LP/HP index) | ✅ (RGB 4:4:4 / 4:2:0 / 4:2:2 byte-exact vs `JxrEncApp -q N`) |
 | | non-uniform / per-band-reuse QP | ⬜ |
 | **Dimensions** | arbitrary, non-16-aligned (pad-then-crop) | ✅ |
 | | hard `WINDOWING_FLAG` | ⬜ |
@@ -148,8 +148,8 @@ identical to `JxrEncApp` (5-tap `[1,4,6,4,1]/16` chroma downsample; jxrlib runs 
 chroma in scaled-arithmetic mode, even at QP 1). **General lossy QP** for RGB 4:4:4 is now
 byte-exact vs `JxrEncApp -q N` across QP indices and overlap levels — this required the per-band
 UV-shift quantizer (chroma DC/LP use the half-step `SHIFTZERO-1` shift) and the DC band's wider
-`iQP>>1` deadzone. The same quantizers are wired into the subsampled-chroma path, so lossy 4:2:0 /
-4:2:2 follows next (validation pending).
+`iQP>>1` deadzone. **Lossy 4:2:0 / 4:2:2 is byte-exact too** (same quantizers on the reduced
+chroma grid, validated vs `JxrEncApp -q N -d 1/2`).
 
 ## Validation discipline
 
