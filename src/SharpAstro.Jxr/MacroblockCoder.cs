@@ -930,7 +930,7 @@ internal static class MacroblockCoder
         var order = MacroblockLayout.DctIndex; // flexbits emit/read order within a block
         int trim = ctx.TrimFlexBits;           // 0 in the default profile
         int mbits = ctx.ModelAc.FlcBits[0];
-        int flex = mbits >= trim ? mbits - trim : 0;
+        int flex = ctx.NoFlexBits ? 0 : (mbits >= trim ? mbits - trim : 0);
         int mask = (1 << flex) - 1;
         var lapMean = new int[2];
         var localCoef = new int[32];
@@ -978,7 +978,7 @@ internal static class MacroblockCoder
                 if (iBlock == 3)
                 {
                     mbits = ctx.ModelAc.FlcBits[1]; chroma = true;
-                    flex = mbits >= trim ? mbits - trim : 0;
+                    flex = ctx.NoFlexBits ? 0 : (mbits >= trim ? mbits - trim : 0);
                     mask = (1 << flex) - 1;
                 }
             }
@@ -1032,7 +1032,7 @@ internal static class MacroblockCoder
         var order = MacroblockLayout.DctIndex;
         int trim = ctx.TrimFlexBits;
         int mbits = ctx.ModelAc.FlcBits[0];
-        int flex = mbits >= trim ? mbits - trim : 0;
+        int flex = ctx.NoFlexBits ? 0 : (mbits >= trim ? mbits - trim : 0);
         int mask = (1 << flex) - 1;
         var lapMean = new int[2];
         var localCoef = new int[32];
@@ -1084,7 +1084,7 @@ internal static class MacroblockCoder
             if (iBlock == 3)
             {
                 mbits = ctx.ModelAc.FlcBits[1]; chroma = true;
-                flex = mbits >= trim ? mbits - trim : 0;
+                flex = ctx.NoFlexBits ? 0 : (mbits >= trim ? mbits - trim : 0);
                 mask = (1 << flex) - 1;
             }
         }
@@ -1133,7 +1133,7 @@ internal static class MacroblockCoder
                                            AdaptiveScan scan, int mbits, int trim, int qp)
     {
         int n = 0;
-        int flex = mbits - trim;
+        int flex = ctx.NoFlexBits ? 0 : mbits - trim;
         if (flex < 0) flex = 0;
 
         if (noSkip)
