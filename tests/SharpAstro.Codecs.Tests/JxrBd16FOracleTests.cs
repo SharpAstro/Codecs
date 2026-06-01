@@ -87,6 +87,44 @@ public sealed class JxrBd16FOracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // BD16F RGB with NO_FLEXBITS — the consumer's Save…NoFlexbits HDR-master mode for colour. Since
+    // NO_FLEXBITS forces scaled-arithmetic for BD16F, this exercises the scaled-444 path on the half
+    // pixel mapping. Lossy but deterministic: our decode of our file must agree bit-for-bit with the
+    // reference JxrDecApp's decode of the same file.
+    [Theory]
+    [InlineData(64, 48, "hdr", 0)]
+    [InlineData(48, 32, "gradient", 0)]
+    [InlineData(80, 80, "hdr", 1)]   // OL_ONE
+    [InlineData(64, 48, "hdr", 2)]   // OL_TWO
+    [InlineData(33, 40, "hdr", 1)]   // non-16-aligned
+    public void OurEncodeRgbF16_NoFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var rgb = JxrBd16FTests.RgbPattern(w, h, kind);
+        var jxr = JxrImageCodec.EncodeRgbF16(rgb, w, h, overlap: overlap, noFlexBits: true);
+        var (dw, dh, ours) = JxrImageCodec.DecodeRgbF16(jxr); // our decode of our NO_FLEXBITS file
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 12"); // 48bppRGBHalf
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our NO_FLEXBITS BD16F RGB file");
+
+            var (rw, rh, bits) = ReadHalfTiff(tif);
+            dw.ShouldBe(w);
+            dh.ShouldBe(h);
+            ours.Length.ShouldBe(w * h * 3);
+            bits.Length.ShouldBe(w * h * 3);
+            for (var i = 0; i < w * h * 3; i++)
+                HBits(ours[i]).ShouldBe(bits[i], $"RGB[{i}] (NoFlexBits f16 OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     /// <summary>Read a 16-bit-sample TIFF and return its samples as raw 16-bit (half) bit patterns.</summary>

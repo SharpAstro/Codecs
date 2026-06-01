@@ -359,11 +359,13 @@ internal static class SignalTransform
     /// <summary>HalfToPixel + color transform (<c>_CC</c>) + idxCC load of one BD16F RGB macroblock
     /// (256 halves per channel) into the three YUV planes. No bias.</summary>
     public static void LoadColorHalf(ReadOnlySpan<Half> r, ReadOnlySpan<Half> g, ReadOnlySpan<Half> b,
-                                     int[] planeY, int[] planeU, int[] planeV, int mbBase)
+                                     int[] planeY, int[] planeU, int[] planeV, int mbBase, int shift = 0)
     {
+        // BD16F has no level bias (the float-pixel is signed, centred at 0); scaled-arith just scales
+        // the pixel <<cShift before _CC (jxrlib inputMBRow: forwardHalf(half) << cShift).
         for (var px = 0; px < 256; px++)
         {
-            int rr = FloatPixel.HalfToPixel(r[px]), gg = FloatPixel.HalfToPixel(g[px]), bb = FloatPixel.HalfToPixel(b[px]);
+            int rr = FloatPixel.HalfToPixel(r[px]) << shift, gg = FloatPixel.HalfToPixel(g[px]) << shift, bb = FloatPixel.HalfToPixel(b[px]) << shift;
             ColorTransform.ForwardRgb(ref rr, ref gg, ref bb);
             int pos = mbBase + IdxCc[px];
             planeU[pos] = -rr;
@@ -373,16 +375,19 @@ internal static class SignalTransform
     }
 
     /// <summary>Inverse color (<c>_ICC</c>) + idxCC unload of one MB into BD16F RGB halves via
-    /// <see cref="FloatPixel.PixelToHalf"/>. No bias, no clamp (the half encoding is bit-exact).</summary>
+    /// <see cref="FloatPixel.PixelToHalf"/>. No clamp (the half encoding is bit-exact). In scaled-arith
+    /// mode (<paramref name="shift"/>=3) jxrlib adds the rounding bias <c>(1&lt;&lt;(shift-1))-1</c> to Y
+    /// (no level bias) before <c>_ICC</c> and right-shifts the result by <paramref name="shift"/>.</summary>
     public static void StoreColorHalf(int[] planeY, int[] planeU, int[] planeV, int mbBase,
-                                      Span<Half> r, Span<Half> g, Span<Half> b)
+                                      Span<Half> r, Span<Half> g, Span<Half> b, int shift = 0)
     {
+        int iBias = shift > 0 ? (1 << (shift - 1)) - 1 : 0;
         for (var px = 0; px < 256; px++)
         {
             int pos = mbBase + IdxCc[px];
-            int gg = planeY[pos], rr = -planeU[pos], bb = planeV[pos];
+            int gg = planeY[pos] + iBias, rr = -planeU[pos], bb = planeV[pos];
             ColorTransform.InverseRgb(ref rr, ref gg, ref bb);
-            r[px] = FloatPixel.PixelToHalf(rr); g[px] = FloatPixel.PixelToHalf(gg); b[px] = FloatPixel.PixelToHalf(bb);
+            r[px] = FloatPixel.PixelToHalf(rr >> shift); g[px] = FloatPixel.PixelToHalf(gg >> shift); b[px] = FloatPixel.PixelToHalf(bb >> shift);
         }
     }
 }
