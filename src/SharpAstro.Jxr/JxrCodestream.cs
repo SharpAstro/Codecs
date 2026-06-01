@@ -37,8 +37,11 @@ internal static class JxrCodestream
     /// </summary>
     public static byte[] Encode(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
                                 int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
-                                JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8, JxrTileLayout? tiles = null)
+                                JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8, JxrTileLayout? tiles = null,
+                                JxrInternalColorFormat internalClrFmt = JxrInternalColorFormat.YUV444)
     {
+        if (internalClrFmt is JxrInternalColorFormat.YUV420 or JxrInternalColorFormat.YUV422)
+            return EncodeChroma(r, g, b, width, height, internalClrFmt, qpDc, qpLp, qpHp, overlap, bd);
         if (tiles is { } layout && (layout.NumVerTiles > 1 || layout.NumHorTiles > 1))
             return EncodeMultiTile(r, g, b, width, height, layout, qpDc, qpLp, qpHp, overlap, bd);
         RequirePositiveDims(width, height);
@@ -79,6 +82,81 @@ internal static class JxrCodestream
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
                 for (var ch = 0; ch < 3; ch++)
                     SignalTransform.QuantizeExtract(planes[ch], baseOff, block, ch, qDc, qLp, qHp);
+                tile.EncodeMacroblock(ctx, block, mbC, mbR, w, w, w, w);
+            }
+            tile.AdvanceRow();
+        }
+
+        FillToByte(w);
+        return w.ToArray();
+    }
+
+    // Single-tile SPATIAL YUV420/422 BD8 RGB encode — the inverse of DecodeChroma. jxrlib forces
+    // scaled-arithmetic mode for subsampled chroma (even at QP 1, since the chroma resolution change
+    // disqualifies the lossless fast-path), so the colour load scales the RGB input <<3 and the chroma
+    // is downsampled (5-tap [1,4,6,4,1]/16, in the YCoCg-R domain) to the reduced grid before the
+    // transform. Luma is a full 444-style plane. Ports strenc.c inputMBRow + downsampleUV + the 420_UV
+    // / 422_UV forward transform loops. (Forward overlap OL_ONE/OL_TWO is a follow-on rung.)
+    private static byte[] EncodeChroma(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
+                                       int width, int height, JxrInternalColorFormat clrFmt,
+                                       int qpDc, int qpLp, int qpHp, int overlap, JxrOutputBitDepth bd)
+    {
+        if (overlap != 0)
+            throw new NotSupportedException("YUV420/422 encode currently supports OL_NONE only (chroma forward overlap is pending).");
+
+        RequirePositiveDims(width, height);
+        var cf = clrFmt == JxrInternalColorFormat.YUV420 ? ColorFormat.Yuv420 : ColorFormat.Yuv422;
+        int mbCols = MbCount(width), mbRows = MbCount(height);
+        bool scaled = true; // jxrlib m_bUVResolutionChange forces bScaledArith for subsampled chroma
+        var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        int bias = LumaBias(bd);
+        int shift = SignalTransform.ScaledShift; // <<3 input scaling (SHIFTZERO + QPFRACBITS)
+        int chromaBlocks = MacroblockLayout.ChromaBlocks(cf);
+
+        var w = new BitWriter();
+        WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.Rgb, bd); // external format is still RGB
+        WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled, bd, clrFmt: clrFmt);
+        WriteProfileLevelInfo(w);
+        WritePacketHeader(w);
+
+        // Colour-transform + <<3-scaled load into the full-res luma plane and full-res U,V planes.
+        var luma = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1)[0];
+        var full = OverlapTransform.AllocatePlanes(mbCols, mbRows, 2); // full-res chroma U,V (pre-downsample)
+        var (mr, mg, mb) = (new int[256], new int[256], new int[256]);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                ExtractMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
+                SignalTransform.LoadColor(mr, mg, mb, luma, full[0], full[1],
+                                          OverlapTransform.MbBase(mbCols, mbR, mbC), bias, shift);
+            }
+
+        // Downsample full-res chroma → reduced chroma, then forward-transform both planes.
+        var reduced = ChromaOverlapTransform.AllocatePlanes(mbCols, mbRows, cf);
+        ChromaDownsample.Downsample(cf, full[0], full[1], reduced[0], reduced[1], mbCols, mbRows);
+
+        OverlapTransform.Forward(new[] { luma }, mbCols, mbRows, overlap, scaled);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                int rb = ChromaOverlapTransform.MbBase(mbCols, mbR, mbC, cf);
+                ChromaTransform.ForwardMbNoOverlap(reduced[0], rb, cf);
+                ChromaTransform.ForwardMbNoOverlap(reduced[1], rb, cf);
+            }
+
+        // Per-MB quantize (luma full, chroma reduced) + entropy code.
+        var ctx = new CodingContext(cf, 3);
+        var tile = new TileCoder(mbCols, 3, cf);
+        for (var mbR = 0; mbR < mbRows; mbR++)
+        {
+            for (var mbC = 0; mbC < mbCols; mbC++)
+            {
+                var block = new Macroblock(3, chromaBlocks);
+                int lumaBase = OverlapTransform.MbBase(mbCols, mbR, mbC);
+                int rb = ChromaOverlapTransform.MbBase(mbCols, mbR, mbC, cf);
+                SignalTransform.QuantizeExtract(luma, lumaBase, block, 0, qDc, qLp, qHp);
+                SignalTransform.QuantizeExtractChroma(reduced[0], rb, block, 1, qDc, qLp, qHp, cf);
+                SignalTransform.QuantizeExtractChroma(reduced[1], rb, block, 2, qDc, qLp, qHp, cf);
                 tile.EncodeMacroblock(ctx, block, mbC, mbR, w, w, w, w);
             }
             tile.AdvanceRow();
@@ -879,9 +957,10 @@ internal static class JxrCodestream
     // YUV444 / BD8 / all-bands / uQPMode==0x750 case: every band carries its own
     // plane-uniform quantizer in channel-mode INDEPENDENT (2), three equal QP indices.
     private static void WritePlaneHeader(BitWriter w, int qpDc, int qpLp, int qpHp, bool scaled, JxrOutputBitDepth bd,
-                                         int lenMantissaOrShift = 0, int expBias = 0)
+                                         int lenMantissaOrShift = 0, int expBias = 0,
+                                         JxrInternalColorFormat clrFmt = JxrInternalColorFormat.YUV444)
     {
-        w.WriteBits((uint)JxrInternalColorFormat.YUV444, 3); // internal color format
+        w.WriteBits((uint)clrFmt, 3);                        // internal color format (YUV444 / YUV420 / YUV422)
         w.WriteBit(scaled);                                  // bScaledArith
         w.WriteBits((uint)JxrBandsPresent.AllBands, 4);      // SB_ALL
         w.WriteBits(0, 4); w.WriteBits(0, 4);                // YUV: RESERVED_F, RESERVED_H

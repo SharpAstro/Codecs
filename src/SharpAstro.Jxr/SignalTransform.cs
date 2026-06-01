@@ -174,16 +174,20 @@ internal static class SignalTransform
     /// whole-image YUV planes at <paramref name="mbBase"/> (no transform). Forward half 1.
     /// <paramref name="bias"/> is the luma level shift (128 for BD8, 32768 for BD16).</summary>
     public static void LoadColor(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
-                                 int[] planeY, int[] planeU, int[] planeV, int mbBase, int bias = Bias)
+                                 int[] planeY, int[] planeU, int[] planeV, int mbBase, int bias = Bias, int shift = 0)
     {
+        // jxrlib inputMBRow CF_RGB BD8: r/g/b are scaled <<cShift BEFORE _CC, iOffset = 128<<cShift
+        // (cShift = SHIFTZERO+QPFRACBITS = 3 in scaled-arith mode, 0 otherwise). The colour transform
+        // has rounding lifts, so the shift must precede it — it is not a post-multiply.
+        int iOffset = bias << shift;
         for (var px = 0; px < 256; px++)
         {
-            int rr = r[px], gg = g[px], bb = b[px];
+            int rr = r[px] << shift, gg = g[px] << shift, bb = b[px] << shift;
             ColorTransform.ForwardRgb(ref rr, ref gg, ref bb);
             int pos = mbBase + IdxCc[px];
             planeU[pos] = -rr;
             planeV[pos] = bb;
-            planeY[pos] = gg - bias;
+            planeY[pos] = gg - iOffset;
         }
     }
 
@@ -204,6 +208,33 @@ internal static class SignalTransform
         }
         for (var i = 0; i < 16; i++)
             mb.BlockDc[ch][i] = p[DcIndex[i]];
+    }
+
+    /// <summary>
+    /// Reduced-chroma counterpart of <see cref="QuantizeExtract"/> for YUV420/422: quantize the
+    /// transformed reduced-chroma MB (read from <paramref name="plane"/>, stride 64/128, at
+    /// <paramref name="mbBase"/>) into <see cref="Macroblock.Plane"/> and extract the per-block DCs.
+    /// The exact inverse of <see cref="DequantizeRestoreChroma"/>: block 0's DC uses the DC quantizer,
+    /// the other blocks' DCs use the LP quantizer, and every block's 15 AC coefficients use the HP
+    /// quantizer (jxrlib <c>quantizeMacroblock</c>, 420/422 branch).
+    /// </summary>
+    public static void QuantizeExtractChroma(ReadOnlySpan<int> plane, int mbBase, Macroblock mb, int ch,
+                                             in JxrQuantizer qDc, in JxrQuantizer qLp, in JxrQuantizer qHp, ColorFormat cf)
+    {
+        int blocks = MacroblockLayout.ChromaBlocks(cf);
+        int stride = blocks * 16;
+        var off = MacroblockLayout.ChromaBlkOffset(cf);
+        var p = mb.Plane[ch];
+        plane.Slice(mbBase, stride).CopyTo(p);
+        for (var j = 0; j < blocks; j++)
+        {
+            int o = off[j];
+            p[o] = Quantization.Quantize(p[o], j == 0 ? qDc : qLp);
+            for (var i = 1; i < 16; i++)
+                p[o + i] = Quantization.Quantize(p[o + i], qHp);
+        }
+        for (var i = 0; i < blocks; i++)
+            mb.BlockDc[ch][i] = p[off[i]];
     }
 
     /// <summary>Write one decoded MB's dequantized coefficients (HP from
