@@ -367,6 +367,61 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
+    // Chroma ENCODE byte-match (E1, OL_NONE): our entire codestream for a subsampled image must be
+    // byte-for-byte identical to what the reference JxrEncApp emits (-d 1 = YUV420, -d 2 = YUV422,
+    // -q 1 lossless, -l 0). Exercises the <<3-scaled colour load, the 5-tap chroma downsample, the
+    // reduced-grid forward PCT, and the YUV420/422 plane header.
+    [Theory]
+    [InlineData(16, 16, "gradient", 1)]
+    [InlineData(32, 16, "gradient", 1)]
+    [InlineData(32, 32, "gradient", 1)]
+    [InlineData(48, 32, "gradient", 1)]
+    [InlineData(64, 48, "random", 1)]
+    [InlineData(80, 80, "gradient", 1)]
+    [InlineData(16, 16, "gradient", 2)]
+    [InlineData(32, 16, "gradient", 2)]
+    [InlineData(32, 32, "gradient", 2)]
+    [InlineData(48, 32, "gradient", 2)]
+    [InlineData(64, 48, "random", 2)]
+    [InlineData(80, 80, "gradient", 2)]
+    // sub-MB / non-16-aligned dimensions (partial macroblocks edge-replicated)
+    [InlineData(17, 13, "gradient", 1)]
+    [InlineData(34, 30, "random", 1)]
+    [InlineData(33, 40, "random", 2)]
+    [InlineData(100, 60, "gradient", 2)]
+    public void OurEncode_Chroma_CodestreamMatchesJxrlib(int w, int h, string kind, int sub)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x7E5 + w * 31 + h + sub) : Gradient(w, h);
+
+        var ours = JxrCodestream.Encode(r, g, b, w, h,
+            internalClrFmt: sub == 1 ? JxrInternalColorFormat.YUV420 : JxrInternalColorFormat.YUV422);
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_chenc{sub}_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d {sub} -q 1 -l 0 -f");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the BMP");
+
+            var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
+            _out.WriteLine($"ours={ours.Length} theirs={theirs.Length}");
+            ours.Length.ShouldBe(theirs.Length, $"codestream length (d{sub} {kind} {w}x{h})");
+            for (var i = 0; i < ours.Length; i++)
+                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (d{sub} {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
     // Rung 7f.2/7f.3 — the strongest overlap check: our entire codestream must be byte-for-byte
     // identical to what the reference JxrEncApp emits for the same image and settings.
     [Theory]
