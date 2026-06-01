@@ -380,8 +380,9 @@ internal static class JxrCodestream
     {
         RequirePositiveDims(width, height);
         int mbCols = MbCount(width), mbRows = MbCount(height);
-        // NO_FLEXBITS (sbSubband != SB_ALL) forces scaled-arith for BD8/BD16 (jxrlib strenc.c).
-        bool scaled = ScaledArith(qpDc, qpLp, qpHp) || noFlexBits;
+        // NO_FLEXBITS (sbSubband != SB_ALL) forces scaled-arith for BD8/BD16/BD16S; BD32* is forced
+        // non-scaled unconditionally (strenc.c:962) — its lossy QP uses the non-scaled quantizer.
+        bool scaled = (ScaledArith(qpDc, qpLp, qpHp) || noFlexBits) && bd != JxrOutputBitDepth.Bd32S;
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int bias = LumaBias(bd);
         int shift = scaled ? SignalTransform.ScaledShift : 0; // <<3 scaled-arith input scaling (lossy QP / NO_FLEXBITS)
@@ -680,7 +681,8 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreGray(planes[0], baseOff, my, bias, max, outShift, bd16Round: bd == JxrOutputBitDepth.Bd16);
+                SignalTransform.StoreGray(planes[0], baseOff, my, bias, max, outShift,
+                                          bd16Round: bd == JxrOutputBitDepth.Bd16, min: SampleMin(bd));
                 StoreMbGray(y, width, height, mbR, mbC, my);
             }
         return (width, height, y);
@@ -1060,6 +1062,8 @@ internal static class JxrCodestream
         switch (bd)
         {
             case JxrOutputBitDepth.Bd16:
+            case JxrOutputBitDepth.Bd16S:   // BD16/BD16S/BD32S all write an 8-bit SHIFT_BITS (strenc.c:778)
+            case JxrOutputBitDepth.Bd32S:
                 w.WriteBits((uint)lenMantissaOrShift, 8);
                 break;
             case JxrOutputBitDepth.Bd32F:
@@ -1074,6 +1078,8 @@ internal static class JxrCodestream
         switch (bd)
         {
             case JxrOutputBitDepth.Bd16:
+            case JxrOutputBitDepth.Bd16S:
+            case JxrOutputBitDepth.Bd32S:
                 return ((int)r.ReadBits(8), 0);
             case JxrOutputBitDepth.Bd32F:
                 int lm = (int)r.ReadBits(8);
@@ -1237,13 +1243,31 @@ internal static class JxrCodestream
     // jxrlib StrEncInit: lossless (all bands QP index ≤ 1) ⇒ bScaledArith == FALSE.
     private static bool ScaledArith(int qpDc, int qpLp, int qpHp) => qpDc > 1 || qpLp > 1 || qpHp > 1;
 
-    // Luma/sample level shift: jxrlib `iOffset = (1 << (bits-1)) << cShift`, with cShift = 0 in
-    // the lossless (non-scaled-arith) path — 128 for BD8, 32768 for BD16. (SHIFT_BITS nLen = 0:
-    // full-precision integer, lossless. Lossy precision reduction is a future extension.)
-    private static int LumaBias(JxrOutputBitDepth bd) => bd == JxrOutputBitDepth.Bd16 ? 32768 : 128;
+    // Luma/sample level shift: jxrlib `iOffset = (1 << (bits-1)) << cShift` — 128 for BD8, 32768 for
+    // BD16-unsigned. The SIGNED formats (BD16S/BD32S) are already centred at 0, so they use NO level
+    // bias (strenc.c BD_16S/BD_32S loads subtract nothing). (SHIFT_BITS nLen = 0: full-precision.)
+    private static int LumaBias(JxrOutputBitDepth bd) => bd switch
+    {
+        JxrOutputBitDepth.Bd16 => 32768,
+        JxrOutputBitDepth.Bd16S or JxrOutputBitDepth.Bd32S => 0,
+        _ => 128,
+    };
 
-    // Output clamp ceiling (jxrlib _CLIP8 / _CLIPU16).
-    private static int SampleMax(JxrOutputBitDepth bd) => bd == JxrOutputBitDepth.Bd16 ? 65535 : 255;
+    // Output clamp range (jxrlib _CLIP8 / _CLIPU16 unsigned, _CLIP16 / none signed).
+    private static int SampleMax(JxrOutputBitDepth bd) => bd switch
+    {
+        JxrOutputBitDepth.Bd16 => 65535,
+        JxrOutputBitDepth.Bd16S => 32767,
+        JxrOutputBitDepth.Bd32S => int.MaxValue,
+        _ => 255,
+    };
+
+    private static int SampleMin(JxrOutputBitDepth bd) => bd switch
+    {
+        JxrOutputBitDepth.Bd16S => -32768,
+        JxrOutputBitDepth.Bd32S => int.MinValue,
+        _ => 0,
+    };
 
     private static void FillToByte(BitWriter w)
     {

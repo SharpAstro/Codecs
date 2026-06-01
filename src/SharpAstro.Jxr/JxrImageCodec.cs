@@ -97,6 +97,45 @@ public static class JxrImageCodec
     }
 
     /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16S</b> (16-bit <b>signed</b>)
+    /// grayscale image — samples in raster order, values −32768..32767 (native signed FITS, BITPIX 16) —
+    /// into a <c>.jxr</c> byte stream. Single-channel Y-only, no level bias (signed is centred at 0).
+    /// Arbitrary dimensions; QP indices default to 0 (lossless). <paramref name="noFlexBits"/> drops the
+    /// flexbits plane (a deterministic-loss HDR-master mode).
+    /// </summary>
+    public static byte[] EncodeGray16S(ReadOnlySpan<int> y, int width, int height,
+                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0, bool noFlexBits = false)
+    {
+        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16S, noFlexBits);
+        var file = new JxrFile((uint)width, (uint)height, JxrPixelFormat.GrayFixedPoint16Bpp, codestream);
+        return JxrContainer.Write(file);
+    }
+
+    /// <summary>Decode a <c>.jxr</c> file produced by <see cref="EncodeGray16S"/> (or jxrlib's
+    /// 16bppGrayFixedPoint) back into a BD16S signed grayscale channel (−32768..32767).</summary>
+    public static (int width, int height, int[] y) DecodeGray16S(ReadOnlySpan<byte> jxr)
+        => JxrCodestream.DecodeGray(JxrContainer.Read(jxr).Codestream);
+
+    /// <summary>
+    /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD32S</b> (32-bit <b>signed</b>)
+    /// grayscale image — samples in raster order, full <see cref="int"/> range (native signed FITS,
+    /// BITPIX 32) — into a <c>.jxr</c> byte stream. Single-channel Y-only, no level bias; BD32* always
+    /// uses non-scaled arithmetic. Arbitrary dimensions; QP indices default to 0 (lossless).
+    /// </summary>
+    public static byte[] EncodeGray32S(ReadOnlySpan<int> y, int width, int height,
+                                       int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+    {
+        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd32S);
+        var file = new JxrFile((uint)width, (uint)height, JxrPixelFormat.GrayFixedPoint32Bpp, codestream);
+        return JxrContainer.Write(file);
+    }
+
+    /// <summary>Decode a <c>.jxr</c> file produced by <see cref="EncodeGray32S"/> (or jxrlib's
+    /// 32bppGrayFixedPoint) back into a BD32S signed grayscale channel (full <see cref="int"/> range).</summary>
+    public static (int width, int height, int[] y) DecodeGray32S(ReadOnlySpan<byte> jxr)
+        => JxrCodestream.DecodeGray(JxrContainer.Read(jxr).Codestream);
+
+    /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> <b>BD16</b> RGB image (each
     /// channel <c>width*height</c> samples, raster order, values 0..65535) into a <c>.jxr</c> byte
     /// stream — YCoCg-R + InternalClrFmt=YUV444, full-precision lossless (SHIFT_BITS 0). Arbitrary
