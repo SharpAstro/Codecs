@@ -115,7 +115,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | **Frequency ordering** | SPATIAL | ✅ |
 | | FREQUENCY | ⬜ |
 | **Arithmetic** | unscaled (lossless QP ≤ 1, all bands) | ✅ |
-| | scaled-arith (lossy QP, or NO_FLEXBITS / chroma subsampling) | ✅ (validated via NO_FLEXBITS BD8 RGB + subsampled chroma) |
+| | scaled-arith (lossy QP, or NO_FLEXBITS / chroma subsampling) | ✅ (byte-exact vs `JxrEncApp`: lossy QP + NO_FLEXBITS BD8 RGB + subsampled chroma) |
 | **Overlap (POT)** | OL_NONE / OL_ONE / OL_TWO | ✅ |
 | **Tiling** | single-tile | ✅ |
 | | multi-tile, **soft** (+ `INDEX_TABLE`) | ✅ (RGB) |
@@ -125,7 +125,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | `NO_FLEXBITS` (omit the flexbits refinement plane) | ✅ BD8 RGB (byte-exact), BD32F mono + BD16F RGB (round-trip vs `JxrDecApp`) — the consumer's HDR-master mode; BD16-int pending (different scaled rounding) |
 | | `NO_HIGHPASS` / `DC_ONLY` (progressive truncation) | ⬜ |
 | **Quantization** | lossless (QP 0) | ✅ |
-| | uniform lossy QP | ✅ |
+| | uniform lossy QP (per-band DC/LP/HP index) | ✅ (RGB 444 byte-exact vs `JxrEncApp -q N`) |
 | | non-uniform / per-band-reuse QP | ⬜ |
 | **Dimensions** | arbitrary, non-16-aligned (pad-then-crop) | ✅ |
 | | hard `WINDOWING_FLAG` | ⬜ |
@@ -145,8 +145,11 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 `SharpAstro.Jxr` round-trips this today whether it's 4:4:4 or **4:2:0 / 4:2:2 at any overlap
 level (OL_NONE / OL_ONE / OL_TWO)** — decode bit-exact vs `JxrDecApp`, encode byte-for-byte
 identical to `JxrEncApp` (5-tap `[1,4,6,4,1]/16` chroma downsample; jxrlib runs all subsampled
-chroma in scaled-arithmetic mode, even at QP 1). Lossy subsampled chroma (the per-band UV-shift
-quantizer) is the one remaining chroma item.
+chroma in scaled-arithmetic mode, even at QP 1). **General lossy QP** for RGB 4:4:4 is now
+byte-exact vs `JxrEncApp -q N` across QP indices and overlap levels — this required the per-band
+UV-shift quantizer (chroma DC/LP use the half-step `SHIFTZERO-1` shift) and the DC band's wider
+`iQP>>1` deadzone. The same quantizers are wired into the subsampled-chroma path, so lossy 4:2:0 /
+4:2:2 follows next (validation pending).
 
 ## Validation discipline
 

@@ -666,6 +666,101 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
+    // General lossy QP (uniform quantization), BD8 RGB YUV444. JxrEncApp's `-q N` with an integer
+    // N ≥ 1 sets uiDefaultQPIndex = N directly; jxrlib then defaults every per-band/per-channel index
+    // to it (strenc.c:968-999), so it's a uniform QP index N across DC=LP=HP and Y=U=V — exactly our
+    // qpDc=qpLp=qpHp=N. QP > 1 forces scaled-arithmetic, and (the new bit) the chroma U/V DC+LP
+    // quantizers use the half-step SHIFTZERO-1 shift (formatQuantizer bShiftedUV). Our codestream must
+    // be byte-for-byte identical to JxrEncApp -q N. QP indices span both remapQP branches
+    // (idx<16 and idx≥16) and the mulless (power-of-two step) vs reciprocal-multiply paths.
+    [Theory]
+    [InlineData(16, 16, "gradient", 2, 0)]
+    [InlineData(32, 32, "gradient", 5, 0)]
+    [InlineData(48, 32, "random", 8, 0)]
+    [InlineData(64, 48, "random", 16, 0)]
+    [InlineData(80, 80, "random", 32, 0)]
+    [InlineData(64, 48, "random", 48, 0)]
+    [InlineData(48, 32, "random", 64, 0)]
+    [InlineData(64, 48, "random", 5, 1)]    // OL_ONE
+    [InlineData(80, 80, "random", 16, 1)]
+    [InlineData(64, 48, "random", 8, 2)]    // OL_TWO
+    [InlineData(48, 32, "random", 32, 2)]
+    [InlineData(17, 13, "random", 5, 0)]    // non-16-aligned
+    [InlineData(33, 40, "random", 16, 1)]
+    public void OurEncode_LossyQp_CodestreamMatchesJxrlib(int w, int h, string kind, int qp, int ol)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x2B + w * 11 + h + qp + ol) : Gradient(w, h);
+        var ours = JxrCodestream.Encode(r, g, b, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: ol);
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_q{qp}_{ol}_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q {qp} -l {ol} -f");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the BMP");
+
+            var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
+            _out.WriteLine($"ours={ours.Length} theirs={theirs.Length}");
+            ours.Length.ShouldBe(theirs.Length, $"codestream length (QP{qp} OL{ol} {kind} {w}x{h})");
+            for (var i = 0; i < ours.Length; i++)
+                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (QP{qp} OL{ol} {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // General lossy QP decode: our decode of our lossy-QP RGB file must agree pixel-for-pixel with
+    // JxrDecApp's decode of the same file (validates the scaled-arith dequant, incl. the half-step
+    // chroma DC/LP, end-to-end through the inverse overlap + colour transform).
+    [Theory]
+    [InlineData(64, 48, "random", 5, 0)]
+    [InlineData(80, 80, "random", 16, 1)]
+    [InlineData(48, 32, "random", 32, 2)]
+    [InlineData(64, 48, "random", 8, 1)]
+    [InlineData(33, 40, "random", 16, 0)]   // non-16-aligned
+    public void OurEncode_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int ol)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x77 + w * 7 + h + qp + ol) : Gradient(w, h);
+        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: ol);
+        var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(jxr); // our decode of our lossy file
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_qdec{qp}_{ol}_{Guid.NewGuid():N}");
+        var jxrPath = tmp + ".jxr";
+        var refPath = tmp + "_ref.bmp";
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (e, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{refPath}\" -c 0");
+            _out.WriteLine($"JxrDecApp exit={e}\n{so}\n{se}");
+            e.ShouldBe(0, "JxrDecApp must decode our lossy file");
+            var (rw, rh, rr, rg, rb) = ReadBmp24(refPath);
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(rr[i], $"R[{i}] (QP{qp} OL{ol} {w}x{h})");
+                dg[i].ShouldBe(rg[i], $"G[{i}]");
+                db[i].ShouldBe(rb[i], $"B[{i}]");
+            }
+        }
+        finally
+        {
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+            if (File.Exists(refPath)) File.Delete(refPath);
+        }
+    }
+
     // Rung 7f.2/7f.3 — the strongest overlap check: our entire codestream must be byte-for-byte
     // identical to what the reference JxrEncApp emits for the same image and settings.
     [Theory]
