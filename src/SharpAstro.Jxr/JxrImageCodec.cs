@@ -77,9 +77,9 @@ public static class JxrImageCodec
     /// Arbitrary dimensions are allowed (partial macroblocks edge-replicated); QP indices default to 0 (lossless).
     /// </summary>
     public static byte[] EncodeGray16(ReadOnlySpan<int> y, int width, int height,
-                                      int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                      int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0, bool noFlexBits = false)
     {
-        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16);
+        var codestream = JxrCodestream.EncodeGray(y, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16, noFlexBits);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,
@@ -103,9 +103,11 @@ public static class JxrImageCodec
     /// dimensions are allowed (partial macroblocks edge-replicated); QP indices default to 0 (lossless).
     /// </summary>
     public static byte[] EncodeRgb48(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b,
-                                     int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                     int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                     bool noFlexBits = false)
     {
-        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16);
+        var codestream = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, JxrOutputBitDepth.Bd16,
+                                              noFlexBits: noFlexBits);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,

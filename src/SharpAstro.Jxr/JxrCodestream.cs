@@ -376,18 +376,20 @@ internal static class JxrCodestream
     /// </summary>
     public static byte[] EncodeGray(ReadOnlySpan<int> y, int width, int height,
                                     int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
-                                    JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8)
+                                    JxrOutputBitDepth bd = JxrOutputBitDepth.Bd8, bool noFlexBits = false)
     {
         RequirePositiveDims(width, height);
         int mbCols = MbCount(width), mbRows = MbCount(height);
-        bool scaled = ScaledArith(qpDc, qpLp, qpHp);
+        // NO_FLEXBITS (sbSubband != SB_ALL) forces scaled-arith for BD8/BD16 (jxrlib strenc.c).
+        bool scaled = ScaledArith(qpDc, qpLp, qpHp) || noFlexBits;
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int bias = LumaBias(bd);
-        int shift = scaled ? SignalTransform.ScaledShift : 0; // <<3 scaled-arith input scaling (lossy QP)
+        int shift = scaled ? SignalTransform.ScaledShift : 0; // <<3 scaled-arith input scaling (lossy QP / NO_FLEXBITS)
+        var bands = noFlexBits ? JxrBandsPresent.NoFlexbits : JxrBandsPresent.AllBands;
 
         var w = new BitWriter();
         WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.YOnly, bd);
-        WritePlaneHeaderGray(w, qpDc, qpLp, qpHp, scaled, bd);
+        WritePlaneHeaderGray(w, qpDc, qpLp, qpHp, scaled, bd, bands: bands);
         WriteProfileLevelInfo(w);
         WritePacketHeader(w);
 
@@ -402,7 +404,7 @@ internal static class JxrCodestream
 
         OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
 
-        var ctx = new CodingContext(ColorFormat.YOnly, 1);
+        var ctx = new CodingContext(ColorFormat.YOnly, 1) { NoFlexBits = noFlexBits };
         var tile = new TileCoder(mbCols, 1, ColorFormat.YOnly);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
@@ -551,7 +553,8 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb, bias, max, outShift);
+                SignalTransform.StoreColor(planes[0], planes[1], planes[2], baseOff, mr, mg, mb, bias, max, outShift,
+                                           bd16Round: bd == JxrOutputBitDepth.Bd16);
                 StoreMb(r, g, b, width, height, mbR, mbC, mr, mg, mb);
             }
         return (width, height, r, g, b);
@@ -646,17 +649,17 @@ internal static class JxrCodestream
         RequirePositiveDims(width, height);
         var bd = ih.OutputBitDepth;
         int bias = LumaBias(bd), max = SampleMax(bd);
-        var (qpDc, qpLp, qpHp, scaled, _, _, _) = ReadPlaneHeaderGray(ref reader, bd);
+        var (qpDc, qpLp, qpHp, scaled, _, _, bands) = ReadPlaneHeaderGray(ref reader, bd);
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int mbCols = MbCount(width), mbRows = MbCount(height);
-        int outShift = scaled ? SignalTransform.ScaledShift : 0; // scaled-arith output >>3 (lossy QP)
+        int outShift = scaled ? SignalTransform.ScaledShift : 0; // scaled-arith output >>3 (lossy QP / NO_FLEXBITS)
         var y = new int[width * height];
 
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows, 1);
-        var ctx = new CodingContext(ColorFormat.YOnly, 1);
+        var ctx = new CodingContext(ColorFormat.YOnly, 1) { NoFlexBits = bands == JxrBandsPresent.NoFlexbits };
         var tile = new TileCoder(mbCols, 1, ColorFormat.YOnly);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
@@ -677,7 +680,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreGray(planes[0], baseOff, my, bias, max, outShift);
+                SignalTransform.StoreGray(planes[0], baseOff, my, bias, max, outShift, bd16Round: bd == JxrOutputBitDepth.Bd16);
                 StoreMbGray(y, width, height, mbR, mbC, my);
             }
         return (width, height, y);

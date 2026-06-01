@@ -96,6 +96,152 @@ public sealed class JxrBd16OracleTests
         finally { Cleanup(jxrPath, tif); }
     }
 
+    // BD16-integer lossy QP: scaled-arith uses a distinct store rounding ((1<<(s-1)), no -1) and the
+    // <<nLen post-shift (nLen=0 here). Lossy but deterministic — our decode of our file must agree with
+    // JxrDecApp's decode of it. (Encode-direction byte-match needs a strict 16-bit TIFF writer to feed
+    // JxrEncApp; the quantize/entropy path is already byte-validated via BD8 444.)
+    [Theory]
+    [InlineData(48, 32, "gradient", 8, 0)]
+    [InlineData(64, 48, "random", 16, 0)]
+    [InlineData(80, 80, "random", 32, 1)]   // OL_ONE
+    [InlineData(64, 48, "random", 16, 2)]   // OL_TWO
+    [InlineData(33, 40, "random", 8, 0)]    // non-16-aligned
+    public void OurEncodeGray16_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var y = JxrBd16Tests.Pattern(w, h, kind, 7);
+        var jxr = JxrImageCodec.EncodeGray16(y, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
+        var (dw, dh, dy) = JxrImageCodec.DecodeGray16(jxr); // our decode of our lossy file
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 3"); // 16bppGray
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our lossy BD16 gray file");
+
+            var (rw, rh, samples) = ReadTiffSamples(tif);
+            (dw, dh).ShouldBe((w, h));
+            samples.Length.ShouldBe(w * h);
+            for (var i = 0; i < w * h; i++)
+                dy[i].ShouldBe(samples[i], $"Y[{i}] (lossy QP{qp} gray16 OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
+    [Theory]
+    [InlineData(48, 32, "gradient", 8, 0)]
+    [InlineData(64, 48, "random", 16, 0)]
+    [InlineData(80, 80, "random", 32, 1)]   // OL_ONE
+    [InlineData(64, 48, "random", 16, 2)]   // OL_TWO
+    [InlineData(33, 40, "random", 8, 0)]    // non-16-aligned
+    public void OurEncodeRgb48_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var r = JxrBd16Tests.Pattern(w, h, kind, 1);
+        var g = JxrBd16Tests.Pattern(w, h, kind, 2);
+        var b = JxrBd16Tests.Pattern(w, h, kind, 3);
+        var jxr = JxrImageCodec.EncodeRgb48(r, g, b, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
+        var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb48(jxr); // our decode of our lossy file
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 10"); // 48bppRGB
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our lossy BD16 RGB file");
+
+            var (rw, rh, samples) = ReadTiffSamples(tif);
+            (dw, dh).ShouldBe((w, h));
+            samples.Length.ShouldBe(w * h * 3);
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(samples[i * 3 + 0], $"R[{i}] (lossy QP{qp} rgb48 OL{overlap} {kind} {w}x{h})");
+                dg[i].ShouldBe(samples[i * 3 + 1], $"G[{i}] (lossy QP{qp} rgb48 OL{overlap} {kind} {w}x{h})");
+                db[i].ShouldBe(samples[i * 3 + 2], $"B[{i}] (lossy QP{qp} rgb48 OL{overlap} {kind} {w}x{h})");
+            }
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
+    // BD16-integer NO_FLEXBITS (the flexbits plane omitted ⇒ forces scaled-arith): exercises the same
+    // BD16 scaled store as lossy QP, but at QP 0. Our decode of our file must agree with JxrDecApp's.
+    [Theory]
+    [InlineData(48, 32, "gradient", 0)]
+    [InlineData(64, 48, "random", 0)]
+    [InlineData(80, 80, "random", 1)]   // OL_ONE
+    [InlineData(64, 48, "random", 2)]   // OL_TWO
+    [InlineData(33, 40, "random", 0)]   // non-16-aligned
+    public void OurEncodeGray16_NoFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var y = JxrBd16Tests.Pattern(w, h, kind, 7);
+        var jxr = JxrImageCodec.EncodeGray16(y, w, h, overlap: overlap, noFlexBits: true);
+        var (dw, dh, dy) = JxrImageCodec.DecodeGray16(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 3"); // 16bppGray
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our NO_FLEXBITS BD16 gray file");
+
+            var (rw, rh, samples) = ReadTiffSamples(tif);
+            (dw, dh).ShouldBe((w, h));
+            samples.Length.ShouldBe(w * h);
+            for (var i = 0; i < w * h; i++)
+                dy[i].ShouldBe(samples[i], $"Y[{i}] (NoFlexBits gray16 OL{overlap} {kind} {w}x{h})");
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
+    [Theory]
+    [InlineData(48, 32, "gradient", 0)]
+    [InlineData(64, 48, "random", 0)]
+    [InlineData(80, 80, "random", 1)]   // OL_ONE
+    [InlineData(64, 48, "random", 2)]   // OL_TWO
+    [InlineData(33, 40, "random", 0)]   // non-16-aligned
+    public void OurEncodeRgb48_NoFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap)
+    {
+        var decApp = FindOracle("JxrDecApp.exe");
+        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+
+        var r = JxrBd16Tests.Pattern(w, h, kind, 1);
+        var g = JxrBd16Tests.Pattern(w, h, kind, 2);
+        var b = JxrBd16Tests.Pattern(w, h, kind, 3);
+        var jxr = JxrImageCodec.EncodeRgb48(r, g, b, w, h, overlap: overlap, noFlexBits: true);
+        var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb48(jxr);
+
+        var (tif, jxrPath) = (TempPath(".tif"), TempPath(".jxr"));
+        File.WriteAllBytes(jxrPath, jxr);
+        try
+        {
+            var (exit, so, se) = Run(decApp, $"-i \"{jxrPath}\" -o \"{tif}\" -c 10"); // 48bppRGB
+            _out.WriteLine($"JxrDecApp exit={exit}\n{so}\n{se}");
+            exit.ShouldBe(0, "JxrDecApp must decode our NO_FLEXBITS BD16 RGB file");
+
+            var (rw, rh, samples) = ReadTiffSamples(tif);
+            (dw, dh).ShouldBe((w, h));
+            samples.Length.ShouldBe(w * h * 3);
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(samples[i * 3 + 0], $"R[{i}] (NoFlexBits rgb48 OL{overlap} {kind} {w}x{h})");
+                dg[i].ShouldBe(samples[i * 3 + 1], $"G[{i}] (NoFlexBits rgb48 OL{overlap} {kind} {w}x{h})");
+                db[i].ShouldBe(samples[i * 3 + 2], $"B[{i}] (NoFlexBits rgb48 OL{overlap} {kind} {w}x{h})");
+            }
+        }
+        finally { Cleanup(jxrPath, tif); }
+    }
+
     // ----------------------------------------------------------------- helpers
 
     /// <summary>Read a 16-bit TIFF via SharpAstro.Tiff and return its samples as ints,
