@@ -55,18 +55,12 @@ public static class JxrContainer
             ?? throw new InvalidDataException("Required PIXEL_FORMAT tag missing");
         var pixelFormat = new JxrPixelFormat(pixelFormatBytes);
 
-        if (imageOffset + (long)imageByteCount > file.Length)
-            throw new InvalidDataException("Primary codestream extents out of file bounds");
-        var codestream = file.Slice((int)imageOffset, (int)imageByteCount).ToArray();
+        var codestream = SliceCodestream(file, imageOffset, imageByteCount, "Primary");
 
         byte[]? alphaCodestream = null;
         if (TryGetScalarUInt32(file, ifd, JxrTag.AlphaOffset, out var alphaOffset) &&
             TryGetScalarUInt32(file, ifd, JxrTag.AlphaByteCount, out var alphaByteCount))
-        {
-            if (alphaOffset + (long)alphaByteCount > file.Length)
-                throw new InvalidDataException("Alpha codestream extents out of file bounds");
-            alphaCodestream = file.Slice((int)alphaOffset, (int)alphaByteCount).ToArray();
-        }
+            alphaCodestream = SliceCodestream(file, alphaOffset, alphaByteCount, "Alpha");
 
         // ---- Optional tags -------------------------------------------------
         uint? spatialXfrm = TryGetScalarUInt32(file, ifd, JxrTag.SpatialXfrmPrimary, out var s) ? s : null;
@@ -94,6 +88,18 @@ public static class JxrContainer
         using var ms = new MemoryStream();
         stream.CopyTo(ms);
         return Read(ms.GetBuffer().AsSpan(0, (int)ms.Length));
+    }
+
+    // Slice a codestream at [offset, offset+byteCount), clamping byteCount to the end of file. jxrlib
+    // writes a loose ALPHA_BYTE_COUNT (it stores the final stream length, not the alpha's own size) and
+    // expects readers to take "alpha = offset → EOF"; a byte count that overruns the file is therefore
+    // truncated rather than treated as corruption. The offset itself must still be in bounds.
+    private static byte[] SliceCodestream(ReadOnlySpan<byte> file, uint offset, uint byteCount, string which)
+    {
+        if (offset > file.Length)
+            throw new InvalidDataException($"{which} codestream offset out of file bounds");
+        long end = Math.Min((long)offset + byteCount, file.Length);
+        return file.Slice((int)offset, (int)(end - offset)).ToArray();
     }
 
     // -----------------------------------------------------------------------

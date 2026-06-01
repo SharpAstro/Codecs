@@ -44,6 +44,51 @@ public static class JxrImageCodec
     }
 
     /// <summary>
+    /// Encode a BD8 <b>RGBA</b> image (each of <paramref name="r"/>/<paramref name="g"/>/<paramref name="b"/>/<paramref name="a"/>
+    /// is <c>width*height</c> samples, 0..255) into a <c>.jxr</c> byte stream with a <b>planar alpha</b>
+    /// plane — jxrlib's default alpha mode (`-a 2`): the colour is one codestream (YCoCg-R + YUV444) and
+    /// the alpha is a second, self-contained Y-only codestream stored alongside it in the container
+    /// (32bppBGRA pixel format). The alpha plane is always lossless (jxrlib default <c>-Q 1</c>); the QP
+    /// indices apply to the colour plane. Arbitrary dimensions; <paramref name="overlap"/> as elsewhere.
+    /// </summary>
+    public static byte[] EncodeRgba32(ReadOnlySpan<int> r, ReadOnlySpan<int> g, ReadOnlySpan<int> b, ReadOnlySpan<int> a,
+                                      int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                      JxrTileLayout? tiles = null)
+    {
+        var color = JxrCodestream.Encode(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, tiles: tiles);
+        var alpha = JxrCodestream.EncodeGray(a, width, height, overlap: overlap, tiles: tiles); // planar alpha: lossless Y-only
+        var file = new JxrFile(
+            Width: (uint)width,
+            Height: (uint)height,
+            PixelFormat: JxrPixelFormat.Bgra32Bpp,
+            Codestream: color,
+            AlphaCodestream: alpha);
+        return JxrContainer.Write(file);
+    }
+
+    /// <summary>Decode a planar-alpha <c>.jxr</c> file (from <see cref="EncodeRgba32"/> or jxrlib's
+    /// 32bppBGRA / <c>-a 2</c>) back into BD8 RGBA channels. If the file has no alpha codestream the
+    /// alpha channel is returned fully opaque (255).</summary>
+    public static (int width, int height, int[] r, int[] g, int[] b, int[] a) DecodeRgba32(ReadOnlySpan<byte> jxr)
+    {
+        var file = JxrContainer.Read(jxr);
+        var (w, h, r, g, b) = JxrCodestream.Decode(file.Codestream);
+        int[] a;
+        if (file.AlphaCodestream is { Length: > 0 } alphaCs)
+        {
+            var (aw, ah, ay) = JxrCodestream.DecodeGray(alphaCs);
+            if (aw != w || ah != h) throw new InvalidDataException("Alpha plane dimensions do not match the colour plane.");
+            a = ay;
+        }
+        else
+        {
+            a = new int[w * h];
+            Array.Fill(a, 255);
+        }
+        return (w, h, r, g, b, a);
+    }
+
+    /// <summary>
     /// Encode a <paramref name="width"/>×<paramref name="height"/> BD8 grayscale image
     /// (<c>width*height</c> samples in raster order, values 0..255) into a <c>.jxr</c> byte
     /// stream — a single-channel Y-only codestream (no colour transform). Dimensions must be
