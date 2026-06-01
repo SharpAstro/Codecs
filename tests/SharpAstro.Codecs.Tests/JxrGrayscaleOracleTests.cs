@@ -159,6 +159,84 @@ public sealed class JxrGrayscaleOracleTests
         }
     }
 
+    // Multi-tile grayscale (SOFT tiles): our Y-only multi-tile codestream must be byte-for-byte
+    // identical to JxrEncApp's (-c 2 = 8bppGray, -U rows cols). Proves the generalized multi-tile core
+    // drives the single-channel path correctly (tiling header, INDEX_TABLE_TILES, per-tile entropy).
+    [Theory]
+    [InlineData(64, 32, "gradient", 0, 2, 1)]
+    [InlineData(64, 64, "gradient", 0, 2, 2)]
+    [InlineData(128, 64, "random", 0, 4, 2)]
+    [InlineData(544, 16, "gradient", 0, 2, 1)]  // spans the 16-MB group boundary
+    [InlineData(64, 32, "gradient", 1, 2, 1)]   // OL_ONE
+    [InlineData(64, 64, "random", 1, 2, 2)]
+    [InlineData(128, 64, "gradient", 2, 4, 2)]  // OL_TWO
+    public void OurEncodeGray_Tiled_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap, int cols, int rows)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var y = JxrGrayscaleTests.Pattern(w, h, kind);
+        int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
+        var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
+        var ours = JxrImageCodec.EncodeGray8(y, w, h, overlap: overlap, tiles: layout);
+        var oursCs = JxrContainer.Read(ours).Codestream;
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxrg_tile_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp8Gray(bmpPath, w, h, y);
+        try
+        {
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 2 -q 1 -l {overlap} -U {rows} {cols} -f");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the tiled gray BMP");
+
+            var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
+            _out.WriteLine($"ours={oursCs.Length} theirs={theirs.Length}");
+            oursCs.Length.ShouldBe(theirs.Length, $"codestream length (gray tiled {cols}x{rows} OL{overlap} {kind} {w}x{h})");
+            for (var i = 0; i < oursCs.Length; i++)
+                oursCs[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (gray tiled {cols}x{rows} OL{overlap} {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // Multi-tile gray decode: a tiled gray .jxr from JxrEncApp must decode losslessly through our codec.
+    [Theory]
+    [InlineData(64, 64, "gradient", 0, 2, 2)]
+    [InlineData(128, 64, "random", 0, 4, 2)]
+    [InlineData(64, 64, "random", 1, 2, 2)]
+    [InlineData(128, 64, "gradient", 2, 4, 2)]
+    public void JxrlibEncodeGray_Tiled_DecodedByUs_IsLossless(int w, int h, string kind, int overlap, int cols, int rows)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var y = JxrGrayscaleTests.Pattern(w, h, kind);
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxrg_tdec_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp8Gray(bmpPath, w, h, y);
+        try
+        {
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 2 -q 1 -l {overlap} -U {rows} {cols} -f");
+            exit.ShouldBe(0, "JxrEncApp must encode the tiled gray BMP");
+
+            var (dw, dh, dy) = JxrImageCodec.DecodeGray8(File.ReadAllBytes(jxrPath));
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+                dy[i].ShouldBe(y[i], $"Y[{i}] (gray tiled-decode {cols}x{rows} OL{overlap} {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
     // Decoder conformance: a lossless Y-only file from JxrEncApp must decode losslessly
     // through our container reader + DecodeGray (also proves we parse real jxrlib gray files).
     [Theory]
