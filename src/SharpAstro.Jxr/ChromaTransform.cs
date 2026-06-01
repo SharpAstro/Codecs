@@ -9,10 +9,10 @@ namespace SharpAstro.Jxr;
 /// <para>Forward = stage-1 PCT on each block, then the chroma second stage on the block
 /// DCs; inverse reverses it. With no overlap each MB is self-contained (no cross-MB
 /// dependency — jxrlib's staggered two-row window produces the identical per-MB result),
-/// so this mirrors <see cref="SignalTransform"/>'s per-MB 444 path. The Photo Overlap
-/// (POT) pre-/post-filters for <c>OL_ONE</c> / <c>OL_TWO</c> on the reduced grid are a
-/// separate follow-on. Faithful to jxrlib's <c>420_UV</c> / <c>422_UV</c> transform loops
-/// (strFwdTransform.c / strInvTransform.c).</para>
+/// so this mirrors <see cref="SignalTransform"/>'s per-MB 444 path. The reduced-grid Photo
+/// Overlap (POT) post-filters for <c>OL_ONE</c> / <c>OL_TWO</c> decode live in
+/// <see cref="ChromaOverlapTransform"/>. Faithful to jxrlib's <c>420_UV</c> / <c>422_UV</c>
+/// transform loops (strFwdTransform.c / strInvTransform.c).</para>
 /// </summary>
 internal static class ChromaTransform
 {
