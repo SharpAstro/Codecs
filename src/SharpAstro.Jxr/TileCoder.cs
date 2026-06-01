@@ -25,6 +25,8 @@ internal sealed class TileCoder
 
     private readonly int Channels;
     private readonly ColorFormat Cf;
+    private readonly bool _reducedChroma; // YUV420/422: chroma channels use the reduced predictors
+    private readonly bool _is420;
     private PredInfo[][] _cur;   // [ch][mbX] current MB row
     private PredInfo[][] _prev;  // [ch][mbX] previous MB row
     private readonly int _mbWidth;
@@ -34,6 +36,8 @@ internal sealed class TileCoder
         _mbWidth = mbWidth;
         Channels = channels;
         Cf = cf;
+        _reducedChroma = cf is ColorFormat.Yuv420 or ColorFormat.Yuv422;
+        _is420 = cf == ColorFormat.Yuv420;
         _cur = NewRow(mbWidth, channels);
         _prev = NewRow(mbWidth, channels);
     }
@@ -80,8 +84,16 @@ internal sealed class TileCoder
 
         for (var ch = 0; ch < Channels; ch++)
         {
-            Prediction.DcAdPredictEnc(mb.BlockDc[ch], dcMode, adMode, Left(ch, mbX), _prev[ch][mbX]);
-            Prediction.AcPredictEnc(mb.Plane[ch], acMode);
+            if (_reducedChroma && ch > 0)
+            {
+                Prediction.DcAdPredictEncChroma(mb.BlockDc[ch], dcMode, adMode, Left(ch, mbX), _prev[ch][mbX], _is420);
+                Prediction.AcPredictEncChroma(mb.Plane[ch], acMode, _is420);
+            }
+            else
+            {
+                Prediction.DcAdPredictEnc(mb.BlockDc[ch], dcMode, adMode, Left(ch, mbX), _prev[ch][mbX]);
+                Prediction.AcPredictEnc(mb.Plane[ch], acMode);
+            }
         }
 
         if (Trace.On && mbX < 4 && mbY < 2)
@@ -114,7 +126,12 @@ internal sealed class TileCoder
         int mode = DcAcMode(mb, mbX, ctxLeft, ctxTop);
         int dcMode = mode & 0x3, adMode = (mode >> 2) & 0x3;
         for (var ch = 0; ch < Channels; ch++)
-            Prediction.DcAdPredictDec(mb.BlockDc[ch], dcMode, adMode, Left(ch, mbX), _prev[ch][mbX]);
+        {
+            if (_reducedChroma && ch > 0)
+                Prediction.DcAdPredictDecChroma(mb.BlockDc[ch], dcMode, adMode, Left(ch, mbX), _prev[ch][mbX], _is420);
+            else
+                Prediction.DcAdPredictDec(mb.BlockDc[ch], dcMode, adMode, Left(ch, mbX), _prev[ch][mbX]);
+        }
         mb.Orientation = 2 - Prediction.GetAcPredMode(mb.BlockDc, Cf);
 
         var (leftCbp, topCbp) = NeighborCbp(mbX);
@@ -124,7 +141,10 @@ internal sealed class TileCoder
         // predACDec: add AC, then store reconstructed neighbor info.
         int acMode = 2 - mb.Orientation;
         for (var ch = 0; ch < Channels; ch++)
-            Prediction.AcPredictDec(mb.Plane[ch], acMode);
+        {
+            if (_reducedChroma && ch > 0) Prediction.AcPredictDecChroma(mb.Plane[ch], acMode, _is420);
+            else Prediction.AcPredictDec(mb.Plane[ch], acMode);
+        }
 
         UpdatePredInfo(mb, mbX); // reconstructed DC/AD/QP
     }
@@ -160,7 +180,8 @@ internal sealed class TileCoder
             var pi = _cur[ch][mbX];
             pi.Dc = mb.BlockDc[ch][0];
             pi.QpIndex = QIndexLp;
-            Prediction.CopyAc(mb.BlockDc[ch], pi.Ad);
+            if (_reducedChroma && ch > 0) Prediction.CopyAcChroma(mb.BlockDc[ch], pi.Ad, _is420);
+            else Prediction.CopyAc(mb.BlockDc[ch], pi.Ad);
         }
     }
 

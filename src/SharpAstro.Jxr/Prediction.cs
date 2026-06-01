@@ -30,9 +30,10 @@ internal sealed class PredInfo
 /// JPEG XR DC / LP-AD / AC prediction, ported faithfully from jxrlib
 /// (image/sys/strPredQuant.c mode selectors; image/encode/strPredQuantEnc.c
 /// <c>predMacroblockEnc</c>; image/decode/strPredQuantDec.c <c>predDCACDec</c> /
-/// <c>predACDec</c>). This covers the full-resolution path (Y_ONLY / YUV_444 /
-/// CMYK / NCOMPONENT — sixteen 4×4 blocks per channel). YUV 4:2:0 / 4:2:2 chroma
-/// subsampling prediction is deferred.
+/// <c>predACDec</c>). The full-resolution path (Y_ONLY / YUV_444 / CMYK / NCOMPONENT —
+/// sixteen 4×4 blocks per channel) is the <c>...Enc</c>/<c>...Dec</c> + <see cref="CopyAc"/>
+/// set; the reduced YUV 4:2:0 / 4:2:2 chroma path (4- / 8-block planes) is the
+/// <c>...Chroma</c> set (<see cref="DcAdPredictEncChroma"/> etc.).
 /// </summary>
 /// <remarks>
 /// DC/AD prediction is a plain neighbor subtract (encode) / add (decode) on the
@@ -201,6 +202,152 @@ internal static class Prediction
                 plane[j + 5] += plane[j - 64 + 5];
                 plane[j + 6] += plane[j - 64 + 6];
             }
+        }
+    }
+
+    // ---- reduced chroma (YUV420/422) DC/AD/AC prediction ----
+    // strPredQuant*.c chroma branches: 420 chroma is a 4-block 2×2 super-block (BlockDc[0..3]),
+    // 422 an 8-block 4×2 (BlockDc[0..7]). DC mean uses +1 rounding (vs luma's plain >>1). The 422
+    // AD-from-top carries an intra-block cascade ([6]∓[2]) that also fires for DC-from-top with no
+    // AD prediction. The DC/AD/AC prediction modes are the same values shared with luma.
+
+    /// <summary>Encode-side DC+AD prediction subtract for one reduced chroma channel (YUV420 if <paramref name="is420"/>, else YUV422).</summary>
+    public static void DcAdPredictEncChroma(Span<int> block, int dcMode, int adMode, PredInfo left, PredInfo top, bool is420)
+    {
+        if (dcMode == 1) block[0] -= top.Dc;
+        else if (dcMode == 0) block[0] -= left.Dc;
+        else if (dcMode == 2) block[0] -= (left.Dc + top.Dc + 1) >> 1;
+
+        if (is420)
+        {
+            if (adMode == 1) block[2] -= top.Ad[1];
+            else if (adMode == 0) block[1] -= left.Ad[0];
+        }
+        else
+        {
+            if (adMode == 1) { block[4] -= top.Ad[4]; block[6] -= block[2]; block[2] -= top.Ad[3]; }
+            else if (adMode == 0) { block[4] -= left.Ad[4]; block[1] -= left.Ad[0]; block[5] -= left.Ad[2]; }
+            else if (dcMode == 1) block[6] -= block[2];
+        }
+    }
+
+    /// <summary>Decode-side DC+AD prediction add for one reduced chroma channel — exact inverse of <see cref="DcAdPredictEncChroma"/>.</summary>
+    public static void DcAdPredictDecChroma(Span<int> block, int dcMode, int adMode, PredInfo left, PredInfo top, bool is420)
+    {
+        if (dcMode == 1) block[0] += top.Dc;
+        else if (dcMode == 0) block[0] += left.Dc;
+        else if (dcMode == 2) block[0] += (left.Dc + top.Dc + 1) >> 1;
+
+        if (is420)
+        {
+            if (adMode == 1) block[2] += top.Ad[1];
+            else if (adMode == 0) block[1] += left.Ad[0];
+        }
+        else
+        {
+            // reverse the encode cascade: restore [2] from the neighbor first, then spread to [6].
+            if (adMode == 1) { block[4] += top.Ad[4]; block[2] += top.Ad[3]; block[6] += block[2]; }
+            else if (adMode == 0) { block[4] += left.Ad[4]; block[1] += left.Ad[0]; block[5] += left.Ad[2]; }
+            else if (dcMode == 1) block[6] += block[2];
+        }
+    }
+
+    /// <summary>copyAC for a reduced chroma DC block — the neighbor AD slots a 420/422 chroma MB exposes.</summary>
+    public static void CopyAcChroma(ReadOnlySpan<int> block, Span<int> ad, bool is420)
+    {
+        ad[0] = block[1];
+        ad[1] = block[2];
+        if (!is420)
+        {
+            ad[2] = block[5];
+            ad[3] = block[6];
+            ad[4] = block[4];
+        }
+    }
+
+    /// <summary>Encode-side AC prediction subtract on a reduced chroma HP plane (64 ints / 420, 128 / 422).</summary>
+    public static void AcPredictEncChroma(Span<int> plane, int acPredMode, bool is420)
+    {
+        if (is420)
+        {
+            if (acPredMode == 1) // from top: blocks at 16,48 reference the block above (−16)
+                for (var j = 3; j >= 1; j -= 2)
+                {
+                    int o = 16 * j;
+                    plane[o + 10] -= plane[o - 16 + 10];
+                    plane[o + 2] -= plane[o - 16 + 2];
+                    plane[o + 9] -= plane[o - 16 + 9];
+                }
+            else if (acPredMode == 0) // from left: blocks at 32,48 reference −32
+                for (var j = 3; j >= 2; j--)
+                {
+                    int o = 16 * j;
+                    plane[o + 5] -= plane[o - 32 + 5];
+                    plane[o + 1] -= plane[o - 32 + 1];
+                    plane[o + 6] -= plane[o - 32 + 6];
+                }
+        }
+        else // 422
+        {
+            if (acPredMode == 1) // from top: blkOffsetUV_422 indices 2..7, reverse (refs stay original)
+                for (var j = 7; j >= 2; j--)
+                {
+                    int o = MacroblockLayout.BlkOffsetUV422[j];
+                    plane[o + 10] -= plane[o - 16 + 10];
+                    plane[o + 2] -= plane[o - 16 + 2];
+                    plane[o + 9] -= plane[o - 16 + 9];
+                }
+            else if (acPredMode == 0) // from left: odd indices {1,3,5,7}, reference −64
+                for (var j = 7; j >= 1; j -= 2)
+                {
+                    int o = MacroblockLayout.BlkOffsetUV422[j];
+                    plane[o + 5] -= plane[o - 64 + 5];
+                    plane[o + 1] -= plane[o - 64 + 1];
+                    plane[o + 6] -= plane[o - 64 + 6];
+                }
+        }
+    }
+
+    /// <summary>Decode-side AC prediction add on a reduced chroma HP plane — inverse of <see cref="AcPredictEncChroma"/>.</summary>
+    public static void AcPredictDecChroma(Span<int> plane, int acPredMode, bool is420)
+    {
+        if (is420)
+        {
+            if (acPredMode == 1)
+                for (var j = 1; j <= 3; j += 2)
+                {
+                    int o = 16 * j;
+                    plane[o + 2] += plane[o - 16 + 2];
+                    plane[o + 10] += plane[o - 16 + 10];
+                    plane[o + 9] += plane[o - 16 + 9];
+                }
+            else if (acPredMode == 0)
+                for (var j = 2; j <= 3; j++)
+                {
+                    int o = 16 * j;
+                    plane[o + 1] += plane[o - 32 + 1];
+                    plane[o + 5] += plane[o - 32 + 5];
+                    plane[o + 6] += plane[o - 32 + 6];
+                }
+        }
+        else // 422
+        {
+            if (acPredMode == 1)
+                for (var j = 2; j < 8; j++)
+                {
+                    int o = MacroblockLayout.BlkOffsetUV422[j];
+                    plane[o + 10] += plane[o - 16 + 10];
+                    plane[o + 2] += plane[o - 16 + 2];
+                    plane[o + 9] += plane[o - 16 + 9];
+                }
+            else if (acPredMode == 0)
+                for (var j = 1; j < 8; j += 2)
+                {
+                    int o = MacroblockLayout.BlkOffsetUV422[j];
+                    plane[o + 1] += plane[o - 64 + 1];
+                    plane[o + 5] += plane[o - 64 + 5];
+                    plane[o + 6] += plane[o - 64 + 6];
+                }
         }
     }
 }
