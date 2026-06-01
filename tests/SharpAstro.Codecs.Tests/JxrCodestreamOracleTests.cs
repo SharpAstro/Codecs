@@ -907,6 +907,111 @@ public sealed class JxrCodestreamOracleTests
         }
     }
 
+    // FREQUENCY mode (jxrlib's DEFAULT bitstream ordering — SPATIAL is the `-f` opt-in). The four bands
+    // (DC/LP/HP/FLEXBITS) live in four separate packets located by an index table, rather than
+    // interleaved per-MB. Our entire codestream must be byte-for-byte identical to JxrEncApp's WITHOUT
+    // `-f`. (Per-band data is unchanged from SPATIAL — bands use independent adaptive models.)
+    [Theory]
+    [InlineData(16, 16, "gradient", 0)]
+    [InlineData(32, 32, "gradient", 0)]
+    [InlineData(48, 32, "random", 0)]
+    [InlineData(64, 48, "random", 0)]
+    [InlineData(80, 80, "gradient", 0)]
+    [InlineData(64, 48, "random", 1)]   // OL_ONE
+    [InlineData(80, 80, "gradient", 1)]
+    [InlineData(64, 48, "random", 2)]   // OL_TWO
+    [InlineData(17, 13, "random", 0)]   // non-16-aligned
+    [InlineData(33, 40, "random", 1)]
+    public void OurEncode_Frequency_CodestreamMatchesJxrlib(int w, int h, string kind, int ol)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x6D + w * 19 + h + ol) : Gradient(w, h);
+        var ours = JxrContainer.Read(JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: ol, frequencyMode: true)).Codestream;
+
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_freq_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            // NO -f ⇒ FREQUENCY mode (the default); -d 3 = YUV444, -q 1 lossless, -l overlap.
+            var (exit, stdout, stderr) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l {ol}");
+            _out.WriteLine($"JxrEncApp exit={exit}\n{stdout}\n{stderr}");
+            exit.ShouldBe(0, "JxrEncApp must encode the BMP");
+
+            var theirs = JxrContainer.Read(File.ReadAllBytes(jxrPath)).Codestream;
+            _out.WriteLine($"ours={ours.Length} theirs={theirs.Length}");
+            ours.Length.ShouldBe(theirs.Length, $"codestream length (freq OL{ol} {kind} {w}x{h})");
+            for (var i = 0; i < ours.Length; i++)
+                ours[i].ShouldBe(theirs[i], $"codestream byte {i} (0x{i:X}) (freq OL{ol} {kind} {w}x{h})");
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // FREQUENCY decode: a frequency-mode file from JxrEncApp (no -f) must decode losslessly through us.
+    [Theory]
+    [InlineData(64, 48, "random", 0)]
+    [InlineData(80, 80, "gradient", 1)]
+    [InlineData(64, 48, "random", 2)]
+    [InlineData(33, 40, "random", 0)]
+    public void JxrlibEncode_Frequency_DecodedByUs_IsLossless(int w, int h, string kind, int ol)
+    {
+        var encApp = FindOracle("JxrEncApp.exe");
+        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x2E + w * 7 + h + ol) : Gradient(w, h);
+        var tmp = Path.Combine(Path.GetTempPath(), $"jxr_freqd_{Guid.NewGuid():N}");
+        var bmpPath = tmp + ".bmp";
+        var jxrPath = tmp + ".jxr";
+        WriteBmp24(bmpPath, w, h, r, g, b);
+        try
+        {
+            var (exit, so, se) = Run(encApp, $"-i \"{bmpPath}\" -o \"{jxrPath}\" -c 0 -d 3 -q 1 -l {ol}");
+            exit.ShouldBe(0, "JxrEncApp must encode the BMP");
+
+            var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(File.ReadAllBytes(jxrPath));
+            (dw, dh).ShouldBe((w, h));
+            for (var i = 0; i < w * h; i++)
+            {
+                dr[i].ShouldBe(r[i], $"R[{i}] (freq decode OL{ol} {kind} {w}x{h})");
+                dg[i].ShouldBe(g[i], $"G[{i}]");
+                db[i].ShouldBe(b[i], $"B[{i}]");
+            }
+        }
+        finally
+        {
+            if (File.Exists(bmpPath)) File.Delete(bmpPath);
+            if (File.Exists(jxrPath)) File.Delete(jxrPath);
+        }
+    }
+
+    // FREQUENCY self round-trip: our frequency encode → our decode is lossless (and the decode path is
+    // exercised independently of the oracle).
+    [Theory]
+    [InlineData(48, 32, "random", 0)]
+    [InlineData(80, 80, "gradient", 1)]
+    [InlineData(64, 48, "random", 2)]
+    [InlineData(33, 40, "random", 0)]
+    public void OurEncode_Frequency_OurDecode_RoundTrips(int w, int h, string kind, int ol)
+    {
+        var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x5B + w * 3 + h + ol) : Gradient(w, h);
+        var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: ol, frequencyMode: true);
+        var (dw, dh, dr, dg, db) = JxrImageCodec.DecodeRgb24(jxr);
+        (dw, dh).ShouldBe((w, h));
+        for (var i = 0; i < w * h; i++)
+        {
+            dr[i].ShouldBe(r[i], $"R[{i}] (freq self OL{ol} {kind} {w}x{h})");
+            dg[i].ShouldBe(g[i], $"G[{i}]");
+            db[i].ShouldBe(b[i], $"B[{i}]");
+        }
+    }
+
     // Rung 7f.2/7f.3 — the strongest overlap check: our entire codestream must be byte-for-byte
     // identical to what the reference JxrEncApp emits for the same image and settings.
     [Theory]
