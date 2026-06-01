@@ -128,7 +128,8 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | `NO_HIGHPASS` / `DC_ONLY` (progressive truncation) | ⬜ |
 | **Quantization** | lossless (QP 0) | ✅ |
 | | uniform lossy QP (per-band DC/LP/HP index) | ✅ (RGB 4:4:4 / 4:2:0 / 4:2:2 + BD8 gray byte-exact vs `JxrEncApp -q N`; BD16-int gray/RGB, BD16F gray/RGB, BD32F gray lossy round-trip vs `JxrDecApp`) |
-| | non-uniform / per-band-reuse QP | ⬜ |
+| | per-channel (distinct Y/U/V) + band-reuse QP | ✅ decode (reads jxrlib quality-mode `-q 0.x` files — distinct U/V indices, USE_DC_QP / USE_LP_QP reuse); encode emits uniform |
+| | non-uniform per-**tile** QP | ⬜ |
 | **Dimensions** | arbitrary, non-16-aligned (pad-then-crop) | ✅ |
 | | hard `WINDOWING_FLAG` | ⬜ |
 | **Alpha** | separate alpha plane | ⬜ |
