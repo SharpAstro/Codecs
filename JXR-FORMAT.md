@@ -121,7 +121,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | **Overlap (POT)** | OL_NONE / OL_ONE / OL_TWO | ✅ |
 | **Tiling** | single-tile | ✅ |
 | | multi-tile, **soft** (+ `INDEX_TABLE`) | ✅ (all formats — RGB + grayscale × BD8/16/16F/32F + signed) |
-| | multi-tile, **hard** (overlap stops at tile edge) | ⬜ |
+| | multi-tile, **hard** (overlap stops at tile edge) | ⬜ (the reference `JxrEncApp` has no flag to emit hard tiles, so we cannot byte-validate an implementation — deliberately out of scope) |
 | **Bands present** | all bands | ✅ |
 | | `TRIM_FLEXBITS` (drop N low bits of the flexbits plane, N=1..15) | ✅ (encode + decode, byte-exact) |
 | | `NO_FLEXBITS` (omit the flexbits refinement plane) | ✅ BD8 RGB / gray (byte-exact); BD16-int gray/RGB, BD16F RGB, BD32F mono (round-trip vs `JxrDecApp`) — the consumer's HDR-master mode |
@@ -131,7 +131,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | per-channel (distinct Y/U/V) + band-reuse QP | ✅ decode (reads jxrlib quality-mode `-q 0.x` files — distinct U/V indices, USE_DC_QP / USE_LP_QP reuse); encode emits uniform |
 | | non-uniform per-**tile** QP | ⬜ |
 | **Dimensions** | arbitrary, non-16-aligned (pad-then-crop) | ✅ |
-| | hard `WINDOWING_FLAG` | ⬜ |
+| | hard `WINDOWING_FLAG` | ⬜ (the reference `JxrEncApp` always pad-then-crops and never sets `WINDOWING_FLAG`, so no oracle file exists to validate against — deliberately out of scope) |
 | **Alpha** | separate alpha plane | ⬜ |
 | **Container** | full `.jxr` TIFF-like file (IFD + pixel-format GUID + codestream) | ✅ |
 
