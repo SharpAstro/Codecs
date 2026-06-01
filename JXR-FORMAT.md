@@ -122,7 +122,7 @@ entirely on this axis** — independent of your on-disk bit depth or channel lay
 | | multi-tile, **hard** (overlap stops at tile edge) | ⬜ |
 | **Bands present** | all bands | ✅ |
 | | `TRIM_FLEXBITS` (drop N low bits of the flexbits plane, N=1..15) | ✅ (encode + decode, byte-exact) |
-| | `NO_FLEXBITS` (omit the flexbits refinement plane) | ✅ BD32F mono + BD8 RGB (byte-exact; the latter via the scaled-arith 444 path); BD16 / BD16F pending |
+| | `NO_FLEXBITS` (omit the flexbits refinement plane) | ✅ BD8 RGB (byte-exact), BD32F mono + BD16F RGB (round-trip vs `JxrDecApp`) — the consumer's HDR-master mode; BD16-int pending (different scaled rounding) |
 | | `NO_HIGHPASS` / `DC_ONLY` (progressive truncation) | ⬜ |
 | **Quantization** | lossless (QP 0) | ✅ |
 | | uniform lossy QP | ✅ |

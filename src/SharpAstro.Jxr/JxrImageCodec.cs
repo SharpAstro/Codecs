@@ -184,14 +184,15 @@ public static class JxrImageCodec
     /// dimensions are allowed (partial macroblocks edge-replicated); lossless.
     /// </summary>
     public static byte[] EncodeRgbF16(ReadOnlySpan<Half> rgb, int width, int height,
-                                      int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                      int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                      bool noFlexBits = false)
     {
         int n = width * height;
         if (rgb.Length < n * 3) throw new ArgumentException("Interleaved RGB half buffer must hold width*height*3 samples.", nameof(rgb));
         var (r, g, b) = (new Half[n], new Half[n], new Half[n]);
         for (var i = 0; i < n; i++) { r[i] = rgb[i * 3]; g[i] = rgb[i * 3 + 1]; b[i] = rgb[i * 3 + 2]; }
 
-        var codestream = JxrCodestream.EncodeRgbHalf(r, g, b, width, height, qpDc, qpLp, qpHp, overlap);
+        var codestream = JxrCodestream.EncodeRgbHalf(r, g, b, width, height, qpDc, qpLp, qpHp, overlap, noFlexBits);
         var file = new JxrFile(
             Width: (uint)width,
             Height: (uint)height,

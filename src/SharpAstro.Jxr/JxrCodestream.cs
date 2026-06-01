@@ -833,16 +833,20 @@ internal static class JxrCodestream
     /// magnitudes, bit-exact round-trip. Arbitrary dimensions are allowed (partial MBs edge-replicated); QP indices 0 for lossless.
     /// </summary>
     public static byte[] EncodeRgbHalf(ReadOnlySpan<Half> r, ReadOnlySpan<Half> g, ReadOnlySpan<Half> b,
-                                       int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0)
+                                       int width, int height, int qpDc = 0, int qpLp = 0, int qpHp = 0, int overlap = 0,
+                                       bool noFlexBits = false)
     {
         RequirePositiveDims(width, height);
         int mbCols = MbCount(width), mbRows = MbCount(height);
-        bool scaled = ScaledArith(qpDc, qpLp, qpHp);
+        // NO_FLEXBITS (sbSubband != SB_ALL) forces scaled-arith for BD16F (jxrlib strenc.c).
+        bool scaled = ScaledArith(qpDc, qpLp, qpHp) || noFlexBits;
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
+        int shift = scaled ? SignalTransform.ScaledShift : 0;
+        var bands = noFlexBits ? JxrBandsPresent.NoFlexbits : JxrBandsPresent.AllBands;
 
         var w = new BitWriter();
         WriteImageHeader(w, width, height, overlap, JxrOutputColorFormat.Rgb, JxrOutputBitDepth.Bd16F);
-        WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled, JxrOutputBitDepth.Bd16F);
+        WritePlaneHeader(w, qpDc, qpLp, qpHp, scaled, JxrOutputBitDepth.Bd16F, bands: bands);
         WriteProfileLevelInfo(w);
         WritePacketHeader(w);
 
@@ -855,12 +859,12 @@ internal static class JxrCodestream
                 ExtractMb1(g, width, height, mbR, mbC, mg);
                 ExtractMb1(b, width, height, mbR, mbC, mb);
                 SignalTransform.LoadColorHalf(mr, mg, mb, planes[0], planes[1], planes[2],
-                                              OverlapTransform.MbBase(mbCols, mbR, mbC));
+                                              OverlapTransform.MbBase(mbCols, mbR, mbC), shift);
             }
 
         OverlapTransform.Forward(planes, mbCols, mbRows, overlap, scaled);
 
-        var ctx = new CodingContext(ColorFormat.Yuv444, 3);
+        var ctx = new CodingContext(ColorFormat.Yuv444, 3) { NoFlexBits = noFlexBits };
         var tile = new TileCoder(mbCols);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
@@ -897,17 +901,16 @@ internal static class JxrCodestream
         var (clrFmt, qpDc, qpLp, qpHp, scaled, bands) = ReadPlaneHeader(ref reader, ih.OutputBitDepth);
         if (clrFmt != JxrInternalColorFormat.YUV444)
             throw new NotSupportedException($"BD16F RGB decode supports YUV444 only (got {clrFmt}); chroma-subsampled BD16F is not yet wired.");
-        if (bands != JxrBandsPresent.AllBands)
-            throw new NotSupportedException("BD16F RGB decode supports all-bands codestreams only (scaled-arith NO_FLEXBITS not yet wired).");
         ReadProfileLevelInfo(ref reader);
         ReadPacketHeader(ref reader);
 
         var (qDc, qLp, qHp) = Quantizers(qpDc, qpLp, qpHp, scaled);
         int mbCols = MbCount(width), mbRows = MbCount(height);
+        int outShift = scaled ? SignalTransform.ScaledShift : 0;
         var (r, g, b) = (new Half[width * height], new Half[width * height], new Half[width * height]);
 
         var planes = OverlapTransform.AllocatePlanes(mbCols, mbRows);
-        var ctx = new CodingContext(ColorFormat.Yuv444, 3);
+        var ctx = new CodingContext(ColorFormat.Yuv444, 3) { NoFlexBits = bands == JxrBandsPresent.NoFlexbits };
         var tile = new TileCoder(mbCols);
         for (var mbR = 0; mbR < mbRows; mbR++)
         {
@@ -929,7 +932,7 @@ internal static class JxrCodestream
             for (var mbC = 0; mbC < mbCols; mbC++)
             {
                 int baseOff = OverlapTransform.MbBase(mbCols, mbR, mbC);
-                SignalTransform.StoreColorHalf(planes[0], planes[1], planes[2], baseOff, mr, mg, mb);
+                SignalTransform.StoreColorHalf(planes[0], planes[1], planes[2], baseOff, mr, mg, mb, outShift);
                 StoreMb1(r, width, height, mbR, mbC, mr);
                 StoreMb1(g, width, height, mbR, mbC, mg);
                 StoreMb1(b, width, height, mbR, mbC, mb);
