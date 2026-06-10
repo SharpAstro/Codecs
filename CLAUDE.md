@@ -11,8 +11,16 @@ Two distinct bodies of code share one repo and one CI/versioning pipeline:
    **machine-transpiled** (via Hebron, see `generation/`) and unchanged from upstream — do
    not hand-edit them. 8-bit precision through the managed API; strips all metadata.
 2. **`src/SharpAstro.*/`** — hand-written, clean-room / faithfully-ported codec packages
-   (`Tiff`, `Png`, `Jxr`, `Exif`, `Color.Icc`, `Jpeg.IccInjector`). Each ships as an
-   independent NuGet. This is where almost all active development happens.
+   (`Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Exif`, `Color.Icc`, `Jpeg.IccInjector`).
+   Each ships as an independent NuGet. This is where almost all active development happens.
+
+   `SharpAstro.Jpeg` (decoder) has the cheapest oracle of the family: full-scale
+   output must be **byte-exact vs the in-repo stb port** (same input bytes through
+   `StbImageSharp.ImageResult`), so the oracle tests never need external binaries
+   and can't skip. Its full-scale pipeline is a 1:1 port of `StbImage.Generated.Jpg.cs`
+   (IDCT constants, upsampling kernels, fixed-point colour convert); the scaled-decode
+   (1/2–1/8) reduced IDCT is clean-room DCT-domain decimation — deliberately NOT
+   ported from libjpeg's jidctred.c, which is IJG-licensed (this repo is Unlicense).
 
 `CODECS.md` documents the per-package decode/encode matrix (its `SharpAstro.Jxr` row reflects
 the jxrlib re-port). See "JXR codec" below for the architecture and validation discipline.
