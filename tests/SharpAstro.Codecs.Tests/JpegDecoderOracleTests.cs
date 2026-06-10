@@ -343,13 +343,24 @@ public sealed class JpegDecoderOracleTests
     public void ReadInfo_ReportsDimensionsComponentsProgressive()
     {
         var baseline = EncodeJpeg(MakeRgbPattern(67, 45), 67, 45, 90, "4:2:0");
-        JpegDecoder.ReadInfo(baseline).ShouldBe(new JpegInfo(67, 45, 3, Progressive: false));
+        JpegDecoder.ReadInfo(baseline).ShouldBe(
+            new JpegInfo(67, 45, 3, Progressive: false) { ChromaSubsampled = true });
 
         var progressive = EncodeJpeg(MakeRgbPattern(20, 10), 20, 10, 90, progressive: true);
-        JpegDecoder.ReadInfo(progressive).ShouldBe(new JpegInfo(20, 10, 3, Progressive: true));
+        var progInfo = JpegDecoder.ReadInfo(progressive);
+        (progInfo.Width, progInfo.Height, progInfo.Components, progInfo.Progressive)
+            .ShouldBe((20, 10, 3, true));
+
+        var fullChroma = EncodeJpeg(MakeRgbPattern(16, 16), 16, 16, 90, "4:4:4");
+        JpegDecoder.ReadInfo(fullChroma).ChromaSubsampled.ShouldBeFalse();
+
+        var subsampled422 = EncodeJpeg(MakeRgbPattern(16, 16), 16, 16, 90, "4:2:2");
+        JpegDecoder.ReadInfo(subsampled422).ChromaSubsampled.ShouldBeTrue();
 
         var gray = EncodeJpeg(MakeRgbPattern(12, 9), 12, 9, 90, gray: true);
-        JpegDecoder.ReadInfo(gray).Components.ShouldBe(1);
+        var grayInfo = JpegDecoder.ReadInfo(gray);
+        grayInfo.Components.ShouldBe(1);
+        grayInfo.ChromaSubsampled.ShouldBeFalse();
 
         var cmyk = EncodeJpeg(MakeRgbPattern(12, 9), 12, 9, 90, cmyk: true);
         JpegDecoder.ReadInfo(cmyk).Components.ShouldBe(4);

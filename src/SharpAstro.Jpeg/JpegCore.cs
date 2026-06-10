@@ -108,7 +108,25 @@ internal ref struct JpegCore
     public JpegInfo ParseInfo()
     {
         DecodeHeader(ScanMode.Header);
-        return new JpegInfo(ImgX, ImgY, ImgN, _progressive);
+
+        // Header-scan mode returns before the frame header computes the sampling
+        // maxima, so derive subsampling directly from the component factors here.
+        var hMax = 1;
+        var vMax = 1;
+        for (var i = 0; i < ImgN; ++i)
+        {
+            hMax = Math.Max(hMax, _comp[i].H);
+            vMax = Math.Max(vMax, _comp[i].V);
+        }
+
+        var subsampled = false;
+        for (var i = 0; i < ImgN; ++i)
+        {
+            if (_comp[i].H != hMax || _comp[i].V != vMax)
+                subsampled = true;
+        }
+
+        return new JpegInfo(ImgX, ImgY, ImgN, _progressive) { ChromaSubsampled = subsampled };
     }
 
     /// <summary>Runs the full entropy decode into the (pooled) component planes.</summary>
