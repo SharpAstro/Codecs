@@ -8,6 +8,15 @@ namespace SharpAstro.Jpeg;
 public sealed record JpegInfo(int Width, int Height, int Components, bool Progressive)
 {
     /// <summary>
+    /// True when any component is stored at lower resolution than the frame
+    /// (chroma subsampling — 4:2:0 / 4:2:2 / etc.). Relevant for scaled decode:
+    /// at <see cref="JpegScale.Eighth"/> a subsampled chroma sample already covers
+    /// a 16×16 source footprint, so quality-sensitive callers may want to cap the
+    /// scale for such streams.
+    /// </summary>
+    public bool ChromaSubsampled { get; init; }
+
+    /// <summary>
     /// Output dimensions when decoding at <paramref name="scale"/> —
     /// <c>ceil(dim / factor)</c>, the libjpeg scaled-decode convention.
     /// </summary>
