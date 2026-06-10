@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+    <VersionPrefix>3.2.0</VersionPrefix>
+    <AssemblyVersion>3.2.0.0</AssemblyVersion>
+
+    <PackageId>SharpAstro.Jpeg</PackageId>
+    <Product>SharpAstro.Jpeg</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>Pure-managed JPEG (ITU-T T.81 / ISO 10918) decoder for .NET. Baseline sequential + progressive DCT, restart intervals, 4:4:4 / 4:2:2 / 4:2:0 / arbitrary chroma subsampling, grayscale, YCbCr, RGB-marked, and Adobe CMYK / YCCK (APP14) streams. Scaled decode at 1/2, 1/4, 1/8 resolution via reduced inverse DCT — a 33-megapixel source can decode straight to a thumbnail-sized raster without the full-resolution intermediate ever existing. Decode-to-caller-buffer API with ArrayPool-backed internals for allocation-free hot paths. Full-scale output is byte-exact against the StbImageSharp (stb_image) reference decoder. AOT-compatible, zero dependencies.</Description>
+    <PackageTags>jpeg jpg image codec decoder scaled idct thumbnail aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../UNLICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
