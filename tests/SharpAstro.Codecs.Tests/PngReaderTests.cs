@@ -179,6 +179,125 @@ public sealed class PngReaderTests
         Should.Throw<InvalidDataException>(() => PngReader.Decode(png));
     }
 
+    [Fact]
+    public void ToRgba8_Rgba8_IsIdentity()
+    {
+        const int w = 5, h = 4;
+        var src = new byte[w * h * 4];
+        var rng = new Random(unchecked((int)0xB0A7B0A7));
+        rng.NextBytes(src);
+
+        var img = PngReader.Decode(PngWriter.Encode(src, w, h));
+
+        // Color type 6 is already RGBA8 — ToRgba8 is a faithful copy of the samples.
+        img.ToRgba8().ShouldBe(src);
+    }
+
+    [Fact]
+    public void ToRgba8_Gray8_ExpandsToOpaqueGrey()
+    {
+        const int w = 3, h = 2;
+        byte[] grey = [0, 40, 80, 120, 160, 200];
+        var img = PngReader.Decode(PngWriter.EncodeGray8(grey, w, h));
+
+        var rgba = img.ToRgba8();
+        for (var i = 0; i < w * h; i++)
+        {
+            rgba[i * 4 + 0].ShouldBe(grey[i]); // R
+            rgba[i * 4 + 1].ShouldBe(grey[i]); // G = grey
+            rgba[i * 4 + 2].ShouldBe(grey[i]); // B = grey
+            rgba[i * 4 + 3].ShouldBe((byte)255); // opaque
+        }
+    }
+
+    [Fact]
+    public void ToRgba8_Gray16_TruncatesToHighByte()
+    {
+        const int w = 4, h = 4;
+        var src = new ushort[w * h];
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)(i * 4113); // spread across the 16-bit range
+
+        var img = PngReader.Decode(PngWriter.EncodeGray16(src, w, h));
+
+        var rgba = img.ToRgba8();
+        for (var i = 0; i < w * h; i++)
+        {
+            var hi = (byte)(src[i] >> 8);
+            rgba[i * 4 + 0].ShouldBe(hi);
+            rgba[i * 4 + 1].ShouldBe(hi);
+            rgba[i * 4 + 2].ShouldBe(hi);
+            rgba[i * 4 + 3].ShouldBe((byte)255);
+        }
+    }
+
+    [Fact]
+    public void ToRgba8_Rgba16_TruncatesEachChannelToHighByte()
+    {
+        const int w = 6, h = 5;
+        var src = new ushort[w * h * 4];
+        var rng = new Random(unchecked((int)0x16F0_16F0));
+        for (var i = 0; i < src.Length; i++) src[i] = (ushort)rng.Next(0, 65536);
+
+        var img = PngReader.Decode(PngWriter.EncodeRgba16(src, w, h));
+
+        var rgba = img.ToRgba8();
+        for (var i = 0; i < src.Length; i++)
+            rgba[i].ShouldBe((byte)(src[i] >> 8));
+    }
+
+    [Fact]
+    public void ToRgba8_Indexed_ExpandsPaletteAndTrns()
+    {
+        // The CBDT-glyph shape: 8-bit indices expand through PLTE (+ tRNS alpha).
+        const int w = 2, h = 3;
+        byte[] palette = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]; // 4 RGB entries
+        byte[] trns = [0, 255, 128]; // entry 3 absent -> opaque
+        byte[] indices = [0, 1, 2, 3, 1, 0];
+
+        var img = PngReader.Decode(BuildIndexedPng(w, h, palette, trns, indices));
+
+        byte[] expected =
+        [
+            10, 20, 30, 0,      // idx 0 -> pal[0..3], trns[0]=0
+            40, 50, 60, 255,    // idx 1 -> pal[3..6], trns[1]=255
+            70, 80, 90, 128,    // idx 2 -> pal[6..9], trns[2]=128
+            100, 110, 120, 255, // idx 3 -> pal[9..12], no trns entry -> opaque
+            40, 50, 60, 255,    // idx 1
+            10, 20, 30, 0,      // idx 0
+        ];
+        img.ToRgba8().ShouldBe(expected);
+    }
+
+    [Fact]
+    public void ToRgba8_IndexedWithoutPalette_Throws()
+    {
+        // A directly-constructed indexed image with no palette can't be expanded.
+        var img = new PngImage
+        {
+            Width = 1,
+            Height = 1,
+            BitDepth = 8,
+            ColorType = 3,
+            Pixels = [0],
+            Palette = null,
+        };
+        Should.Throw<InvalidDataException>(() => img.ToRgba8());
+    }
+
+    [Fact]
+    public void ToRgba8_UnknownColorType_Throws()
+    {
+        var img = new PngImage
+        {
+            Width = 1,
+            Height = 1,
+            BitDepth = 8,
+            ColorType = 99,
+            Pixels = [0],
+        };
+        Should.Throw<InvalidDataException>(() => img.ToRgba8());
+    }
+
     /// <summary>
     /// Assemble a valid 8-bit indexed PNG: signature + IHDR + optional PLTE +
     /// optional tRNS + IDAT (filter-type-0 rows, zlib-deflated) + IEND, each
