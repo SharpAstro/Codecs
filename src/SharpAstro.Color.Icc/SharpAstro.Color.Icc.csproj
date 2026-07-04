@@ -13,8 +13,8 @@
          recomputed per ICC v4 §7.2.18). Lets callers tag TIFFs / JPEGs
          with HDR10 / HLG / wide-gamut signalling that's recognised by
          PixInsight, Affinity Photo, recent Photoshop and ImageMagick. -->
-    <VersionPrefix>3.2.0</VersionPrefix>
-    <AssemblyVersion>3.2.0.0</AssemblyVersion>
+    <VersionPrefix>3.4.0</VersionPrefix>
+    <AssemblyVersion>3.4.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Color.Icc</PackageId>
     <Product>SharpAstro.Color.Icc</Product>
