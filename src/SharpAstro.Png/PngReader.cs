@@ -445,6 +445,95 @@ public sealed record PngImage
             result[i] = BinaryPrimitives.ReadUInt16BigEndian(Pixels.AsSpan(i * 2, 2));
         return result;
     }
+
+    /// <summary>
+    /// Expand the raw <see cref="Pixels"/> samples into tightly-packed 8-bit RGBA
+    /// (row-major, 4 bytes per pixel, top-down) — the layout most GPU / UI consumers
+    /// want. Handles every color type the decoder produces: greyscale (0), RGB (2),
+    /// indexed (3, via <see cref="Palette"/> + optional <see cref="PaletteAlpha"/>),
+    /// greyscale + alpha (4), and RGBA (6). 16-bit samples are truncated to their high
+    /// byte (<see cref="Pixels"/> holds 16-bit values big-endian, so the byte at the
+    /// sample offset already IS the high byte).
+    /// </summary>
+    /// <remarks>
+    /// The faithful-decode counterpart to the "give me display pixels" need:
+    /// <see cref="PngReader.Decode"/> keeps samples in their declared color type to
+    /// preserve the file exactly; this collapses them to RGBA8 on demand, so consumers
+    /// don't each re-implement the big-endian truncation and palette lookup.
+    /// </remarks>
+    /// <exception cref="InvalidDataException">
+    /// <see cref="ColorType"/> is not one of the five PNG color types (0/2/3/4/6), the
+    /// image is indexed but carries no <see cref="Palette"/>, or a pixel indexes past
+    /// the palette's end.
+    /// </exception>
+    public byte[] ToRgba8()
+    {
+        var w = Width;
+        var h = Height;
+        var src = Pixels;
+        var spp = SamplesPerPixel;
+        var step = BitDepth == 16 ? 2 : 1; // bytes per sample (high byte first for 16-bit)
+        var rowBytes = w * spp * step;
+        var dst = new byte[w * h * 4];
+
+        for (var y = 0; y < h; y++)
+        {
+            var srcRow = y * rowBytes;
+            var dstRow = y * w * 4;
+            for (var x = 0; x < w; x++)
+            {
+                var s = srcRow + x * spp * step;
+                byte r, g, b, a;
+                switch (ColorType)
+                {
+                    case 0: // greyscale
+                        r = g = b = src[s];
+                        a = 255;
+                        break;
+                    case 2: // RGB
+                        r = src[s];
+                        g = src[s + step];
+                        b = src[s + 2 * step];
+                        a = 255;
+                        break;
+                    case 3: // indexed: src[s] is an index into Palette (+ optional PaletteAlpha)
+                        if (Palette is not { } pal)
+                            throw new InvalidDataException("Indexed PNG has no palette to expand to RGBA8");
+                        var idx = src[s];
+                        var pi = idx * 3;
+                        if (pi + 2 >= pal.Length)
+                            throw new InvalidDataException(
+                                $"Palette index {idx} out of range (palette has {pal.Length / 3} entries)");
+                        r = pal[pi];
+                        g = pal[pi + 1];
+                        b = pal[pi + 2];
+                        a = PaletteAlpha is { } pa && idx < pa.Length ? pa[idx] : (byte)255;
+                        break;
+                    case 4: // greyscale + alpha
+                        r = g = b = src[s];
+                        a = src[s + step];
+                        break;
+                    case 6: // RGBA
+                        r = src[s];
+                        g = src[s + step];
+                        b = src[s + 2 * step];
+                        a = src[s + 3 * step];
+                        break;
+                    default:
+                        // Unreachable in practice: SamplesPerPixel (read above) already
+                        // throws for any color type outside {0,2,3,4,6}. Kept for definite
+                        // assignment of r/g/b/a and as a defensive backstop.
+                        throw new InvalidDataException($"Cannot expand PNG color type {ColorType} to RGBA8");
+                }
+                var d = dstRow + x * 4;
+                dst[d] = r;
+                dst[d + 1] = g;
+                dst[d + 2] = b;
+                dst[d + 3] = a;
+            }
+        }
+        return dst;
+    }
 }
 
 /// <summary>
