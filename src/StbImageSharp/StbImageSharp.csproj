@@ -12,8 +12,8 @@
          lockstep with a shared run-number patch. Bumped from 2.30 -> 3.0 alongside
          the SharpAstro.Tiff IccProfile API break, then 3.0 -> 3.1 alongside the
          SharpAstro.Png CicpChunk H.273-enum break + Color.Icc WithCicp helper. -->
-    <VersionPrefix>3.2.0</VersionPrefix>
-    <AssemblyVersion>3.2.0.0</AssemblyVersion>
+    <VersionPrefix>3.4.0</VersionPrefix>
+    <AssemblyVersion>3.4.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.StbImage</PackageId>
     <Product>SharpAstro.StbImage</Product>

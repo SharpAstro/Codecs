@@ -15,8 +15,8 @@
          now write `new CicpChunk(ColorPrimaries.BT2020, TransferFunction.Pq,
          MatrixCoefficients.Identity, true)`. The static presets
          (Hdr10Pq / Bt2020Hlg / Srgb) are unchanged source-wise. -->
-    <VersionPrefix>3.2.0</VersionPrefix>
-    <AssemblyVersion>3.2.0.0</AssemblyVersion>
+    <VersionPrefix>3.4.0</VersionPrefix>
+    <AssemblyVersion>3.4.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Png</PackageId>
     <Product>SharpAstro.Png</Product>
