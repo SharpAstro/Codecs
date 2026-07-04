@@ -43,6 +43,8 @@ public static class PngReader
         int? width = null, height = null, bitDepth = null, colorType = null,
              compressionMethod = null, filterMethod = null, interlaceMethod = null;
         var idatChunks = new List<byte[]>();
+        byte[]? palette = null;             // PLTE: 3 bytes (RGB) per entry
+        byte[]? paletteAlpha = null;        // tRNS (indexed meaning): 1 alpha byte per entry
         byte[]? iccProfileRaw = null;       // zlib-deflated, as on disk
         string? iccProfileName = null;
         byte[]? rawExif = null;
@@ -116,6 +118,20 @@ public static class PngReader
                 pos += 8 + len + 4;
                 break;
             }
+            else if (typeBytes.SequenceEqual("PLTE"u8))
+            {
+                if (len == 0 || len % 3 != 0)
+                    throw new InvalidDataException($"PLTE length must be a positive multiple of 3, got {len}");
+                palette = chunkData.ToArray();
+            }
+            else if (typeBytes.SequenceEqual("tRNS"u8))
+            {
+                // For indexed color (the only case this reader expands), tRNS is one
+                // alpha byte per palette entry, in palette order; entries past its end
+                // are fully opaque. For truecolor/gray tRNS carries a single transparent
+                // sample — not handled here (only the indexed meaning is surfaced).
+                paletteAlpha = chunkData.ToArray();
+            }
             else if (typeBytes.SequenceEqual("iCCP"u8))
             {
                 // iCCP layout: keyword (1..79 bytes) + null + compression method (1 byte) + compressed profile.
@@ -180,6 +196,8 @@ public static class PngReader
 
         if (width is null) throw new InvalidDataException("No IHDR chunk found");
         if (idatChunks.Count == 0) throw new InvalidDataException("No IDAT chunks found");
+        if (colorType == 3 && palette is null)
+            throw new InvalidDataException("Indexed-color PNG missing required PLTE chunk");
 
         // Concatenate IDAT chunks then inflate as a single zlib stream — the
         // spec lets a producer split IDATs anywhere, even mid-deflate-token.
@@ -195,6 +213,8 @@ public static class PngReader
             BitDepth = bitDepth.Value,
             ColorType = colorType.Value,
             Pixels = pixels,
+            Palette = palette,
+            PaletteAlpha = paletteAlpha,
             IccProfile = iccProfileRaw,
             IccProfileName = iccProfileName,
             SrgbRenderingIntent = sawSrgb ? srgbRenderingIntent : null,
@@ -226,8 +246,12 @@ public static class PngReader
             throw new InvalidDataException(
                 $"Invalid (ColorType={colorType}, BitDepth={bitDepth}) combination per PNG spec");
 
-        if (colorType == 3)
-            throw new NotSupportedException("Indexed-color PNGs (ColorType=3) not yet supported");
+        // Indexed-color is supported at 8-bit (one palette index per byte). Sub-byte
+        // indexed (1/2/4-bit) shares the general sub-byte gap below (it needs bit
+        // unpacking the unfilter path doesn't do yet).
+        if (colorType == 3 && bitDepth != 8)
+            throw new NotSupportedException(
+                $"Indexed-color PNGs are supported at 8-bit only for now (got {bitDepth}-bit)");
         if (bitDepth is 1 or 2 or 4)
             throw new NotSupportedException(
                 $"Sub-byte bit depths ({bitDepth}-bit) not yet supported; only 8 and 16 bit-per-sample for now");
@@ -353,6 +377,23 @@ public sealed record PngImage
     /// for a native-endian convenience view.
     /// </summary>
     public required byte[] Pixels { get; init; }
+
+    /// <summary>
+    /// Palette (<c>PLTE</c>) for indexed-color images (<see cref="ColorType"/> == 3):
+    /// RGB triples, 3 bytes per entry, in palette-index order. Null for non-indexed
+    /// images. Each byte in <see cref="Pixels"/> is a single index into this palette
+    /// (the reader keeps indexed pixels un-expanded to stay faithful to the file's
+    /// declared <see cref="ColorType"/> — expand via palette lookup at the consumer).
+    /// </summary>
+    public byte[]? Palette { get; init; }
+
+    /// <summary>
+    /// Per-palette-entry alpha (<c>tRNS</c>) for indexed-color images: one byte per
+    /// entry, in palette order. May be shorter than <see cref="Palette"/> — entries
+    /// past its end are fully opaque (255). Null when an indexed image has no tRNS
+    /// chunk (all opaque) or when the image is not indexed.
+    /// </summary>
+    public byte[]? PaletteAlpha { get; init; }
 
     /// <summary>Decompressed ICC profile bytes from the <c>iCCP</c> chunk, or null if absent.</summary>
     public byte[]? IccProfile { get; init; }

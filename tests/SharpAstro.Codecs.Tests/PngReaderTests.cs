@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.IO.Compression;
 using SharpAstro.Png;
 using Shouldly;
 
@@ -146,6 +148,106 @@ public sealed class PngReaderTests
             img.Height.ShouldBe(h);
             img.Pixels.ShouldBe(src, $"size {w}x{h}");
         }
+    }
+
+    [Fact]
+    public void Indexed8_Decodes_KeepingIndicesAndSurfacingPaletteAndTrns()
+    {
+        // PngWriter can't emit indexed color, so hand-build a minimal 8-bit
+        // indexed PNG (PLTE + tRNS) — the shape Noto Color Emoji's CBDT glyphs use.
+        const int w = 2, h = 3;
+        byte[] palette = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]; // 4 RGB entries
+        byte[] trns = [0, 255, 128]; // entry 3 absent -> opaque
+        byte[] indices = [0, 1, 2, 3, 1, 0]; // row-major, one index per pixel
+
+        var png = BuildIndexedPng(w, h, palette, trns, indices);
+        var img = PngReader.Decode(png);
+
+        img.Width.ShouldBe(w);
+        img.Height.ShouldBe(h);
+        img.BitDepth.ShouldBe(8);
+        img.ColorType.ShouldBe(3);                // faithful to the file; indices not expanded
+        img.Pixels.ShouldBe(indices);
+        img.Palette.ShouldBe(palette);
+        img.PaletteAlpha.ShouldBe(trns);
+    }
+
+    [Fact]
+    public void Indexed_MissingPlte_Throws()
+    {
+        var png = BuildIndexedPng(1, 1, palette: null, trns: null, indices: [0]);
+        Should.Throw<InvalidDataException>(() => PngReader.Decode(png));
+    }
+
+    /// <summary>
+    /// Assemble a valid 8-bit indexed PNG: signature + IHDR + optional PLTE +
+    /// optional tRNS + IDAT (filter-type-0 rows, zlib-deflated) + IEND, each
+    /// chunk carrying a correct CRC32.
+    /// </summary>
+    private static byte[] BuildIndexedPng(int w, int h, byte[]? palette, byte[]? trns, byte[] indices)
+    {
+        using var ms = new MemoryStream();
+        ms.Write([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]); // signature
+
+        var ihdr = new byte[13];
+        BinaryPrimitives.WriteUInt32BigEndian(ihdr.AsSpan(0, 4), (uint)w);
+        BinaryPrimitives.WriteUInt32BigEndian(ihdr.AsSpan(4, 4), (uint)h);
+        ihdr[8] = 8; // bit depth
+        ihdr[9] = 3; // color type = indexed
+        // ihdr[10..12] = compression/filter/interlace = 0
+        WriteChunk(ms, "IHDR"u8, ihdr);
+
+        if (palette is not null) WriteChunk(ms, "PLTE"u8, palette);
+        if (trns is not null) WriteChunk(ms, "tRNS"u8, trns);
+
+        // Filter type 0 (None) prefixed on each row.
+        var raw = new byte[(w + 1) * h];
+        for (var y = 0; y < h; y++)
+        {
+            raw[y * (w + 1)] = 0;
+            Array.Copy(indices, y * w, raw, y * (w + 1) + 1, w);
+        }
+        WriteChunk(ms, "IDAT"u8, ZlibCompress(raw));
+        WriteChunk(ms, "IEND"u8, []);
+        return ms.ToArray();
+    }
+
+    private static void WriteChunk(Stream s, ReadOnlySpan<byte> type, ReadOnlySpan<byte> data)
+    {
+        Span<byte> len = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(len, (uint)data.Length);
+        s.Write(len);
+        s.Write(type);
+        s.Write(data);
+        uint c = 0xFFFFFFFFu;
+        foreach (var x in type) c = CrcTable[(c ^ x) & 0xFF] ^ (c >> 8);
+        foreach (var x in data) c = CrcTable[(c ^ x) & 0xFF] ^ (c >> 8);
+        Span<byte> crc = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(crc, c ^ 0xFFFFFFFFu);
+        s.Write(crc);
+    }
+
+    private static byte[] ZlibCompress(byte[] data)
+    {
+        using var outMs = new MemoryStream();
+        using (var z = new ZLibStream(outMs, CompressionLevel.Optimal, leaveOpen: true))
+            z.Write(data);
+        return outMs.ToArray();
+    }
+
+    private static readonly uint[] CrcTable = BuildCrcTable();
+
+    private static uint[] BuildCrcTable()
+    {
+        var t = new uint[256];
+        for (uint n = 0; n < 256; n++)
+        {
+            var c = n;
+            for (var k = 0; k < 8; k++)
+                c = ((c & 1) != 0) ? 0xEDB88320u ^ (c >> 1) : (c >> 1);
+            t[n] = c;
+        }
+        return t;
     }
 
     private static int IndexOfAscii(byte[] data, string needle)
