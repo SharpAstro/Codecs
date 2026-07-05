@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\SharpAstro.Codecs\SharpAstro.Codecs.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Tiff\SharpAstro.Tiff.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Exif\SharpAstro.Exif.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Png\SharpAstro.Png.csproj" />
