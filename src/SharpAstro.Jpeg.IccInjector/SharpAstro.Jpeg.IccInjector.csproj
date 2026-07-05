@@ -7,8 +7,6 @@
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
-    <VersionPrefix>3.5.0</VersionPrefix>
-    <AssemblyVersion>3.5.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Jpeg.IccInjector</PackageId>
     <Product>SharpAstro.Jpeg.IccInjector</Product>

@@ -19,8 +19,6 @@
          `using SharpAstro.Color.Icc` for `using SharpAstro.Codecs.Abstractions`
          (names and codepoints unchanged). IccProfiles.WithCicp keeps its
          signature; this package now references Abstractions. -->
-    <VersionPrefix>3.5.0</VersionPrefix>
-    <AssemblyVersion>3.5.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Color.Icc</PackageId>
     <Product>SharpAstro.Color.Icc</Product>

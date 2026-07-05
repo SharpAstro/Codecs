@@ -1,0 +1,16 @@
+<Project>
+
+  <!-- Family-lockstep version shared by every package in the repo. This is the
+       LOCAL default only: CI publishes with an explicit -p:Version whose
+       Major.Minor comes from VERSION_PREFIX in .github/workflows/dotnet.yml —
+       that variable is the single source of truth for what ships to NuGet.
+       Bump BOTH together when bumping the family Major.Minor (lesson learned:
+       the 3.5 facade-adapters work first shipped as 3.4.49 because only the
+       csprojs were bumped). Per-package release notes stay as comments in the
+       individual csprojs. -->
+  <PropertyGroup>
+    <VersionPrefix>3.5.0</VersionPrefix>
+    <AssemblyVersion>3.5.0.0</AssemblyVersion>
+  </PropertyGroup>
+
+</Project>
