@@ -7,10 +7,11 @@
        Bump BOTH together when bumping the family Major.Minor (lesson learned:
        the 3.5 facade-adapters work first shipped as 3.4.49 because only the
        csprojs were bumped). Per-package release notes stay as comments in the
-       individual csprojs. -->
+       individual csprojs. 3.6: baseline JPEG encoder (JpegEncoder) joins
+       SharpAstro.Jpeg. -->
   <PropertyGroup>
-    <VersionPrefix>3.5.0</VersionPrefix>
-    <AssemblyVersion>3.5.0.0</AssemblyVersion>
+    <VersionPrefix>3.6.0</VersionPrefix>
+    <AssemblyVersion>3.6.0.0</AssemblyVersion>
   </PropertyGroup>
 
 </Project>

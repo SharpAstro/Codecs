@@ -11,8 +11,8 @@
     <PackageId>SharpAstro.Jpeg</PackageId>
     <Product>SharpAstro.Jpeg</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed JPEG (ITU-T T.81 / ISO 10918) decoder for .NET. Baseline sequential + progressive DCT, restart intervals, 4:4:4 / 4:2:2 / 4:2:0 / arbitrary chroma subsampling, grayscale, YCbCr, RGB-marked, and Adobe CMYK / YCCK (APP14) streams. Scaled decode at 1/2, 1/4, 1/8 resolution via reduced inverse DCT — a 33-megapixel source can decode straight to a thumbnail-sized raster without the full-resolution intermediate ever existing. Decode-to-caller-buffer API with ArrayPool-backed internals for allocation-free hot paths. Full-scale output is byte-exact against the StbImageSharp (stb_image) reference decoder. AOT-compatible.</Description>
-    <PackageTags>jpeg jpg image codec decoder scaled idct thumbnail aot</PackageTags>
+    <Description>Pure-managed JPEG (ITU-T T.81 / ISO 10918) codec for .NET. Decoder: baseline sequential + progressive DCT, restart intervals, 4:4:4 / 4:2:2 / 4:2:0 / arbitrary chroma subsampling, grayscale, YCbCr, RGB-marked, and Adobe CMYK / YCCK (APP14) streams, plus scaled decode at 1/2, 1/4, 1/8 resolution via reduced inverse DCT — a 33-megapixel source can decode straight to a thumbnail-sized raster without the full-resolution intermediate ever existing. Encoder (3.6): baseline sequential DCT, 4:4:4 / 4:2:0, quality 1..100 — a faithful port of the stb_image_write JPEG writer, byte-for-byte identical to that reference. Decode-to-caller-buffer API with ArrayPool-backed internals; JpegSegmentScanner surfaces APPn metadata segments. Full-scale decode is byte-exact against the StbImageSharp (stb_image) reference decoder. AOT-compatible.</Description>
+    <PackageTags>jpeg jpg image codec decoder encoder scaled idct thumbnail aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
