@@ -15,8 +15,13 @@
          now write `new CicpChunk(ColorPrimaries.BT2020, TransferFunction.Pq,
          MatrixCoefficients.Identity, true)`. The static presets
          (Hdr10Pq / Bt2020Hlg / Srgb) are unchanged source-wise. -->
-    <VersionPrefix>3.4.0</VersionPrefix>
-    <AssemblyVersion>3.4.0.0</AssemblyVersion>
+    <!-- 3.5: CicpChunk's H.273 enum types now come from
+         SharpAstro.Codecs.Abstractions (relocated out of SharpAstro.Color.Icc;
+         source-breaking using swap). PngImageDecoder maps cICP (and gAMA 1.0 ->
+         linear) onto IDecodedImage.ColorEncoding, so PNG-3 HDR signalling
+         survives the SharpAstro.Codecs facade instead of being dropped. -->
+    <VersionPrefix>3.5.0</VersionPrefix>
+    <AssemblyVersion>3.5.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Png</PackageId>
     <Product>SharpAstro.Png</Product>
@@ -38,12 +43,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- CicpChunk's H.273 enum codepoint definitions live in SharpAstro.Color.Icc;
-         the same enums drive ICC v4.4 cicp-tag injection via IccProfiles.WithCicp.
-         Centralising the enums means PNG cICP signalling and ICC cicp signalling
-         agree on naming + numbering. -->
+    <!-- IccProfiles.SRgbV4 is the documented source of profile bytes for the
+         iCCP-writing overloads (doc crefs in PngWriter / PngWriteOptions). The
+         H.273 enum codepoint definitions CicpChunk uses moved to
+         SharpAstro.Codecs.Abstractions in 3.5. -->
     <ProjectReference Include="..\SharpAstro.Color.Icc\SharpAstro.Color.Icc.csproj" />
-    <!-- IImageDecoder / IDecodedImage contract for the SharpAstro.Codecs facade. -->
+    <!-- IImageDecoder / IDecodedImage contract for the SharpAstro.Codecs facade,
+         plus the H.273 enums (ColorPrimaries / TransferFunction /
+         MatrixCoefficients) and ColorEncoding shared by CicpChunk and
+         IccProfiles.WithCicp - one vocabulary for PNG cICP signalling, ICC cicp
+         signalling, and the codec-neutral decode contract. -->
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
     <PackageReference Include="Microsoft.SourceLink.GitHub">
       <PrivateAssets>all</PrivateAssets>

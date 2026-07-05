@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.Reflection;
 using System.Security.Cryptography;
+using SharpAstro.Codecs.Abstractions;
 
 namespace SharpAstro.Color.Icc;
 

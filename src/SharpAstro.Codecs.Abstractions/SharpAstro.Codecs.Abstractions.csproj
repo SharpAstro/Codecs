@@ -8,13 +8,23 @@
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
-    <VersionPrefix>3.4.0</VersionPrefix>
-    <AssemblyVersion>3.4.0.0</AssemblyVersion>
+    <!-- 3.5: gains the colour vocabulary. The ITU-T H.273 enums (ColorPrimaries /
+         TransferFunction / MatrixCoefficients) relocate here from
+         SharpAstro.Color.Icc (source-breaking using swap; names and codepoints
+         unchanged), and IDecodedImage gains ColorEncoding - H.273 primaries +
+         transfer, code range, and float reference semantics - so decoders can
+         surface what the samples MEAN and PNG-3 cICP signalling is no longer
+         dropped at the facade boundary. The default (a DIM) is
+         ColorEncoding.AssumedSrgb, the assumption every existing consumer
+         already baked in; existing IDecodedImage implementations keep compiling
+         with their current meaning. -->
+    <VersionPrefix>3.5.0</VersionPrefix>
+    <AssemblyVersion>3.5.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Codecs.Abstractions</PackageId>
     <Product>SharpAstro.Codecs.Abstractions</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Shared abstractions for the SharpAstro image codec family: IImageDecoder (magic-byte sniff + fidelity/zero-copy decode) and IDecodedImage / RasterImage (a codec-neutral decoded raster). AOT-compatible, zero runtime dependencies.</Description>
+    <Description>Shared abstractions for the SharpAstro image codec family: IImageDecoder (magic-byte sniff + fidelity/zero-copy decode) and IDecodedImage / RasterImage (a codec-neutral decoded raster). Ships the ITU-T H.273 colour vocabulary (ColorPrimaries / TransferFunction / MatrixCoefficients) and a ColorEncoding record surfacing what decoded samples mean (sRGB, PQ/HLG HDR, linear light). AOT-compatible, zero runtime dependencies.</Description>
     <PackageTags>image codec decoder raster aot abstractions</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

@@ -13,13 +13,19 @@
          recomputed per ICC v4 §7.2.18). Lets callers tag TIFFs / JPEGs
          with HDR10 / HLG / wide-gamut signalling that's recognised by
          PixInsight, Affinity Photo, recent Photoshop and ImageMagick. -->
-    <VersionPrefix>3.4.0</VersionPrefix>
-    <AssemblyVersion>3.4.0.0</AssemblyVersion>
+    <!-- 3.5: the H.273 enums relocate to SharpAstro.Codecs.Abstractions so the
+         codec-neutral IDecodedImage.ColorEncoding can use them without pulling
+         this package in. Source-breaking for enum consumers: swap
+         `using SharpAstro.Color.Icc` for `using SharpAstro.Codecs.Abstractions`
+         (names and codepoints unchanged). IccProfiles.WithCicp keeps its
+         signature; this package now references Abstractions. -->
+    <VersionPrefix>3.5.0</VersionPrefix>
+    <AssemblyVersion>3.5.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Color.Icc</PackageId>
     <Product>SharpAstro.Color.Icc</Product>
     <Authors>SharpAstro</Authors>
-    <Description>ICC v4 colour-management primitives for .NET image-codec consumers. Bundled sRGB v4 profile (588-byte LittleCMS-generated, ReadOnlyMemory&lt;byte&gt; for embedding in TIFF/PNG/JPEG) plus a WithCicp(...) helper that injects an ICC v4.4 cicp tag carrying H.273 colour-primaries / transfer-function codepoints, so HDR10, HLG, wide-gamut, and linear-scene-light signalling can be added on top of any base profile. Ships H.273 ColorPrimaries / TransferFunction / MatrixCoefficients enums shared with SharpAstro.Png's PNG-3 cICP chunk. AOT-compatible.</Description>
+    <Description>ICC v4 colour-management primitives for .NET image-codec consumers. Bundled sRGB v4 profile (588-byte LittleCMS-generated, ReadOnlyMemory&lt;byte&gt; for embedding in TIFF/PNG/JPEG) plus a WithCicp(...) helper that injects an ICC v4.4 cicp tag carrying H.273 colour-primaries / transfer-function codepoints, so HDR10, HLG, wide-gamut, and linear-scene-light signalling can be added on top of any base profile. The H.273 ColorPrimaries / TransferFunction / MatrixCoefficients enums (shared with SharpAstro.Png's PNG-3 cICP chunk) live in SharpAstro.Codecs.Abstractions as of 3.5. AOT-compatible.</Description>
     <PackageTags>icc color profile srgb aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -40,6 +46,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The H.273 vocabulary (ColorPrimaries / TransferFunction / MatrixCoefficients)
+         that WithCicp consumes lives in Abstractions as of 3.5, alongside the
+         codec-neutral ColorEncoding that shares it. -->
+    <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
     <PackageReference Include="Microsoft.SourceLink.GitHub">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

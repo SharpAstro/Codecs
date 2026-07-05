@@ -1,4 +1,4 @@
-namespace SharpAstro.Color.Icc;
+namespace SharpAstro.Codecs.Abstractions;
 
 /// <summary>
 /// ITU-T H.273 §8.1 colour primaries. The numeric codepoints are what gets

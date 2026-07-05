@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Color.Icc;
 using Shouldly;
 using Xunit;

@@ -598,12 +598,12 @@ public sealed record ChromaticityChunk(
 /// </summary>
 /// <param name="ColorPrimaries">H.273 §8.1 colour primaries codepoint.</param>
 /// <param name="TransferFunction">H.273 §8.2 transfer characteristics codepoint.</param>
-/// <param name="MatrixCoefficients">H.273 §8.3 matrix codepoint. PNG-3 §11.3.2.6 requires <see cref="SharpAstro.Color.Icc.MatrixCoefficients.Identity"/> (RGB) — PNG doesn't carry YCbCr.</param>
+/// <param name="MatrixCoefficients">H.273 §8.3 matrix codepoint. PNG-3 §11.3.2.6 requires <see cref="SharpAstro.Codecs.Abstractions.MatrixCoefficients.Identity"/> (RGB) — PNG doesn't carry YCbCr.</param>
 /// <param name="VideoFullRangeFlag">PNG-3 requires <c>true</c> (full range 0..2^N-1).</param>
 public sealed record CicpChunk(
-    SharpAstro.Color.Icc.ColorPrimaries ColorPrimaries,
-    SharpAstro.Color.Icc.TransferFunction TransferFunction,
-    SharpAstro.Color.Icc.MatrixCoefficients MatrixCoefficients,
+    SharpAstro.Codecs.Abstractions.ColorPrimaries ColorPrimaries,
+    SharpAstro.Codecs.Abstractions.TransferFunction TransferFunction,
+    SharpAstro.Codecs.Abstractions.MatrixCoefficients MatrixCoefficients,
     bool VideoFullRangeFlag)
 {
     internal static CicpChunk Read(ReadOnlySpan<byte> chunkData)
@@ -611,9 +611,9 @@ public sealed record CicpChunk(
         if (chunkData.Length != 4)
             throw new InvalidDataException($"cICP chunk length must be 4, got {chunkData.Length}");
         return new CicpChunk(
-            ColorPrimaries:       (SharpAstro.Color.Icc.ColorPrimaries)chunkData[0],
-            TransferFunction:     (SharpAstro.Color.Icc.TransferFunction)chunkData[1],
-            MatrixCoefficients:   (SharpAstro.Color.Icc.MatrixCoefficients)chunkData[2],
+            ColorPrimaries:       (SharpAstro.Codecs.Abstractions.ColorPrimaries)chunkData[0],
+            TransferFunction:     (SharpAstro.Codecs.Abstractions.TransferFunction)chunkData[1],
+            MatrixCoefficients:   (SharpAstro.Codecs.Abstractions.MatrixCoefficients)chunkData[2],
             VideoFullRangeFlag:   chunkData[3] != 0);
     }
 
@@ -627,16 +627,16 @@ public sealed record CicpChunk(
 
     /// <summary>BT.2020 + PQ (SMPTE 2084) — the standard "HDR10" signalling.</summary>
     public static CicpChunk Hdr10Pq => new(
-        SharpAstro.Color.Icc.ColorPrimaries.BT2020,
-        SharpAstro.Color.Icc.TransferFunction.Pq,
-        SharpAstro.Color.Icc.MatrixCoefficients.Identity,
+        SharpAstro.Codecs.Abstractions.ColorPrimaries.BT2020,
+        SharpAstro.Codecs.Abstractions.TransferFunction.Pq,
+        SharpAstro.Codecs.Abstractions.MatrixCoefficients.Identity,
         true);
 
     /// <summary>BT.2020 + HLG (ARIB STD-B67) — broadcast HDR.</summary>
     public static CicpChunk Bt2020Hlg => new(
-        SharpAstro.Color.Icc.ColorPrimaries.BT2020,
-        SharpAstro.Color.Icc.TransferFunction.Hlg,
-        SharpAstro.Color.Icc.MatrixCoefficients.Identity,
+        SharpAstro.Codecs.Abstractions.ColorPrimaries.BT2020,
+        SharpAstro.Codecs.Abstractions.TransferFunction.Hlg,
+        SharpAstro.Codecs.Abstractions.MatrixCoefficients.Identity,
         true);
 
     /// <summary>
@@ -648,16 +648,16 @@ public sealed record CicpChunk(
     /// and you want PQ HDR luminance without re-mapping primaries.
     /// </summary>
     public static CicpChunk SrgbPq => new(
-        SharpAstro.Color.Icc.ColorPrimaries.BT709,
-        SharpAstro.Color.Icc.TransferFunction.Pq,
-        SharpAstro.Color.Icc.MatrixCoefficients.Identity,
+        SharpAstro.Codecs.Abstractions.ColorPrimaries.BT709,
+        SharpAstro.Codecs.Abstractions.TransferFunction.Pq,
+        SharpAstro.Codecs.Abstractions.MatrixCoefficients.Identity,
         true);
 
     /// <summary>sRGB primaries + sRGB transfer — explicit signal of SDR sRGB.</summary>
     public static CicpChunk Srgb => new(
-        SharpAstro.Color.Icc.ColorPrimaries.BT709,
-        SharpAstro.Color.Icc.TransferFunction.Srgb,
-        SharpAstro.Color.Icc.MatrixCoefficients.Identity,
+        SharpAstro.Codecs.Abstractions.ColorPrimaries.BT709,
+        SharpAstro.Codecs.Abstractions.TransferFunction.Srgb,
+        SharpAstro.Codecs.Abstractions.MatrixCoefficients.Identity,
         true);
 }
 
