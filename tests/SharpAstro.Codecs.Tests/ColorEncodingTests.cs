@@ -43,7 +43,8 @@ public sealed class ColorEncodingTests
         var png = PngWriter.Encode(TinyRgba, 4, 4, new PngWriteOptions { Cicp = CicpChunk.Hdr10Pq });
 
         ImageCodecs.TryDecode(png, out var img).ShouldBeTrue();
-        img!.ColorEncoding.Primaries.ShouldBe(ColorPrimaries.BT2020);
+        img.ShouldNotBeNull();
+        img.ColorEncoding.Primaries.ShouldBe(ColorPrimaries.BT2020);
         img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Pq);
         img.ColorEncoding.FullRange.ShouldBeTrue();
     }
@@ -54,7 +55,8 @@ public sealed class ColorEncodingTests
         var png = PngWriter.Encode(TinyRgba, 4, 4, new PngWriteOptions());
 
         ImageCodecs.TryDecode(png, out var img).ShouldBeTrue();
-        img!.ColorEncoding.ShouldBe(ColorEncoding.AssumedSrgb);
+        img.ShouldNotBeNull();
+        img.ColorEncoding.ShouldBe(ColorEncoding.AssumedSrgb);
     }
 
     [Fact]
@@ -65,8 +67,37 @@ public sealed class ColorEncodingTests
         var png = PngWriter.Encode(TinyRgba, 4, 4, new PngWriteOptions { Gamma = 1.0 });
 
         ImageCodecs.TryDecode(png, out var img).ShouldBeTrue();
-        img!.ColorEncoding.Transfer.ShouldBe(TransferFunction.Linear);
+        img.ShouldNotBeNull();
+        img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Linear);
         img.ColorEncoding.Primaries.ShouldBe(ColorPrimaries.BT709);
+    }
+
+    [Fact]
+    public void Hdr_tagged_png_refuses_the_display_path_but_keeps_fidelity()
+    {
+        // PQ code values through >>8 would render crushed/wrong-gamut - the
+        // display path refuses (same contract as the float codecs) while the
+        // fidelity path decodes with the tag attached.
+        var png = PngWriter.Encode(TinyRgba, 4, 4, new PngWriteOptions { Cicp = CicpChunk.Hdr10Pq });
+
+        ImageCodecs.TryDecodeIntoRgba8(png, new byte[4 * 4 * 4]).ShouldBeFalse();
+        ImageCodecs.TryDecode(png, out var img).ShouldBeTrue();
+        img.ShouldNotBeNull();
+        img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Pq);
+    }
+
+    [Fact]
+    public void Srgb_and_linear_tagged_pngs_keep_the_display_path()
+    {
+        var untagged = PngWriter.Encode(TinyRgba, 4, 4, new PngWriteOptions());
+        ImageCodecs.TryDecodeIntoRgba8(untagged, new byte[4 * 4 * 4]).ShouldBeTrue();
+
+        var explicitSrgb = PngWriter.Encode(TinyRgba, 4, 4, new PngWriteOptions { Cicp = CicpChunk.Srgb });
+        ImageCodecs.TryDecodeIntoRgba8(explicitSrgb, new byte[4 * 4 * 4]).ShouldBeTrue();
+
+        // gAMA 1.0 (linear astro master): monotone code dump stays available.
+        var linear = PngWriter.Encode(TinyRgba, 4, 4, new PngWriteOptions { Gamma = 1.0 });
+        ImageCodecs.TryDecodeIntoRgba8(linear, new byte[4 * 4 * 4]).ShouldBeTrue();
     }
 
     [Fact]
@@ -80,7 +111,8 @@ public sealed class ColorEncodingTests
         });
 
         ImageCodecs.TryDecode(png, out var img).ShouldBeTrue();
-        img!.ColorEncoding.Transfer.ShouldBe(TransferFunction.Hlg);
+        img.ShouldNotBeNull();
+        img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Hlg);
         img.ColorEncoding.Primaries.ShouldBe(ColorPrimaries.BT2020);
     }
 }

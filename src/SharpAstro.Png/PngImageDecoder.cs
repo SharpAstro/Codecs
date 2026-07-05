@@ -66,11 +66,22 @@ public sealed class PngImageDecoder : IImageDecoder
     }
 
     /// <inheritdoc />
+    /// <remarks>False for cICP PQ/HLG-tagged files: their integer code values are
+    /// encoded for an HDR EOTF, so the code-value expansion would render them
+    /// crushed/wrong-gamut - the same "no canonical 8-bit projection" refusal the
+    /// float codecs make. Use <see cref="TryDecode"/> + a colour-managed
+    /// conversion instead. Untagged, sRGB-tagged, and gAMA-linear files keep the
+    /// display path (linear is monotone and the astro-master quick-look case;
+    /// HLG's nominal SDR fallback was considered, but the facade can't know the
+    /// display context, so HLG refuses alongside PQ).</remarks>
     public static bool TryDecodeIntoRgba8(ReadOnlySpan<byte> data, Span<byte> rgbaDestination)
     {
         try
         {
             var png = PngReader.Decode(data);
+            if (png.Cicp is { } cicp &&
+                cicp.TransferFunction is TransferFunction.Pq or TransferFunction.Hlg)
+                return false;
             if (rgbaDestination.Length < (long)png.Width * png.Height * 4) return false;
             png.ExpandToRgba8(rgbaDestination);
             return true;

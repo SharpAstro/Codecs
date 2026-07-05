@@ -30,7 +30,8 @@ public sealed class CodecAdapterTests
         info.ShouldBe(new ImageInfo(2, 2, 1, SampleFormat.UInt16));
 
         ImageCodecs.TryDecode(tiff, out var img).ShouldBeTrue();
-        img!.ColorEncoding.ShouldBe(ColorEncoding.AssumedSrgb);
+        img.ShouldNotBeNull();
+        img.ColorEncoding.ShouldBe(ColorEncoding.AssumedSrgb);
         var f = img.ToFloats();
         f[0].ShouldBe(0f);
         f[4].ShouldBe(1000 / 65535f);
@@ -44,7 +45,8 @@ public sealed class CodecAdapterTests
         var tiff = HdrTiff.Float32Gray(2, 2, y);
 
         ImageCodecs.TryDecode(tiff, out var img).ShouldBeTrue();
-        img!.SampleFormat.ShouldBe(SampleFormat.Float32);
+        img.ShouldNotBeNull();
+        img.SampleFormat.ShouldBe(SampleFormat.Float32);
         img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Linear);
         img.ColorEncoding.Float.ShouldBe(FloatSemantics.SceneReferred);
 
@@ -63,7 +65,8 @@ public sealed class CodecAdapterTests
         var tiff = HdrTiff.HalfGray(2, 2, y);
 
         ImageCodecs.TryDecode(tiff, out var img).ShouldBeTrue();
-        img!.SampleFormat.ShouldBe(SampleFormat.Float32);
+        img.ShouldNotBeNull();
+        img.SampleFormat.ShouldBe(SampleFormat.Float32);
 
         var f = img.ToFloats();
         f[0].ShouldBe(0.5f);
@@ -83,7 +86,8 @@ public sealed class CodecAdapterTests
         info.ShouldBe(new ImageInfo(2, 2, 1, SampleFormat.UInt8));
 
         ImageCodecs.TryDecode(jxr, out var img).ShouldBeTrue();
-        img!.Pixels.ToArray().ShouldBe(new byte[] { 0, 64, 128, 255 });
+        img.ShouldNotBeNull();
+        img.Pixels.ToArray().ShouldBe(new byte[] { 0, 64, 128, 255 });
         img.ColorEncoding.ShouldBe(ColorEncoding.AssumedSrgb);
 
         var rgba = new byte[2 * 2 * 4];
@@ -102,7 +106,8 @@ public sealed class CodecAdapterTests
         var jxr = JxrImageCodec.EncodeRgb24(r, g, b, 2, 2);
 
         ImageCodecs.TryDecode(jxr, out var img).ShouldBeTrue();
-        (img!.Channels, img.SampleFormat).ShouldBe((3, SampleFormat.UInt8));
+        img.ShouldNotBeNull();
+        (img.Channels, img.SampleFormat).ShouldBe((3, SampleFormat.UInt8));
         img.Pixels[..6].ToArray().ShouldBe(new byte[] { 255, 0, 0, 0, 255, 0 });
     }
 
@@ -114,7 +119,8 @@ public sealed class CodecAdapterTests
         var jxr = JxrImageCodec.EncodeGrayF32(y, 2, 2);
 
         ImageCodecs.TryDecode(jxr, out var img).ShouldBeTrue();
-        img!.SampleFormat.ShouldBe(SampleFormat.Float32);
+        img.ShouldNotBeNull();
+        img.SampleFormat.ShouldBe(SampleFormat.Float32);
         img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Linear);
         img.ColorEncoding.Float.ShouldBe(FloatSemantics.DisplayReferred); // scRGB: 1.0 = white
 
@@ -136,7 +142,8 @@ public sealed class CodecAdapterTests
 
         ImageCodecs.CanDecode(exr).ShouldBeTrue();
         ImageCodecs.TryDecode(exr, out var img).ShouldBeTrue();
-        (img!.Channels, img.SampleFormat).ShouldBe((1, SampleFormat.Float32));
+        img.ShouldNotBeNull();
+        (img.Channels, img.SampleFormat).ShouldBe((1, SampleFormat.Float32));
         img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Linear);
         img.ColorEncoding.Float.ShouldBe(FloatSemantics.SceneReferred);
 
@@ -157,7 +164,8 @@ public sealed class CodecAdapterTests
         var exr = ExrImageCodec.EncodeRgbHalf(rgb, 2, 2);
 
         ImageCodecs.TryDecode(exr, out var img).ShouldBeTrue();
-        (img!.Channels, img.SampleFormat).ShouldBe((3, SampleFormat.Float32));
+        img.ShouldNotBeNull();
+        (img.Channels, img.SampleFormat).ShouldBe((3, SampleFormat.Float32));
 
         var f = img.ToFloats();
         f[0].ShouldBe(0f);
@@ -182,7 +190,8 @@ public sealed class CodecAdapterTests
         info.ShouldBe(new ImageInfo(2, 2, 3, SampleFormat.UInt8));
 
         ImageCodecs.TryDecode(jxl, out var img).ShouldBeTrue();
-        img!.Pixels[..6].ToArray().ShouldBe(new byte[] { 255, 0, 0, 0, 255, 0 });
+        img.ShouldNotBeNull();
+        img.Pixels[..6].ToArray().ShouldBe(new byte[] { 255, 0, 0, 0, 255, 0 });
 
         var rgba = new byte[16];
         ImageCodecs.TryDecodeIntoRgba8(jxl, rgba).ShouldBeTrue();
@@ -197,7 +206,8 @@ public sealed class CodecAdapterTests
         var jxl = JxlImageCodec.EncodeGrayF32(y, 2, 2);
 
         ImageCodecs.TryDecode(jxl, out var img).ShouldBeTrue();
-        img!.SampleFormat.ShouldBe(SampleFormat.Float32);
+        img.ShouldNotBeNull();
+        img.SampleFormat.ShouldBe(SampleFormat.Float32);
         img.ColorEncoding.Float.ShouldBe(FloatSemantics.SceneReferred);
 
         var f = img.ToFloats();
@@ -217,9 +227,11 @@ public sealed class CodecAdapterTests
         var jxr = JxrImageCodec.EncodeGray8([42], 1, 1);
 
         ImageCodecs.TryDecode(tiff, out var tiffImg).ShouldBeTrue();
-        tiffImg!.SampleFormat.ShouldBe(SampleFormat.UInt16);
+        tiffImg.ShouldNotBeNull();
+        tiffImg.SampleFormat.ShouldBe(SampleFormat.UInt16);
 
         ImageCodecs.TryDecode(jxr, out var jxrImg).ShouldBeTrue();
-        jxrImg!.SampleFormat.ShouldBe(SampleFormat.UInt8);
+        jxrImg.ShouldNotBeNull();
+        jxrImg.SampleFormat.ShouldBe(SampleFormat.UInt8);
     }
 }
