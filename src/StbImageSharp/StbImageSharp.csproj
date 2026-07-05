@@ -20,9 +20,9 @@
     <Authors>SharpAstro (port of StbSharp/StbImageSharp by Roman Shapiro et al.)</Authors>
     <Description>SharpAstro fork of StbImageSharp — pure-managed C# port of stb_image.h. Decodes JPG (baseline), PNG, BMP, TGA, PSD, GIF, HDR. AOT-compatible, no native binaries.</Description>
     <PackageTags>image png jpeg bmp gif tga psd hdr decoder stb aot</PackageTags>
-    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
     <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>

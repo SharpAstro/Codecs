@@ -99,10 +99,10 @@ None of this is urgent — the packages coexist fine and ship from the same CI.
 ## Building & testing
 
 ```bash
-git clone https://github.com/SharpAstro/StbImageSharp
-cd StbImageSharp
-dotnet build StbImageSharp.JustTests.sln -c Release
-dotnet test  StbImageSharp.JustTests.sln -c Release
+git clone https://github.com/SharpAstro/Codecs
+cd Codecs
+dotnet build Codecs.JustTests.sln -c Release
+dotnet test  Codecs.JustTests.sln -c Release
 ```
 
 Requires the .NET 10 SDK.

@@ -15,9 +15,9 @@
     <Authors>SharpAstro</Authors>
     <Description>Splice an ICC profile (APP2 segment) into an existing JPEG byte stream produced by any encoder. Pure-managed, AOT-compatible, single-segment ICC only (up to 65519-byte profiles). Note: this is NOT a JPEG codec — the SharpAstro.Jpeg PackageId is reserved for a future full encoder/decoder.</Description>
     <PackageTags>jpeg icc color profile aot</PackageTags>
-    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
     <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
