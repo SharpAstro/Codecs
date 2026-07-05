@@ -4,23 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Two distinct bodies of code share one repo and one CI/versioning pipeline:
+`src/SharpAstro.*/` — hand-written, clean-room / faithfully-ported image codec packages, each an
+independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch):
 
-1. **`src/StbImageSharp/`** — a pure-managed **decode-only** port of Sean Barrett's
-   `stb_image.h` (PNG/JPG/BMP/TGA/PSD/GIF/HDR). The `StbImage.Generated.*.cs` files are
-   **machine-transpiled** (via Hebron, see `generation/`) and unchanged from upstream — do
-   not hand-edit them. 8-bit precision through the managed API; strips all metadata.
-2. **`src/SharpAstro.*/`** — hand-written, clean-room / faithfully-ported codec packages
-   (`Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Exif`, `Color.Icc`, `Jpeg.IccInjector`).
-   Each ships as an independent NuGet. This is where almost all active development happens.
+- **`SharpAstro.Codecs`** — the facade: magic-byte sniff + dispatch over `IImageDecoder`.
+  Consumers reference this one package instead of cherry-picking individual codecs.
+- **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
+  fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Exif`, `Color.Icc`, `Jpeg.IccInjector`.
 
-   `SharpAstro.Jpeg` (decoder) has the cheapest oracle of the family: full-scale
-   output must be **byte-exact vs the in-repo stb port** (same input bytes through
-   `StbImageSharp.ImageResult`), so the oracle tests never need external binaries
-   and can't skip. Its full-scale pipeline is a 1:1 port of `StbImage.Generated.Jpg.cs`
-   (IDCT constants, upsampling kernels, fixed-point colour convert); the scaled-decode
-   (1/2–1/8) reduced IDCT is clean-room DCT-domain decimation — deliberately NOT
-   ported from libjpeg's jidctred.c, which is IJG-licensed (this repo is Unlicense).
+`SharpAstro.Jpeg`'s full-scale decode was built as a faithful port of the stb_image (StbImageSharp)
+JPEG path (IDCT constants, upsampling kernels, fixed-point colour convert) and validated
+**byte-exact against that reference decoder**. The stb port has since been removed from the repo;
+the guarantee is preserved as a committed golden digest baseline
+(`tests/SharpAstro.Codecs.Tests/Fixtures/jpeg-oracle-golden.tsv`, driven by `JpegDecoderOracleTests`
+— regenerate with `REGEN_JPEG_ORACLE=1`). The scaled-decode (1/2–1/8) reduced IDCT is clean-room
+DCT-domain decimation — deliberately NOT ported from libjpeg's `jidctred.c`, which is IJG-licensed
+(this repo is Unlicense).
 
 `CODECS.md` documents the per-package decode/encode matrix (its `SharpAstro.Jxr` row reflects
 the jxrlib re-port). See "JXR codec" below for the architecture and validation discipline.
@@ -35,10 +35,10 @@ dotnet build Codecs.JustTests.sln -c Release
 dotnet test  Codecs.JustTests.sln -c Release
 ```
 
-**Solution gotcha:** the xunit codec test project `SharpAstro.Codecs.Tests` is **only in
-`Codecs.JustTests.sln`**, not in `Codecs.sln` (which instead carries the
-MonoGame `Viewer` / `Stb.Native` / `Testing` projects). When working on the SharpAstro
-codecs, use `JustTests.sln` or the individual project — the main `.sln` won't see those tests.
+**Solution gotcha:** the xunit codec test project `SharpAstro.Codecs.Tests` is in
+`Codecs.JustTests.sln` (the CI build/test/pack target), not in `Codecs.sln` (which carries
+only the library projects). When working on the codecs, use `Codecs.JustTests.sln` or the
+individual project — `Codecs.sln` won't see the tests.
 
 ```bash
 # Iterate on one project (fast):
@@ -49,15 +49,13 @@ dotnet test tests/SharpAstro.Codecs.Tests/SharpAstro.Codecs.Tests.csproj --filte
 dotnet test tests/SharpAstro.Codecs.Tests/SharpAstro.Codecs.Tests.csproj --filter "FullyQualifiedName~JxrGrayscaleOracle"
 ```
 
-**Two test frameworks** (don't mix conventions): `StbImageSharp.Tests` uses **NUnit**
-(covers the stb port); `SharpAstro.Codecs.Tests` uses **xunit v3 + Shouldly** (+ Magick.NET
-for visual diffing) and covers the SharpAstro codec family.
+Tests: `SharpAstro.Codecs.Tests` uses **xunit v3 + Shouldly** (+ Magick.NET for visual
+diffing and deterministic input encoding) and covers the whole codec family.
 
 Package versions are **centrally managed** in `Directory.Packages.props` — add a
 `<PackageVersion>` there and reference it without a version in the `.csproj`. All packages
 ship in lockstep (shared Major.Minor + CI run-number patch). Project conventions: `net10.0`,
-`IsAotCompatible=true`, SourceLink/embedded debug. Note `StbImageSharp` is `Nullable=disable`
-(transpiled), while the `SharpAstro.*` codecs are `Nullable=enable` + `ImplicitUsings=enable`.
+`IsAotCompatible=true`, SourceLink/embedded debug, `Nullable=enable` + `ImplicitUsings=enable`.
 
 ## JXR codec — jxrlib re-port (the most involved subsystem)
 
