@@ -35,6 +35,9 @@
          PngPredictor — semantic dep: "TIFF that accepts PNG sources needs to know
          PNG row prediction". Other TIFF code paths don't touch PNG. -->
     <ProjectReference Include="..\SharpAstro.Png\SharpAstro.Png.csproj" />
+    <!-- IImageDecoder / IDecodedImage contract for the SharpAstro.Codecs facade
+         (TiffImageDecoder). -->
+    <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
   </ItemGroup>
 
   <ItemGroup>

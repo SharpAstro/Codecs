@@ -1,8 +1,12 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using SharpAstro.Codecs.Abstractions;
+using SharpAstro.Exr;
 using SharpAstro.Jpeg;
+using SharpAstro.Jxl;
+using SharpAstro.Jxr;
 using SharpAstro.Png;
+using SharpAstro.Tiff;
 
 namespace SharpAstro.Codecs;
 
@@ -12,10 +16,18 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Currently registers PNG and JPEG. To add a format, implement
-/// <see cref="IImageDecoder"/> in its codec package and add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, and JPEG XL. To add a format,
+/// implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
-/// sniff order.
+/// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
+/// at byte 2, so the two II-prefixed sniffs never collide).
+/// </para>
+/// <para>
+/// Float-sample content (EXR, HDR float JXR/JXL/TIFF) decodes through
+/// <see cref="TryDecode"/> with <see cref="IDecodedImage.ColorEncoding"/>
+/// declaring its meaning; <see cref="TryDecodeIntoRgba8"/> serves the
+/// integer-sample display path only - projecting HDR float to 8 bits is a
+/// consumer tone/stretch decision, not a codec one.
 /// </para>
 /// </summary>
 public static class ImageCodecs
@@ -41,6 +53,10 @@ public static class ImageCodecs
     [
         Register<PngImageDecoder>(),
         Register<JpegImageDecoder>(),
+        Register<TiffImageDecoder>(),
+        Register<JxrImageDecoder>(),
+        Register<ExrImageDecoder>(),
+        Register<JxlImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>

@@ -8,14 +8,19 @@
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
+    <!-- 3.5: registers the whole family - TIFF, JXR, EXR, JXL join PNG + JPEG.
+         Decoded images now carry ColorEncoding (H.273 primaries/transfer + float
+         reference semantics) and offer ToFloats() for a policy-free RGBA float32
+         view; TryDecodeIntoRgba8 stays integer-only (float content has no
+         canonical 8-bit projection). -->
     <VersionPrefix>3.5.0</VersionPrefix>
     <AssemblyVersion>3.5.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Codecs</PackageId>
     <Product>SharpAstro.Codecs</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Image-codec facade over the SharpAstro codec family: sniff a byte stream's format by its magic-byte signature and dispatch to the matching decoder (PNG, JPEG), returning a codec-neutral IDecodedImage (fidelity tier) or decoding zero-copy into a caller-provided 8-bit RGBA buffer (display tier). AOT-compatible.</Description>
-    <PackageTags>image codec facade decoder sniff dispatch png jpeg aot</PackageTags>
+    <Description>Image-codec facade over the SharpAstro codec family: sniff a byte stream's format by its magic-byte signature and dispatch to the matching decoder (PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL), returning a codec-neutral IDecodedImage (fidelity tier: native bit depth + ColorEncoding colour signalling, with a ToFloats() RGBA float32 view) or decoding zero-copy into a caller-provided 8-bit RGBA buffer (display tier, integer-sample formats). AOT-compatible.</Description>
+    <PackageTags>image codec facade decoder sniff dispatch png jpeg tiff jxr exr jxl hdr aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
@@ -38,6 +43,10 @@
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
     <ProjectReference Include="..\SharpAstro.Png\SharpAstro.Png.csproj" />
     <ProjectReference Include="..\SharpAstro.Jpeg\SharpAstro.Jpeg.csproj" />
+    <ProjectReference Include="..\SharpAstro.Tiff\SharpAstro.Tiff.csproj" />
+    <ProjectReference Include="..\SharpAstro.Jxr\SharpAstro.Jxr.csproj" />
+    <ProjectReference Include="..\SharpAstro.Exr\SharpAstro.Exr.csproj" />
+    <ProjectReference Include="..\SharpAstro.Jxl\SharpAstro.Jxl.csproj" />
     <PackageReference Include="Microsoft.SourceLink.GitHub">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

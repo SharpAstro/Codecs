@@ -34,6 +34,9 @@
     <!-- JXR's container (T.833) is a TIFF-IFD wrapper around the T.832 codestream.
          Reuse SharpAstro.Tiff's IFD plumbing rather than reinventing it. -->
     <ProjectReference Include="..\SharpAstro.Tiff\SharpAstro.Tiff.csproj" />
+    <!-- IImageDecoder / IDecodedImage contract for the SharpAstro.Codecs facade
+         (JxrImageDecoder). -->
+    <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
   </ItemGroup>
 
   <ItemGroup>
