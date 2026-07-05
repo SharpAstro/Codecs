@@ -110,6 +110,41 @@ public sealed class RasterImage : IDecodedImage
         }
     }
 
+    /// <inheritdoc />
+    public float[] ToFloats()
+    {
+        var dst = new float[checked(Width * Height * 4)];
+        ExpandToFloats(dst);
+        return dst;
+    }
+
+    /// <summary>
+    /// Widens into a caller-provided RGBA float32 destination (row-major, 4
+    /// floats/pixel, R,G,B,A order) — the allocation-free form of
+    /// <see cref="ToFloats"/>. <paramref name="destination"/> must be at least
+    /// <c>Width * Height * 4</c> floats. Integer samples divide by their max code
+    /// (exact at the endpoints); Float32 samples copy verbatim.
+    /// </summary>
+    public void ExpandToFloats(Span<float> destination)
+    {
+        var pixelCount = Width * Height;
+        if (destination.Length < checked(pixelCount * 4))
+            throw new ArgumentException("Destination too small for Width*Height*4 RGBA floats.", nameof(destination));
+
+        switch (SampleFormat)
+        {
+            case SampleFormat.UInt8:
+                ExpandU8F(_pixels, Channels, pixelCount, destination);
+                break;
+            case SampleFormat.UInt16:
+                ExpandU16F(_pixels, Channels, pixelCount, destination);
+                break;
+            default:
+                ExpandF32(_pixels, Channels, pixelCount, destination);
+                break;
+        }
+    }
+
     private static void ExpandU8(ReadOnlySpan<byte> src, int channels, int pixelCount, Span<byte> dst)
     {
         for (int p = 0, s = 0, d = 0; p < pixelCount; p++, s += channels, d += 4)
@@ -173,6 +208,104 @@ public sealed class RasterImage : IDecodedImage
                     dst[d + 1] = (byte)(s16[s + 1] >> 8);
                     dst[d + 2] = (byte)(s16[s + 2] >> 8);
                     dst[d + 3] = (byte)(s16[s + 3] >> 8);
+                    break;
+            }
+        }
+    }
+
+    // Division (not multiply-by-reciprocal) so the endpoints are exact:
+    // 255/255f == 1f and 65535/65535f == 1f in IEEE single.
+    private static void ExpandU8F(ReadOnlySpan<byte> src, int channels, int pixelCount, Span<float> dst)
+    {
+        for (int p = 0, s = 0, d = 0; p < pixelCount; p++, s += channels, d += 4)
+        {
+            switch (channels)
+            {
+                case 1: // gray -> RGB, opaque
+                    dst[d] = dst[d + 1] = dst[d + 2] = src[s] / 255f;
+                    dst[d + 3] = 1f;
+                    break;
+                case 2: // gray + alpha
+                    dst[d] = dst[d + 1] = dst[d + 2] = src[s] / 255f;
+                    dst[d + 3] = src[s + 1] / 255f;
+                    break;
+                case 3: // RGB, opaque
+                    dst[d] = src[s] / 255f;
+                    dst[d + 1] = src[s + 1] / 255f;
+                    dst[d + 2] = src[s + 2] / 255f;
+                    dst[d + 3] = 1f;
+                    break;
+                default: // 4: RGBA
+                    dst[d] = src[s] / 255f;
+                    dst[d + 1] = src[s + 1] / 255f;
+                    dst[d + 2] = src[s + 2] / 255f;
+                    dst[d + 3] = src[s + 3] / 255f;
+                    break;
+            }
+        }
+    }
+
+    private static void ExpandU16F(ReadOnlySpan<byte> src, int channels, int pixelCount, Span<float> dst)
+    {
+        // Host byte order per the IDecodedImage contract, so a straight reinterpret is valid.
+        var s16 = MemoryMarshal.Cast<byte, ushort>(src);
+        for (int p = 0, s = 0, d = 0; p < pixelCount; p++, s += channels, d += 4)
+        {
+            switch (channels)
+            {
+                case 1:
+                    dst[d] = dst[d + 1] = dst[d + 2] = s16[s] / 65535f;
+                    dst[d + 3] = 1f;
+                    break;
+                case 2:
+                    dst[d] = dst[d + 1] = dst[d + 2] = s16[s] / 65535f;
+                    dst[d + 3] = s16[s + 1] / 65535f;
+                    break;
+                case 3:
+                    dst[d] = s16[s] / 65535f;
+                    dst[d + 1] = s16[s + 1] / 65535f;
+                    dst[d + 2] = s16[s + 2] / 65535f;
+                    dst[d + 3] = 1f;
+                    break;
+                default: // 4
+                    dst[d] = s16[s] / 65535f;
+                    dst[d + 1] = s16[s + 1] / 65535f;
+                    dst[d + 2] = s16[s + 2] / 65535f;
+                    dst[d + 3] = s16[s + 3] / 65535f;
+                    break;
+            }
+        }
+    }
+
+    private static void ExpandF32(ReadOnlySpan<byte> src, int channels, int pixelCount, Span<float> dst)
+    {
+        // Verbatim: scene-/display-referred float values pass through unclamped
+        // (HDR highlights > 1 and wide-gamut negatives survive); only the channel
+        // layout is widened to RGBA.
+        var sf = MemoryMarshal.Cast<byte, float>(src);
+        for (int p = 0, s = 0, d = 0; p < pixelCount; p++, s += channels, d += 4)
+        {
+            switch (channels)
+            {
+                case 1:
+                    dst[d] = dst[d + 1] = dst[d + 2] = sf[s];
+                    dst[d + 3] = 1f;
+                    break;
+                case 2:
+                    dst[d] = dst[d + 1] = dst[d + 2] = sf[s];
+                    dst[d + 3] = sf[s + 1];
+                    break;
+                case 3:
+                    dst[d] = sf[s];
+                    dst[d + 1] = sf[s + 1];
+                    dst[d + 2] = sf[s + 2];
+                    dst[d + 3] = 1f;
+                    break;
+                default: // 4
+                    dst[d] = sf[s];
+                    dst[d + 1] = sf[s + 1];
+                    dst[d + 2] = sf[s + 2];
+                    dst[d + 3] = sf[s + 3];
                     break;
             }
         }
