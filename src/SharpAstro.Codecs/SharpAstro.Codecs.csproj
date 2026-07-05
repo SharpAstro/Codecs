@@ -13,8 +13,6 @@
          reference semantics) and offer ToFloats() for a policy-free RGBA float32
          view; TryDecodeIntoRgba8 stays integer-only (float content has no
          canonical 8-bit projection). -->
-    <VersionPrefix>3.5.0</VersionPrefix>
-    <AssemblyVersion>3.5.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Codecs</PackageId>
     <Product>SharpAstro.Codecs</Product>

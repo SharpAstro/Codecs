@@ -18,8 +18,6 @@
          ColorEncoding.AssumedSrgb, the assumption every existing consumer
          already baked in; existing IDecodedImage implementations keep compiling
          with their current meaning. -->
-    <VersionPrefix>3.5.0</VersionPrefix>
-    <AssemblyVersion>3.5.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Codecs.Abstractions</PackageId>
     <Product>SharpAstro.Codecs.Abstractions</Product>
