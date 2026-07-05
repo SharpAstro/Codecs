@@ -1,7 +1,7 @@
 # SharpAstro.StbImage
 
 [![NuGet](https://img.shields.io/nuget/v/SharpAstro.StbImage)](https://www.nuget.org/packages/SharpAstro.StbImage/)
-[![CI/CD](https://github.com/SharpAstro/StbImageSharp/actions/workflows/dotnet.yml/badge.svg)](https://github.com/SharpAstro/StbImageSharp/actions/workflows/dotnet.yml)
+[![CI/CD](https://github.com/SharpAstro/Codecs/actions/workflows/dotnet.yml/badge.svg)](https://github.com/SharpAstro/Codecs/actions/workflows/dotnet.yml)
 
 SharpAstro fork of [StbSharp/StbImageSharp](https://github.com/StbSharp/StbImageSharp) — a pure-managed C# port of Sean Barrett's [`stb_image.h`](https://github.com/nothings/stb). Decodes **JPG (baseline)**, **PNG**, **BMP**, **TGA**, **PSD**, **GIF**, and **HDR** without any native binaries.
 
@@ -36,10 +36,10 @@ See the [upstream README](https://github.com/StbSharp/StbImageSharp) for richer 
 ## Building from source
 
 ```
-git clone https://github.com/SharpAstro/StbImageSharp
-cd StbImageSharp
-dotnet build StbImageSharp.JustTests.sln -c Release
-dotnet test  StbImageSharp.JustTests.sln -c Release
+git clone https://github.com/SharpAstro/Codecs
+cd Codecs
+dotnet build Codecs.JustTests.sln -c Release
+dotnet test  Codecs.JustTests.sln -c Release
 ```
 
 Requires the .NET 10 SDK.

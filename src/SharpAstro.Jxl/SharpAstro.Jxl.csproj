@@ -16,9 +16,9 @@
     <Authors>SharpAstro</Authors>
     <Description>Pure-managed JPEG XL (.jxl) codec for .NET. Clean-room implementation against ISO/IEC 18181, validated against the Magick.NET (libjxl) oracle. AOT-compatible.</Description>
     <PackageTags>jxl jpegxl jpeg-xl image codec aot</PackageTags>
-    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
     <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>

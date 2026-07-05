@@ -16,9 +16,9 @@
     <Authors>SharpAstro</Authors>
     <Description>Shared abstractions for the SharpAstro image codec family: IImageDecoder (magic-byte sniff + fidelity/zero-copy decode) and IDecodedImage / RasterImage (a codec-neutral decoded raster). AOT-compatible, zero runtime dependencies.</Description>
     <PackageTags>image codec decoder raster aot abstractions</PackageTags>
-    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
     <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>

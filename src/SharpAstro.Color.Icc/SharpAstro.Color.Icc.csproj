@@ -21,9 +21,9 @@
     <Authors>SharpAstro</Authors>
     <Description>ICC v4 colour-management primitives for .NET image-codec consumers. Bundled sRGB v4 profile (588-byte LittleCMS-generated, ReadOnlyMemory&lt;byte&gt; for embedding in TIFF/PNG/JPEG) plus a WithCicp(...) helper that injects an ICC v4.4 cicp tag carrying H.273 colour-primaries / transfer-function codepoints, so HDR10, HLG, wide-gamut, and linear-scene-light signalling can be added on top of any base profile. Ships H.273 ColorPrimaries / TransferFunction / MatrixCoefficients enums shared with SharpAstro.Png's PNG-3 cICP chunk. AOT-compatible.</Description>
     <PackageTags>icc color profile srgb aot</PackageTags>
-    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
     <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>

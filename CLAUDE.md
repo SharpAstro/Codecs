@@ -31,12 +31,12 @@ Requires the **.NET 10 SDK**. There is no separate lint step (CI is build + test
 
 ```bash
 # Canonical solution for development — CI builds/tests/packs this one.
-dotnet build StbImageSharp.JustTests.sln -c Release
-dotnet test  StbImageSharp.JustTests.sln -c Release
+dotnet build Codecs.JustTests.sln -c Release
+dotnet test  Codecs.JustTests.sln -c Release
 ```
 
 **Solution gotcha:** the xunit codec test project `SharpAstro.Codecs.Tests` is **only in
-`StbImageSharp.JustTests.sln`**, not in `StbImageSharp.sln` (which instead carries the
+`Codecs.JustTests.sln`**, not in `Codecs.sln` (which instead carries the
 MonoGame `Viewer` / `Stb.Native` / `Testing` projects). When working on the SharpAstro
 codecs, use `JustTests.sln` or the individual project — the main `.sln` won't see those tests.
 

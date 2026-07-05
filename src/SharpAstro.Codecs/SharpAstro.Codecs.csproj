@@ -16,9 +16,9 @@
     <Authors>SharpAstro</Authors>
     <Description>Image-codec facade over the SharpAstro codec family: sniff a byte stream's format by its magic-byte signature and dispatch to the matching decoder (PNG, JPEG), returning a codec-neutral IDecodedImage (fidelity tier) or decoding zero-copy into a caller-provided 8-bit RGBA buffer (display tier). AOT-compatible.</Description>
     <PackageTags>image codec facade decoder sniff dispatch png jpeg aot</PackageTags>
-    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
     <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>

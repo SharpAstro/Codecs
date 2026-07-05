@@ -16,9 +16,9 @@
     <Authors>SharpAstro</Authors>
     <Description>Pure-managed JPEG XR (ITU-T T.832 / ISO/IEC 29199-2) encoder/decoder for .NET. AOT-compatible. The codec core is ported faithfully from Microsoft's jxrlib reference implementation and validated bit-exactly against it (byte-for-byte vs JxrEncApp; round-trips through JxrDecApp and Windows Photo / WIC). Reuses SharpAstro.Tiff for the T.833 .jxr container. Current pipeline: single-tile spatial YUV444 BD8 RGB, lossless and lossy, all three overlap levels.</Description>
     <PackageTags>jpeg-xr jxr wdp hdp image codec aot</PackageTags>
-    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
     <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
