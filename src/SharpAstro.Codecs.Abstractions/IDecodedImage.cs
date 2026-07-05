@@ -41,6 +41,18 @@ public interface IDecodedImage
     ReadOnlySpan<byte> IccProfile { get; }
 
     /// <summary>
+    /// How the sample values encode colour: H.273 primaries + transfer, code
+    /// range, and (for float rasters) what the values are referenced to.
+    /// Informational like <see cref="IccProfile"/> — never rescales pixels.
+    /// Defaults to <see cref="ColorEncoding.AssumedSrgb"/> so implementations
+    /// (and consumers) that predate colour signalling keep today's meaning.
+    /// Note <see cref="ToRgba8"/>'s code-value projection is only colour-correct
+    /// for display-referred sRGB-ish content — check here before relying on it
+    /// (a PQ/HLG-tagged raster needs a colour-managed conversion instead).
+    /// </summary>
+    ColorEncoding ColorEncoding => ColorEncoding.AssumedSrgb;
+
+    /// <summary>
     /// Down-converts to a freshly-allocated, tightly-packed 8-bit RGBA buffer
     /// (row-major, 4 bytes/pixel, R,G,B,A byte order). 16-bit samples are scaled
     /// by <c>&gt;&gt; 8</c>; gray expands across R/G/B; a missing alpha becomes 255.

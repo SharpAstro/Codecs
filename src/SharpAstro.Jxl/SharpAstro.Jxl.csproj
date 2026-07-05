@@ -8,8 +8,8 @@
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
-    <VersionPrefix>3.4.0</VersionPrefix>
-    <AssemblyVersion>3.4.0.0</AssemblyVersion>
+    <VersionPrefix>3.5.0</VersionPrefix>
+    <AssemblyVersion>3.5.0.0</AssemblyVersion>
 
     <PackageId>SharpAstro.Jxl</PackageId>
     <Product>SharpAstro.Jxl</Product>

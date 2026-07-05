@@ -21,7 +21,8 @@ public sealed class RasterImage : IDecodedImage
     /// <param name="sampleFormat">The per-channel sample type of <paramref name="pixels"/>.</param>
     /// <param name="pixels">Interleaved, row-major, tightly-packed samples in host byte order. Ownership transfers to this instance - do not mutate after handing it over.</param>
     /// <param name="iccProfile">Optional embedded ICC profile bytes.</param>
-    public RasterImage(int width, int height, int channels, SampleFormat sampleFormat, byte[] pixels, byte[]? iccProfile = null)
+    /// <param name="colorEncoding">How the samples encode colour; null means <see cref="ColorEncoding.AssumedSrgb"/>.</param>
+    public RasterImage(int width, int height, int channels, SampleFormat sampleFormat, byte[] pixels, byte[]? iccProfile = null, ColorEncoding? colorEncoding = null)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "Width and height must be positive.");
@@ -39,6 +40,7 @@ public sealed class RasterImage : IDecodedImage
         SampleFormat = sampleFormat;
         _pixels = pixels;
         _icc = iccProfile ?? [];
+        ColorEncoding = colorEncoding ?? ColorEncoding.AssumedSrgb;
     }
 
     /// <inheritdoc />
@@ -58,6 +60,9 @@ public sealed class RasterImage : IDecodedImage
 
     /// <inheritdoc />
     public ReadOnlySpan<byte> IccProfile => _icc;
+
+    /// <inheritdoc />
+    public ColorEncoding ColorEncoding { get; }
 
     /// <summary>Bytes per single channel sample for a given <see cref="SampleFormat"/>.</summary>
     public static int BytesPerSample(SampleFormat format) => format switch

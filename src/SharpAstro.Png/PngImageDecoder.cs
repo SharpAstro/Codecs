@@ -15,6 +15,9 @@ namespace SharpAstro.Png;
 /// RGBA preserve their native channel count and bit depth (16-bit is converted from
 /// PNG's big-endian to the host byte order required by <see cref="IDecodedImage"/>);
 /// indexed images are palette-expanded to 8-bit RGBA (with tRNS alpha when present).
+/// Colour signalling survives the adapter: cICP (and gAMA 1.0 → linear) maps onto
+/// <see cref="IDecodedImage.ColorEncoding"/>, so PNG-3 HDR tagging isn't dropped
+/// at the facade boundary.
 /// </para>
 /// </summary>
 public sealed class PngImageDecoder : IImageDecoder
@@ -98,10 +101,11 @@ public sealed class PngImageDecoder : IImageDecoder
     private static RasterImage ToDecoded(PngImage png)
     {
         var icc = png.IccProfile;
+        var color = MapColorEncoding(png);
 
         // Indexed: palette (+ optional tRNS) expansion to RGBA8 - PngImage.ToRgba8 already does this.
         if (png.ColorType == 3)
-            return new RasterImage(png.Width, png.Height, 4, SampleFormat.UInt8, png.ToRgba8(), icc);
+            return new RasterImage(png.Width, png.Height, 4, SampleFormat.UInt8, png.ToRgba8(), icc, color);
 
         var channels = PngReader.SamplesPerPixel(png.ColorType);
         if (png.BitDepth == 16)
@@ -110,10 +114,33 @@ public sealed class PngImageDecoder : IImageDecoder
             // host byte order. AsUInt16Samples returns host-native ushort[].
             var samples = png.AsUInt16Samples();
             var bytes = MemoryMarshal.AsBytes(samples.AsSpan()).ToArray();
-            return new RasterImage(png.Width, png.Height, channels, SampleFormat.UInt16, bytes, icc);
+            return new RasterImage(png.Width, png.Height, channels, SampleFormat.UInt16, bytes, icc, color);
         }
 
         // 8-bit: Pixels are already the interleaved host-order raster.
-        return new RasterImage(png.Width, png.Height, channels, SampleFormat.UInt8, png.Pixels, icc);
+        return new RasterImage(png.Width, png.Height, channels, SampleFormat.UInt8, png.Pixels, icc, color);
+    }
+
+    // cICP is authoritative when present (PNG-3 gives it precedence over iCCP /
+    // sRGB / gAMA); CicpChunk and ColorEncoding share the H.273 vocabulary, so
+    // the mapping is a straight property copy. gAMA 1.0 declares linear-light
+    // samples (e.g. astro masters) - H.273 codepoint 8 (Linear) says exactly
+    // that. Anything else (sRGB chunk, gAMA ~1/2.2, untagged) lands on the sRGB
+    // assumption; the raw gAMA / cHRM values stay available via PngReader for
+    // consumers that need them.
+    private static ColorEncoding MapColorEncoding(PngImage png)
+    {
+        if (png.Cicp is { } cicp)
+            return new ColorEncoding
+            {
+                Primaries = cicp.ColorPrimaries,
+                Transfer = cicp.TransferFunction,
+                FullRange = cicp.VideoFullRangeFlag,
+            };
+
+        if (png.Gamma == 1.0)
+            return ColorEncoding.AssumedSrgb with { Transfer = TransferFunction.Linear };
+
+        return ColorEncoding.AssumedSrgb;
     }
 }
