@@ -31,6 +31,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- IImageDecoder / IDecodedImage contract for the SharpAstro.Codecs facade
+         (JxlImageDecoder). -->
+    <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
   </ItemGroup>
 
