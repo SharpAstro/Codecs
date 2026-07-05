@@ -43,6 +43,8 @@
          Centralising the enums means PNG cICP signalling and ICC cicp signalling
          agree on naming + numbering. -->
     <ProjectReference Include="..\SharpAstro.Color.Icc\SharpAstro.Color.Icc.csproj" />
+    <!-- IImageDecoder / IDecodedImage contract for the SharpAstro.Codecs facade. -->
+    <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
     <PackageReference Include="Microsoft.SourceLink.GitHub">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

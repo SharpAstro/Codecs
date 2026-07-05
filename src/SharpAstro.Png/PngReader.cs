@@ -468,13 +468,29 @@ public sealed record PngImage
     /// </exception>
     public byte[] ToRgba8()
     {
+        var dst = new byte[Width * Height * 4];
+        ExpandToRgba8(dst);
+        return dst;
+    }
+
+    /// <summary>
+    /// Expand the raw <see cref="Pixels"/> samples into a caller-provided 8-bit RGBA
+    /// destination (row-major, 4 bytes per pixel, top-down) - identical mapping to
+    /// <see cref="ToRgba8()"/> but writing into <paramref name="destination"/> instead
+    /// of allocating a result, so a codec facade can decode straight into a pooled or
+    /// UI-owned buffer. <paramref name="destination"/> must be at least
+    /// <c>Width * Height * 4</c> bytes.
+    /// </summary>
+    public void ExpandToRgba8(Span<byte> destination)
+    {
         var w = Width;
         var h = Height;
         var src = Pixels;
         var spp = SamplesPerPixel;
         var step = BitDepth == 16 ? 2 : 1; // bytes per sample (high byte first for 16-bit)
         var rowBytes = w * spp * step;
-        var dst = new byte[w * h * 4];
+        if (destination.Length < w * h * 4)
+            throw new ArgumentException($"Destination too small: {destination.Length} < {w * h * 4} (Width*Height*4).", nameof(destination));
 
         for (var y = 0; y < h; y++)
         {
@@ -526,13 +542,12 @@ public sealed record PngImage
                         throw new InvalidDataException($"Cannot expand PNG color type {ColorType} to RGBA8");
                 }
                 var d = dstRow + x * 4;
-                dst[d] = r;
-                dst[d + 1] = g;
-                dst[d + 2] = b;
-                dst[d + 3] = a;
+                destination[d] = r;
+                destination[d + 1] = g;
+                destination[d + 2] = b;
+                destination[d + 3] = a;
             }
         }
-        return dst;
     }
 }
 

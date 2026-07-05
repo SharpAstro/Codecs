@@ -4,17 +4,18 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsAotCompatible>true</IsAotCompatible>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
     <VersionPrefix>3.4.0</VersionPrefix>
     <AssemblyVersion>3.4.0.0</AssemblyVersion>
 
-    <PackageId>SharpAstro.Jpeg</PackageId>
-    <Product>SharpAstro.Jpeg</Product>
+    <PackageId>SharpAstro.Codecs</PackageId>
+    <Product>SharpAstro.Codecs</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed JPEG (ITU-T T.81 / ISO 10918) decoder for .NET. Baseline sequential + progressive DCT, restart intervals, 4:4:4 / 4:2:2 / 4:2:0 / arbitrary chroma subsampling, grayscale, YCbCr, RGB-marked, and Adobe CMYK / YCCK (APP14) streams. Scaled decode at 1/2, 1/4, 1/8 resolution via reduced inverse DCT — a 33-megapixel source can decode straight to a thumbnail-sized raster without the full-resolution intermediate ever existing. Decode-to-caller-buffer API with ArrayPool-backed internals for allocation-free hot paths. Full-scale output is byte-exact against the StbImageSharp (stb_image) reference decoder. AOT-compatible.</Description>
-    <PackageTags>jpeg jpg image codec decoder scaled idct thumbnail aot</PackageTags>
+    <Description>Image-codec facade over the SharpAstro codec family: sniff a byte stream's format by its magic-byte signature and dispatch to the matching decoder (PNG, JPEG), returning a codec-neutral IDecodedImage (fidelity tier) or decoding zero-copy into a caller-provided 8-bit RGBA buffer (display tier). AOT-compatible.</Description>
+    <PackageTags>image codec facade decoder sniff dispatch png jpeg aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
@@ -30,8 +31,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- IImageDecoder / IDecodedImage contract for the SharpAstro.Codecs facade. -->
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
+    <ProjectReference Include="..\SharpAstro.Png\SharpAstro.Png.csproj" />
+    <ProjectReference Include="..\SharpAstro.Jpeg\SharpAstro.Jpeg.csproj" />
     <PackageReference Include="Microsoft.SourceLink.GitHub">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
