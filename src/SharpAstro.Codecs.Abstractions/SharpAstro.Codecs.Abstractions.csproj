@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+    <VersionPrefix>3.4.0</VersionPrefix>
+    <AssemblyVersion>3.4.0.0</AssemblyVersion>
+
+    <PackageId>SharpAstro.Codecs.Abstractions</PackageId>
+    <Product>SharpAstro.Codecs.Abstractions</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>Shared abstractions for the SharpAstro image codec family: IImageDecoder (magic-byte sniff + fidelity/zero-copy decode) and IDecodedImage / RasterImage (a codec-neutral decoded raster). AOT-compatible, zero runtime dependencies.</Description>
+    <PackageTags>image codec decoder raster aot abstractions</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/StbImageSharp.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/StbImageSharp</PackageProjectUrl>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../UNLICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>
