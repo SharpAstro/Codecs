@@ -1,7 +1,12 @@
 # Roadmap: gain-map JPEG (Ultra HDR / ISO 21496-1)
 
-**Status: planned, not started.** This document is the design + validation plan for
-adding gain-map ("Ultra HDR") JPEG support to the codec family.
+**Status: core shipped in 3.5** — milestones 1–3 and 5–6 landed as
+`SharpAstro.Jpeg.GainMap` (read + reconstruct + assemble + generate, verified
+against Chromium via a headless differential check: the assembled file renders
+identically to the base under an SDR colour profile and diverges under an HDR
+one). Milestone 4 (the libultrahdr oracle harness + committed golden vectors)
+and milestone 7 (ISO 21496-1 / Apple dialects) remain open. This document keeps
+the original design + validation plan for those remaining rungs.
 
 ## Why this feature
 
@@ -150,16 +155,25 @@ self-consistency.
 
 ## Milestones (rung by rung)
 
-1. ⬜ `SharpAstro.Jpeg`: surface APP1/APP2 segments from the decoder (also closes the
-   existing ICC/EXIF gap in the Jpeg row of `CODECS.md`).
-2. ⬜ MPF reader + minimal `hdrgm`/`GContainer` XMP parse (`SharpAstro.Exif` domain).
-3. ⬜ `SharpAstro.Jpeg.GainMap` read path: `TryRead` + `ReconstructHdr` + property tests.
-4. ⬜ Oracle validation vs libultrahdr (both directions) + committed golden vectors.
-5. ⬜ Write path: `Assemble` (splice; works with any encoder's baseline JPEGs today).
-6. ⬜ `Compute`: gain-map generation from an HDR/SDR pair — the astro publishing tier.
-   Pairs with the consumer's own tone map; a default (simple Reinhard over
-   `ToFloats()` output) can ship as a convenience, clearly labelled as one policy
-   among many.
+1. ✅ `SharpAstro.Jpeg`: `JpegSegmentScanner` — byte-level marker-segment
+   enumeration + APPn payload discovery (the ICC/EXIF gap in the Jpeg row of
+   `CODECS.md` is now byte-level closed; decoded-property surfacing can follow).
+2. ✅ MPF reader/writer (`MpfSegment`) + targeted `hdrgm`/`GContainer` XMP
+   (`GainMapXmp`). *Deviation from plan:* these landed inside
+   `SharpAstro.Jpeg.GainMap` rather than `SharpAstro.Exif` — they sit next to
+   their only consumer, and `Exif` keeps its dependency profile unchanged.
+3. ✅ `SharpAstro.Jpeg.GainMap` read path: `TryRead`/`TrySplit` +
+   `ReconstructHdr` + the property-test spine (W=0 ⇒ base exactly, W=1 ⇒
+   capacity max, monotone in W).
+4. ⬜ Oracle validation vs libultrahdr (both directions) + committed golden
+   vectors. *Interim substitute already in place:* Skia-parser-mirroring
+   structural tests (MPF offset math, Item:Length, required hdrgm fields) plus
+   a live headless-Chromium differential check of the write path.
+5. ✅ Write path: `Assemble` (splice; works with any encoder's baseline JPEGs —
+   emits GContainer XMP **and** MPF, the Ultra HDR v1 superset).
+6. ✅ `Compute`: gain-map generation from an HDR/SDR pair — the astro publishing
+   tier. Ships without a bundled tone map (the SDR rendition is the caller's
+   policy); a labelled Reinhard convenience remains an option for later.
 7. ⬜ ISO 21496-1 binary metadata (read alongside XMP; write once Android 15-era
    readers are the baseline). Apple dialect read-only, best-effort, last.
 
