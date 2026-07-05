@@ -121,4 +121,86 @@ public sealed class RasterImageTests
             img.ExpandToRgba8(tooSmall);
         });
     }
+
+    // ------------------------------------------------------------- ToFloats
+    // Container-only widening: meaning (ColorEncoding) is untouched — ints
+    // normalize to [0,1] endpoint-exact, floats pass through unclamped.
+
+    [Fact]
+    public void ToFloats_gray8_broadcasts_and_normalizes_endpoint_exact()
+    {
+        var img = new RasterImage(2, 1, 1, SampleFormat.UInt8, [0, 255]);
+
+        img.ToFloats().ShouldBe([0f, 0f, 0f, 1f, 1f, 1f, 1f, 1f]);
+    }
+
+    [Fact]
+    public void ToFloats_rgba8_normalizes_each_channel()
+    {
+        var img = new RasterImage(1, 1, 4, SampleFormat.UInt8, [51, 102, 153, 204]);
+
+        img.ToFloats().ShouldBe([51 / 255f, 102 / 255f, 153 / 255f, 204 / 255f]);
+    }
+
+    [Fact]
+    public void ToFloats_grayalpha8_maps_second_channel_to_alpha()
+    {
+        var img = new RasterImage(1, 1, 2, SampleFormat.UInt8, [255, 51]);
+
+        img.ToFloats().ShouldBe([1f, 1f, 1f, 51 / 255f]);
+    }
+
+    [Fact]
+    public void ToFloats_uint16_normalizes_endpoint_exact()
+    {
+        // gray samples 0x0000 and 0xFFFF (host little-endian bytes)
+        var img = new RasterImage(2, 1, 1, SampleFormat.UInt16, [0x00, 0x00, 0xFF, 0xFF]);
+
+        var f = img.ToFloats();
+
+        f[0].ShouldBe(0f);
+        f[3].ShouldBe(1f);  // synthesized alpha
+        f[4].ShouldBe(1f);  // 65535/65535f is exactly 1f
+    }
+
+    [Fact]
+    public void ToFloats_float32_passes_hdr_values_through_unclamped()
+    {
+        // gray float pixels: 4.5 (HDR highlight) and -0.25 (wide-gamut negative)
+        var px = new byte[8];
+        BitConverter.TryWriteBytes(px.AsSpan(0), 4.5f);
+        BitConverter.TryWriteBytes(px.AsSpan(4), -0.25f);
+        var img = new RasterImage(2, 1, 1, SampleFormat.Float32, px);
+
+        var f = img.ToFloats();
+
+        f[0].ShouldBe(4.5f);    // broadcast across RGB
+        f[2].ShouldBe(4.5f);
+        f[3].ShouldBe(1f);      // synthesized alpha
+        f[4].ShouldBe(-0.25f);  // NOT clamped
+    }
+
+    [Fact]
+    public void ToFloats_rgb_float32_copies_verbatim_with_opaque_alpha()
+    {
+        var px = new byte[12];
+        BitConverter.TryWriteBytes(px.AsSpan(0), 0.5f);
+        BitConverter.TryWriteBytes(px.AsSpan(4), 2f);
+        BitConverter.TryWriteBytes(px.AsSpan(8), 100f);
+        var img = new RasterImage(1, 1, 3, SampleFormat.Float32, px);
+
+        img.ToFloats().ShouldBe([0.5f, 2f, 100f, 1f]);
+    }
+
+    [Fact]
+    public void ExpandToFloats_rejects_undersized_destination()
+    {
+        var img = new RasterImage(2, 2, 3, SampleFormat.UInt8, new byte[12]);
+
+        Should.Throw<ArgumentException>(() =>
+        {
+            var tooSmall = new float[8]; // needs 2*2*4 = 16
+            img.ExpandToFloats(tooSmall);
+        });
+    }
 }

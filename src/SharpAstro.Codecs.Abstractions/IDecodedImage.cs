@@ -58,4 +58,15 @@ public interface IDecodedImage
     /// by <c>&gt;&gt; 8</c>; gray expands across R/G/B; a missing alpha becomes 255.
     /// </summary>
     byte[] ToRgba8();
+
+    /// <summary>
+    /// Widens to a freshly-allocated RGBA float32 buffer (row-major, 4
+    /// floats/pixel, R,G,B,A order). Container-only and meaning-preserving:
+    /// UInt8/UInt16 samples normalize to <c>[0,1]</c> (0 → 0f, max code → exactly
+    /// 1f), Float32 samples copy verbatim (no clamp, no rescale), gray broadcasts
+    /// across R/G/B, a missing alpha becomes 1f. The result stays in
+    /// <see cref="ColorEncoding"/> — a PQ-encoded raster is still PQ-encoded
+    /// afterwards; this is NOT a linearization or display conversion.
+    /// </summary>
+    float[] ToFloats();
 }
