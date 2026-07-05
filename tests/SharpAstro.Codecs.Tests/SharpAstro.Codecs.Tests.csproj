@@ -39,6 +39,8 @@
     <Content Include="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
     <!-- jxrlib oracle binaries (built via Oracle\build.sh); skipped if absent. -->
     <None Include="Oracle\bin\*.exe" CopyToOutputDirectory="PreserveNewest" Link="Oracle\%(Filename)%(Extension)" Condition="Exists('Oracle\bin\JxrDecApp.exe')" />
+    <!-- jpegenc oracle (built via Oracle\jpegenc\build.sh); skipped if absent. -->
+    <None Include="Oracle\bin\jpegenc.exe" CopyToOutputDirectory="PreserveNewest" Link="Oracle\jpegenc.exe" Condition="Exists('Oracle\bin\jpegenc.exe')" />
   </ItemGroup>
 
 </Project>

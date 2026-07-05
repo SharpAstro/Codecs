@@ -12,7 +12,9 @@ namespace SharpAstro.Codecs.Tests;
 /// Compute→Assemble→TryRead→ReconstructHdr round-trip, and structural checks on
 /// the assembled bytes that mirror how Chromium/Skia actually locates the gain
 /// map (MPF offsets AND the GContainer trailing-Length convention — both paths).
-/// Deterministic JPEG inputs come from Magick.NET, per the repo's test convention.
+/// The base and gain-map JPEGs are encoded with our own <see cref="JpegEncoder"/>,
+/// so the write path is fully in-family — Magick.NET appears only as an
+/// independent decode oracle (proving the assembled file is a real JPEG).
 /// </summary>
 public sealed class JpegGainMapTests
 {
@@ -24,17 +26,10 @@ public sealed class JpegGainMapTests
 
     // ------------------------------------------------------------ helpers
 
-    /// <summary>Encodes packed RGB8 as a baseline JPEG (quality 100, no chroma
-    /// subsampling — determinism and fidelity for round-trip bounds).</summary>
-    private static byte[] EncodeJpeg(byte[] rgb, int width, int height)
-    {
-        var settings = new PixelReadSettings((uint)width, (uint)height, StorageType.Char, PixelMapping.RGB);
-        using var image = new MagickImage();
-        image.ReadPixels(rgb, settings);
-        image.Quality = 100;
-        image.Settings.SetDefine(MagickFormat.Jpeg, "sampling-factor", "1x1");
-        return image.ToByteArray(MagickFormat.Jpeg);
-    }
+    /// <summary>Encodes packed RGB8 as a baseline JPEG with our own encoder
+    /// (quality 100 ⇒ 4:4:4 — determinism and fidelity for round-trip bounds).</summary>
+    private static byte[] EncodeJpeg(byte[] rgb, int width, int height) =>
+        JpegEncoder.Encode(rgb, width, height, 3, new JpegEncodeOptions { Quality = 100 });
 
     private static byte[] GrayToRgb(byte[] gray)
     {

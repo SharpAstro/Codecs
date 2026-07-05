@@ -2,3 +2,4 @@ bin/
 jxrlib-src/
 probe/*.exe
 probe/*.obj
+jpegenc/stb_image_write.h
