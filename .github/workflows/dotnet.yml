@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  # Lockstep version: every package in this repo (StbImageSharp port + the
+  # Lockstep version: every package in this repo (the SharpAstro.Codecs facade +
   # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg / .Jxr / .Exr / .Jxl family)
   # ships at the same Major.Minor and a shared run-number patch. Bumped from
   # 2.30 -> 3.0 with the SharpAstro.Tiff IccProfile API break (byte[]? ->

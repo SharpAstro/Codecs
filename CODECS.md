@@ -9,9 +9,10 @@ exactly the formats they need.
 
 | Package | Decode | Encode | What it actually is |
 |---|:---:|:---:|---|
-| [`SharpAstro.StbImage`](src/StbImageSharp/) | PNG · JPG · BMP · TGA · PSD · GIF · HDR | — | Auto-generated C# port of Sean Barrett's `stb_image.h`. Decode-only, **8-bit precision through the managed API** (the internal 16-bit pipeline isn't exposed by `ImageResult`/`ImageResultFloat`). **Strips ancillary metadata** — iCCP / sRGB / gAMA / cHRM / eXIf / tEXt are all discarded. Use for "best-effort decode an arbitrary still image"; not for HDR or color-managed workflows. |
+| [`SharpAstro.Codecs`](src/SharpAstro.Codecs/) | *(dispatches)* | — | **Facade.** Magic-byte sniff + dispatch over the codecs below via `ImageCodecs.TryReadInfo` / `TryDecode` / `TryDecodeIntoRgba8` (zero-copy into a caller RGBA buffer). Reference this one package to decode an arbitrary supported still image — currently **PNG + JPEG** — without cherry-picking individual codecs. |
+| [`SharpAstro.Codecs.Abstractions`](src/SharpAstro.Codecs.Abstractions/) | — | — | **Base.** `IImageDecoder` (static-abstract magic-byte sniff + fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage` (a codec-neutral decoded raster). Zero runtime dependencies; each codec package implements it. |
 | [`SharpAstro.Png`](src/SharpAstro.Png/) | PNG | PNG | Pure-managed encoder + decoder. Writer: libpng-style adaptive per-row filtering, 8/16-bit RGBA/Gray. Reader: chunk parsing with CRC validation, color types 0/2/4/6 at 8/16-bit. **Both sides handle**: `iCCP` (ICC profile), `sRGB`, `gAMA`, `cHRM`, `eXIf`, plus PNG-3 HDR chunks `cICP` / `mDCv` / `cLLI` (HDR10, HLG signaling). Also exports `PngPredictor` as a reusable row-unfilter building block (TIFF Predictor=2, PDF FlateDecode). Sub-byte bit depths (1/2/4), indexed-color (PLTE), and Adam7 interlacing are not yet supported. |
-| [`SharpAstro.Jpeg`](src/SharpAstro.Jpeg/) | JPEG | — | Pure-managed **clean-room** JPEG (ITU-T T.81) decoder. Baseline sequential + progressive DCT, restart intervals, 4:4:4 / 4:2:2 / 4:2:0 / arbitrary chroma subsampling, grayscale, YCbCr, RGB-marked, Adobe CMYK / YCCK (APP14). **Scaled decode at 1/2 / 1/4 / 1/8 via reduced inverse DCT** — a 33 MP scan decodes straight to LOD/thumbnail size without the full-resolution raster ever existing (the motivating use case: killing image-decode LOH churn in drawboard's pdf-viewer). Pooled internals + `DecodeTo` caller-buffer API: a 5100×6600 q85 4:2:0 source decodes at 1/4 scale in ~50 ms with ~1 MB allocated, vs ~380 ms / ~130 MB full-scale through the stb port. **Full-scale output is byte-exact against `SharpAstro.StbImage`** — the in-repo stb port doubles as an always-on oracle (no external binaries), with Magick.NET (libjpeg) as the independent tolerance oracle; scaled output is property-tested against flat-colour and box-downsample references. Decode-only; `JpegIccInjector` (below) covers ICC tagging of any encoder's output until an encoder lands here. Decoder does not yet surface APP2 ICC / EXIF blobs — pair with `SharpAstro.Exif` or extend when a consumer needs it. |
+| [`SharpAstro.Jpeg`](src/SharpAstro.Jpeg/) | JPEG | — | Pure-managed **clean-room** JPEG (ITU-T T.81) decoder. Baseline sequential + progressive DCT, restart intervals, 4:4:4 / 4:2:2 / 4:2:0 / arbitrary chroma subsampling, grayscale, YCbCr, RGB-marked, Adobe CMYK / YCCK (APP14). **Scaled decode at 1/2 / 1/4 / 1/8 via reduced inverse DCT** — a 33 MP scan decodes straight to LOD/thumbnail size without the full-resolution raster ever existing (the motivating use case: killing image-decode LOH churn in drawboard's pdf-viewer). Pooled internals + `DecodeTo` caller-buffer API: a 5100×6600 q85 4:2:0 source decodes at 1/4 scale in ~50 ms with ~1 MB allocated, vs ~380 ms / ~130 MB full-scale. **Full-scale output is pinned byte-exact to a committed golden baseline** — frozen from the stb_image (StbImageSharp) reference decoder before that port was removed from the repo (see `JpegDecoderOracleTests`) — with Magick.NET (libjpeg) as the independent tolerance oracle; scaled output is property-tested against flat-colour and box-downsample references. Decode-only; `JpegIccInjector` (below) covers ICC tagging of any encoder's output until an encoder lands here. Decoder does not yet surface APP2 ICC / EXIF blobs — pair with `SharpAstro.Exif` or extend when a consumer needs it. |
 | [`SharpAstro.Jpeg.IccInjector`](src/SharpAstro.Jpeg.IccInjector/) | — | — | `JpegIccInjector` — splices an APP2 ICC segment into an already-encoded JPEG byte stream. Not a JPEG codec; the decoder now ships as `SharpAstro.Jpeg`, and a future encoder slots in there too. |
 | [`SharpAstro.Tiff`](src/SharpAstro.Tiff/) | TIFF | TIFF | Full pure-managed TIFF reader/writer. Multi-page, 8/16/32-bit uint + IEEE-Float, Uncompressed / Deflate / Zlib, II + MM byte order, SampleFormat/SMin/SMax/ICC round-trip. |
 | [`SharpAstro.Jxr`](src/SharpAstro.Jxr/) | JXR | JXR | Faithful, table-exact C# re-port of Microsoft's **jxrlib** C reference codec (the earlier spec-derived codec was retired). BD8/BD16/BD16F/BD32F × grayscale (Y-only) + RGB, plus **signed BD16S / BD32S** grayscale + RGB (native FITS BITPIX 16/32), **spatial + frequency** ordering — single-tile, plus **multi-tile soft tiling** (`INDEX_TABLE`, all formats — RGB + grayscale across every bit depth incl. signed) — Photo Overlap Transform (OL_NONE / OL_ONE / OL_TWO), lossy quantization, **arbitrary (non-16-aligned) dimensions** (pad-then-crop), full `.jxr` file container. RGB automatically uses YCoCg-R + InternalClrFmt=YUV444 internally for Windows Photo / WIC interop; BD32F is mono-only (T.832 has no Table A.6 GUID for BD32F RGB). **Validated bit-exact against the jxrlib reference binaries** — codestream byte-match vs `JxrEncApp` plus both decode directions. **YUV420/422 chroma subsampling now both encodes and decodes at every overlap level** (4:2:0 / 4:2:2, OL_NONE / OL_ONE / OL_TWO) — decode bit-exact vs `JxrDecApp`, encode **byte-for-byte identical to `JxrEncApp`** (5-tap `[1,4,6,4,1]/16` downsample in the YCoCg-R domain, scaled-arithmetic mode which jxrlib forces for subsampled chroma even at QP 1). **General lossy QP is byte-exact vs `JxrEncApp -q N`** for RGB 4:4:4 / 4:2:0 / 4:2:2 **and BD8 grayscale** across QP indices and overlap levels (the per-band UV-shift quantizer — chroma DC/LP at the half-step `SHIFTZERO-1` shift — plus the DC band's `iQP>>1` deadzone); the BD16-integer (gray/RGB) and HDR float (BD16F gray/RGB, BD32F gray) formats round-trip lossy QP **and** NO_FLEXBITS exactly vs `JxrDecApp` (BD16-integer uses a distinct scaled store rounding — `(1<<(s-1))` with no −1 — versus BD8/BD16F). **Signed BD16S/BD32S** (gray + RGB, native FITS) and **planar alpha** (32bppBGRA — colour + alpha codestreams byte-exact vs `JxrEncApp -a 2`) are supported, and the decoder also reads **per-channel (distinct Y/U/V) QP** from jxrlib quality-mode files. Planar alpha and **FREQUENCY mode** (jxrlib's default bitstream ordering — separate DC/LP/HP/FLEXBITS band packets, byte-exact vs `JxrEncApp` for RGB 4:4:4 BD8) are supported. Hard tiling and `WINDOWING_FLAG` stay out of scope (the reference `JxrEncApp` can't emit them, so they can't be byte-validated). See **[`JXR-FORMAT.md`](JXR-FORMAT.md)** for the full per-axis format-support breakdown (bit depths, channel layouts, internal colour formats, chroma subsampling, compression structure) with ticks. |
@@ -22,11 +23,10 @@ exactly the formats they need.
 
 ## JPEG decode path — recommendation
 
-Prefer **`SharpAstro.Jpeg`** (`JpegDecoder.Decode` / `DecodeTo`): byte-identical
-pixels to the stb port at full scale, plus scaled decode and pooled buffers the
-stb port can't offer. `SharpAstro.StbImage` remains the fallback for anything
-the clean-room decoder rejects (it currently rejects nothing stb accepts —
-both cap at 8-bit precision and neither does lossless/arithmetic JPEG).
+Use **`SharpAstro.Jpeg`** (`JpegDecoder.Decode` / `DecodeTo`): baseline + progressive,
+scaled 1/2–1/8 LOD decode, and pooled caller-buffer APIs. Full-scale output is pinned
+byte-exact to the golden baseline (originally the stb_image reference decode). It caps at
+8-bit precision and does not do lossless/arithmetic JPEG.
 
 ## PNG decode path — recommendation
 
@@ -36,18 +36,13 @@ preserves iCCP / sRGB / gAMA / cHRM / eXIf metadata and decodes 16-bit
 samples faithfully (returned in PNG's big-endian byte order; use
 `PngImage.AsUInt16Samples()` for a host-endian view).
 
-`SharpAstro.StbImage` is still the right tool for "best-effort decode an
-arbitrary still image" (BMP/TGA/PSD/GIF/HDR have no clean-room sibling
-yet), but for PNG specifically it discards all metadata and downsamples
-16-bit to 8-bit through the managed API — prefer `SharpAstro.Png`.
-
 ## Picking what to consume
 
 The packages are independent — pull only what your project actually needs:
 
 ```xml
-<!-- Reading any common still image -->
-<PackageReference Include="SharpAstro.StbImage" />
+<!-- Reading any supported still image (facade: PNG + JPEG sniff/dispatch) -->
+<PackageReference Include="SharpAstro.Codecs" />
 
 <!-- Writing PNGs -->
 <PackageReference Include="SharpAstro.Png" />
@@ -80,19 +75,20 @@ intentionally **codec-free**: `BoxRasterizer.RenderToRgba` returns a raw
 
 ## Naming-convention status
 
-The package names follow three inconsistent patterns today:
+The package names follow a few patterns today:
 
-1. **`StbImage`** — names the *source library* (the C header it ports). Doesn't say what formats or what direction.
-2. **`Png` / `Tiff` / `Jxr`** — names the *format*. Tiff and Jxr happen to be symmetric (encode + decode); Png is currently encode-only.
-3. **`Jpeg`** — now a real (decode-only) codec; `Jpeg.IccInjector` stays a separate metadata-domain package.
+1. **`Codecs` / `Codecs.Abstractions`** — the facade + its base contract (sniff/dispatch, `IImageDecoder`).
+2. **`Png` / `Tiff` / `Jxr`** — names the *format*. Tiff / Jxr / Png are symmetric (encode + decode).
+3. **`Jpeg`** — a (decode-only) codec; `Jpeg.IccInjector` stays a separate metadata-domain package.
 4. **`Color.Icc` / `Exif`** — names a *domain* (color management, metadata) rather than a codec.
 
-This is tracked but not yet acted on. Likely future moves:
+Milestones:
 
-- ✅ **`SharpAstro.Jpeg` renamed to `SharpAstro.Jpeg.IccInjector`** — the `Jpeg` PackageId is now reserved for a future full codec.
-- ✅ **Pure-managed JPEG decoder shipped as `SharpAstro.Jpeg`** (baseline + progressive, scaled decode, stb-oracle byte-exact). Encode is the remaining half of "full codec".
+- ✅ **`SharpAstro.Jpeg` renamed to `SharpAstro.Jpeg.IccInjector`** — the `Jpeg` PackageId is now reserved for a full codec.
+- ✅ **Pure-managed JPEG decoder shipped as `SharpAstro.Jpeg`** (baseline + progressive, scaled decode, golden-baseline byte-exact). Encode is the remaining half of "full codec".
 - ✅ **Pure-managed PNG decoder added to `SharpAstro.Png`** (`PngReader.Decode`) — now symmetric with `Tiff` / `Jxr`. Sub-byte depths / indexed-color / Adam7 are deferred follow-ups.
-- **Shrink `SharpAstro.StbImage`** as each format gets a clean-room sibling, eventually leaving it as "the holdouts" (TGA / PSD / GIF / HDR / BMP).
+- ✅ **`SharpAstro.Codecs` facade shipped** — one package to sniff + decode (PNG + JPEG) instead of cherry-picking.
+- ✅ **Removed `SharpAstro.StbImage`** (the auto-generated stb_image port) — it had no first-party consumers, and the JPEG byte-exact guarantee it anchored is now a committed golden baseline. **Trade-off:** the family no longer decodes the stb-only formats **BMP / TGA / PSD / GIF / HDR** (no clean-room sibling exists for them yet).
 
 None of this is urgent — the packages coexist fine and ship from the same CI.
 
@@ -110,4 +106,4 @@ Requires the .NET 10 SDK.
 ## License
 
 All packages in this repository are released under the [Unlicense](UNLICENSE)
-(public domain), matching the upstream `stb_image.h` and StbImageSharp terms.
+(public domain).

@@ -1,23 +1,36 @@
+using System.Security.Cryptography;
 using ImageMagick;
 using SharpAstro.Jpeg;
 using Shouldly;
-using Xunit.Sdk;
 
 namespace SharpAstro.Codecs.Tests;
 
 /// <summary>
-/// Byte-exact oracle tests for <see cref="JpegDecoder"/>: full-scale output must
-/// match the in-repo StbImageSharp (stb_image) reference decoder bit for bit on
-/// the same input bytes. Inputs are encoded in-test with Magick.NET (libjpeg),
-/// so the matrix — subsampling × quality × progressive × colour model — costs no
-/// committed fixtures; restart intervals (which ImageMagick cannot emit) come
-/// from a hand-built minimal bitstream, and one real-world camera-style file
-/// (DockPanes.jpg) rides along from the stb test resources.
+/// Byte-exact regression tests for <see cref="JpegDecoder"/>: full-scale output
+/// must match a committed golden baseline on a matrix of inputs (subsampling ×
+/// quality × progressive × colour model, edge dimensions, grayscale, Adobe CMYK,
+/// restart intervals, and one real-world camera file). Inputs are encoded in-test
+/// with Magick.NET (libjpeg) plus a hand-built restart bitstream, so the matrix
+/// costs no committed image fixtures; only a tiny <c>jpeg-oracle-golden.tsv</c>
+/// digest manifest is stored.
+///
+/// <para><b>Provenance of the golden.</b> The baseline was frozen from
+/// <see cref="JpegDecoder"/>'s own output at the moment the in-repo StbImageSharp
+/// (stb_image) reference decoder confirmed it byte-for-byte — i.e. the golden IS
+/// the stb-validated decode. The stb port has since been removed from the repo;
+/// this manifest is what preserves that byte-exact guarantee. To refresh it after
+/// an intentional decoder change, run this project with
+/// <c>REGEN_JPEG_ORACLE=1</c> (see <see cref="RegenerateGolden"/>) and review the
+/// resulting diff.</para>
 ///
 /// <para>A separate tolerance check against Magick's own (libjpeg-turbo) decode
-/// guards against faithfully replicating an stb bug: stb and libjpeg use the
-/// same accurate integer IDCT and triangular chroma upsampling, so they agree
-/// within a couple of code values.</para>
+/// (<see cref="FullScale_WithinToleranceOfLibjpeg"/>) guards against faithfully
+/// replicating an stb bug: stb and libjpeg use the same accurate integer IDCT and
+/// triangular chroma upsampling, so they agree within a couple of code values.</para>
+///
+/// <para>The inputs are reproducible only against the pinned Magick.NET version
+/// (see <c>Directory.Packages.props</c>); a Magick bump can change the encoded
+/// bytes and require a golden regen.</para>
 /// </summary>
 public sealed class JpegDecoderOracleTests
 {
@@ -64,113 +77,166 @@ public sealed class JpegDecoderOracleTests
         return img.ToByteArray(MagickFormat.Jpeg);
     }
 
-    private static (int W, int H, byte[] Rgba) StbDecode(byte[] jpeg)
+    private static string DockPanesPath => Path.Combine(AppContext.BaseDirectory, "Fixtures", "DockPanes.jpg");
+
+    // ------------------------------------------------------------ the case matrix
+    //
+    // One source of truth for every byte-exact case: (label, lazy builder). The
+    // [Theory] below and the golden regenerator both iterate it, so the input
+    // construction never drifts between "what we assert" and "what we froze".
+
+    private static readonly (string Label, Func<byte[]> Build)[] OracleCases = BuildOracleCases();
+
+    private static (string, Func<byte[]>)[] BuildOracleCases()
     {
-        var r = StbImageSharp.ImageResult.FromMemory(jpeg, StbImageSharp.ColorComponents.RedGreenBlueAlpha);
-        return (r.Width, r.Height, r.Data);
+        var cases = new List<(string, Func<byte[]>)>();
+
+        // Sampling × quality × progressive, at odd dimensions (partial edge MCUs
+        // in both axes).
+        foreach (var sampling in new[] { "4:4:4", "4:2:2", "4:2:0" })
+            foreach (var quality in new[] { 95, 75, 25 })
+                foreach (var progressive in new[] { false, true })
+                {
+                    var s = sampling;
+                    var q = quality;
+                    var p = progressive;
+                    const int w = 67, h = 45;
+                    cases.Add((
+                        $"{s} q{q}{(p ? " progressive" : "")}",
+                        () => EncodeJpeg(MakeRgbPattern(w, h), w, h, q, s, p)));
+                }
+
+        // Edge dimensions.
+        foreach (var (w, h) in new[] { (1, 1), (8, 8), (16, 16), (17, 13), (130, 7), (7, 130) })
+        {
+            var ww = w;
+            var hh = h;
+            cases.Add((
+                $"{ww}x{hh} 4:2:0",
+                () => EncodeJpeg(MakeRgbPattern(ww, hh), ww, hh, 85, "4:2:0")));
+        }
+
+        // Grayscale, baseline + progressive.
+        foreach (var progressive in new[] { false, true })
+        {
+            var p = progressive;
+            const int w = 50, h = 38;
+            cases.Add((
+                $"grayscale{(p ? " progressive" : "")}",
+                () => EncodeJpeg(MakeRgbPattern(w, h), w, h, 80, gray: true, progressive: p)));
+        }
+
+        // Adobe CMYK.
+        cases.Add(("Adobe CMYK", () => EncodeJpeg(MakeRgbPattern(40, 30), 40, 30, 90, cmyk: true)));
+
+        // Restart intervals (hand-built, deterministic, no encoder).
+        cases.Add(("restart intervals", () => BuildRestartMarkerJpeg(blocksW: 10, blocksH: 7, restartInterval: 7)));
+
+        // One real-world camera-style file.
+        cases.Add(("DockPanes.jpg", () => File.ReadAllBytes(DockPanesPath)));
+
+        return cases.ToArray();
     }
 
-    private static void AssertByteExact(byte[] jpeg, string label)
+    public static IEnumerable<object[]> CaseLabels() => OracleCases.Select(c => new object[] { c.Label });
+
+    private static byte[] BuildCase(string label) => OracleCases.First(c => c.Label == label).Build();
+
+    // ------------------------------------------------------------ the byte-exact assertion
+
+    [Theory]
+    [MemberData(nameof(CaseLabels))]
+    public void ByteExact(string label)
     {
-        var (ew, eh, expected) = StbDecode(jpeg);
+        var jpeg = BuildCase(label);
         var ours = JpegDecoder.Decode(jpeg);
-        ours.Width.ShouldBe(ew, label);
-        ours.Height.ShouldBe(eh, label);
 
-        if (ours.Pixels.AsSpan().SequenceEqual(expected))
+        var golden = Golden.Value;
+        golden.ShouldContainKey(label);
+        var (w, h, sha) = golden[label];
+
+        ours.Width.ShouldBe(w, label);
+        ours.Height.ShouldBe(h, label);
+        Sha256(ours.Pixels).ShouldBe(sha, $"{label}: decoded pixels differ from the frozen golden baseline");
+    }
+
+    private static string Sha256(byte[] pixels) => Convert.ToHexString(SHA256.HashData(pixels));
+
+    // ------------------------------------------------------------ golden manifest
+
+    private static readonly Lazy<Dictionary<string, (int W, int H, string Sha)>> Golden = new(LoadGolden);
+
+    private static string GoldenFileName => "jpeg-oracle-golden.tsv";
+
+    private static Dictionary<string, (int, int, string)> LoadGolden()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", GoldenFileName);
+        var map = new Dictionary<string, (int, int, string)>();
+        foreach (var line in File.ReadAllLines(path))
+        {
+            if (line.Length == 0 || line[0] == '#')
+                continue;
+            var parts = line.Split('\t');
+            map[parts[0]] = (int.Parse(parts[1]), int.Parse(parts[2]), parts[3]);
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    /// Regenerates <c>jpeg-oracle-golden.tsv</c> from the current decoder output.
+    /// Skipped unless <c>REGEN_JPEG_ORACLE=1</c>; run it after an intentional
+    /// decoder change and review the diff (the baseline was originally frozen
+    /// while the stb reference decoder validated the output byte-for-byte).
+    /// </summary>
+    [Fact]
+    public void RegenerateGolden()
+    {
+        if (Environment.GetEnvironmentVariable("REGEN_JPEG_ORACLE") != "1")
+        {
+            Assert.Skip("set REGEN_JPEG_ORACLE=1 to rewrite the golden baseline");
             return;
+        }
 
-        var idx = 0;
-        while (idx < expected.Length && ours.Pixels[idx] == expected[idx])
-            idx++;
-        var px = idx / 4;
-        throw new XunitException(
-            $"{label}: first mismatch at byte {idx} (pixel {px % ew},{px / ew} channel {idx % 4}): " +
-            $"ours={ours.Pixels[idx]} stb={expected[idx]}");
+        var lines = new List<string>
+        {
+            "# jpeg-oracle-golden.tsv - byte-exact baseline for JpegDecoderOracleTests.",
+            "# label<TAB>width<TAB>height<TAB>sha256(RGBA pixels, uppercase hex).",
+            "# Regenerate with REGEN_JPEG_ORACLE=1; see JpegDecoderOracleTests for provenance.",
+        };
+        foreach (var (label, build) in OracleCases)
+        {
+            var ours = JpegDecoder.Decode(build());
+            lines.Add($"{label}\t{ours.Width}\t{ours.Height}\t{Sha256(ours.Pixels)}");
+        }
+
+        var outPath = Path.Combine(RepoFixturesDir(), GoldenFileName);
+        File.WriteAllLines(outPath, lines);
     }
 
-    // ------------------------------------------------------------ the matrix
-
-    [Theory]
-    [InlineData("4:4:4", 95, false)]
-    [InlineData("4:4:4", 95, true)]
-    [InlineData("4:4:4", 75, false)]
-    [InlineData("4:4:4", 75, true)]
-    [InlineData("4:4:4", 25, false)]
-    [InlineData("4:4:4", 25, true)]
-    [InlineData("4:2:2", 95, false)]
-    [InlineData("4:2:2", 95, true)]
-    [InlineData("4:2:2", 75, false)]
-    [InlineData("4:2:2", 75, true)]
-    [InlineData("4:2:2", 25, false)]
-    [InlineData("4:2:2", 25, true)]
-    [InlineData("4:2:0", 95, false)]
-    [InlineData("4:2:0", 95, true)]
-    [InlineData("4:2:0", 75, false)]
-    [InlineData("4:2:0", 75, true)]
-    [InlineData("4:2:0", 25, false)]
-    [InlineData("4:2:0", 25, true)]
-    public void ByteExact_SamplingQualityProgressive(string sampling, int quality, bool progressive)
+    private static string RepoFixturesDir()
     {
-        // Odd dimensions on purpose: exercises partial edge MCUs in both axes.
-        const int w = 67, h = 45;
-        var jpeg = EncodeJpeg(MakeRgbPattern(w, h), w, h, quality, sampling, progressive);
-        AssertByteExact(jpeg, $"{sampling} q{quality}{(progressive ? " progressive" : "")}");
-    }
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        for (var i = 0; i < 12 && dir is not null; i++, dir = dir.Parent)
+        {
+            var candidate = Path.Combine(dir.FullName, "tests", "SharpAstro.Codecs.Tests", "Fixtures");
+            if (Directory.Exists(candidate))
+                return candidate;
+        }
 
-    [Theory]
-    [InlineData(1, 1)]
-    [InlineData(8, 8)]
-    [InlineData(16, 16)]
-    [InlineData(17, 13)]
-    [InlineData(130, 7)]
-    [InlineData(7, 130)]
-    public void ByteExact_EdgeDimensions(int w, int h)
-    {
-        var jpeg = EncodeJpeg(MakeRgbPattern(w, h), w, h, 85, "4:2:0");
-        AssertByteExact(jpeg, $"{w}x{h} 4:2:0");
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void ByteExact_Grayscale(bool progressive)
-    {
-        const int w = 50, h = 38;
-        var jpeg = EncodeJpeg(MakeRgbPattern(w, h), w, h, 80, gray: true, progressive: progressive);
-        AssertByteExact(jpeg, $"grayscale{(progressive ? " progressive" : "")}");
-    }
-
-    [Fact]
-    public void ByteExact_AdobeCmyk()
-    {
-        const int w = 40, h = 30;
-        var jpeg = EncodeJpeg(MakeRgbPattern(w, h), w, h, 90, cmyk: true);
-        AssertByteExact(jpeg, "Adobe CMYK");
-    }
-
-    [Fact]
-    public void ByteExact_RealWorldFixture()
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "Fixtures", "DockPanes.jpg");
-        var jpeg = File.ReadAllBytes(path);
-        AssertByteExact(jpeg, "DockPanes.jpg");
+        throw new DirectoryNotFoundException("could not locate the SharpAstro.Codecs.Tests/Fixtures source directory");
     }
 
     // ------------------------------------------------------------ restart markers
 
     [Fact]
-    public void ByteExact_RestartIntervals()
+    public void RestartIntervals_StreamContainsMarkers()
     {
-        // ImageMagick can't emit DRI, so build a minimal stream by hand:
-        // 10×7 blocks of single-component baseline data, RSTn every 7 MCUs.
+        // Byte-exact decode is covered by the ByteExact theory ("restart intervals");
+        // this proves the hand-built stream actually contains what we claim to test.
         var jpeg = BuildRestartMarkerJpeg(blocksW: 10, blocksH: 7, restartInterval: 7);
-
-        // Prove the stream actually contains what we claim to test.
         ContainsMarker(jpeg, 0xDD).ShouldBeTrue("stream should declare a DRI interval");
         ContainsMarker(jpeg, 0xD0).ShouldBeTrue("stream should contain RST0");
-
-        AssertByteExact(jpeg, "restart intervals");
     }
 
     private static bool ContainsMarker(byte[] jpeg, byte marker)

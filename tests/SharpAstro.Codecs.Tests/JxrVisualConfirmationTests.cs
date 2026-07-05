@@ -27,8 +27,8 @@ public sealed class JxrVisualConfirmationTests
     [Fact]
     public void RealPhoto_Encode_Decode_Artifacts()
     {
-        var src = FindRepoFile(Path.Combine("tests", "StbImageSharp.Tests", "Resources", "DockPanes.jpg"));
-        if (src is null) { _out.WriteLine("DockPanes.jpg not found — skipping visual confirmation."); return; }
+        var src = Path.Combine(AppContext.BaseDirectory, "Fixtures", "DockPanes.jpg");
+        if (!File.Exists(src)) { _out.WriteLine("DockPanes.jpg not found — skipping visual confirmation."); return; }
 
         // Load the photo and crop to a multiple of 16 (the codec's MB grid).
         using var img = new MagickImage(src);
@@ -118,13 +118,5 @@ public sealed class JxrVisualConfirmationTests
             if (Directory.Exists(Path.Combine(dir.FullName, ".git")))
                 return dir.FullName;
         return null;
-    }
-
-    private static string? FindRepoFile(string relative)
-    {
-        var root = FindRepoRoot();
-        if (root is null) return null;
-        var full = Path.Combine(root, relative);
-        return File.Exists(full) ? full : null;
     }
 }

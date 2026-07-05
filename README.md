@@ -1,37 +1,50 @@
-# SharpAstro.StbImage
+# SharpAstro Codecs
 
-[![NuGet](https://img.shields.io/nuget/v/SharpAstro.StbImage)](https://www.nuget.org/packages/SharpAstro.StbImage/)
+[![NuGet](https://img.shields.io/nuget/v/SharpAstro.Codecs)](https://www.nuget.org/packages/SharpAstro.Codecs/)
 [![CI/CD](https://github.com/SharpAstro/Codecs/actions/workflows/dotnet.yml/badge.svg)](https://github.com/SharpAstro/Codecs/actions/workflows/dotnet.yml)
 
-SharpAstro fork of [StbSharp/StbImageSharp](https://github.com/StbSharp/StbImageSharp) — a pure-managed C# port of Sean Barrett's [`stb_image.h`](https://github.com/nothings/stb). Decodes **JPG (baseline)**, **PNG**, **BMP**, **TGA**, **PSD**, **GIF**, and **HDR** without any native binaries.
+A family of **pure-managed, AOT-compatible** image-codec packages for .NET 10 — no native binaries.
+Each format ships as an independent NuGet, and **`SharpAstro.Codecs`** is a thin facade that sniffs a
+byte stream by its magic bytes and dispatches to the right decoder, so a consumer can reference one
+package instead of cherry-picking codecs.
 
-This repository also hosts a family of sibling pure-managed codec packages (`SharpAstro.Png`, `SharpAstro.Tiff`, `SharpAstro.Jxr`, `SharpAstro.Color.Icc`, `SharpAstro.Exif`, `SharpAstro.Jpeg`). See **[CODECS.md](CODECS.md)** for the full matrix of what each package decodes / encodes and how to pick the right one.
+Formats: **PNG** (read/write), **JPEG** (baseline + progressive decode, incl. scaled 1/2–1/8 LOD),
+**TIFF** (read/write), **JPEG XR** (read/write, jxrlib-exact), **OpenEXR** (read/write), **JPEG XL**
+(read/write), plus **EXIF** reading and a bundled **sRGB ICC** profile. See **[CODECS.md](CODECS.md)**
+for the full per-package decode/encode matrix and how to pick the right one.
 
-Why a fork? The SharpAstro family of libraries (`DIR.Lib`, `Fonts.Lib`, `SdlVulkan.Renderer`, …) targets .NET 10, ships AOT-compatible NuGet packages, and is wired into a CI/CD pipeline. This fork brings StbImageSharp into the same convention: `net10.0`, `<IsAotCompatible>true</IsAotCompatible>`, centrally-managed package versions, SourceLink debugging, and automated publishing.
-
-The C# source is unchanged from upstream — it's still the Hebron-transpiled stb_image port. Only project scaffolding (csproj, CI, packaging metadata) has been modernised.
+All packages target `net10.0`, are `IsAotCompatible`, ship SourceLink debugging, and publish in
+lockstep (shared Major.Minor + CI run-number patch).
 
 ## NuGet
 
 ```
-dotnet add package SharpAstro.StbImage
-```
+# One facade for sniff-and-decode (PNG + JPEG today):
+dotnet add package SharpAstro.Codecs
 
-Namespace is still `StbImageSharp` to keep call sites identical when migrating off the upstream package.
+# ...or reference just the format(s) you need:
+dotnet add package SharpAstro.Png
+dotnet add package SharpAstro.Jxr
+```
 
 ## Usage
 
-```csharp
-using StbImageSharp;
+Decode any supported still image through the facade — sniff the header, size a buffer, decode into it:
 
-using var stream = File.OpenRead(path);
-var image = ImageResult.FromStream(stream, ColorComponents.RedGreenBlueAlpha);
-// image.Width, image.Height, image.Data (byte[])
+```csharp
+using SharpAstro.Codecs;
+
+var bytes = File.ReadAllBytes(path);
+if (ImageCodecs.TryReadInfo(bytes, out var info))
+{
+    var rgba = new byte[info.Width * info.Height * 4];
+    ImageCodecs.TryDecodeIntoRgba8(bytes, rgba);      // zero-copy into your buffer
+    // ...or ImageCodecs.TryDecode(bytes, out IDecodedImage img) for the full-fidelity raster.
+}
 ```
 
-Other entry points: `ImageResult.FromMemory(byte[])`, `ImageInfo.FromStream` (header peek), `ImageResultFloat.FromStream` (HDR), `ImageResult.AnimatedGifFramesFromStream`.
-
-See the [upstream README](https://github.com/StbSharp/StbImageSharp) for richer examples (MonoGame Texture2D, WinForms Bitmap, etc.).
+Each codec is also usable directly — e.g. `PngReader` / `PngWriter`, `JpegDecoder.Decode` / `DecodeTo`,
+`TiffReader` / `TiffWriter`, `JxrImageCodec`, `ExrImageCodec`, `JxlImageCodec`. See CODECS.md.
 
 ## Building from source
 
@@ -46,9 +59,12 @@ Requires the .NET 10 SDK.
 
 ## License
 
-[Unlicense](UNLICENSE) (public domain). Same terms as the upstream port and the original stb library.
+[Unlicense](UNLICENSE) (public domain).
 
 ## Credits
 
-* [stb](https://github.com/nothings/stb) — Sean Barrett's original C image-loader header.
-* [StbSharp/StbImageSharp](https://github.com/StbSharp/StbImageSharp) — Roman Shapiro's C# port (via [Hebron](https://github.com/rds1983/Hebron) C-to-C# transpiler).
+This repository began as a fork of [StbSharp/StbImageSharp](https://github.com/StbSharp/StbImageSharp)
+(Roman Shapiro's C# port of Sean Barrett's [`stb_image.h`](https://github.com/nothings/stb), via the
+[Hebron](https://github.com/rds1983/Hebron) C-to-C# transpiler). `SharpAstro.Jpeg`'s decoder was
+ported from and validated byte-exact against that reference decoder before the stb port itself was
+retired from the repo.
