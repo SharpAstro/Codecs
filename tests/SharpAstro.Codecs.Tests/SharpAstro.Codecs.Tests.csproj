@@ -28,6 +28,7 @@
     <ProjectReference Include="..\..\src\SharpAstro.Png\SharpAstro.Png.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Color.Icc\SharpAstro.Color.Icc.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jpeg.IccInjector\SharpAstro.Jpeg.IccInjector.csproj" />
+    <ProjectReference Include="..\..\src\SharpAstro.Jpeg.GainMap\SharpAstro.Jpeg.GainMap.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jpeg\SharpAstro.Jpeg.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jxr\SharpAstro.Jxr.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Exr\SharpAstro.Exr.csproj" />

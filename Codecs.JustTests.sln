@@ -31,6 +31,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Codecs.Abstracti
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Codecs", "src\SharpAstro.Codecs\SharpAstro.Codecs.csproj", "{CCF5956B-6C36-4FD5-9FE1-60403A9666CD}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Jpeg.GainMap", "src\SharpAstro.Jpeg.GainMap\SharpAstro.Jpeg.GainMap.csproj", "{11B29D28-E14D-4933-A87A-D26F27E9326D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -185,6 +187,18 @@ Global
 		{CCF5956B-6C36-4FD5-9FE1-60403A9666CD}.Release|x64.Build.0 = Release|Any CPU
 		{CCF5956B-6C36-4FD5-9FE1-60403A9666CD}.Release|x86.ActiveCfg = Release|Any CPU
 		{CCF5956B-6C36-4FD5-9FE1-60403A9666CD}.Release|x86.Build.0 = Release|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Debug|x64.Build.0 = Debug|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Debug|x86.Build.0 = Debug|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Release|x64.ActiveCfg = Release|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Release|x64.Build.0 = Release|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Release|x86.ActiveCfg = Release|Any CPU
+		{11B29D28-E14D-4933-A87A-D26F27E9326D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -202,6 +216,7 @@ Global
 		{DA630206-74B5-4AED-AD0B-52B82E56184E} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{F2BA4D78-E58A-461A-B59B-EBE2A077D2AD} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{CCF5956B-6C36-4FD5-9FE1-60403A9666CD} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{11B29D28-E14D-4933-A87A-D26F27E9326D} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {C9C812E7-F89A-4B6E-8F9D-981D5F8BBAB3}
