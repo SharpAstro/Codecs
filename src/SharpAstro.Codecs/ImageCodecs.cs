@@ -29,6 +29,14 @@ namespace SharpAstro.Codecs;
 /// integer-sample display path only - projecting HDR float to 8 bits is a
 /// consumer tone/stretch decision, not a codec one.
 /// </para>
+/// <para>
+/// A gain-map ("Ultra HDR") JPEG is recognised too: <see cref="TryDecode"/> +
+/// <see cref="IDecodedImage.ToFloats"/> reconstruct the authored HDR (linear,
+/// display-referred), while <see cref="TryDecodeIntoRgba8"/> and
+/// <see cref="IDecodedImage.ToRgba8"/> return the SDR base rendition - so the
+/// float path is HDR and the 8-bit path is the graceful SDR fallback. Plain JPEGs
+/// are unaffected.
+/// </para>
 /// </summary>
 public static class ImageCodecs
 {
@@ -52,6 +60,12 @@ public static class ImageCodecs
     private static readonly Entry[] _registry =
     [
         Register<PngImageDecoder>(),
+        // GainMap must precede the plain JPEG decoder: both answer the FF D8 FF
+        // signature, but GainMapImageDecoder.CanDecode only claims a JPEG that
+        // actually carries a locatable gain map, so ordinary JPEGs fall through.
+        // It makes ToFloats() reconstruct the authored HDR while the 8-bit path
+        // keeps returning the SDR base.
+        Register<GainMapImageDecoder>(),
         Register<JpegImageDecoder>(),
         Register<TiffImageDecoder>(),
         Register<JxrImageDecoder>(),
