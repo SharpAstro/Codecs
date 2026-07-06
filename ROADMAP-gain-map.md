@@ -1,10 +1,11 @@
 # Roadmap: gain-map JPEG (Ultra HDR / ISO 21496-1)
 
-**Status: core shipped in 3.5** — milestones 1–3 and 5–6 landed as
-`SharpAstro.Jpeg.GainMap` (read + reconstruct + assemble + generate, verified
-against Chromium via a headless differential check: the assembled file renders
-identically to the base under an SDR colour profile and diverges under an HDR
-one). Milestone 4 (the libultrahdr oracle harness + committed golden vectors)
+**Status: core shipped in 3.5, facade-integrated in 3.6** — milestones 1–3, 5–6
+and 8 landed (read + reconstruct + assemble + generate as
+`SharpAstro.Jpeg.GainMap`, now decoded transparently through the `SharpAstro.Codecs`
+facade), verified against Chromium via a headless differential check: the assembled
+file renders identically to the base under an SDR colour profile and diverges under
+an HDR one. Milestone 4 (the libultrahdr oracle harness + committed golden vectors)
 and milestone 7 (ISO 21496-1 / Apple dialects) remain open. This document keeps
 the original design + validation plan for those remaining rungs.
 
@@ -126,10 +127,17 @@ public sealed class GainMapImage
 
 - **`SharpAstro.Codecs.Abstractions`**: **no change.** `ColorEncoding` stays pure
   H.273 + `FloatSemantics`; headroom and gain-map parameters live on
-  `GainMapMetadata`, not on `IDecodedImage`. The facade's `TryDecode` /
-  `TryDecodeIntoRgba8` keep returning the SDR base for these files (which is already
-  today's behaviour, and is *correct* — the base is the authored display rendition).
-  HDR reconstruction is an explicit opt-in through the GainMap package.
+  `GainMapMetadata`, not on `IDecodedImage`.
+- **`SharpAstro.Codecs`** (facade): **now gain-map aware** (revised from the original
+  "SDR base only" plan). It references `SharpAstro.Jpeg.GainMap` and registers a
+  `GainMapImageDecoder` ahead of the plain JPEG decoder, split by tier:
+  `TryDecode` + `ToFloats()` reconstruct the authored HDR (linear, display-referred,
+  at `HdrCapacityMax`), while `TryDecodeIntoRgba8` / `ToRgba8` keep returning the SDR
+  base (the authored display rendition, and the graceful fallback a gain-map-unaware
+  viewer shows). So "ask the facade for floats" transparently yields HDR; a display
+  headroom other than the full authored one is reached through the returned
+  `GainMapDecodedImage.Source`. Plain JPEGs are untouched (the gain-map decoder's
+  `CanDecode` only claims JPEGs that carry a locatable gain map).
 
 ## Validation discipline
 
@@ -176,6 +184,10 @@ self-consistency.
    policy); a labelled Reinhard convenience remains an option for later.
 7. ⬜ ISO 21496-1 binary metadata (read alongside XMP; write once Android 15-era
    readers are the baseline). Apple dialect read-only, best-effort, last.
+8. ✅ Facade integration (`SharpAstro.Codecs`): `GainMapImageDecoder` +
+   `GainMapDecodedImage` — `ImageCodecs.TryDecode(...).ToFloats()` reconstructs HDR,
+   the 8-bit path stays the SDR base. Transparent for consumers referencing only the
+   `Codecs` facade; plain JPEGs unaffected (`GainMapFacadeTests`).
 
 ## Non-goals / caveats
 

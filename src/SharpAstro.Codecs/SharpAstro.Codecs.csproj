@@ -41,6 +41,7 @@
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
     <ProjectReference Include="..\SharpAstro.Png\SharpAstro.Png.csproj" />
     <ProjectReference Include="..\SharpAstro.Jpeg\SharpAstro.Jpeg.csproj" />
+    <ProjectReference Include="..\SharpAstro.Jpeg.GainMap\SharpAstro.Jpeg.GainMap.csproj" />
     <ProjectReference Include="..\SharpAstro.Tiff\SharpAstro.Tiff.csproj" />
     <ProjectReference Include="..\SharpAstro.Jxr\SharpAstro.Jxr.csproj" />
     <ProjectReference Include="..\SharpAstro.Exr\SharpAstro.Exr.csproj" />
