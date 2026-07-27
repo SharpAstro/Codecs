@@ -11,7 +11,8 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Exif`, `Color.Icc`, `Jpeg.IccInjector`.
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Exif`, `Color.Icc`, `Jpeg.IccInjector`,
+  `Jpeg.GainMap` (Ultra HDR read/write; facade-registered *ahead of* the plain JPEG decoder).
 
 `SharpAstro.Jpeg`'s full-scale decode was built as a faithful port of the stb_image (StbImageSharp)
 JPEG path (IDCT constants, upsampling kernels, fixed-point colour convert) and validated
@@ -22,8 +23,19 @@ the guarantee is preserved as a committed golden digest baseline
 DCT-domain decimation — deliberately NOT ported from libjpeg's `jidctred.c`, which is IJG-licensed
 (this repo is Unlicense).
 
+`SharpAstro.Jpeg` also ships a **second, structurally unrelated decoder**: `LosslessJpeg`
+(ITU-T T.81 Annex H, SOF3) — Huffman-coded sample-difference predictors 1–7, no quantisation,
+**up to 16-bit precision**, DRI/RSTn restarts, point transform. It shares no code with
+`JpegDecoder` (which handles SOF0/1/2 only). Its real consumer is outside this repo: the
+**FC.SDK.Raw** repo decodes Canon CR2 IFD3 raw strips (14-bit Bayer as a 2-component interleaved
+lossless sub-frame) through it. Keep it working — `LosslessJpegTests` uses hand-crafted minimal
+bitstreams, because real CR2 payloads are too large to commit.
+
 `CODECS.md` documents the per-package decode/encode matrix (its `SharpAstro.Jxr` row reflects
 the jxrlib re-port). See "JXR codec" below for the architecture and validation discipline.
+Longer-horizon work lives in the root roadmap docs: [`ROADMAP-jpeg-encoder.md`](ROADMAP-jpeg-encoder.md),
+[`ROADMAP-gain-map.md`](ROADMAP-gain-map.md), [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md)
+(JBIG2 / JPX), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
 ## Build & test
 
@@ -62,10 +74,20 @@ ship in lockstep (shared Major.Minor + CI run-number patch). Project conventions
 `SharpAstro.Jxr` is a **faithful, table-exact C# re-port of Microsoft's jxrlib C** (the earlier
 spec-derived codec produced "garbage after the first block" and was retired). The re-port was
 built up incrementally and validated bit-exact at each step; it landed on **`master`** via
-PR #1 (merge commit `5b2f3f2`) and shipped to NuGet at **3.0.211**. It supports BD8/BD16/BD16F/
-BD32F × grayscale (Y-only) + RGB, single-tile SPATIAL mode, POT (OL_NONE/ONE/TWO), lossy QP, and
-arbitrary (non-16-aligned) dimensions (pad-then-crop, not WINDOWING_FLAG). Frequency mode,
-multi-tile, and alpha plane remain out of scope.
+PR #1 (merge commit `5b2f3f2`) and first shipped to NuGet at **3.0.211**.
+
+Support has widened well past that first landing. Current state (see [`JXR-FORMAT.md`](JXR-FORMAT.md)
+for the per-axis breakdown with ticks):
+
+- **Bit depths** — BD8 / BD16 / BD16F / BD32F, plus **signed BD16S / BD32S** (native FITS BITPIX 16/32).
+- **Channels** — grayscale (Y-only) + RGB, plus **planar alpha** (32bppBGRA, byte-exact vs `JxrEncApp -a 2`).
+- **Chroma** — YUV444, plus **YUV420 / YUV422** subsampling encode *and* decode at every overlap level.
+- **Structure** — SPATIAL **and FREQUENCY** ordering; single-tile **and multi-tile soft tiling**
+  (`INDEX_TABLE`, all formats); POT (OL_NONE/ONE/TWO); arbitrary (non-16-aligned) dimensions
+  (pad-then-crop, not WINDOWING_FLAG); lossy QP byte-exact vs `JxrEncApp -q N`, incl. per-channel QP on read.
+
+Still **out of scope**: hard tiling and `WINDOWING_FLAG` — the reference `JxrEncApp` can't emit
+them, so they can't be byte-validated, and byte-validation is the whole point of this port.
 
 Architecture (encode pipeline; decode mirrors it):
 
@@ -106,3 +128,20 @@ The oracle binaries (`tests/SharpAstro.Codecs.Tests/Oracle/bin/JxrEncApp.exe`,
 corresponding `segenc.c` / `segdec.c` / `strenc.c` function and match it exactly.
 `JXRLIB_TRACE` (env var on the prebuilt apps) + our `Trace.cs` give per-MB diffs for
 debugging divergences.
+
+## Oracle harnesses (all codecs)
+
+There are now **four** oracle mechanisms, with different acquisition stories. All of them
+**skip gracefully** when their dependency is missing, so a clean clone still builds and tests
+green — which also means *a silently skipped oracle is not a passing oracle*. Check the skip
+messages when a change should have been caught.
+
+| Codec | Oracle | How to get it |
+|---|---|---|
+| JXR | `JxrEncApp.exe` / `JxrDecApp.exe` (jxrlib, BSD-2) | `bash tests/SharpAstro.Codecs.Tests/Oracle/build.sh` — clones + clang-builds into `Oracle/bin/`. Git-ignored. |
+| JPEG **encode** | `jpegenc.exe` (stb_image_write wrapper) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpegenc/build.sh` — downloads the header **pinned by commit SHA + SHA-256**, clang-builds into `Oracle/bin/`. Git-ignored; `jpegenc.c` + `build.sh` are the committed source of truth. |
+| JPEG **decode** | committed golden digests | No external dependency — `Fixtures/jpeg-oracle-golden.tsv` (decode) and `jpeg-encoder-golden.tsv` (encode) run in CI unconditionally. Regenerate with `REGEN_JPEG_ORACLE=1`. |
+| JXL, EXR | Magick.NET (libjxl / OpenEXR) | Just a NuGet reference — no build step. |
+
+Byte-exactness claims that depend on a *pinned* reference (the stb JPEG writer) break if the pin
+moves; treat the SHA in `jpegenc/build.sh` as part of the contract.

@@ -19,7 +19,7 @@ lockstep (shared Major.Minor + CI run-number patch).
 ## NuGet
 
 ```
-# One facade for sniff-and-decode (PNG + JPEG today):
+# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL):
 dotnet add package SharpAstro.Codecs
 
 # ...or reference just the format(s) you need:

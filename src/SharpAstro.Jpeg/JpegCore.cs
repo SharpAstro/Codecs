@@ -7,8 +7,11 @@ namespace SharpAstro.Jpeg;
 /// The decoder engine: marker parsing, Huffman/entropy decode (baseline +
 /// progressive), restart intervals, per-component sample planes, and the final
 /// upsample + colour-convert pass. The full-scale pipeline is a 1:1 port of
-/// stb_image's JPEG decoder (the in-repo <c>StbImage.Generated.Jpg.cs</c> is the
-/// reference source) so output is byte-exact against StbImageSharp; departures:
+/// stb_image's JPEG decoder, so output is byte-exact against StbImageSharp. That
+/// port (<c>StbImage.Generated.Jpg.cs</c>) is no longer in this repo — the
+/// guarantee now lives as a committed golden digest baseline
+/// (<c>Fixtures/jpeg-oracle-golden.tsv</c>, driven by <c>JpegDecoderOracleTests</c>).
+/// Departures from the reference:
 ///
 /// <list type="bullet">
 /// <item>Component planes, progressive coefficient buffers, and line buffers are

@@ -14,9 +14,11 @@ namespace SharpAstro.Png;
 /// interlacing, no palette, no extra ancillary chunks.
 ///
 /// Used by both production code ("save my <see cref="RgbaImage"/> render to
-/// disk") and the test suite (committed baselines for golden-image regression
-/// tests live as PNGs and are decoded back via <c>StbImageSharp</c> for
-/// pixel-equality comparison).
+/// disk") and the test suite, where committed baselines for golden-image
+/// regression tests live as PNGs. Those are read back in-family via
+/// <see cref="PngReader"/> (or, in <c>PngWriterBitDepthTests</c>, a hand-rolled
+/// in-test reader that avoids any third-party decoder dependency); image-diff
+/// comparison goes through Magick.NET in <c>VisualJudge</c>.
 ///
 /// The filter encoders below are the dual of <see cref="PngPredictor"/>
 /// (PDF/TIFF code path's PNG row unfilter): same Sub / Up / Average / Paeth
