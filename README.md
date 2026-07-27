@@ -8,10 +8,11 @@ Each format ships as an independent NuGet, and **`SharpAstro.Codecs`** is a thin
 byte stream by its magic bytes and dispatches to the right decoder, so a consumer can reference one
 package instead of cherry-picking codecs.
 
-Formats: **PNG** (read/write), **JPEG** (baseline + progressive decode, incl. scaled 1/2–1/8 LOD),
-**TIFF** (read/write), **JPEG XR** (read/write, jxrlib-exact), **OpenEXR** (read/write), **JPEG XL**
-(read/write), plus **EXIF** reading and a bundled **sRGB ICC** profile. See **[CODECS.md](CODECS.md)**
-for the full per-package decode/encode matrix and how to pick the right one.
+Formats: **PNG** (read/write), **JPEG** (baseline + progressive decode, incl. scaled 1/2–1/8 LOD;
+baseline encode), **TIFF** (read/write), **JPEG XR** (read/write, jxrlib-exact), **OpenEXR**
+(read/write), **JPEG XL** (read/write), **JBIG2** (bilevel decode, for PDF's `/JBIG2Decode`), plus
+**EXIF** reading and a bundled **sRGB ICC** profile. See **[CODECS.md](CODECS.md)** for the full
+per-package decode/encode matrix and how to pick the right one.
 
 All packages target `net10.0`, are `IsAotCompatible`, ship SourceLink debugging, and publish in
 lockstep (shared Major.Minor + CI run-number patch).
@@ -19,7 +20,7 @@ lockstep (shared Major.Minor + CI run-number patch).
 ## NuGet
 
 ```
-# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL):
+# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, .jb2):
 dotnet add package SharpAstro.Codecs
 
 # ...or reference just the format(s) you need:
@@ -45,6 +46,21 @@ if (ImageCodecs.TryReadInfo(bytes, out var info))
 
 Each codec is also usable directly — e.g. `PngReader` / `PngWriter`, `JpegDecoder.Decode` / `DecodeTo`,
 `TiffReader` / `TiffWriter`, `JxrImageCodec`, `ExrImageCodec`, `JxlImageCodec`. See CODECS.md.
+
+JBIG2 is the one format whose main entry point is *not* the facade. A PDF-embedded JBIG2 stream has
+no file header to sniff, keeps its shared segment dictionaries in a separate `/JBIG2Globals` stream,
+and takes its dimensions from the image dictionary — so those callers pass all three explicitly:
+
+```csharp
+using SharpAstro.Jbig2;
+
+// `embedded` / `globals` are the PDF streams; width/height come from the image dictionary.
+var page = Jbig2Decoder.Decode(embedded, globals, width, height);
+var bits = page.Bits;        // one byte per pixel, 1 = black (T.88 polarity)
+var gray = page.ToGray8();   // ...or the 8-bit projection, black 0 / white 255
+```
+
+Standalone `.jb2` files do have a signature, and decode through the facade like anything else.
 
 ## Building from source
 

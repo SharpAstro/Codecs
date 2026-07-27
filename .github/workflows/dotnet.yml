@@ -9,8 +9,9 @@ on:
 
 env:
   # Lockstep version: every package in this repo (the SharpAstro.Codecs facade +
-  # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg / .Jxr / .Exr / .Jxl family)
-  # ships at the same Major.Minor and a shared run-number patch. Bumped from
+  # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg / .Jxr / .Exr / .Jxl /
+  # .Jbig2 family) ships at the same Major.Minor and a shared run-number patch.
+  # Bumped from
   # 2.30 -> 3.0 with the SharpAstro.Tiff IccProfile API break (byte[]? ->
   # ReadOnlyMemory<byte>). Bumped 3.0 -> 3.1 with the SharpAstro.Png CicpChunk
   # H.273-enum break (positional args switched from raw bytes to H.273 enums) +
@@ -24,10 +25,12 @@ env:
   # shipped as 3.4.49 because only the csprojs were bumped, not this variable) and
   # the SharpAstro.Jpeg.GainMap (Ultra HDR gain-map read/write) package joining
   # the family. Bumped 3.5 -> 3.6 with the baseline JPEG encoder (JpegEncoder,
-  # a byte-exact stb_image_write port) joining SharpAstro.Jpeg. When bumping the
-  # family Major.Minor, bump it HERE (and keep Directory.Build.props in sync for
-  # local builds).
-  VERSION_PREFIX: 3.6.${{ github.run_number }}
+  # a byte-exact stb_image_write port) joining SharpAstro.Jpeg. Bumped 3.6 -> 3.7
+  # with the new SharpAstro.Jbig2 (clean-room ITU-T T.88: MQ arithmetic decoder +
+  # generic regions, for PDF's /JBIG2Decode) package joining the family. When
+  # bumping the family Major.Minor, bump it HERE (and keep Directory.Build.props
+  # in sync for local builds).
+  VERSION_PREFIX: 3.7.${{ github.run_number }}
   VERSION_REV: ${{ github.run_attempt }}
   VERSION_HASH: +${{ github.sha }}
   BUILD_CONF: Release
@@ -44,7 +47,24 @@ jobs:
       run: dotnet restore Codecs.JustTests.sln
     - name: Build
       run: dotnet build Codecs.JustTests.sln -c $BUILD_CONF --no-restore -p:Version=${VERSION_PREFIX}${VERSION_REV}${VERSION_HASH} -p:FileVersion=${VERSION_PREFIX}.${VERSION_REV} -p:ContinuousIntegrationBuild=true
+    # jbig2dec is the reference JBIG2 decoder that Jbig2OracleTests checks our
+    # codestreams against. Used strictly as a BINARY -- it is AGPL and can never
+    # be a port source for this Unlicense repo (see
+    # tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
+    #
+    # This is the first oracle in the family to run in CI at all: the JXR and
+    # jpegenc harnesses are local clang builds under Oracle/bin/ that no workflow
+    # step ever produces, so they have only ever run on a dev machine. They can
+    # follow this pattern once their binaries are obtainable here.
+    - name: Install codec oracles
+      run: sudo apt-get update && sudo apt-get install -y jbig2dec
     - name: Test
+      # REQUIRE_ORACLES turns "oracle missing" from a skip into a failure. Every
+      # oracle harness degrades to a skip so a clean clone stays green, which is
+      # right locally and misleading here -- without this, a CI job that stopped
+      # installing jbig2dec would look exactly like one that ran it.
+      env:
+        REQUIRE_ORACLES: 1
       run: dotnet test Codecs.JustTests.sln -c $BUILD_CONF --no-build
     - name: Upload NuGet package
       uses: actions/upload-artifact@v7

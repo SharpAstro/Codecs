@@ -11,8 +11,9 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Exif`, `Color.Icc`, `Jpeg.IccInjector`,
-  `Jpeg.GainMap` (Ultra HDR read/write; facade-registered *ahead of* the plain JPEG decoder).
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Exif`, `Color.Icc`,
+  `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered *ahead of* the
+  plain JPEG decoder).
 
 `SharpAstro.Jpeg`'s full-scale decode was built as a faithful port of the stb_image (StbImageSharp)
 JPEG path (IDCT constants, upsampling kernels, fixed-point colour convert) and validated
@@ -31,11 +32,21 @@ DCT-domain decimation — deliberately NOT ported from libjpeg's `jidctred.c`, w
 lossless sub-frame) through it. Keep it working — `LosslessJpegTests` uses hand-crafted minimal
 bitstreams, because real CR2 payloads are too large to commit.
 
+`SharpAstro.Jbig2` (3.7) is the odd one out in the family: its primary entry point is **not** the
+facade. PDF's `/JBIG2Decode` filter hands over an *embedded stream* (T.88 §D.3) that has no file
+header to sniff, keeps its shared segment dictionaries in a separate `/JBIG2Globals` stream, and
+takes its dimensions from the image dictionary — none of which fits `(bytes) -> image`. So the API
+is `Jbig2Decoder.Decode(embedded, globals, width, height)`, and `Jbig2ImageDecoder : IImageDecoder`
+is registered only as a courtesy for standalone `.jb2` files. **Rung 1 of 5 has shipped** — the MQ
+arithmetic decoder, generic regions (GBTEMPLATE 0–3, TPGDON, arbitrary AT pixels), page info, and
+composition; MMR, symbol dictionary + text region, refinement, and halftone all throw
+`NotSupportedException` naming the missing feature. See "JBIG2 codec" below.
+
 `CODECS.md` documents the per-package decode/encode matrix (its `SharpAstro.Jxr` row reflects
 the jxrlib re-port). See "JXR codec" below for the architecture and validation discipline.
 Longer-horizon work lives in the root roadmap docs: [`ROADMAP-jpeg-encoder.md`](ROADMAP-jpeg-encoder.md),
 [`ROADMAP-gain-map.md`](ROADMAP-gain-map.md), [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md)
-(JBIG2 / JPX), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
+(JBIG2 rungs 2–5 / JPX), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
 ## Build & test
 
@@ -129,9 +140,76 @@ corresponding `segenc.c` / `segdec.c` / `strenc.c` function and match it exactly
 `JXRLIB_TRACE` (env var on the prebuilt apps) + our `Trace.cs` give per-MB diffs for
 debugging divergences.
 
+## JBIG2 codec — clean-room from T.88, staged in rungs
+
+`SharpAstro.Jbig2` is **clean-room from ITU-T T.88**, and that is not a stylistic preference —
+it is forced. This repo is **Unlicense (public domain)**, which is stricter than "permissive":
+notice-retaining code cannot be relicensed into it. `jbig2dec` is **AGPL** (unusable as a port
+source, full stop); pdf.js, PDFium, and `jbig2enc` are Apache-2.0 / BSD-3, which still means
+notice retention. All four are fine as oracle *binaries* — running a program is not linking to
+it — but none may be read-and-transcribed. Same line already drawn for libjpeg's `jidctred.c`.
+
+Structure (`src/SharpAstro.Jbig2/`):
+
+```
+Jbig2Decoder        (public: Decode(embedded, globals, w, h) / DecodeFile / TryReadFileInfo)
+  → Jbig2Segment    (T.88 §7.2 segment headers + §7.4.1 region info)
+  → GenericRegionDecoder  (§6.2: GBTEMPLATE 0-3 context templates, TPGDON, AT pixels)
+  → MqDecoder       (Annex E arithmetic decoder; a ref struct over the coded span)
+  → Jbig2Bitmap     (byte-per-pixel bilevel + OR/AND/XOR/XNOR/REPLACE composition)
+Jbig2Image          (public result: Bits = 1 byte/pixel, 1 = black; ToGray8 / ToRaster)
+Jbig2ImageDecoder   (IImageDecoder courtesy adapter, standalone .jb2 only)
+```
+
+Two invariants worth not breaking:
+
+- **Polarity.** `Jbig2Image.Bits` is T.88's own: **1 = black**. PDF's `/Decode` and `ImageMask`
+  invert that conditionally, but that is image-dictionary policy, not codestream meaning, so the
+  codec emits one documented polarity and the PDF layer decides. Same refusal the facade makes
+  about tone-mapping HDR float.
+- **Context templates.** What conformance turns on is **which pixels a template reads** (the
+  set, AT offsets included) — *not* which bit each one lands in. A context value is only an
+  index into adaptive-state slots that all start identical, so permuting the bit positions is a
+  bijection: it preserves which pixels share a slot and the coded bytes come out unchanged.
+  Established empirically, not by argument — swapping two template bits leaves jbig2dec still
+  agreeing with us; changing one template pixel's *coordinate* makes it disagree at once.
+  The numbering is still written to match T.88 Figures 4-7 exactly, because TPGDON's SLTP
+  decision uses **hard-coded** contexts (0x9B25 and friends) that name a specific neighbourhood
+  in the spec's numbering — permute the real contexts and a different neighbourhood collides
+  with that slot.
+
+Validation, weakest to strongest. Layers 1-3 need nothing installed and run in CI
+unconditionally; layer 4 skips **visibly** (`Assert.SkipUnless`, so it is reported as a skip
+rather than a silent pass) when jbig2dec is absent:
+
+1. **T.88 Annex H.2 conformance vector, both directions** — the published 256-decision sequence
+   and its 30-byte codestream. `Jbig2MqEncoder` (test-only; encoding is a shipped non-goal) reads
+   the shipped `Qe` table rather than duplicating it, so the vector validates what actually ships.
+2. **One-hot template tests** — each template cell set alone must produce exactly its own power
+   of two, plus a sweep asserting non-template neighbours contribute nothing. Pins the literal
+   T.88 numbering; see the caveat above about what that does and does not buy.
+3. **Round-trip through synthetic streams** — `Jbig2StreamBuilder` builds real segment streams and
+   `.jb2` files. Validates the MQ integration, scan order, TPGDON, and the segment layer; it is
+   structurally blind to the templates, since its encoder calls the decoder's own `Context`.
+4. **Third-party bytes, both directions** — the ones that actually catch template errors:
+   - **jbig2enc → us**: committed `Fixtures/jbig2/*.jb2` produced by jbig2enc, decoded and
+     compared. No tooling needed at test time. Covers GBTEMPLATE 0 / nominal AT only — that is
+     all jbig2enc emits (asserted, so a fixture regeneration can't quietly change it).
+   - **us → jbig2dec**: `Jbig2Oracle` shells out to the reference decoder for every template,
+     moved AT pixels, and TPGDON on/off — the cases jbig2enc can't produce. Resolves `jbig2dec`
+     on PATH, else through WSL (`wsl.exe -- jbig2dec`; there is no native Windows build). Install
+     with `apt-get install jbig2dec`, or `wsl -- sudo apt-get install -y jbig2dec`.
+
+Both jbig2dec (AGPL) and jbig2enc (Apache-2.0) are **binaries only** here — running a program is
+not linking to it, and encoder output is data. Neither may ever be read as a port source.
+
+When adding a rung (MMR, symbol dictionary + text region, refinement, halftone), the missing-feature
+`NotSupportedException` it replaces is the thing to grep for. Keep the existing refusals loud —
+a stream this decoder cannot fully reconstruct must fail rather than return a plausible page.
+
 ## Oracle harnesses (all codecs)
 
-There are now **four** oracle mechanisms, with different acquisition stories. All of them
+There are now **five** oracle mechanisms, with different acquisition stories. All of them
 **skip gracefully** when their dependency is missing, so a clean clone still builds and tests
 green — which also means *a silently skipped oracle is not a passing oracle*. Check the skip
 messages when a change should have been caught.
@@ -142,6 +220,26 @@ messages when a change should have been caught.
 | JPEG **encode** | `jpegenc.exe` (stb_image_write wrapper) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpegenc/build.sh` — downloads the header **pinned by commit SHA + SHA-256**, clang-builds into `Oracle/bin/`. Git-ignored; `jpegenc.c` + `build.sh` are the committed source of truth. |
 | JPEG **decode** | committed golden digests | No external dependency — `Fixtures/jpeg-oracle-golden.tsv` (decode) and `jpeg-encoder-golden.tsv` (encode) run in CI unconditionally. Regenerate with `REGEN_JPEG_ORACLE=1`. |
 | JXL, EXR | Magick.NET (libjxl / OpenEXR) | Just a NuGet reference — no build step. |
+| JBIG2 **decode** | committed jbig2enc fixtures + spec vectors | No external dependency, nothing to skip — `Fixtures/jbig2/*.jb2` (real jbig2enc output) plus the T.88 Annex H.2 MQ vector and one-hot template tests. Regenerate the fixtures with `Oracle/jbig2/make-fixtures.sh` (needs jbig2enc). |
+| JBIG2 **conformance** | `jbig2dec` (Artifex, AGPL — **binary only**) | `apt-get install jbig2dec`, or on Windows `wsl -- sudo apt-get install -y jbig2dec` — `Jbig2Oracle` finds it on PATH or through WSL. Unlike the JXR/jpegenc oracles this one **reports its skip** (`Assert.SkipUnless`) instead of passing silently, and it works in CI with a one-line apt step. |
 
 Byte-exactness claims that depend on a *pinned* reference (the stb JPEG writer) break if the pin
 moves; treat the SHA in `jpegenc/build.sh` as part of the contract.
+
+### `REQUIRE_ORACLES` — making a skipped oracle a red build
+
+Graceful skipping keeps a clean clone green, and in CI it is a liability: a job that stops
+installing its oracle looks exactly like a job that runs it. `REQUIRE_ORACLES=1` turns "oracle
+unavailable" from a skip into a **failure**, and CI's test step sets it.
+
+`OracleGate.RequireOrSkip(available, name, reason)` is the shared entry point. **JBIG2 is the
+first harness wired to it, and the only oracle CI installs** (`apt-get install -y jbig2dec`) —
+the JXR and jpegenc harnesses are local clang builds under `Oracle/bin/` that no workflow step
+produces, so they still use the older silent return-pass idiom and have only ever run on a dev
+box. Porting them is the obvious follow-on now that the pattern exists.
+
+Related knob: `JBIG2DEC=<path>` overrides oracle resolution — point it at a custom build, or at
+a bogus path to exercise the failure branch.
+
+Local behaviour is unchanged: without `REQUIRE_ORACLES`, a missing jbig2dec yields reported
+xunit *skips* (`Assert.Skip`), which at least show in the run summary rather than passing mutely.

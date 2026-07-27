@@ -1,13 +1,15 @@
 # Roadmap: PDF-embedded codecs (JBIG2 / JPX)
 
-**Status: not started — assessment + plan only.** Nothing in this document is
-implemented. It exists to record the scoping decisions (especially the *contract*
-problem and the *licence* constraints) before any code is written, because both are
-easy to get wrong late and expensive to unwind.
+**Status: JBIG2 rung 1 of 5 shipped in 3.7 as `SharpAstro.Jbig2`. JPX not started.**
 
-Recommended order: **JBIG2 first, JPX deferred.** JBIG2 is a well-scoped, staged
-project that also validates the new API shape; JPX is a `SharpAstro.Jxr`-scale
-undertaking that should only start once that shape is proven.
+Original plan: JBIG2 first, JPX deferred — JBIG2 being the well-scoped staged
+project that would also prove out the new API shape. That is what happened. The
+first rung (MQ arithmetic decoder + generic regions) is in, and the API shape
+this document predicted survived contact with the implementation unchanged.
+
+The scoping sections below are kept as written, because they are what the
+package was built to and what the remaining rungs will be built to. Progress is
+marked inline.
 
 ## Why these two
 
@@ -19,7 +21,7 @@ decode. A PDF page's image XObjects arrive through a `/Filter`, and today:
 | `/DCTDecode` | JPEG | ✅ `SharpAstro.Jpeg` (incl. scaled 1/2–1/8 LOD decode) |
 | `/FlateDecode` + predictor | raw samples | ✅ `PngPredictor` exposes the row-unfilter |
 | `/CCITTFaxDecode` | Group 3/4 fax | ❌ (see non-goals) |
-| **`/JBIG2Decode`** | **JBIG2 (ITU-T T.88)** | ❌ **this document** |
+| **`/JBIG2Decode`** | **JBIG2 (ITU-T T.88)** | 🟡 `SharpAstro.Jbig2` — generic regions (rung 1 of 5) |
 | **`/JPXDecode`** | **JPEG 2000 (ISO/IEC 15444)** | ❌ **this document** |
 
 The motivating consumer is the same one that drove `SharpAstro.Jpeg`'s scaled decode:
@@ -27,6 +29,11 @@ drawboard's pdf-viewer. Scanned documents are overwhelmingly JBIG2 (bilevel text
 less often, JPX.
 
 ## The contract problem — read this before designing the API
+
+**Resolved as written.** `SharpAstro.Jbig2` ships exactly the entry point below,
+with `Jbig2ImageDecoder : IImageDecoder` registered for standalone `.jb2` files
+only. Both consequences called out at the end of this section were implemented as
+described: bilevel expands to `UInt8` grey, and polarity is fixed at the codec.
 
 This is the single most important constraint, and it does **not** affect both formats
 equally.
@@ -105,20 +112,35 @@ T.88 Annex E and T.800 Annex C specify the **same** MQ arithmetic coder with the
 not over-engineer it into a public package on day one; it is an implementation detail
 until there are two real consumers.
 
+**Shipped** as `MqDecoder` in `SharpAstro.Jbig2`, and kept `internal` exactly as
+argued: there is still only one consumer. If JPX ever starts, that is the moment to
+decide where it lives, not before.
+
 ## JBIG2 — the plan
 
 Scale, for calibration against the existing packages (`SharpAstro.Exif` is 558 LOC,
 `SharpAstro.Png` 1554, `SharpAstro.Jxr` 10949):
 
-| Rung | Scope | Est. LOC | Why this order |
+| Rung | Scope | Est. LOC | Status |
 |---|---|---|---|
-| 1 | MQ decoder + **generic region** (templates 0–3, TPGDON) | ~800–1200 | Smallest slice that decodes real PDFs. Also builds the component JPX needs. |
-| 2 | **MMR** variant of generic region (T.6 / Group 4 coding) | ~400 | Shares the region plumbing; incidentally unlocks `/CCITTFaxDecode` later. |
+| 1 | MQ decoder + **generic region** (templates 0–3, TPGDON) | ~800–1200 | ✅ **shipped 3.7** (~900 LOC incl. the segment layer). Smallest slice that decodes real PDFs; also builds the component JPX needs. |
+| 2 | **MMR** variant of generic region (T.6 / Group 4 coding) | ~400 | Next. Shares the region plumbing; incidentally unlocks `/CCITTFaxDecode` later. |
 | 3 | **Symbol dictionary + text region** | ~1200–1500 | Where JBIG2's real compression on scanned text lives. The rung that makes it genuinely useful. |
-| 4 | **Generic refinement region** | ~400 | Needed by lossy-refine encoders. |
+| 4 | **Generic refinement region** | ~400 | Needed by lossy-refine encoders. Also the first consumer of the intermediate-region auxiliary buffer, which rung 1 deliberately skips rather than decodes-and-drops. |
 | 5 | **Pattern dictionary + halftone region** | ~500 | Rare in practice. Last. |
 
 Rung 1 alone already covers a meaningful share of real-world PDFs.
+
+Beyond the rungs, two known gaps in what rung 1 does ship:
+
+- **Unknown-length segments** (`0xFFFFFFFF`, §7.2.7) are rejected rather than
+  scanned for their terminator sequence. Legal only on immediate generic regions
+  and rare in practice.
+- **Performance.** `GenericRegionDecoder` re-reads every template neighbour for
+  every pixel instead of sliding the context along the row. Correctness against
+  the figures came first — the slow form is the one that can be read against
+  them — but a nominal-AT fast path is worth doing before anyone points a
+  2500×3500 scan at it.
 
 ### Validation plan
 
@@ -127,15 +149,45 @@ Mirrors the three-layer discipline documented in `CLAUDE.md` for JXR:
 1. **Golden-vector component tests** — the T.88 specification ships worked examples
    (Annex H test sequences); bake those in as unit tests. Spec-derived, so no licence
    contamination.
+   ✅ **Done.** The Annex H.2 conformance sequence runs in **both** directions
+   (256 known decisions ⟷ the published 30-byte codestream), via a test-only
+   `Jbig2MqEncoder` that reads the shipped `Qe` table rather than duplicating it.
+   Joined by one-hot context-template tests that pin each cell of Figures 4–7
+   individually — the layer a round-trip structurally cannot validate.
 2. **Self round-trip** is *not* available (decode-only) — so this layer is replaced by
    property tests on synthetic bitstreams, the `LosslessJpegTests` pattern.
+   ✅ **Done**, via `Jbig2StreamBuilder`, which synthesises real segment streams
+   and `.jb2` files. Note the boundary of what it proves: its region encoder forms
+   contexts with the shipped decoder's own code, so it validates MQ integration,
+   scan order, TPGDON, and the segment layer — never the templates.
 3. **Oracle pixel-match** — decode the same stream with `jbig2dec` and compare rasters
    exactly. Bilevel output means **exact match, no tolerance** — a much sharper oracle
    than the tolerance-based ones the lossy codecs need.
+   ✅ **Done, in both directions.** `jbig2dec` and `jbig2enc` both turned out to be
+   apt-installable (`jbig2dec` / `jbig2` on Ubuntu 24.04), so no source builds were
+   needed — a happy surprise given win-arm64. See
+   [`Oracle/jbig2/README.md`](tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
+   - **jbig2enc → us**: its output is committed as `Fixtures/jbig2/*.jb2` (under 130
+     bytes each), so this runs in CI with nothing installed. Covers GBTEMPLATE 0 /
+     nominal AT only — all jbig2enc emits.
+   - **us → jbig2dec**: `Jbig2Oracle` drives the reference decoder across every
+     template, moved AT pixels, and TPGDON either way. Skips **visibly**
+     (`Assert.SkipUnless`) when absent, rather than the silent return-pass the
+     JXR/jpegenc harnesses use.
 
-Fixtures come from `jbig2enc` (encode known bitmaps) plus real scanned PDFs. Follow the
-established harness conventions: oracle binaries git-ignored under `Oracle/bin/`, a
-`build.sh` that clang-builds them, and **graceful skip** when absent.
+**What the oracle changed.** It did not just confirm the decoder — it corrected a belief.
+Deliberately breaking a template showed that swapping two context **bits** leaves jbig2dec
+still agreeing with us, while changing one template **pixel coordinate** makes it disagree
+immediately. Context values are only indices into adaptive-state slots that all start
+identical, so a permutation preserves which pixels share a slot and the coded bytes are
+unchanged. Conformance rests on *which pixels a template reads*, not on the bit numbering —
+the numbering matters only because TPGDON's SLTP contexts are hard-coded constants in the
+spec's numbering. The docs written before the oracle existed claimed the opposite and have
+been corrected.
+
+Remaining fixture gap: **real scanned PDFs**. Everything above is either synthetic or
+jbig2enc's narrow slice, so nothing yet exercises the format as production encoders in the
+wild actually emit it. That matters most from rung 3 onward.
 
 ## JPX — the plan (deferred)
 
@@ -164,7 +216,9 @@ Two things genuinely favour it when the time comes:
    the pdf-viewer use case that is the single most attractive property of the format.
 
 **Gate:** do not start JPX until JBIG2 has shipped and the PDF-embedded-stream API
-shape has survived contact with a real consumer.
+shape has survived contact with a real consumer. Half of that gate is now met — the
+API shape shipped in 3.7 and held — but "a real consumer" means the pdf-viewer
+actually decoding scanned pages through it, which has not happened yet.
 
 ## Non-goals
 

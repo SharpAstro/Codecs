@@ -9,6 +9,13 @@
 *.vcxproj         text eol=crlf
 *.vcxproj.filters text eol=crlf
 
-# Upstream stb_image.h is vendored verbatim; mark it so GitHub language
-# stats don't attribute it to this repo.
+# Committed binary test fixtures. `* text=auto` classifies these correctly today,
+# but that is a content heuristic and a small codestream could plausibly trip it —
+# a single CRLF rewrite silently corrupts a fixture into an undecodable stream,
+# which surfaces as a baffling codec bug rather than as a diff. Be explicit.
+*.jb2 binary
+
+# Vendored C headers (jxrlib reference sources under tests/.../Oracle/, and the
+# stb_image_write.h the jpegenc oracle downloads at build time) — mark them so
+# GitHub language stats don't attribute them to this repo.
 *.h linguist-vendored
