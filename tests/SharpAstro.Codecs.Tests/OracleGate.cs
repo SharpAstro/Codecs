@@ -14,15 +14,15 @@ namespace SharpAstro.Codecs.Tests;
 /// into a red build.
 /// </para>
 /// <para>
-/// JBIG2 is the first harness wired up this way, and neither of the other two
-/// runs in CI at all — but they fail differently, which is worth knowing before
-/// reading a CI log. jpegenc already reports honest <c>Assert.Skip</c>s (it just
-/// isn't gated). JXR still uses the original idiom —
-/// <c>if (encApp is null) { WriteLine(...); return; }</c> — which <b>passes</b>,
-/// so its ~38 oracle methods are invisible in a CI summary while checking
-/// nothing. Both should adopt this gate; JXR is the urgent one, since converting
-/// it costs nothing and makes the gap show up immediately, whereas actually
-/// running either oracle means teaching the workflow to build the binaries.
+/// Two harnesses are wired up this way — <see cref="Jbig2Oracle"/> and
+/// <see cref="JxrOracle"/> — and CI installs or builds both, so they really run.
+/// JXR was the urgent one: its guards used to be
+/// <c>if (encApp is null) { WriteLine(...); return; }</c>, which <b>passes</b>,
+/// so 447 test cases reported success in CI while asserting nothing.
+/// </para>
+/// <para>
+/// jpegenc is the one still outside: it reports honest skips already, but is
+/// neither gated nor built in CI, so its cases skip rather than fail.
 /// </para>
 /// </summary>
 internal static class OracleGate

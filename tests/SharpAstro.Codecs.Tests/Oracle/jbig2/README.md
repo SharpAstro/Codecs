@@ -39,12 +39,10 @@ that stops installing its oracle looks exactly like one that runs it. CI's test
 step sets `REQUIRE_ORACLES=1` so that silence becomes a red build. The shared
 entry point is `OracleGate.RequireOrSkip`; JBIG2 is the first harness on it.
 
-The other two oracles are not yet gated and do not run in CI. Reading a CI
-summary, they look different from each other: jpegenc's 52 cases appear as honest
-skips, while the ~38 `Jxr*OracleTests` methods `return` early and are counted as
-**passes**. So a CI run reporting 56 skips has, in fact, silently not validated
-JXR at all. Gating JXR is the cheap half of fixing that; making either oracle
-actually run in CI means building its binary there.
+The JXR harness has since joined it (`JxrOracle`), and CI builds jxrlib as well —
+which mattered, because its guards used to `return` early and count as passes,
+hiding 447 inert test cases. jpegenc is the last one out: honest skips, but
+neither gated nor built in CI.
 
 ## Regenerating the committed fixtures
 

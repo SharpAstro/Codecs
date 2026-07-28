@@ -43,26 +43,38 @@ jobs:
     - uses: actions/setup-dotnet@v5
       with:
         dotnet-version: 10.0.x
-    - name: Restore dependencies
-      run: dotnet restore Codecs.JustTests.sln
-    - name: Build
-      run: dotnet build Codecs.JustTests.sln -c $BUILD_CONF --no-restore -p:Version=${VERSION_PREFIX}${VERSION_REV}${VERSION_HASH} -p:FileVersion=${VERSION_PREFIX}.${VERSION_REV} -p:ContinuousIntegrationBuild=true
+    # Oracles are built BEFORE dotnet build. JxrOracle finds the binaries by
+    # walking up from the test output directory to Oracle/bin/, so strictly the
+    # order does not matter today -- but the csproj also has a <None
+    # CopyToOutputDirectory> glob over Oracle/*, evaluated during the build, and
+    # leaving those two mechanisms disagreeing about whether the files exist yet
+    # is how a working setup quietly stops working.
+    #
     # jbig2dec is the reference JBIG2 decoder that Jbig2OracleTests checks our
     # codestreams against. Used strictly as a BINARY -- it is AGPL and can never
     # be a port source for this Unlicense repo (see
     # tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
-    #
-    # This is the first oracle in the family to run in CI at all: the JXR and
-    # jpegenc harnesses are local clang builds under Oracle/bin/ that no workflow
-    # step ever produces, so they have only ever run on a dev machine. They can
-    # follow this pattern once their binaries are obtainable here.
     - name: Install codec oracles
       run: sudo apt-get update && sudo apt-get install -y jbig2dec
+    # JxrEncApp / JxrDecApp from jxrlib (BSD-2), clang-built from a pinned
+    # commit in ~10s. This is the strongest guarantee the repo makes about the
+    # JXR port -- our codestream is byte-for-byte what the reference emits --
+    # and until now it had never run in CI: the tests resolved the binaries,
+    # found nothing, and returned early, which counts as a pass. Building them
+    # here is what turns ~57 of those into real assertions.
+    - name: Build JXR oracle (jxrlib)
+      run: bash tests/SharpAstro.Codecs.Tests/Oracle/build.sh
+    - name: Restore dependencies
+      run: dotnet restore Codecs.JustTests.sln
+    - name: Build
+      run: dotnet build Codecs.JustTests.sln -c $BUILD_CONF --no-restore -p:Version=${VERSION_PREFIX}${VERSION_REV}${VERSION_HASH} -p:FileVersion=${VERSION_PREFIX}.${VERSION_REV} -p:ContinuousIntegrationBuild=true
     - name: Test
       # REQUIRE_ORACLES turns "oracle missing" from a skip into a failure. Every
       # oracle harness degrades to a skip so a clean clone stays green, which is
       # right locally and misleading here -- without this, a CI job that stopped
-      # installing jbig2dec would look exactly like one that ran it.
+      # installing jbig2dec or building jxrlib would look exactly like one that
+      # did. Covers the jbig2dec and JXR harnesses; jpegenc is not gated yet, so
+      # its 52 cases still show as honest skips until a build step lands.
       env:
         REQUIRE_ORACLES: 1
       run: dotnet test Codecs.JustTests.sln -c $BUILD_CONF --no-build

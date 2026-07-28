@@ -68,8 +68,7 @@ public sealed class JxrSignedOracleTests
     [InlineData(80, 80, "random", 16, 1)]
     public void Gray16S_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var y = SignedPattern(w, h, kind, 16);
         var jxr = JxrImageCodec.EncodeGray16S(y, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
@@ -101,8 +100,7 @@ public sealed class JxrSignedOracleTests
     [InlineData(64, 48, "random", 16, 0)] // lossy QP (BD32S stays non-scaled)
     public void Gray32S_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var y = SignedPattern(w, h, kind, 24);
         var jxr = JxrImageCodec.EncodeGray32S(y, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
@@ -156,8 +154,7 @@ public sealed class JxrSignedOracleTests
     [InlineData(33, 40, "random", 16, 11, 2)]   // non-16-aligned
     public void Rgb_Signed_DecodesLikeJxrDecApp(int w, int h, string kind, int bits, int decCode, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = (SignedPattern(w, h, kind, bits), SignedPattern(w, h, "gradient", bits), SignedPattern(w, h, kind == "random" ? "gradient" : "random", bits));
         bool bd16 = bits <= 16;
@@ -193,8 +190,7 @@ public sealed class JxrSignedOracleTests
     [InlineData(128, 64, "gradient", 32, 7, 2, 4, 2)]
     public void Signed_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int bd, int decCode, int overlap, int cols, int rows)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
         var layout = JxrTileLayout.Uniform(mbW, mbH, cols, rows);
@@ -280,18 +276,5 @@ public sealed class JxrSignedOracleTests
         var se = p.StandardError.ReadToEnd();
         p.WaitForExit(30_000);
         return (p.ExitCode, so, se);
-    }
-
-    private static string? FindOracle(string exe)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
-        {
-            var direct = Path.Combine(dir.FullName, "Oracle", "bin", exe);
-            if (File.Exists(direct)) return direct;
-            var nested = Path.Combine(dir.FullName, "tests", "SharpAstro.Codecs.Tests", "Oracle", "bin", exe);
-            if (File.Exists(nested)) return nested;
-        }
-        return null;
     }
 }

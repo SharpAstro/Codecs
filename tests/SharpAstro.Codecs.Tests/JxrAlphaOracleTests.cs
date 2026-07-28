@@ -10,8 +10,8 @@ namespace SharpAstro.Codecs.Tests;
 /// mode: the colour is one codestream (YCoCg-R + YUV444) and the alpha is a second, self-contained
 /// Y-only codestream stored alongside it in the container. Validated four ways: lossless self
 /// round-trip; the colour AND alpha codestreams each byte-for-byte identical to what JxrEncApp emits;
-/// our decode of JxrEncApp's RGBA file; and JxrDecApp's decode of ours. Tests no-op when the oracle
-/// binaries aren't present.
+/// our decode of JxrEncApp's RGBA file; and JxrDecApp's decode of ours. Tests skip (visibly) when
+/// the oracle binaries aren't present, and fail under <c>REQUIRE_ORACLES=1</c>.
 /// </summary>
 public sealed class JxrAlphaOracleTests
 {
@@ -47,8 +47,7 @@ public sealed class JxrAlphaOracleTests
     [InlineData(33, 40, 0)]
     public void OurEncodeRgba32_CodestreamsMatchJxrlib(int w, int h, int overlap)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b, a) = RgbaPattern(w, h);
         var ours = JxrImageCodec.EncodeRgba32(r, g, b, a, w, h, overlap: overlap);
@@ -89,8 +88,7 @@ public sealed class JxrAlphaOracleTests
     [InlineData(33, 40, 0)]
     public void OurEncodeRgba32_DecodedByJxrDecApp_IsLossless(int w, int h, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b, a) = RgbaPattern(w, h);
         var jxr = JxrImageCodec.EncodeRgba32(r, g, b, a, w, h, overlap: overlap);
@@ -123,8 +121,7 @@ public sealed class JxrAlphaOracleTests
     [InlineData(33, 40, 0)]
     public void JxrlibEncodeRgba32_DecodedByUs_IsLossless(int w, int h, int overlap)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b, a) = RgbaPattern(w, h);
         var tmp = Path.Combine(Path.GetTempPath(), $"jxradecu_{Guid.NewGuid():N}");
@@ -236,18 +233,5 @@ public sealed class JxrAlphaOracleTests
         var se = p.StandardError.ReadToEnd();
         p.WaitForExit(30_000);
         return (p.ExitCode, so, se);
-    }
-
-    private static string? FindOracle(string exe)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
-        {
-            var direct = Path.Combine(dir.FullName, "Oracle", "bin", exe);
-            if (File.Exists(direct)) return direct;
-            var nested = Path.Combine(dir.FullName, "tests", "SharpAstro.Codecs.Tests", "Oracle", "bin", exe);
-            if (File.Exists(nested)) return nested;
-        }
-        return null;
     }
 }

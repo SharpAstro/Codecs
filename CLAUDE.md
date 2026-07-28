@@ -212,19 +212,21 @@ a stream this decoder cannot fully reconstruct must fail rather than return a pl
 There are now **five** oracle mechanisms, with different acquisition stories. All of them
 **skip gracefully** when their dependency is missing, so a clean clone still builds and tests
 green — which also means *a silently skipped oracle is not a passing oracle*. Check the skip
-messages when a change should have been caught.
+messages when a change should have been caught, and see `REQUIRE_ORACLES` below for how CI
+refuses to accept that silence.
 
 | Codec | Oracle | How to get it |
 |---|---|---|
-| JXR | `JxrEncApp.exe` / `JxrDecApp.exe` (jxrlib, BSD-2) | `bash tests/SharpAstro.Codecs.Tests/Oracle/build.sh` — clones + clang-builds into `Oracle/bin/`. Git-ignored. |
+| JXR | `JxrEncApp.exe` / `JxrDecApp.exe` (jxrlib, BSD-2) | `bash tests/SharpAstro.Codecs.Tests/Oracle/build.sh` — clones at a **pinned commit** + clang-builds into `Oracle/bin/` in ~10s. Git-ignored. Works on Windows *and* Linux (different flags — see the script), and **CI runs it**. |
 | JPEG **encode** | `jpegenc.exe` (stb_image_write wrapper) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpegenc/build.sh` — downloads the header **pinned by commit SHA + SHA-256**, clang-builds into `Oracle/bin/`. Git-ignored; `jpegenc.c` + `build.sh` are the committed source of truth. |
 | JPEG **decode** | committed golden digests | No external dependency — `Fixtures/jpeg-oracle-golden.tsv` (decode) and `jpeg-encoder-golden.tsv` (encode) run in CI unconditionally. Regenerate with `REGEN_JPEG_ORACLE=1`. |
 | JXL, EXR | Magick.NET (libjxl / OpenEXR) | Just a NuGet reference — no build step. |
 | JBIG2 **decode** | committed jbig2enc fixtures + spec vectors | No external dependency, nothing to skip — `Fixtures/jbig2/*.jb2` (real jbig2enc output) plus the T.88 Annex H.2 MQ vector and one-hot template tests. Regenerate the fixtures with `Oracle/jbig2/make-fixtures.sh` (needs jbig2enc). |
-| JBIG2 **conformance** | `jbig2dec` (Artifex, AGPL — **binary only**) | `apt-get install jbig2dec`, or on Windows `wsl -- sudo apt-get install -y jbig2dec` — `Jbig2Oracle` finds it on PATH or through WSL. Unlike the JXR/jpegenc oracles this one **reports its skip** (`Assert.SkipUnless`) instead of passing silently, and it works in CI with a one-line apt step. |
+| JBIG2 **conformance** | `jbig2dec` (Artifex, AGPL — **binary only**) | `apt-get install jbig2dec`, or on Windows `wsl -- sudo apt-get install -y jbig2dec` — `Jbig2Oracle` finds it on PATH or through WSL. CI installs it with a one-line apt step. |
 
-Byte-exactness claims that depend on a *pinned* reference (the stb JPEG writer) break if the pin
-moves; treat the SHA in `jpegenc/build.sh` as part of the contract.
+Byte-exactness claims that depend on a *pinned* reference break if the pin moves; treat the
+SHA-256 in `jpegenc/build.sh` and the `JXRLIB_COMMIT` in `Oracle/build.sh` as part of the
+contract.
 
 ### `REQUIRE_ORACLES` — making a skipped oracle a red build
 
@@ -232,30 +234,31 @@ Graceful skipping keeps a clean clone green, and in CI it is a liability: a job 
 installing its oracle looks exactly like a job that runs it. `REQUIRE_ORACLES=1` turns "oracle
 unavailable" from a skip into a **failure**, and CI's test step sets it.
 
-`OracleGate.RequireOrSkip(available, name, reason)` is the shared entry point. **JBIG2 is the
-first harness wired to it, and the only oracle CI installs** (`apt-get install -y jbig2dec`) —
-the JXR and jpegenc harnesses are local clang builds under `Oracle/bin/` that no workflow step
-produces, so they have only ever run on a dev box. Porting them is the obvious follow-on now
-that the pattern exists.
+`OracleGate.RequireOrSkip(available, name, reason)` is the shared entry point. Two harnesses are
+on it — **JBIG2** (`Jbig2Oracle`) and **JXR** (`JxrOracle`) — and CI both installs jbig2dec and
+builds jxrlib, so both genuinely run there.
 
-Those two are **not** in the same state, and the difference matters when reading a CI log:
+| Harness | Gated? | Built/installed in CI? | Missing ⇒ |
+|---|---|---|---|
+| jbig2dec | yes | yes (`apt-get install jbig2dec`) | skip locally, **fail** in CI |
+| JXR (jxrlib) | yes | yes (`Oracle/build.sh`, ~10s) | skip locally, **fail** in CI |
+| jpegenc | no | no | honest `Assert.Skip` (52 cases), never fails |
 
-- **jpegenc** already reports xunit skips (`Assert.Skip`), just without the gate — so its 52
-  `JpegEncoderOracleTests` cases show up honestly as skips in every CI run. Wiring it to
-  `OracleGate` is a one-line change; getting it to actually *run* means building `jpegenc.exe`
-  in the workflow.
-- **JXR** still uses the older idiom — `if (encApp is null) { _out.WriteLine(...); return; }`,
-  which **passes**. ~38 oracle test methods across `Jxr*OracleTests` therefore contribute zero
-  skips to a CI run while validating nothing. The strongest layer this repo has (byte-exact vs
-  `JxrEncApp`) is, in CI, entirely inert and indistinguishable from success. Converting those
-  guards to `OracleGate.RequireOrSkip` is worth doing *before* the workflow learns to build the
-  binaries, because it costs nothing and makes the gap visible in the meantime.
+**Why JXR mattered most.** Its guards used to be `if (encApp is null) { _out.WriteLine(...);
+return; }` — which makes the test **pass**. On a dev box with `Oracle/bin/` populated that is
+invisible; in CI it meant **447 test cases** (57 methods, expanded over their `InlineData`)
+reported success while executing no assertions at all, and byte-exactness against `JxrEncApp` is
+the strongest claim this repo makes about the JXR port. It was inert and indistinguishable from
+green. Gating alone would have exposed it; building jxrlib in CI is what actually turned those
+447 into real checks.
 
-A corollary for anyone predicting a skip count: a local run and a CI run legitimately differ,
-because a dev box has `Oracle/bin/` populated. Local is currently 4 skips, CI 56.
+jpegenc is the remaining gap: it already reports honest skips, it is just not gated and not
+built, so its cases show as skips rather than failures. Wiring it is a one-line change plus a
+build step, following exactly the pattern above.
 
-Related knob: `JBIG2DEC=<path>` overrides oracle resolution — point it at a custom build, or at
-a bogus path to exercise the failure branch.
+A corollary for anyone predicting a skip count: local and CI runs legitimately differ, because a
+dev box has `Oracle/bin/` fully populated. Local is 4 skips; CI is 4 + jpegenc's 52.
 
-Local behaviour is unchanged: without `REQUIRE_ORACLES`, a missing jbig2dec yields reported
-xunit *skips* (`Assert.Skip`), which at least show in the run summary rather than passing mutely.
+Related knob: `JBIG2DEC=<path>` overrides jbig2dec resolution — point it at a custom build, or at
+a bogus path to exercise the failure branch. For JXR, temporarily renaming `Oracle/bin/` does the
+same job.
