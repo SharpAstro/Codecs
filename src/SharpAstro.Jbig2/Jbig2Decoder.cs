@@ -25,12 +25,13 @@ namespace SharpAstro.Jbig2;
 /// </para>
 /// <para>
 /// <b>Implemented:</b> the MQ arithmetic decoder (Annex E), generic region
-/// decoding (§6.2: GBTEMPLATE 0-3, TPGDON, arbitrary AT pixels), page
-/// information, and region composition. <b>Not yet:</b> MMR (T.6) coding, symbol
-/// dictionary + text region, generic refinement, and halftone regions. Those
-/// throw <see cref="NotSupportedException"/> naming the missing feature — a
-/// stream this decoder cannot fully reconstruct fails loudly rather than
-/// returning a plausible-looking partial page.
+/// decoding both ways — arithmetic (§6.2.5: GBTEMPLATE 0-3, TPGDON, arbitrary AT
+/// pixels) and MMR / ITU-T T.6 (§6.2.6) — page information, and region
+/// composition. <b>Not yet:</b> symbol dictionary + text region, generic
+/// refinement, and halftone regions. Those throw
+/// <see cref="NotSupportedException"/> naming the missing feature — a stream this
+/// decoder cannot fully reconstruct fails loudly rather than returning a
+/// plausible-looking partial page.
 /// </para>
 /// </summary>
 public static class Jbig2Decoder
@@ -351,26 +352,37 @@ public static class Jbig2Decoder
         var typicalPrediction = (flags & 0x08) != 0;
         var extTemplate = (flags & 0x10) != 0;
 
+        Jbig2Bitmap bitmap;
         if (mmr)
-            throw new NotSupportedException("JBIG2: MMR-coded generic regions are not implemented yet.");
-        if (extTemplate)
-            throw new NotSupportedException("JBIG2: EXTTEMPLATE generic regions are not implemented yet.");
-
-        Span<sbyte> at = stackalloc sbyte[8];
-        var atPixels = template == 0 ? 4 : 1;
-        if (position + atPixels * 2 > data.Length)
-            throw new InvalidDataException("JBIG2: truncated generic region AT pixel list.");
-
-        for (var i = 0; i < atPixels; i++)
         {
-            at[i * 2] = (sbyte)data[position++];
-            at[i * 2 + 1] = (sbyte)data[position++];
+            // §7.4.6.3: the AT pixel list is present only when MMR is 0, so the
+            // coded data starts immediately after the flags byte. GBTEMPLATE and
+            // TPGDON are required to be 0 here and mean nothing to T.6 coding —
+            // a stream that sets them anyway still decodes to the right pixels,
+            // so they are ignored rather than made fatal.
+            bitmap = MmrDecoder.Decode(data[position..], region.Width, region.Height);
         }
+        else
+        {
+            if (extTemplate)
+                throw new NotSupportedException("JBIG2: EXTTEMPLATE generic regions are not implemented yet.");
 
-        var contexts = new byte[1 << GenericRegionDecoder.ContextBits(template)];
-        var mq = new MqDecoder(data[position..]);
-        var bitmap = GenericRegionDecoder.Decode(
-            ref mq, contexts, region.Width, region.Height, template, typicalPrediction, at);
+            Span<sbyte> at = stackalloc sbyte[8];
+            var atPixels = template == 0 ? 4 : 1;
+            if (position + atPixels * 2 > data.Length)
+                throw new InvalidDataException("JBIG2: truncated generic region AT pixel list.");
+
+            for (var i = 0; i < atPixels; i++)
+            {
+                at[i * 2] = (sbyte)data[position++];
+                at[i * 2 + 1] = (sbyte)data[position++];
+            }
+
+            var contexts = new byte[1 << GenericRegionDecoder.ContextBits(template)];
+            var mq = new MqDecoder(data[position..]);
+            bitmap = GenericRegionDecoder.Decode(
+                ref mq, contexts, region.Width, region.Height, template, typicalPrediction, at);
+        }
 
         page.Combine(bitmap, region.X, region.Y, region.Operator);
     }

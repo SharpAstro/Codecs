@@ -198,8 +198,14 @@ public sealed class Jbig2DecoderTests
             .Message.ShouldContain(expected);
     }
 
+    /// <summary>
+    /// MMR regions are decoded now, so garbage in one has to fail as
+    /// <em>malformed data</em> rather than as a missing feature. The distinction
+    /// is worth a test: a <see cref="NotSupportedException"/> here would send a
+    /// caller off looking for a decoder that already exists.
+    /// </summary>
     [Fact]
-    public void Decode_MmrCodedGenericRegion_SaysWhatIsMissing()
+    public void Decode_MmrCodedGenericRegion_FailsAsCorruptRatherThanUnsupported()
     {
         byte[] regionData =
         [
@@ -209,12 +215,12 @@ public sealed class Jbig2DecoderTests
             0x00, 0x00, 0x00, 0x00,   // y
             0x00,                     // combination operator OR
             0x01,                     // generic region flags: MMR = 1
-            0x00, 0x00,               // whatever coded data
+            0x00, 0x00,               // not a T.6 codestream: all-zero is the EOL prefix
         ];
 
         var stream = Jbig2StreamBuilder.Segment(1, SegmentType.ImmediateGenericRegion, 1, regionData);
 
-        Should.Throw<NotSupportedException>(() => Jbig2Decoder.Decode(stream, 8, 2))
+        Should.Throw<InvalidDataException>(() => Jbig2Decoder.Decode(stream, 8, 2))
             .Message.ShouldContain("MMR");
     }
 

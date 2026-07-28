@@ -94,6 +94,40 @@ internal static class Jbig2StreamBuilder
         return [.. body];
     }
 
+    /// <summary>
+    /// An immediate-generic-region segment data part carrying already-MMR-coded
+    /// data (T.88 §7.4.6 with <c>MMR = 1</c>).
+    /// <para>
+    /// There is no MMR encoder here and there will not be one — the coded bytes
+    /// come from <see cref="Group4Tiff"/>, i.e. from libtiff. This method only
+    /// wraps them in the segment envelope, which is what lets the very same
+    /// third-party bytes be pushed through the whole segment layer and compared
+    /// against jbig2dec.
+    /// </para>
+    /// </summary>
+    public static byte[] MmrGenericRegionSegment(
+        int width,
+        int height,
+        byte[] coded,
+        int x = 0,
+        int y = 0,
+        CombinationOperator op = CombinationOperator.Or)
+    {
+        var body = new List<byte>();
+        WriteUInt32(body, (uint)width);
+        WriteUInt32(body, (uint)height);
+        WriteUInt32(body, (uint)x);
+        WriteUInt32(body, (uint)y);
+        body.Add((byte)op);
+
+        // Generic region flags: MMR=1. §7.4.6.3 makes the AT pixel list
+        // conditional on MMR being 0, so none follows.
+        body.Add(0x01);
+
+        body.AddRange(coded);
+        return [.. body];
+    }
+
     /// <summary>A page information segment data part (T.88 §7.4.8).</summary>
     public static byte[] PageInformation(int width, int height, bool defaultPixelBlack = false, bool stripedUnknownHeight = false)
     {

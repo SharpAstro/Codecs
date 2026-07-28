@@ -1,20 +1,37 @@
 # JBIG2 oracles
 
-Two independent implementations check `SharpAstro.Jbig2`, in opposite directions.
-Neither is ever read as a port source — see the licence note at the bottom.
+Three independent implementations check `SharpAstro.Jbig2`, in opposite
+directions. None is ever read as a port source — see the licence note at the
+bottom.
 
 | Direction | Tool | Where it lives | Needs installing? |
 |---|---|---|---|
 | **jbig2enc → us** | `jbig2` (jbig2enc, Apache-2.0) | committed `Fixtures/jbig2/*.jb2`, driven by `Jbig2EncoderFixtureTests` | **No** — the fixtures are in the repo |
 | **us → jbig2dec** | `jbig2dec` (Artifex, AGPL) | `Jbig2Oracle` + `Jbig2OracleTests` | Yes, else the tests skip |
+| **libtiff → us** (MMR) | ImageMagick / libtiff, via Magick.NET | `Group4Tiff` + `Jbig2MmrOracleTests` | **No** — Magick.NET is already a package reference |
 
-They cover different things, which is the point of having both.
+They cover different things, which is the point of having all three.
 
 - jbig2enc only ever emits **GBTEMPLATE 0 with nominal AT pixels** (asserted by
   `JbigEncFixtures_UseTemplate0WithNominalAtPixels`, so a fixture refresh can't
   quietly change it). Real third-party bytes, but a narrow slice of the format.
 - jbig2dec is driven with **our own** streams, so it reaches every template,
   moved AT pixels, and TPGDON either way — the cases jbig2enc cannot produce.
+- libtiff covers the **MMR** path, which neither of the other two touches:
+  jbig2enc never emits `MMR = 1`, and the jbig2dec direction needs a stream we
+  can produce, which for MMR means borrowing an encoder. CCITT Group 4 *is*
+  ITU-T T.6, which is what T.88 §6.2.6 carries, so a Group 4 TIFF strip is a
+  JBIG2 MMR region with a different wrapper. `Jbig2MmrOracleTests` then feeds
+  those same bytes on through the segment layer and past jbig2dec, so all three
+  implementations end up agreeing on one raster.
+
+The MMR oracle is the only one here with no round-trip behind it — encoding
+JBIG2 is a non-goal, and the T.4 run-length tables have no self-consistency to
+check, so a mistyped entry produces a wrong run length and nothing internal
+notices. That was not hypothetical: mislabelling white run 24 as 25 left every
+picture-shaped test green, because none of them contains a white run of exactly
+24. Coverage there is now per table entry
+(`EveryRunLength_DecodesToItself`), not per picture.
 
 ## Installing jbig2dec
 
@@ -66,6 +83,23 @@ deliberately breaking the decoder and watching which layer fails:
 |---|:---:|:---:|:---:|
 | Template reads a different **pixel** | pass | **fail** | **fail** |
 | Two template **bits swapped** (same pixels) | pass | **fail** | pass |
+
+The MMR side was measured the same way, with eight deliberate bugs: a mislabelled
+white run, a duplicated black makeup code, a wrong extended-makeup value, a wrong
+vertical-mode offset, pass mode mapped to vertical, pass mode moving to `b1 + 1`
+instead of `b2`, the `b1` parity rule inverted, and `a0` starting at 0 instead of
+-1. All eight are caught, but not by any single layer:
+
+| Layer | Catches | Misses |
+|---|:---:|---|
+| picture patterns (`Patterns`) | 7 / 8 | the mislabelled white run — no picture happens to contain a white run of exactly 24 |
+| per-run-length sweep | 6 / 8 | both mode-logic bugs — its rows are all coded in horizontal mode by construction |
+| hand vectors + table structure (`Jbig2MmrTests`) | 8 / 8 | — |
+
+The last row looks like it makes the others redundant and does not: it catches
+the table bugs *structurally* (a mislabelled run leaves a gap, a duplicated code
+is not prefix-free) rather than by decoding, so it would miss any bug that keeps
+the tables well-formed but wrong — which is exactly what libtiff is there for.
 
 A context value is only an index into adaptive-state slots that all start
 identical, so permuting the bit positions preserves which pixels share a slot and

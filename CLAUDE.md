@@ -37,16 +37,17 @@ facade. PDF's `/JBIG2Decode` filter hands over an *embedded stream* (T.88 §D.3)
 header to sniff, keeps its shared segment dictionaries in a separate `/JBIG2Globals` stream, and
 takes its dimensions from the image dictionary — none of which fits `(bytes) -> image`. So the API
 is `Jbig2Decoder.Decode(embedded, globals, width, height)`, and `Jbig2ImageDecoder : IImageDecoder`
-is registered only as a courtesy for standalone `.jb2` files. **Rung 1 of 5 has shipped** — the MQ
-arithmetic decoder, generic regions (GBTEMPLATE 0–3, TPGDON, arbitrary AT pixels), page info, and
-composition; MMR, symbol dictionary + text region, refinement, and halftone all throw
-`NotSupportedException` naming the missing feature. See "JBIG2 codec" below.
+is registered only as a courtesy for standalone `.jb2` files. **Rungs 1–2 of 5 have shipped** — the
+MQ arithmetic decoder, generic regions in both codings (arithmetic GBTEMPLATE 0–3 with TPGDON and
+arbitrary AT pixels, **and MMR / ITU-T T.6**), page info, and composition; symbol dictionary + text
+region, refinement, and halftone all throw `NotSupportedException` naming the missing feature. See
+"JBIG2 codec" below.
 
 `CODECS.md` documents the per-package decode/encode matrix (its `SharpAstro.Jxr` row reflects
 the jxrlib re-port). See "JXR codec" below for the architecture and validation discipline.
 Longer-horizon work lives in the root roadmap docs: [`ROADMAP-jpeg-encoder.md`](ROADMAP-jpeg-encoder.md),
 [`ROADMAP-gain-map.md`](ROADMAP-gain-map.md), [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md)
-(JBIG2 rungs 2–5 / JPX), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
+(JBIG2 rungs 3–5 / JPX), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
 ## Build & test
 
@@ -142,7 +143,8 @@ debugging divergences.
 
 ## JBIG2 codec — clean-room from T.88, staged in rungs
 
-`SharpAstro.Jbig2` is **clean-room from ITU-T T.88**, and that is not a stylistic preference —
+`SharpAstro.Jbig2` is **clean-room from ITU-T T.88** (and T.4/T.6 for the MMR path), and that is
+not a stylistic preference —
 it is forced. This repo is **Unlicense (public domain)**, which is stricter than "permissive":
 notice-retaining code cannot be relicensed into it. `jbig2dec` is **AGPL** (unusable as a port
 source, full stop); pdf.js, PDFium, and `jbig2enc` are Apache-2.0 / BSD-3, which still means
@@ -154,8 +156,10 @@ Structure (`src/SharpAstro.Jbig2/`):
 ```
 Jbig2Decoder        (public: Decode(embedded, globals, w, h) / DecodeFile / TryReadFileInfo)
   → Jbig2Segment    (T.88 §7.2 segment headers + §7.4.1 region info)
-  → GenericRegionDecoder  (§6.2: GBTEMPLATE 0-3 context templates, TPGDON, AT pixels)
-  → MqDecoder       (Annex E arithmetic decoder; a ref struct over the coded span)
+  → GenericRegionDecoder  (§6.2.5: GBTEMPLATE 0-3 context templates, TPGDON, AT pixels)
+  →   MqDecoder     (Annex E arithmetic decoder; a ref struct over the coded span)
+  → MmrDecoder      (§6.2.6 = ITU-T T.6: changing elements, pass/vertical/horizontal modes)
+  →   MmrCodes      (T.4 Tables 2-4 as literal bit strings, expanded to peek lookups)
   → Jbig2Bitmap     (byte-per-pixel bilevel + OR/AND/XOR/XNOR/REPLACE composition)
 Jbig2Image          (public result: Bits = 1 byte/pixel, 1 = black; ToGray8 / ToRaster)
 Jbig2ImageDecoder   (IImageDecoder courtesy adapter, standalone .jb2 only)
@@ -203,13 +207,45 @@ rather than a silent pass) when jbig2dec is absent:
 Both jbig2dec (AGPL) and jbig2enc (Apache-2.0) are **binaries only** here — running a program is
 not linking to it, and encoder output is data. Neither may ever be read as a port source.
 
-When adding a rung (MMR, symbol dictionary + text region, refinement, halftone), the missing-feature
+### MMR (rung 2) — validated only against foreign bytes
+
+The arithmetic path has three layers before an external oracle is needed. **MMR has none of
+them**: encoding is a non-goal, so there is no round-trip, and the T.4 run-length tables have no
+self-consistency to check — a mistyped entry yields a wrong run length and nothing internal
+notices. So MMR is validated entirely on third-party bytes, and the harness is the cheapest in the
+repo: `Group4Tiff` (test-only) has **Magick.NET/libtiff** encode a raster as CCITT Group 4, strips
+the TIFF wrapper off, and feeds the codestream in. Magick.NET is already referenced for the EXR and
+JXL harnesses, so this needs no install, no build step, and no skip — it runs everywhere including
+CI. `Jbig2MmrOracleTests` then pushes the same bytes on through the segment layer and past
+jbig2dec.
+
+Two things learned building it, both worth keeping:
+
+- **Coverage has to be per table entry.** Mislabelling white run 24 as 25 left every
+  picture-shaped pattern green, because none happens to contain a white run of exactly 24.
+  `EveryRunLength_DecodesToItself` now sweeps every length T.4 defines, using rows shaped so the
+  encoder has no choice but to spell the run out (past vertical mode's ±3 reach, with an all-white
+  reference line so pass mode would swallow the row). Slope patterns were added for the same
+  reason — VR2/VR3/VL2/VL3 were barely exercised by pictures. Against eight deliberate bugs the
+  layers score 7/8 (pictures), 6/8 (run sweep — its rows are all horizontal mode, so mode-logic
+  bugs walk straight through) and 8/8 (hand vectors, two of them structurally rather than by
+  decoding). Together they are 8/8; **none of them is 8/8 for the right reasons alone**, which is
+  why all three stay. The matrix is in `Oracle/jbig2/README.md`.
+- **ImageMagick writes `PhotometricInterpretation = 1`** (BlackIsZero) for bilevel, and libtiff's
+  fax coder ignores that tag — it codes bit 0 as a *white* run either way. So the coded runs come
+  out inverted with respect to T.88, and `Group4Tiff` flips its input to cancel it. The photometric
+  is probed once rather than assumed.
+
+When adding a rung (symbol dictionary + text region, refinement, halftone), the missing-feature
 `NotSupportedException` it replaces is the thing to grep for. Keep the existing refusals loud —
-a stream this decoder cannot fully reconstruct must fail rather than return a plausible page.
+a stream this decoder cannot fully reconstruct must fail rather than return a plausible page. Note
+the one deliberate exception: an MMR region that also sets TPGDON violates §7.4.6.2 but still
+decodes to the right pixels, so it is tolerated rather than rejected. Loud failure is for streams
+this decoder would otherwise get *wrong*.
 
 ## Oracle harnesses (all codecs)
 
-There are now **five** oracle mechanisms, with different acquisition stories. All of them
+There are now **six** oracle mechanisms, with different acquisition stories. All of them
 **skip gracefully** when their dependency is missing, so a clean clone still builds and tests
 green — which also means *a silently skipped oracle is not a passing oracle*. Check the skip
 messages when a change should have been caught, and see `REQUIRE_ORACLES` below for how CI
@@ -221,6 +257,7 @@ refuses to accept that silence.
 | JPEG **encode** | `jpegenc.exe` (stb_image_write wrapper) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpegenc/build.sh` — downloads the header **pinned by commit SHA + SHA-256**, clang-builds into `Oracle/bin/`. Git-ignored; `jpegenc.c` + `build.sh` are the committed source of truth. **CI runs it.** |
 | JPEG **decode** | committed golden digests | No external dependency — `Fixtures/jpeg-oracle-golden.tsv` (decode) and `jpeg-encoder-golden.tsv` (encode) run in CI unconditionally. Regenerate with `REGEN_JPEG_ORACLE=1`. |
 | JXL, EXR | Magick.NET (libjxl / OpenEXR) | Just a NuGet reference — no build step. |
+| JBIG2 **MMR** | Magick.NET (libtiff, CCITT Group 4) | Just a NuGet reference. `Group4Tiff` has libtiff encode the raster as Group 4 and unwraps the codestream — T.6 is exactly what T.88 §6.2.6 carries. Nothing to install, nothing to skip. |
 | JBIG2 **decode** | committed jbig2enc fixtures + spec vectors | No external dependency, nothing to skip — `Fixtures/jbig2/*.jb2` (real jbig2enc output) plus the T.88 Annex H.2 MQ vector and one-hot template tests. Regenerate the fixtures with `Oracle/jbig2/make-fixtures.sh` (needs jbig2enc). |
 | JBIG2 **conformance** | `jbig2dec` (Artifex, AGPL — **binary only**) | `apt-get install jbig2dec`, or on Windows `wsl -- sudo apt-get install -y jbig2dec` — `Jbig2Oracle` finds it on PATH or through WSL. CI installs it with a one-line apt step. |
 

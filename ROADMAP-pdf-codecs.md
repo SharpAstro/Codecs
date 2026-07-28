@@ -1,11 +1,12 @@
 # Roadmap: PDF-embedded codecs (JBIG2 / JPX)
 
-**Status: JBIG2 rung 1 of 5 shipped in 3.7 as `SharpAstro.Jbig2`. JPX not started.**
+**Status: JBIG2 rungs 1–2 of 5 shipped in 3.7 as `SharpAstro.Jbig2`. JPX not started.**
 
 Original plan: JBIG2 first, JPX deferred — JBIG2 being the well-scoped staged
 project that would also prove out the new API shape. That is what happened. The
-first rung (MQ arithmetic decoder + generic regions) is in, and the API shape
-this document predicted survived contact with the implementation unchanged.
+first two rungs (MQ arithmetic decoder + generic regions, then the MMR variant)
+are in, and the API shape this document predicted survived contact with the
+implementation unchanged.
 
 The scoping sections below are kept as written, because they are what the
 package was built to and what the remaining rungs will be built to. Progress is
@@ -20,8 +21,8 @@ decode. A PDF page's image XObjects arrive through a `/Filter`, and today:
 |---|---|---|
 | `/DCTDecode` | JPEG | ✅ `SharpAstro.Jpeg` (incl. scaled 1/2–1/8 LOD decode) |
 | `/FlateDecode` + predictor | raw samples | ✅ `PngPredictor` exposes the row-unfilter |
-| `/CCITTFaxDecode` | Group 3/4 fax | ❌ (see non-goals) |
-| **`/JBIG2Decode`** | **JBIG2 (ITU-T T.88)** | 🟡 `SharpAstro.Jbig2` — generic regions (rung 1 of 5) |
+| `/CCITTFaxDecode` | Group 3/4 fax | 🟡 the Group 4 (`K < 0`) coding is implemented as `MmrDecoder`, but `internal` — see non-goals |
+| **`/JBIG2Decode`** | **JBIG2 (ITU-T T.88)** | 🟡 `SharpAstro.Jbig2` — generic regions, arithmetic + MMR (rungs 1–2 of 5) |
 | **`/JPXDecode`** | **JPEG 2000 (ISO/IEC 15444)** | ❌ **this document** |
 
 The motivating consumer is the same one that drove `SharpAstro.Jpeg`'s scaled decode:
@@ -124,12 +125,42 @@ Scale, for calibration against the existing packages (`SharpAstro.Exif` is 558 L
 | Rung | Scope | Est. LOC | Status |
 |---|---|---|---|
 | 1 | MQ decoder + **generic region** (templates 0–3, TPGDON) | ~800–1200 | ✅ **shipped 3.7** (~900 LOC incl. the segment layer). Smallest slice that decodes real PDFs; also builds the component JPX needs. |
-| 2 | **MMR** variant of generic region (T.6 / Group 4 coding) | ~400 | Next. Shares the region plumbing; incidentally unlocks `/CCITTFaxDecode` later. |
-| 3 | **Symbol dictionary + text region** | ~1200–1500 | Where JBIG2's real compression on scanned text lives. The rung that makes it genuinely useful. |
+| 2 | **MMR** variant of generic region (T.6 / Group 4 coding) | ~400 | ✅ **shipped 3.7** (~430 LOC across `MmrDecoder` + `MmrCodes`). Shares the region plumbing; the T.6 decoder is also what `/CCITTFaxDecode` needs at `K < 0`, though it stays `internal` for now. |
+| 3 | **Symbol dictionary + text region** | ~1200–1500 | Next. Where JBIG2's real compression on scanned text lives — the rung that makes it genuinely useful. |
 | 4 | **Generic refinement region** | ~400 | Needed by lossy-refine encoders. Also the first consumer of the intermediate-region auxiliary buffer, which rung 1 deliberately skips rather than decodes-and-drops. |
 | 5 | **Pattern dictionary + halftone region** | ~500 | Rare in practice. Last. |
 
 Rung 1 alone already covers a meaningful share of real-world PDFs.
+
+Rung 2 turned out to have a validation shape unlike anything else in the package,
+and that is the part worth carrying forward. The arithmetic path has three
+internal layers before an external oracle is needed; MMR has **none** — encoding
+is a non-goal so there is no round-trip, and the T.4 run-length tables have no
+self-consistency to check. The whole rung therefore rests on foreign bytes, which
+turned out to be free: **Magick.NET is already referenced**, ImageMagick writes
+CCITT Group 4 TIFFs, and Group 4 *is* T.6. `Group4Tiff` encodes a raster, strips
+the TIFF wrapper, and hands the codestream over — no install, no build step, no
+skip, and it runs in CI like any other test.
+
+Two findings from building it:
+
+- **Coverage has to be per table entry, and proving that took a mutation.**
+  Mislabelling white run 24 as 25 left every picture-shaped pattern green,
+  because none contains a white run of exactly 24. The suite now sweeps every run
+  length T.4 defines, in rows shaped so the encoder must spell the run out.
+  Slope patterns went in for the same reason — VR2/VR3/VL2/VL3 were barely
+  reached by pictures. Eight deliberate bugs (table entries, mode codes, `b2`
+  handling, the b1 parity rule, the first-run-of-a-line convention) are now all
+  caught, and measurably **no single layer catches them all**: the pictures get
+  7/8, the run sweep 6/8 (its rows are horizontal-mode by construction, so it is
+  blind to mode logic), and the hand vectors 8/8 but two of those structurally
+  rather than by decoding. The per-layer matrix is in
+  [`Oracle/jbig2/README.md`](tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
+- **The polarity is not what it looks like.** ImageMagick tags bilevel output
+  `PhotometricInterpretation = 1` (BlackIsZero), and libtiff's fax coder ignores
+  the tag — bit 0 is a *white* run regardless. So the coded runs come out
+  inverted with respect to T.88 and the harness cancels it, after probing the
+  photometric rather than assuming it.
 
 Beyond the rungs, two known gaps in what rung 1 does ship:
 
@@ -144,7 +175,8 @@ Beyond the rungs, two known gaps in what rung 1 does ship:
 
 ### Validation plan
 
-Mirrors the three-layer discipline documented in `CLAUDE.md` for JXR:
+Mirrors the three-layer discipline documented in `CLAUDE.md` for JXR, plus a fourth
+layer that rung 2 forced:
 
 1. **Golden-vector component tests** — the T.88 specification ships worked examples
    (Annex H test sequences); bake those in as unit tests. Spec-derived, so no licence
@@ -171,9 +203,15 @@ Mirrors the three-layer discipline documented in `CLAUDE.md` for JXR:
      bytes each), so this runs in CI with nothing installed. Covers GBTEMPLATE 0 /
      nominal AT only — all jbig2enc emits.
    - **us → jbig2dec**: `Jbig2Oracle` drives the reference decoder across every
-     template, moved AT pixels, and TPGDON either way. Skips **visibly**
-     (`Assert.SkipUnless`) when absent, rather than the silent return-pass the
-     JXR/jpegenc harnesses use.
+     template, moved AT pixels, and TPGDON either way. Skips **visibly** through
+     `OracleGate`, and CI sets `REQUIRE_ORACLES=1` so a missing jbig2dec reddens the
+     build instead of quietly reporting success.
+4. **Foreign-encoder bytes for MMR** — added with rung 2, because layers 1–3 do not
+   reach it: there is no round-trip (encoding is a non-goal) and the T.4 tables have
+   no self-consistency to check.
+   ✅ **Done**, via `Group4Tiff` — ImageMagick/libtiff writes CCITT Group 4, which is
+   T.6, which is what T.88 §6.2.6 carries. Magick.NET was already a reference, so this
+   layer costs nothing to acquire and never skips.
 
 **What the oracle changed.** It did not just confirm the decoder — it corrected a belief.
 Deliberately breaking a template showed that swapping two context **bits** leaves jbig2dec
@@ -185,9 +223,10 @@ the numbering matters only because TPGDON's SLTP contexts are hard-coded constan
 spec's numbering. The docs written before the oracle existed claimed the opposite and have
 been corrected.
 
-Remaining fixture gap: **real scanned PDFs**. Everything above is either synthetic or
-jbig2enc's narrow slice, so nothing yet exercises the format as production encoders in the
-wild actually emit it. That matters most from rung 3 onward.
+Remaining fixture gap: **real scanned PDFs**. Everything above is either synthetic,
+jbig2enc's narrow slice, or libtiff's Group 4, so nothing yet exercises the format as
+production JBIG2 encoders in the wild actually emit it. That matters most from rung 3
+onward.
 
 ## JPX — the plan (deferred)
 
@@ -227,7 +266,12 @@ actually decoding scanned pages through it, which has not happened yet.
 - **A PDF parser.** These packages decode image streams handed to them. Object
   resolution, filter chains, `/Decode` arrays, and `ImageMask` polarity stay in the
   consumer's PDF layer.
-- **`/CCITTFaxDecode` as a separate package** — if rung 2 lands, the MMR decoder can be
-  exposed for it, but it is not a driver on its own.
+- **`/CCITTFaxDecode` as a separate package.** Rung 2 landed, so the T.6 decoder now
+  exists and `MmrDecoder.Decode(coded, width, height)` is all a `K < 0` filter needs —
+  but it stays `internal`, on the same reasoning that keeps `MqDecoder` internal: one
+  consumer is not a public API. Making it public is a five-line change the day a real
+  caller asks. Note the scope, though: `/CCITTFaxDecode` also covers `K = 0` (pure 1D
+  Modified Huffman) and `K > 0` (mixed 1D/2D with EOL-tagged lines), neither of which
+  T.88 uses and neither of which is implemented.
 - Arithmetic-coded JPEG, still out of scope (unrelated to JBIG2's MQ coder despite both
   being "arithmetic JPEG-family coding").
