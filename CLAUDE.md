@@ -235,8 +235,24 @@ unavailable" from a skip into a **failure**, and CI's test step sets it.
 `OracleGate.RequireOrSkip(available, name, reason)` is the shared entry point. **JBIG2 is the
 first harness wired to it, and the only oracle CI installs** (`apt-get install -y jbig2dec`) —
 the JXR and jpegenc harnesses are local clang builds under `Oracle/bin/` that no workflow step
-produces, so they still use the older silent return-pass idiom and have only ever run on a dev
-box. Porting them is the obvious follow-on now that the pattern exists.
+produces, so they have only ever run on a dev box. Porting them is the obvious follow-on now
+that the pattern exists.
+
+Those two are **not** in the same state, and the difference matters when reading a CI log:
+
+- **jpegenc** already reports xunit skips (`Assert.Skip`), just without the gate — so its 52
+  `JpegEncoderOracleTests` cases show up honestly as skips in every CI run. Wiring it to
+  `OracleGate` is a one-line change; getting it to actually *run* means building `jpegenc.exe`
+  in the workflow.
+- **JXR** still uses the older idiom — `if (encApp is null) { _out.WriteLine(...); return; }`,
+  which **passes**. ~38 oracle test methods across `Jxr*OracleTests` therefore contribute zero
+  skips to a CI run while validating nothing. The strongest layer this repo has (byte-exact vs
+  `JxrEncApp`) is, in CI, entirely inert and indistinguishable from success. Converting those
+  guards to `OracleGate.RequireOrSkip` is worth doing *before* the workflow learns to build the
+  binaries, because it costs nothing and makes the gap visible in the meantime.
+
+A corollary for anyone predicting a skip count: a local run and a CI run legitimately differ,
+because a dev box has `Oracle/bin/` populated. Local is currently 4 skips, CI 56.
 
 Related knob: `JBIG2DEC=<path>` overrides oracle resolution — point it at a custom build, or at
 a bogus path to exercise the failure branch.
