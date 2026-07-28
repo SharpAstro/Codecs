@@ -57,19 +57,20 @@ public static class Jbig2Decoder
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "Width and height must be positive.");
 
-        var page = new Jbig2Bitmap(width, height);
-        var composited = false;
+        var state = new DecodingState(new Jbig2Bitmap(width, height));
 
         // Globals carry segment definitions shared by several images in one PDF;
-        // they are processed as a prefix of the image's own segment stream. Any
-        // page association is honoured as-is, since a globals stream conventionally
-        // uses page 0 ("applies to every page").
+        // they are processed as a prefix of the image's own segment stream, and
+        // the results they leave behind — symbol dictionaries, above all — stay
+        // in scope for the image's own segments. Any page association is honoured
+        // as-is, since a globals stream conventionally uses page 0 ("applies to
+        // every page").
         if (!globals.IsEmpty)
-            ProcessStream(globals, ReadSequential(globals), page, targetPage: 0, ref composited);
+            ProcessStream(globals, ReadSequential(globals), state, targetPage: 0);
 
-        ProcessStream(embedded, ReadSequential(embedded), page, targetPage: 0, ref composited);
+        ProcessStream(embedded, ReadSequential(embedded), state, targetPage: 0);
 
-        return new Jbig2Image(width, height, page.Data);
+        return new Jbig2Image(width, height, state.Page.Data);
     }
 
     /// <summary>
@@ -91,11 +92,10 @@ public static class Jbig2Decoder
         if (!TryFindPageSize(body, segments, out var width, out var height))
             throw new InvalidDataException("JBIG2: file has no page information segment for page 1, or its height is indeterminate.");
 
-        var page = new Jbig2Bitmap(width, height);
-        var composited = false;
-        ProcessStream(body, segments, page, targetPage: 1, ref composited);
+        var state = new DecodingState(new Jbig2Bitmap(width, height));
+        ProcessStream(body, segments, state, targetPage: 1);
 
-        return new Jbig2Image(width, height, page.Data);
+        return new Jbig2Image(width, height, state.Page.Data);
     }
 
     /// <summary>
@@ -241,12 +241,31 @@ public static class Jbig2Decoder
 
     // ---- segment dispatch --------------------------------------------------------
 
+    /// <summary>
+    /// Everything a segment might need from the segments before it. T.88 makes
+    /// most of the interesting segment types <em>referential</em> — a text region
+    /// names the symbol dictionaries it draws from, a halftone region names its
+    /// pattern dictionary, a refinement region names the intermediate region it
+    /// corrects — so the results have to outlive the segment that produced them,
+    /// keyed by segment number.
+    /// </summary>
+    private sealed class DecodingState(Jbig2Bitmap page)
+    {
+        /// <summary>The page being composited onto.</summary>
+        public Jbig2Bitmap Page { get; } = page;
+
+        /// <summary>Whether any region has been composited yet — see <see cref="ApplyPageInformation"/>.</summary>
+        public bool Composited { get; set; }
+
+        /// <summary>Intermediate region bitmaps (§7.4.1.1), awaiting a refinement region that names them.</summary>
+        public Dictionary<uint, Jbig2Bitmap> IntermediateRegions { get; } = [];
+    }
+
     private static void ProcessStream(
         ReadOnlySpan<byte> stream,
         List<SegmentHeader> segments,
-        Jbig2Bitmap page,
-        uint targetPage,
-        ref bool composited)
+        DecodingState state,
+        uint targetPage)
     {
         foreach (var segment in segments)
         {
@@ -256,29 +275,37 @@ public static class Jbig2Decoder
             // construction and encoders are inconsistent about the field.
             if (targetPage != 0 && segment.Page != 0 && segment.Page != targetPage) continue;
 
-            ProcessSegment(segment, stream.Slice(segment.DataStart, segment.DataLength), page, ref composited);
+            ProcessSegment(segment, stream.Slice(segment.DataStart, segment.DataLength), state);
         }
     }
 
-    private static void ProcessSegment(SegmentHeader segment, ReadOnlySpan<byte> data, Jbig2Bitmap page, ref bool composited)
+    private static void ProcessSegment(SegmentHeader segment, ReadOnlySpan<byte> data, DecodingState state)
     {
         switch (segment.Type)
         {
             case SegmentType.PageInformation:
-                ApplyPageInformation(data, page, composited);
+                ApplyPageInformation(data, state.Page, state.Composited);
                 break;
 
             case SegmentType.ImmediateGenericRegion:
             case SegmentType.ImmediateLosslessGenericRegion:
-                DecodeGenericRegion(data, page);
-                composited = true;
+                Compose(state, DecodeGenericRegion(data, out var genericInfo), genericInfo);
                 break;
 
             case SegmentType.IntermediateGenericRegion:
-                // Intermediate regions are not composited onto the page: they are
-                // held in an auxiliary buffer for a later refinement region to
-                // consume. Nothing can reference one until refinement lands, so
-                // decoding it now would be work thrown away.
+                // Not composited onto the page: an intermediate region is an
+                // auxiliary buffer that some later refinement region names as its
+                // reference (§7.4.1.1).
+                state.IntermediateRegions[segment.Number] = DecodeGenericRegion(data, out _);
+                break;
+
+            case SegmentType.ImmediateRefinementRegion:
+            case SegmentType.ImmediateLosslessRefinementRegion:
+                Compose(state, DecodeRefinementRegion(data, segment, state, out var refineInfo), refineInfo);
+                break;
+
+            case SegmentType.IntermediateRefinementRegion:
+                state.IntermediateRegions[segment.Number] = DecodeRefinementRegion(data, segment, state, out _);
                 break;
 
             case SegmentType.EndOfPage:
@@ -303,17 +330,18 @@ public static class Jbig2Decoder
                 throw new NotSupportedException(
                     "JBIG2: pattern dictionary / halftone region segments are not implemented yet.");
 
-            case SegmentType.IntermediateRefinementRegion:
-            case SegmentType.ImmediateRefinementRegion:
-            case SegmentType.ImmediateLosslessRefinementRegion:
-                throw new NotSupportedException(
-                    "JBIG2: generic refinement region segments are not implemented yet.");
-
             default:
                 // §7.2.3: a decoder skips segment types it does not recognise. The
                 // data length in the header is what makes that safe.
                 break;
         }
+    }
+
+    /// <summary>Merges a decoded region onto the page at the placement its region info gives.</summary>
+    private static void Compose(DecodingState state, Jbig2Bitmap region, RegionInfo info)
+    {
+        state.Page.Combine(region, info.X, info.Y, info.Operator);
+        state.Composited = true;
     }
 
     /// <summary>
@@ -338,10 +366,11 @@ public static class Jbig2Decoder
     }
 
     /// <summary>Generic region segment (T.88 §7.4.6): region info, flags, AT pixels, then MQ-coded data.</summary>
-    private static void DecodeGenericRegion(ReadOnlySpan<byte> data, Jbig2Bitmap page)
+    private static Jbig2Bitmap DecodeGenericRegion(ReadOnlySpan<byte> data, out RegionInfo info)
     {
         var position = 0;
         var region = Jbig2Segment.ReadRegionInfo(data, ref position);
+        info = region;
 
         if (position >= data.Length)
             throw new InvalidDataException("JBIG2: truncated generic region segment flags.");
@@ -384,6 +413,78 @@ public static class Jbig2Decoder
                 ref mq, contexts, region.Width, region.Height, template, typicalPrediction, at);
         }
 
-        page.Combine(bitmap, region.X, region.Y, region.Operator);
+        return bitmap;
+    }
+
+    /// <summary>
+    /// Generic refinement region segment (T.88 §7.4.7): region info, flags, AT
+    /// pixels, then MQ-coded corrections to a reference bitmap.
+    /// </summary>
+    /// <remarks>
+    /// §7.4.7.2 picks the reference in one of two ways. If the segment refers to
+    /// an intermediate region, that region's buffer is the reference; otherwise
+    /// it refines <em>the page itself</em>, the rectangle the region info points
+    /// at.
+    /// <para>
+    /// The result is then composited with the region's own external combination
+    /// operator, like any other region — it is <b>not</b> forced to REPLACE. That
+    /// is worth stating because forcing it looks right and is not: under OR a
+    /// page refinement can only ever add black, so an encoder that wants to clear
+    /// pixels has to say REPLACE in the region info, and one that says OR means
+    /// OR. jbig2dec settles the question — it disagreed with a forced REPLACE on
+    /// every case that clears a pixel and agrees once the declared operator is
+    /// honoured.
+    /// </para>
+    /// </remarks>
+    private static Jbig2Bitmap DecodeRefinementRegion(
+        ReadOnlySpan<byte> data, SegmentHeader segment, DecodingState state, out RegionInfo info)
+    {
+        var position = 0;
+        var region = Jbig2Segment.ReadRegionInfo(data, ref position);
+
+        if (position >= data.Length)
+            throw new InvalidDataException("JBIG2: truncated refinement region segment flags.");
+
+        var flags = data[position++];
+        var template = flags & 0x01;
+        var typicalPrediction = (flags & 0x02) != 0;
+
+        Span<sbyte> at = stackalloc sbyte[4];
+        RefinementRegionDecoder.NominalAt.CopyTo(at);
+        if (template == 0)
+        {
+            if (position + 4 > data.Length)
+                throw new InvalidDataException("JBIG2: truncated refinement region AT pixel list.");
+
+            for (var i = 0; i < 4; i++) at[i] = (sbyte)data[position++];
+        }
+
+        // Lifting the page rectangle out is not just convenience: the decoder
+        // reads the reference while writing its output, so they cannot be the
+        // same storage.
+        var reference = FindIntermediateReference(segment, state)
+            ?? state.Page.Crop(region.X, region.Y, region.Width, region.Height);
+
+        info = region;
+
+        var contexts = new byte[1 << RefinementRegionDecoder.ContextBits(template)];
+        var mq = new MqDecoder(data[position..]);
+
+        // §7.4.7.2: a region segment always refines the co-located reference, so
+        // the offsets are zero here. They are only non-zero inside a symbol
+        // dictionary or text region, which position each refinement themselves.
+        return RefinementRegionDecoder.Decode(
+            ref mq, contexts, region.Width, region.Height, template,
+            reference, dx: 0, dy: 0, typicalPrediction, at);
+    }
+
+    /// <summary>The intermediate region buffer this segment refers to, or null when it refines the page.</summary>
+    private static Jbig2Bitmap? FindIntermediateReference(SegmentHeader segment, DecodingState state)
+    {
+        foreach (var referred in segment.ReferredTo)
+            if (state.IntermediateRegions.TryGetValue(referred, out var buffer))
+                return buffer;
+
+        return null;
     }
 }

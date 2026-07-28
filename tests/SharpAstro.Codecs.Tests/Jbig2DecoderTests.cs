@@ -183,13 +183,14 @@ public sealed class Jbig2DecoderTests
     }
 
     // Segment type codes from T.88 §7.3, as ints for the same reason as above.
+    // Refinement (40/42/43) has left this list: it is decoded now, so a malformed
+    // one fails as corrupt data instead — Jbig2RefinementTests covers that.
     [Theory]
     [InlineData(0, "symbol dictionary")]    // symbol dictionary
     [InlineData(6, "text region")]          // immediate text region
     [InlineData(7, "text region")]          // immediate lossless text region
     [InlineData(16, "halftone")]            // pattern dictionary
     [InlineData(22, "halftone")]            // immediate halftone region
-    [InlineData(42, "refinement")]          // immediate refinement region
     public void Decode_UnimplementedSegmentType_SaysWhatIsMissing(int typeCode, string expected)
     {
         var stream = Jbig2StreamBuilder.Segment(1, (SegmentType)typeCode, 1, [0x00, 0x00, 0x00, 0x00]);

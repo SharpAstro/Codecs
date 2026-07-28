@@ -128,15 +128,107 @@ internal static class Jbig2StreamBuilder
         return [.. body];
     }
 
+    /// <summary>
+    /// Arithmetically encodes a bitmap as refinement-region coded data against
+    /// <paramref name="reference"/> (T.88 §6.3).
+    /// </summary>
+    /// <remarks>
+    /// The TPGRON logic here has to mirror the decoder's decision for decision,
+    /// including which pixels get skipped — a row may only be marked "typical" if
+    /// every pixel the decoder would predict from a uniform reference
+    /// neighbourhood really does match. Get that wrong and the two sides
+    /// desynchronise mid-row rather than producing a visibly wrong pixel.
+    /// </remarks>
+    public static byte[] EncodeRefinementRegion(
+        Jbig2Bitmap bitmap,
+        Jbig2Bitmap reference,
+        int template,
+        bool typicalPrediction,
+        sbyte[] at,
+        int dx = 0,
+        int dy = 0)
+    {
+        var encoder = new Jbig2MqEncoder();
+        var contexts = new byte[1 << RefinementRegionDecoder.ContextBits(template)];
+        var sltpContext = RefinementRegionDecoder.TypicalPredictionContext(template);
+        var ltp = 0;
+
+        for (var y = 0; y < bitmap.Height; y++)
+        {
+            if (typicalPrediction)
+            {
+                var predictable = true;
+                for (var x = 0; x < bitmap.Width && predictable; x++)
+                    if (RefinementRegionDecoder.IsTypical(reference, x - dx, y - dy, out var v))
+                        predictable = bitmap.Data[y * bitmap.Width + x] == v;
+
+                var toggle = predictable != (ltp == 1);
+                encoder.Encode(contexts, sltpContext, toggle ? 1 : 0);
+                if (toggle) ltp ^= 1;
+            }
+
+            for (var x = 0; x < bitmap.Width; x++)
+            {
+                if (ltp == 1 && RefinementRegionDecoder.IsTypical(reference, x - dx, y - dy, out _)) continue;
+
+                var context = RefinementRegionDecoder.Context(
+                    bitmap, x, y, reference, x - dx, y - dy, template, at);
+                encoder.Encode(contexts, context, bitmap.Data[y * bitmap.Width + x]);
+            }
+        }
+
+        return encoder.Flush();
+    }
+
+    /// <summary>A complete refinement-region segment data part (T.88 §7.4.7).</summary>
+    public static byte[] RefinementRegionSegment(
+        Jbig2Bitmap bitmap,
+        Jbig2Bitmap reference,
+        int x = 0,
+        int y = 0,
+        CombinationOperator op = CombinationOperator.Or,
+        int template = 0,
+        bool typicalPrediction = false,
+        sbyte[]? at = null)
+    {
+        at ??= [.. RefinementRegionDecoder.NominalAt];
+
+        var body = new List<byte>();
+        WriteUInt32(body, (uint)bitmap.Width);
+        WriteUInt32(body, (uint)bitmap.Height);
+        WriteUInt32(body, (uint)x);
+        WriteUInt32(body, (uint)y);
+        body.Add((byte)op);
+
+        // Refinement region flags: GRTEMPLATE in bit 0, TPGRON in bit 1.
+        body.Add((byte)(template | (typicalPrediction ? 0x02 : 0)));
+
+        // §7.4.7.3: the AT pixel list is present only for GRTEMPLATE 0.
+        if (template == 0)
+            for (var i = 0; i < 4; i++) body.Add((byte)at[i]);
+
+        body.AddRange(EncodeRefinementRegion(bitmap, reference, template, typicalPrediction, at));
+        return [.. body];
+    }
+
     /// <summary>A page information segment data part (T.88 §7.4.8).</summary>
-    public static byte[] PageInformation(int width, int height, bool defaultPixelBlack = false, bool stripedUnknownHeight = false)
+    /// <param name="allowOperatorOverride">
+    /// §7.4.8.5 bit 6: whether a region may use a combination operator other than
+    /// the page default. Needed by anything that composites with REPLACE.
+    /// </param>
+    public static byte[] PageInformation(
+        int width,
+        int height,
+        bool defaultPixelBlack = false,
+        bool stripedUnknownHeight = false,
+        bool allowOperatorOverride = false)
     {
         var body = new List<byte>();
         WriteUInt32(body, (uint)width);
         WriteUInt32(body, stripedUnknownHeight ? uint.MaxValue : (uint)height);
         WriteUInt32(body, 0);   // X resolution, unspecified
         WriteUInt32(body, 0);   // Y resolution, unspecified
-        body.Add((byte)(defaultPixelBlack ? 0x04 : 0x00));
+        body.Add((byte)((defaultPixelBlack ? 0x04 : 0x00) | (allowOperatorOverride ? 0x40 : 0x00)));
         body.Add(0);            // striping information, high byte
         body.Add(0);            // striping information, low byte
         return [.. body];

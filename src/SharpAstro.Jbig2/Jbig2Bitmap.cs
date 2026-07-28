@@ -74,6 +74,22 @@ internal sealed class Jbig2Bitmap
         (uint)x < (uint)Width && (uint)y < (uint)Height ? Data[y * Width + x] : 0;
 
     /// <summary>
+    /// Copies out a rectangle as a new bitmap, reading anything outside this one
+    /// as white. Used where a decoder needs a snapshot of the page it is about to
+    /// write over — a refinement region reads its reference while producing its
+    /// output, so the two cannot share storage.
+    /// </summary>
+    public Jbig2Bitmap Crop(int x0, int y0, int width, int height)
+    {
+        var crop = new Jbig2Bitmap(width, height);
+        for (var y = 0; y < height; y++)
+            for (var x = 0; x < width; x++)
+                crop.Data[y * width + x] = (byte)Get(x0 + x, y0 + y);
+
+        return crop;
+    }
+
+    /// <summary>
     /// Merges <paramref name="source"/> into this bitmap with its top-left corner
     /// at (<paramref name="x0"/>, <paramref name="y0"/>), clipping anything that
     /// falls outside. A region whose placement runs past the page edge is
