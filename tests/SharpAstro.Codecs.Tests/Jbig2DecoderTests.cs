@@ -182,21 +182,20 @@ public sealed class Jbig2DecoderTests
         Jbig2StreamBuilder.ToRows(4, 2, page.Bits).ShouldBe(["####", "####"]);
     }
 
-    // Segment type codes from T.88 §7.3, as ints for the same reason as above.
-    // Refinement (40/42/43) has left this list: it is decoded now, so a malformed
-    // one fails as corrupt data instead — Jbig2RefinementTests covers that.
-    [Theory]
-    [InlineData(0, "symbol dictionary")]    // symbol dictionary
-    [InlineData(6, "text region")]          // immediate text region
-    [InlineData(7, "text region")]          // immediate lossless text region
-    [InlineData(16, "halftone")]            // pattern dictionary
-    [InlineData(22, "halftone")]            // immediate halftone region
-    public void Decode_UnimplementedSegmentType_SaysWhatIsMissing(int typeCode, string expected)
+    /// <summary>
+    /// What is left unimplemented, and it is now one thing: custom Huffman table
+    /// segments (§7.4.13). Every region and dictionary type this list used to
+    /// name — symbol dictionary, text, refinement, pattern, halftone — decodes,
+    /// so a malformed one of those fails as corrupt data instead, which their own
+    /// test files cover.
+    /// </summary>
+    [Fact]
+    public void Decode_CustomHuffmanTableSegment_SaysWhatIsMissing()
     {
-        var stream = Jbig2StreamBuilder.Segment(1, (SegmentType)typeCode, 1, [0x00, 0x00, 0x00, 0x00]);
+        var stream = Jbig2StreamBuilder.Segment(1, SegmentType.Tables, 1, [0x00, 0x00, 0x00, 0x00]);
 
         Should.Throw<NotSupportedException>(() => Jbig2Decoder.Decode(stream, 8, 8))
-            .Message.ShouldContain(expected);
+            .Message.ShouldContain("Huffman table");
     }
 
     /// <summary>

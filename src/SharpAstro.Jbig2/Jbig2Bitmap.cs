@@ -64,6 +64,14 @@ internal sealed class Jbig2Bitmap
     public byte[] Data { get; }
 
     /// <summary>
+    /// A 1x1 white placeholder. Symbol dictionaries size their ID alphabet by the
+    /// symbol count they declare, so slots past the ones decoded so far need
+    /// something addressable — naming one is a malformed stream, and this makes
+    /// that a clean rejection rather than a null dereference.
+    /// </summary>
+    public static Jbig2Bitmap Empty { get; } = new(1, 1);
+
+    /// <summary>
     /// Reads a pixel, returning 0 for any coordinate outside the bitmap. T.88
     /// §6.2.5.2 requires exactly this: template pixels that fall off the top or
     /// the sides of the region are treated as white, which is what makes the

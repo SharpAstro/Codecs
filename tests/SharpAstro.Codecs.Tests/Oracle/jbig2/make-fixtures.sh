@@ -51,6 +51,42 @@ jbig2 -d      t.pbm > "$out/s_tpgd.jb2"   # standalone, TPGD
 jbig2 -p      t.pbm > "$out/e.jb2"        # embedded (PDF-shaped)
 jbig2 -p -d   t.pbm > "$out/e_tpgd.jb2"   # embedded, TPGD
 
+# Symbol mode (-s) is jbig2enc's real purpose and exercises a completely
+# different half of T.88: a symbol dictionary segment plus a text region that
+# stamps its glyphs onto the page. The pattern above is deliberately not used —
+# it has no repeated shapes, so the symbol coder would find nothing to share.
+# This one is a grid of a few glyph-like blobs, repeated.
+python3 - <<'PY'
+w, h = 64, 40
+def glyph(k, x, y):
+    return ((x * 3 + y * 5 + k * 7) % 11) < 4
+with open('g.pbm', 'w') as f:
+    f.write('P1\n%d %d\n' % (w, h))
+    for y in range(h):
+        row = []
+        for x in range(w):
+            gx, gy = x // 8, y // 10
+            ix, iy = x % 8, y % 10
+            row.append(1 if (ix < 6 and iy < 8 and glyph((gx + gy) % 3, ix, iy)) else 0)
+        f.write(' '.join(map(str, row)) + '\n')
+PY
+
+jbig2 -s      g.pbm > "$out/sym.jb2"      # standalone, symbol mode
+jbig2 -s -d   g.pbm > "$out/sym_tpgd.jb2" # standalone, symbol mode + TPGD
+
+# Symbol matching is lossy by default (-t 0.85), so the decoded page is NOT the
+# source image and there is no hand-written grid to compare against. jbig2dec's
+# raster is committed alongside as the expected result — its *output* is data,
+# the same distinction that lets jbig2enc's output be committed at all. See the
+# licence note in Oracle/jbig2/README.md.
+if command -v jbig2dec > /dev/null; then
+    for f in sym sym_tpgd; do
+        jbig2dec -q -t pbm -o "$out/$f.pbm" "$out/$f.jb2"
+    done
+else
+    echo "warning: jbig2dec absent, symbol-mode expected rasters not refreshed" >&2
+fi
+
 echo "Regenerated:"
 ls -l "$out"
 

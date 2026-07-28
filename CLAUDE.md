@@ -37,17 +37,18 @@ facade. PDF's `/JBIG2Decode` filter hands over an *embedded stream* (T.88 §D.3)
 header to sniff, keeps its shared segment dictionaries in a separate `/JBIG2Globals` stream, and
 takes its dimensions from the image dictionary — none of which fits `(bytes) -> image`. So the API
 is `Jbig2Decoder.Decode(embedded, globals, width, height)`, and `Jbig2ImageDecoder : IImageDecoder`
-is registered only as a courtesy for standalone `.jb2` files. **Rungs 1–2 of 5 have shipped** — the
+is registered only as a courtesy for standalone `.jb2` files. **All five rungs have shipped** — the
 MQ arithmetic decoder, generic regions in both codings (arithmetic GBTEMPLATE 0–3 with TPGDON and
-arbitrary AT pixels, **and MMR / ITU-T T.6**), page info, and composition; symbol dictionary + text
-region, refinement, and halftone all throw `NotSupportedException` naming the missing feature. See
-"JBIG2 codec" below.
+arbitrary AT pixels, **and MMR / ITU-T T.6**), refinement regions, symbol dictionaries + text
+regions, pattern dictionaries + halftone regions, page info, and composition. What is left is the
+**Huffman-coded variants** (SDHUFF/SBHUFF + custom table segments) and a few flags — see "JBIG2
+codec" below, which lists them and why each is refused rather than guessed.
 
 `CODECS.md` documents the per-package decode/encode matrix (its `SharpAstro.Jxr` row reflects
 the jxrlib re-port). See "JXR codec" below for the architecture and validation discipline.
 Longer-horizon work lives in the root roadmap docs: [`ROADMAP-jpeg-encoder.md`](ROADMAP-jpeg-encoder.md),
 [`ROADMAP-gain-map.md`](ROADMAP-gain-map.md), [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md)
-(JBIG2 rungs 3–5 / JPX), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
+(JPX / JBIG2's remaining Huffman variants), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
 ## Build & test
 
@@ -156,10 +157,17 @@ Structure (`src/SharpAstro.Jbig2/`):
 ```
 Jbig2Decoder        (public: Decode(embedded, globals, w, h) / DecodeFile / TryReadFileInfo)
   → Jbig2Segment    (T.88 §7.2 segment headers + §7.4.1 region info)
+  → DecodingState   (nested: results keyed by segment number, so segments can refer
+                     to each other -- symbol/pattern dictionaries, intermediate regions)
   → GenericRegionDecoder  (§6.2.5: GBTEMPLATE 0-3 context templates, TPGDON, AT pixels)
   →   MqDecoder     (Annex E arithmetic decoder; a ref struct over the coded span)
   → MmrDecoder      (§6.2.6 = ITU-T T.6: changing elements, pass/vertical/horizontal modes)
   →   MmrCodes      (T.4 Tables 2-4 as literal bit strings, expanded to peek lookups)
+  → RefinementRegionDecoder (§6.3: GRTEMPLATE 0/1 over a reference bitmap + dx/dy)
+  → SymbolDictionaryDecoder (§6.5: height classes, refine/aggregate symbols, export runs)
+  → TextRegionDecoder       (§6.4: strip layout, REFCORNER/TRANSPOSED, per-instance refine)
+  →   ArithIntDecoder       (Annex A: the integer + symbol-ID coders every number uses)
+  → HalftoneDecoder         (§6.6/§6.7: pattern dictionary + Gray-coded bitplanes)
   → Jbig2Bitmap     (byte-per-pixel bilevel + OR/AND/XOR/XNOR/REPLACE composition)
 Jbig2Image          (public result: Bits = 1 byte/pixel, 1 = black; ToGray8 / ToRaster)
 Jbig2ImageDecoder   (IImageDecoder courtesy adapter, standalone .jb2 only)
@@ -236,12 +244,47 @@ Two things learned building it, both worth keeping:
   out inverted with respect to T.88, and `Group4Tiff` flips its input to cancel it. The photometric
   is probed once rather than assumed.
 
-When adding a rung (symbol dictionary + text region, refinement, halftone), the missing-feature
-`NotSupportedException` it replaces is the thing to grep for. Keep the existing refusals loud —
-a stream this decoder cannot fully reconstruct must fail rather than return a plausible page. Note
-the one deliberate exception: an MMR region that also sets TPGDON violates §7.4.6.2 but still
-decodes to the right pixels, so it is tolerated rather than rejected. Loud failure is for streams
-this decoder would otherwise get *wrong*.
+### Rungs 3-5 — the rest of T.88, and how each was validated
+
+All five rungs have landed. The later three each needed a different oracle, because no single
+tool emits all of them:
+
+| Rung | What validates it |
+|---|---|
+| 3 — symbol dictionary + text region | **jbig2enc `-s`**, whose *primary* mode this is. `Fixtures/jbig2/sym*.jb2` are real symbol-coded bytes, committed with jbig2dec's raster as the expected result (symbol matching is lossy by default, so there is no hand-writable grid). Covers only jbig2enc's one shape — arithmetic, bottom-left corner, one strip, no refinement — so the other seven corner/transposed combinations, multi-row strips, SBDSOFFSET, SBREFINE and SDREFAGG go through `Jbig2SymbolBuilder` and **jbig2dec**. |
+| 4 — generic refinement | Nothing third-party emits refinement (jbig2enc's `-r` writes an empty file), so it is synthetic streams through **jbig2dec** only. |
+| 5 — pattern dictionary + halftone | Same: no encoder available, so synthetic through **jbig2dec**. Two things there have no other check — the Gray coding of Annex C.5, which a round-trip cannot see, and the §6.6.5.1 lattice, where a cell's position mixes both grid-vector components in 1/256 pixel units. |
+
+Three findings from building them, all established by measurement:
+
+- **A page refinement composites with its declared operator, not a forced REPLACE.** Forcing it
+  looks right — under OR a refinement can only ever *add* black, so it cannot clear a pixel — and
+  jbig2dec disagreed on every case that clears one. An encoder that wants replacement says so in
+  the region info.
+- **jbig2dec cannot be the oracle for intermediate regions**: it rejects intermediate generic
+  regions outright ("NYI"). The refinement oracle streams therefore refine the *page*, which
+  exercises the same §6.3 procedure; the intermediate route is covered against our own decoder,
+  which is all that is available for it.
+- **TPGRON in a refinement region is refused**, and that was narrowed rather than assumed. For
+  GRTEMPLATE 1 a sweep of *all 1024* possible SLTP context values found no candidate that makes
+  jbig2dec agree, so the constant is not the cause; for GRTEMPLATE 0 five of six
+  reference/target relationships agree and the sixth desynchronises part-way down. jbig2dec emits
+  no diagnostic either way and there is no second oracle to break the tie. "Agrees on five of six"
+  is a decoder that silently corrupts the sixth.
+
+What is still refused, and why each is a refusal rather than a guess:
+
+| Feature | Reason |
+|---|---|
+| SDHUFF / SBHUFF + custom table segments (§7.4.13, Annex B) | Not implemented. No available encoder emits them, so there would be nothing to check an implementation against. |
+| MMR inside pattern dictionaries and halftone regions | Not implemented; the plumbing exists (`MmrDecoder`) but nothing emits these to check against. |
+| HENABLESKIP | Changes *what gets coded*, not just speed — skipped pixels are absent from the stream, so ignoring the flag would desynchronise rather than merely run slow. |
+| TPGRON in a refinement region | See above. |
+| Symbol dictionaries importing/retaining arithmetic contexts (§7.4.3.1.1 bits 8-9) | A dictionary decoded with the wrong initial contexts yields plausible but wrong glyphs. |
+
+The deliberate *non*-refusal is worth knowing too: an MMR region that also sets TPGDON violates
+§7.4.6.2 but still decodes to the right pixels, so it is tolerated. Loud failure is for streams
+this decoder would otherwise get **wrong**, not for cosmetic flag violations.
 
 ## Oracle harnesses (all codecs)
 

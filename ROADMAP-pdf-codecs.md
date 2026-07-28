@@ -1,12 +1,20 @@
 # Roadmap: PDF-embedded codecs (JBIG2 / JPX)
 
-**Status: JBIG2 rungs 1–2 of 5 shipped in 3.7 as `SharpAstro.Jbig2`. JPX not started.**
+**Status: JBIG2 complete — all five rungs shipped in 3.7 as `SharpAstro.Jbig2`. JPX not started.**
 
 Original plan: JBIG2 first, JPX deferred — JBIG2 being the well-scoped staged
-project that would also prove out the new API shape. That is what happened. The
-first two rungs (MQ arithmetic decoder + generic regions, then the MMR variant)
-are in, and the API shape this document predicted survived contact with the
-implementation unchanged.
+project that would also prove out the new API shape. That is what happened, and
+all five rungs are now in. The API shape this document predicted survived
+contact with every one of them unchanged, including the parts it was least sure
+about: symbol dictionaries really do cross the `/JBIG2Globals` boundary through
+the `globals` argument, and nothing needed a public API beyond
+`Decode(embedded, globals, w, h)`.
+
+What is left of JBIG2 is the **Huffman-coded variants** — SDHUFF/SBHUFF and the
+custom table segments of Annex B. They are refused rather than attempted for the
+reason that has governed this whole project: no available encoder emits them, so
+an implementation would have nothing to check itself against, and a decoder
+nobody can contradict is a decoder nobody should trust.
 
 The scoping sections below are kept as written, because they are what the
 package was built to and what the remaining rungs will be built to. Progress is
@@ -22,7 +30,7 @@ decode. A PDF page's image XObjects arrive through a `/Filter`, and today:
 | `/DCTDecode` | JPEG | ✅ `SharpAstro.Jpeg` (incl. scaled 1/2–1/8 LOD decode) |
 | `/FlateDecode` + predictor | raw samples | ✅ `PngPredictor` exposes the row-unfilter |
 | `/CCITTFaxDecode` | Group 3/4 fax | 🟡 the Group 4 (`K < 0`) coding is implemented as `MmrDecoder`, but `internal` — see non-goals |
-| **`/JBIG2Decode`** | **JBIG2 (ITU-T T.88)** | 🟡 `SharpAstro.Jbig2` — generic regions, arithmetic + MMR (rungs 1–2 of 5) |
+| **`/JBIG2Decode`** | **JBIG2 (ITU-T T.88)** | ✅ `SharpAstro.Jbig2` — every region type; the arithmetic path is complete, Huffman variants refused |
 | **`/JPXDecode`** | **JPEG 2000 (ISO/IEC 15444)** | ❌ **this document** |
 
 The motivating consumer is the same one that drove `SharpAstro.Jpeg`'s scaled decode:
@@ -126,9 +134,9 @@ Scale, for calibration against the existing packages (`SharpAstro.Exif` is 558 L
 |---|---|---|---|
 | 1 | MQ decoder + **generic region** (templates 0–3, TPGDON) | ~800–1200 | ✅ **shipped 3.7** (~900 LOC incl. the segment layer). Smallest slice that decodes real PDFs; also builds the component JPX needs. |
 | 2 | **MMR** variant of generic region (T.6 / Group 4 coding) | ~400 | ✅ **shipped 3.7** (~430 LOC across `MmrDecoder` + `MmrCodes`). Shares the region plumbing; the T.6 decoder is also what `/CCITTFaxDecode` needs at `K < 0`, though it stays `internal` for now. |
-| 3 | **Symbol dictionary + text region** | ~1200–1500 | Next. Where JBIG2's real compression on scanned text lives — the rung that makes it genuinely useful. |
-| 4 | **Generic refinement region** | ~400 | Needed by lossy-refine encoders. Also the first consumer of the intermediate-region auxiliary buffer, which rung 1 deliberately skips rather than decodes-and-drops. |
-| 5 | **Pattern dictionary + halftone region** | ~500 | Rare in practice. Last. |
+| 3 | **Symbol dictionary + text region** | ~1200–1500 | ✅ **shipped 3.7** (~700 LOC — the estimate was high because the Huffman half is refused). Where JBIG2's real compression on scanned text lives, and the rung that makes it genuinely useful. |
+| 4 | **Generic refinement region** | ~400 | ✅ **shipped 3.7** (~200 LOC). Needed by lossy-refine encoders, and the first consumer of the intermediate-region auxiliary buffer that rung 1 deliberately skipped rather than decoded-and-dropped. |
+| 5 | **Pattern dictionary + halftone region** | ~500 | ✅ **shipped 3.7** (~160 LOC). Rare in practice, and the one rung with no third-party encoder at all. |
 
 Rung 1 alone already covers a meaningful share of real-world PDFs.
 

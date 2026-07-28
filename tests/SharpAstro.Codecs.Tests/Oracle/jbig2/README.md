@@ -6,7 +6,7 @@ bottom.
 
 | Direction | Tool | Where it lives | Needs installing? |
 |---|---|---|---|
-| **jbig2enc → us** | `jbig2` (jbig2enc, Apache-2.0) | committed `Fixtures/jbig2/*.jb2`, driven by `Jbig2EncoderFixtureTests` | **No** — the fixtures are in the repo |
+| **jbig2enc → us** | `jbig2` (jbig2enc, Apache-2.0) | committed `Fixtures/jbig2/*.jb2` (generic) and `sym*.jb2` (symbol mode), driven by `Jbig2EncoderFixtureTests` / `Jbig2SymbolFixtureTests` | **No** — the fixtures are in the repo |
 | **us → jbig2dec** | `jbig2dec` (Artifex, AGPL) | `Jbig2Oracle` + `Jbig2OracleTests` | Yes, else the tests skip |
 | **libtiff → us** (MMR) | ImageMagick / libtiff, via Magick.NET | `Group4Tiff` + `Jbig2MmrOracleTests` | **No** — Magick.NET is already a package reference |
 
@@ -15,8 +15,12 @@ They cover different things, which is the point of having all three.
 - jbig2enc only ever emits **GBTEMPLATE 0 with nominal AT pixels** (asserted by
   `JbigEncFixtures_UseTemplate0WithNominalAtPixels`, so a fixture refresh can't
   quietly change it). Real third-party bytes, but a narrow slice of the format.
-- jbig2dec is driven with **our own** streams, so it reaches every template,
-  moved AT pixels, and TPGDON either way — the cases jbig2enc cannot produce.
+- jbig2dec is driven with **our own** streams, so it reaches everything no
+  encoder emits: every generic template, moved AT pixels, TPGDON either way,
+  refinement regions, halftone regions, and seven of the eight text-region
+  reference-corner/transposed combinations. For rungs 4 and 5 it is the *only*
+  check there is — jbig2enc has no halftone mode, and its `-r` refinement flag
+  writes an empty file.
 - libtiff covers the **MMR** path, which neither of the other two touches:
   jbig2enc never emits `MMR = 1`, and the jbig2dec direction needs a stream we
   can produce, which for MMR means borrowing an encoder. CCITT Group 4 *is*
@@ -60,6 +64,16 @@ All three external oracles (jbig2dec, jxrlib, jpegenc) are now gated and built
 or installed in CI. JXR was the one that mattered most: its guards used to
 `return` early, which counts as a **pass**, so 447 test cases had been reporting
 success in CI while asserting nothing.
+
+### A note on the symbol-mode fixtures
+
+`sym.jb2` / `sym_tpgd.jb2` come with a committed `.pbm` beside them, which the
+others do not. Symbol matching is lossy by default (`-t 0.85`): jbig2enc replaces
+near-identical glyphs with a shared bitmap, so the decoded page is deliberately
+**not** the source image and there is no grid anyone could write by eye. The
+expected raster is jbig2dec's, and committing it is the same licence call as
+committing jbig2enc's output — a decoded image is data, not a derivative of the
+decoder. Nothing needs installing to run those tests.
 
 ## Regenerating the committed fixtures
 
