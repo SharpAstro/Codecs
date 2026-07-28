@@ -26,10 +26,13 @@ env:
   # the SharpAstro.Jpeg.GainMap (Ultra HDR gain-map read/write) package joining
   # the family. Bumped 3.5 -> 3.6 with the baseline JPEG encoder (JpegEncoder,
   # a byte-exact stb_image_write port) joining SharpAstro.Jpeg. Bumped 3.6 -> 3.7
-  # with the new SharpAstro.Jbig2 (clean-room ITU-T T.88: MQ arithmetic decoder +
-  # generic regions, for PDF's /JBIG2Decode) package joining the family. When
-  # bumping the family Major.Minor, bump it HERE (and keep Directory.Build.props
-  # in sync for local builds).
+  # with the new SharpAstro.Jbig2 (clean-room ITU-T T.88, for PDF's /JBIG2Decode)
+  # package joining the family. 3.7 has NOT shipped yet -- 3.6.561 is the latest on
+  # nuget.org -- so no further bump was needed as JBIG2 grew from its first rung to
+  # every region type T.88 defines (generic + MMR/T.6, refinement, symbol
+  # dictionary + text region, pattern dictionary + halftone); it all lands in the
+  # first 3.7. When bumping the family Major.Minor, bump it HERE (and keep
+  # Directory.Build.props in sync for local builds).
   VERSION_PREFIX: 3.7.${{ github.run_number }}
   VERSION_REV: ${{ github.run_attempt }}
   VERSION_HASH: +${{ github.sha }}
