@@ -9,6 +9,14 @@
 *.vcxproj         text eol=crlf
 *.vcxproj.filters text eol=crlf
 
+# Shell scripts must be LF in the WORKING TREE too, not just the index. With
+# core.autocrlf=true (the default on Windows) they otherwise check out as CRLF,
+# and bash chokes on the trailing \r: `set -euo pipefail` becomes `pipefail\r`
+# and the script dies on line 6. That is not hypothetical — Oracle/jpegenc/
+# build.sh was checked out CRLF and unrunnable from Git Bash. These scripts now
+# build oracles in CI as well, so they have to work on both platforms.
+*.sh              text eol=lf
+
 # Committed binary test fixtures. `* text=auto` classifies these correctly today,
 # but that is a content heuristic and a small codestream could plausibly trip it —
 # a single CRLF rewrite silently corrupts a fixture into an undecodable stream,

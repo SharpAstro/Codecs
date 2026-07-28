@@ -14,15 +14,15 @@ namespace SharpAstro.Codecs.Tests;
 /// into a red build.
 /// </para>
 /// <para>
-/// Two harnesses are wired up this way — <see cref="Jbig2Oracle"/> and
-/// <see cref="JxrOracle"/> — and CI installs or builds both, so they really run.
-/// JXR was the urgent one: its guards used to be
-/// <c>if (encApp is null) { WriteLine(...); return; }</c>, which <b>passes</b>,
-/// so 447 test cases reported success in CI while asserting nothing.
+/// All three external oracles are wired up this way — <see cref="Jbig2Oracle"/>,
+/// <see cref="JxrOracle"/>, and jpegenc (via
+/// <c>JpegEncoderOracleTests.RequireOracle</c>) — and CI installs or builds each
+/// one, so none can go quietly missing.
 /// </para>
 /// <para>
-/// jpegenc is the one still outside: it reports honest skips already, but is
-/// neither gated nor built in CI, so its cases skip rather than fail.
+/// JXR was the urgent case that prompted this: its guards used to be
+/// <c>if (encApp is null) { WriteLine(...); return; }</c>, which <b>passes</b>,
+/// so 447 test cases reported success in CI while asserting nothing at all.
 /// </para>
 /// </summary>
 internal static class OracleGate

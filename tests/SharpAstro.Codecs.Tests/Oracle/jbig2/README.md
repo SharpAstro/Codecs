@@ -37,12 +37,12 @@ build, and for exercising the failure branch below.
 Graceful skipping keeps a clean clone green, and in CI it is a liability — a job
 that stops installing its oracle looks exactly like one that runs it. CI's test
 step sets `REQUIRE_ORACLES=1` so that silence becomes a red build. The shared
-entry point is `OracleGate.RequireOrSkip`; JBIG2 is the first harness on it.
+entry point is `OracleGate.RequireOrSkip`; JBIG2 was the first harness on it.
 
-The JXR harness has since joined it (`JxrOracle`), and CI builds jxrlib as well —
-which mattered, because its guards used to `return` early and count as passes,
-hiding 447 inert test cases. jpegenc is the last one out: honest skips, but
-neither gated nor built in CI.
+All three external oracles (jbig2dec, jxrlib, jpegenc) are now gated and built
+or installed in CI. JXR was the one that mattered most: its guards used to
+`return` early, which counts as a **pass**, so 447 test cases had been reporting
+success in CI while asserting nothing.
 
 ## Regenerating the committed fixtures
 

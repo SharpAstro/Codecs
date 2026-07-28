@@ -149,12 +149,7 @@ public sealed class JpegEncoderOracleTests
     [MemberData(nameof(CaseLabels))]
     public void ByteExactVsOracle(string label)
     {
-        var oracle = FindOracle();
-        if (oracle is null)
-        {
-            Assert.Skip("jpegenc.exe not found — build Oracle/jpegenc/build.sh (golden still guards the encoder)");
-            return;
-        }
+        var oracle = RequireOracle();
 
         var (_, w, h, c, q) = Case(label);
         var pixels = MakePattern(w, h, c);
@@ -320,6 +315,22 @@ public sealed class JpegEncoderOracleTests
         if (sq == 0) return double.PositiveInfinity;
         var mse = (double)sq / (w * h * 3);
         return 10 * Math.Log10(255.0 * 255.0 / mse);
+    }
+
+    /// <summary>
+    /// Resolves <c>jpegenc.exe</c> or stops the test — skipping locally, failing
+    /// under <c>REQUIRE_ORACLES=1</c>. CI builds the binary, so a missing one
+    /// there means the build step broke rather than that a dev never compiled
+    /// it. The committed golden guards the encoder either way; what *this* test
+    /// adds is proof the golden still matches the live reference.
+    /// </summary>
+    private static string RequireOracle()
+    {
+        var oracle = FindOracle();
+        OracleGate.RequireOrSkip(oracle is not null, "jpegenc.exe",
+            "Build it with `bash tests/SharpAstro.Codecs.Tests/Oracle/jpegenc/build.sh` " +
+            "(needs clang and curl). The committed golden still guards the encoder without it.");
+        return oracle!;
     }
 
     private static string? FindOracle()
