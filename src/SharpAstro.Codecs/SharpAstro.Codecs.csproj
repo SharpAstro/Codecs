@@ -17,8 +17,8 @@
     <PackageId>SharpAstro.Codecs</PackageId>
     <Product>SharpAstro.Codecs</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Image-codec facade over the SharpAstro codec family: sniff a byte stream's format by its magic-byte signature and dispatch to the matching decoder (PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL), returning a codec-neutral IDecodedImage (fidelity tier: native bit depth + ColorEncoding colour signalling, with a ToFloats() RGBA float32 view) or decoding zero-copy into a caller-provided 8-bit RGBA buffer (display tier, integer-sample formats). AOT-compatible.</Description>
-    <PackageTags>image codec facade decoder sniff dispatch png jpeg tiff jxr exr jxl hdr aot</PackageTags>
+    <Description>Image-codec facade over the SharpAstro codec family: sniff a byte stream's format by its magic-byte signature and dispatch to the matching decoder (PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2), returning a codec-neutral IDecodedImage (fidelity tier: native bit depth + ColorEncoding colour signalling, with a ToFloats() RGBA float32 view) or decoding zero-copy into a caller-provided 8-bit RGBA buffer (display tier, integer-sample formats). AOT-compatible.</Description>
+    <PackageTags>image codec facade decoder sniff dispatch png jpeg tiff jxr exr jxl jbig2 hdr aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
@@ -46,6 +46,7 @@
     <ProjectReference Include="..\SharpAstro.Jxr\SharpAstro.Jxr.csproj" />
     <ProjectReference Include="..\SharpAstro.Exr\SharpAstro.Exr.csproj" />
     <ProjectReference Include="..\SharpAstro.Jxl\SharpAstro.Jxl.csproj" />
+    <ProjectReference Include="..\SharpAstro.Jbig2\SharpAstro.Jbig2.csproj" />
     <PackageReference Include="Microsoft.SourceLink.GitHub">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

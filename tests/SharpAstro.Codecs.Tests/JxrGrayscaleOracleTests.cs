@@ -43,8 +43,7 @@ public sealed class JxrGrayscaleOracleTests
     [InlineData(7, 1, "gradient", 0)]
     public void OurEncodeGray_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var y = JxrGrayscaleTests.Pattern(w, h, kind);
         var ours = JxrCodestream.EncodeGray(y, w, h, overlap: overlap);
@@ -92,8 +91,7 @@ public sealed class JxrGrayscaleOracleTests
     [InlineData(33, 40, "random", 16, 1)]
     public void OurEncodeGray_LossyQp_CodestreamMatchesJxrlib(int w, int h, string kind, int qp, int overlap)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var y = JxrGrayscaleTests.Pattern(w, h, kind);
         var ours = JxrCodestream.EncodeGray(y, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
@@ -129,8 +127,7 @@ public sealed class JxrGrayscaleOracleTests
     [InlineData(33, 40, "random", 5, 0)]
     public void OurEncodeGray_LossyQp_DecodedByJxrDecApp(int w, int h, string kind, int qp, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var y = JxrGrayscaleTests.Pattern(w, h, kind);
         var jxr = JxrImageCodec.EncodeGray8(y, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
@@ -172,8 +169,7 @@ public sealed class JxrGrayscaleOracleTests
     [InlineData(128, 64, "gradient", 2, 4, 2)]  // OL_TWO
     public void OurEncodeGray_Tiled_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap, int cols, int rows)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var y = JxrGrayscaleTests.Pattern(w, h, kind);
         int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
@@ -212,8 +208,7 @@ public sealed class JxrGrayscaleOracleTests
     [InlineData(128, 64, "gradient", 2, 4, 2)]
     public void JxrlibEncodeGray_Tiled_DecodedByUs_IsLossless(int w, int h, string kind, int overlap, int cols, int rows)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var y = JxrGrayscaleTests.Pattern(w, h, kind);
         var tmp = Path.Combine(Path.GetTempPath(), $"jxrg_tdec_{Guid.NewGuid():N}");
@@ -250,8 +245,7 @@ public sealed class JxrGrayscaleOracleTests
     [InlineData(33, 40, "random", 0)]
     public void JxrlibEncodeGray_DecodedByUs_IsLossless(int w, int h, string kind, int overlap)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var y = JxrGrayscaleTests.Pattern(w, h, kind);
         var tmp = Path.Combine(Path.GetTempPath(), $"jxrg_dec{overlap}_{Guid.NewGuid():N}");
@@ -286,8 +280,7 @@ public sealed class JxrGrayscaleOracleTests
     [InlineData(80, 80, "gradient", 1)]
     public void OurEncodeGray_DecodedByJxrDecApp_IsLossless(int w, int h, string kind, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var y = JxrGrayscaleTests.Pattern(w, h, kind);
         var jxr = JxrImageCodec.EncodeGray8(y, w, h, overlap: overlap);
@@ -398,18 +391,5 @@ public sealed class JxrGrayscaleOracleTests
         var se = p.StandardError.ReadToEnd();
         p.WaitForExit(30_000);
         return (p.ExitCode, so, se);
-    }
-
-    private static string? FindOracle(string exe)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
-        {
-            var direct = Path.Combine(dir.FullName, "Oracle", "bin", exe);
-            if (File.Exists(direct)) return direct;
-            var nested = Path.Combine(dir.FullName, "tests", "SharpAstro.Codecs.Tests", "Oracle", "bin", exe);
-            if (File.Exists(nested)) return nested;
-        }
-        return null;
     }
 }

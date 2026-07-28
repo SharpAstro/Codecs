@@ -9,8 +9,9 @@ on:
 
 env:
   # Lockstep version: every package in this repo (the SharpAstro.Codecs facade +
-  # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg / .Jxr / .Exr / .Jxl family)
-  # ships at the same Major.Minor and a shared run-number patch. Bumped from
+  # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg / .Jxr / .Exr / .Jxl /
+  # .Jbig2 family) ships at the same Major.Minor and a shared run-number patch.
+  # Bumped from
   # 2.30 -> 3.0 with the SharpAstro.Tiff IccProfile API break (byte[]? ->
   # ReadOnlyMemory<byte>). Bumped 3.0 -> 3.1 with the SharpAstro.Png CicpChunk
   # H.273-enum break (positional args switched from raw bytes to H.273 enums) +
@@ -24,10 +25,15 @@ env:
   # shipped as 3.4.49 because only the csprojs were bumped, not this variable) and
   # the SharpAstro.Jpeg.GainMap (Ultra HDR gain-map read/write) package joining
   # the family. Bumped 3.5 -> 3.6 with the baseline JPEG encoder (JpegEncoder,
-  # a byte-exact stb_image_write port) joining SharpAstro.Jpeg. When bumping the
-  # family Major.Minor, bump it HERE (and keep Directory.Build.props in sync for
-  # local builds).
-  VERSION_PREFIX: 3.6.${{ github.run_number }}
+  # a byte-exact stb_image_write port) joining SharpAstro.Jpeg. Bumped 3.6 -> 3.7
+  # with the new SharpAstro.Jbig2 (clean-room ITU-T T.88, for PDF's /JBIG2Decode)
+  # package joining the family. 3.7 has NOT shipped yet -- 3.6.561 is the latest on
+  # nuget.org -- so no further bump was needed as JBIG2 grew from its first rung to
+  # every region type T.88 defines (generic + MMR/T.6, refinement, symbol
+  # dictionary + text region, pattern dictionary + halftone); it all lands in the
+  # first 3.7. When bumping the family Major.Minor, bump it HERE (and keep
+  # Directory.Build.props in sync for local builds).
+  VERSION_PREFIX: 3.7.${{ github.run_number }}
   VERSION_REV: ${{ github.run_attempt }}
   VERSION_HASH: +${{ github.sha }}
   BUILD_CONF: Release
@@ -40,11 +46,47 @@ jobs:
     - uses: actions/setup-dotnet@v5
       with:
         dotnet-version: 10.0.x
+    # Oracles are built BEFORE dotnet build. JxrOracle finds the binaries by
+    # walking up from the test output directory to Oracle/bin/, so strictly the
+    # order does not matter today -- but the csproj also has a <None
+    # CopyToOutputDirectory> glob over Oracle/*, evaluated during the build, and
+    # leaving those two mechanisms disagreeing about whether the files exist yet
+    # is how a working setup quietly stops working.
+    #
+    # jbig2dec is the reference JBIG2 decoder that Jbig2OracleTests checks our
+    # codestreams against. Used strictly as a BINARY -- it is AGPL and can never
+    # be a port source for this Unlicense repo (see
+    # tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
+    - name: Install codec oracles
+      run: sudo apt-get update && sudo apt-get install -y jbig2dec
+    # JxrEncApp / JxrDecApp from jxrlib (BSD-2), clang-built from a pinned
+    # commit in ~10s. This is the strongest guarantee the repo makes about the
+    # JXR port -- our codestream is byte-for-byte what the reference emits --
+    # and until now it had never run in CI: the tests resolved the binaries,
+    # found nothing, and returned early, which counts as a pass. Building them
+    # here is what turns ~57 of those into real assertions.
+    - name: Build JXR oracle (jxrlib)
+      run: bash tests/SharpAstro.Codecs.Tests/Oracle/build.sh
+    # jpegenc wraps the pinned stb_image_write.h that JpegEncoder was ported
+    # against, verified by SHA-256 on download. The committed golden digests
+    # already guard the encoder without it; what this adds is the check that the
+    # golden still matches the *live* reference rather than drifting into a
+    # self-consistent fiction.
+    - name: Build JPEG encoder oracle (stb_image_write)
+      run: bash tests/SharpAstro.Codecs.Tests/Oracle/jpegenc/build.sh
     - name: Restore dependencies
       run: dotnet restore Codecs.JustTests.sln
     - name: Build
       run: dotnet build Codecs.JustTests.sln -c $BUILD_CONF --no-restore -p:Version=${VERSION_PREFIX}${VERSION_REV}${VERSION_HASH} -p:FileVersion=${VERSION_PREFIX}.${VERSION_REV} -p:ContinuousIntegrationBuild=true
     - name: Test
+      # REQUIRE_ORACLES turns "oracle missing" from a skip into a failure. Every
+      # oracle harness degrades to a skip so a clean clone stays green, which is
+      # right locally and misleading here -- without this, a CI job that stopped
+      # installing jbig2dec or building an oracle would look exactly like one
+      # that did. All three external oracles (jbig2dec, jxrlib, jpegenc) are now
+      # gated and built above, so this run has no silently-absent oracle left.
+      env:
+        REQUIRE_ORACLES: 1
       run: dotnet test Codecs.JustTests.sln -c $BUILD_CONF --no-build
     - name: Upload NuGet package
       uses: actions/upload-artifact@v7

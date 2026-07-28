@@ -10,7 +10,8 @@ namespace SharpAstro.Codecs.Tests;
 /// uncompressed TIFF we write (<see cref="HdrTiff"/>): the codestream <b>byte-for-byte</b>
 /// match vs <c>JxrEncApp</c> (the gold standard, previously only BD8 had it) and the
 /// <c>JxrEncApp</c>→our-decode direction (decoder conformance on real jxrlib HDR files).
-/// Complements the per-rung our-encode→JxrDecApp oracles. No-ops when binaries are absent.
+/// Complements the per-rung our-encode→JxrDecApp oracles. Skips (visibly) when the binaries are
+/// absent, and fails under <c>REQUIRE_ORACLES=1</c>.
 /// </summary>
 public sealed class JxrHdrHarnessOracleTests
 {
@@ -28,7 +29,7 @@ public sealed class JxrHdrHarnessOracleTests
     [InlineData(17, 13, "gradient", 1)]
     public void Gray16_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
-        var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
+        var enc = JxrOracle.RequireEncApp();
         var y = JxrBd16Tests.Pattern(w, h, kind, 7);
         var ours = JxrCodestream.EncodeGray(y, w, h, overlap: overlap, bd: JxrOutputBitDepth.Bd16);
         var theirs = Codestream(JxrlibEncode(enc, HdrTiff.Uint16Gray(w, h, y), $"-c 3 -q 1 -l {overlap} -f"));
@@ -42,7 +43,7 @@ public sealed class JxrHdrHarnessOracleTests
     [InlineData(33, 40, "random", 0)]
     public void Gray16_JxrlibEncode_DecodedByUs_IsLossless(int w, int h, string kind, int overlap)
     {
-        var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
+        var enc = JxrOracle.RequireEncApp();
         var y = JxrBd16Tests.Pattern(w, h, kind, 7);
         var jxr = JxrlibEncode(enc, HdrTiff.Uint16Gray(w, h, y), $"-c 3 -q 1 -l {overlap} -f");
         var (_, _, dy) = JxrImageCodec.DecodeGray16(jxr);
@@ -57,7 +58,7 @@ public sealed class JxrHdrHarnessOracleTests
     [InlineData(33, 40, "gradient", 1)]
     public void Rgb48_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
-        var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
+        var enc = JxrOracle.RequireEncApp();
         var (r, g, b) = (JxrBd16Tests.Pattern(w, h, kind, 1), JxrBd16Tests.Pattern(w, h, kind, 2), JxrBd16Tests.Pattern(w, h, kind, 3));
         var ours = JxrCodestream.Encode(r, g, b, w, h, overlap: overlap, bd: JxrOutputBitDepth.Bd16);
         var theirs = Codestream(JxrlibEncode(enc, HdrTiff.Uint16Rgb(w, h, r, g, b), $"-c 10 -d 3 -q 1 -l {overlap} -f"));
@@ -74,7 +75,7 @@ public sealed class JxrHdrHarnessOracleTests
     [InlineData(33, 40, "hdr", 1)]
     public void GrayF32_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
-        var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
+        var enc = JxrOracle.RequireEncApp();
         var y = JxrBd32FTests.Pattern(w, h, kind);
         // jxrlib BD32F defaults: lenMantissa 13, expBias 4 (strenc.c:1316; no -S/-C).
         var ours = JxrCodestream.EncodeGrayF32(y, w, h, 13, 4, overlap: overlap);
@@ -92,7 +93,7 @@ public sealed class JxrHdrHarnessOracleTests
     [InlineData(33, 40, "hdr", 1)]
     public void GrayF16_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
-        var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
+        var enc = JxrOracle.RequireEncApp();
         var y = JxrBd16FTests.GrayPattern(w, h, kind);
         var ours = JxrCodestream.EncodeGrayHalf(y, w, h, overlap: overlap);
         var theirs = Codestream(JxrlibEncode(enc, HdrTiff.HalfGray(w, h, y), $"-c 5 -q 1 -l {overlap} -f"));
@@ -107,7 +108,7 @@ public sealed class JxrHdrHarnessOracleTests
     [InlineData(33, 40, "hdr", 1)]
     public void RgbF16_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
-        var enc = FindOracle("JxrEncApp.exe"); if (enc is null) { Skip(); return; }
+        var enc = JxrOracle.RequireEncApp();
         var rgb = JxrBd16FTests.RgbPattern(w, h, kind);
         var (r, g, b) = Deinterleave(rgb, w * h);
         var ours = JxrCodestream.EncodeRgbHalf(r, g, b, w, h, overlap: overlap);
@@ -117,7 +118,6 @@ public sealed class JxrHdrHarnessOracleTests
 
     // ----------------------------------------------------------------- helpers
 
-    private void Skip() => _out.WriteLine("JxrEncApp.exe not found — skipping oracle test.");
 
     /// <summary>Run JxrEncApp on a TIFF we wrote and return the full <c>.jxr</c> bytes.</summary>
     private byte[] JxrlibEncode(string encApp, byte[] tiff, string args)
@@ -173,18 +173,5 @@ public sealed class JxrHdrHarnessOracleTests
         var se = p.StandardError.ReadToEnd();
         p.WaitForExit(30_000);
         return (p.ExitCode, so, se);
-    }
-
-    private static string? FindOracle(string exe)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
-        {
-            var direct = Path.Combine(dir.FullName, "Oracle", "bin", exe);
-            if (File.Exists(direct)) return direct;
-            var nested = Path.Combine(dir.FullName, "tests", "SharpAstro.Codecs.Tests", "Oracle", "bin", exe);
-            if (File.Exists(nested)) return nested;
-        }
-        return null;
     }
 }

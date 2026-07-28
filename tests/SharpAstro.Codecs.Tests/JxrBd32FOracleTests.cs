@@ -35,8 +35,7 @@ public sealed class JxrBd32FOracleTests
     [InlineData(33, 40, "hdr", 8, 0)]
     public void OurEncodeGrayF32_DecodedByJxrDecApp_IsLossless(int w, int h, string kind, int lenMantissa, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         const int expBias = 0;
         var y = JxrBd32FTests.Pattern(w, h, kind);
@@ -77,8 +76,7 @@ public sealed class JxrBd32FOracleTests
     [InlineData(33, 40, "hdr", 8, 0)]   // non-16-aligned
     public void OurEncodeGrayF32_NoFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int lenMantissa, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         const int expBias = 0;
         var y = JxrBd32FTests.Pattern(w, h, kind);
@@ -116,8 +114,7 @@ public sealed class JxrBd32FOracleTests
     [InlineData(33, 40, "hdr", 8, 8, 0)]    // non-16-aligned
     public void OurEncodeGrayF32_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int lenMantissa, int qp, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         const int expBias = 0;
         var y = JxrBd32FTests.Pattern(w, h, kind);
@@ -152,8 +149,7 @@ public sealed class JxrBd32FOracleTests
     [InlineData(128, 64, "hdr", 8, 2, 4, 2)]
     public void OurEncodeGrayF32_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int lenMantissa, int overlap, int cols, int rows)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         const int expBias = 0;
         var y = JxrBd32FTests.Pattern(w, h, kind);
@@ -216,18 +212,5 @@ public sealed class JxrBd32FOracleTests
         var se = p.StandardError.ReadToEnd();
         p.WaitForExit(30_000);
         return (p.ExitCode, so, se);
-    }
-
-    private static string? FindOracle(string exe)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
-        {
-            var direct = Path.Combine(dir.FullName, "Oracle", "bin", exe);
-            if (File.Exists(direct)) return direct;
-            var nested = Path.Combine(dir.FullName, "tests", "SharpAstro.Codecs.Tests", "Oracle", "bin", exe);
-            if (File.Exists(nested)) return nested;
-        }
-        return null;
     }
 }

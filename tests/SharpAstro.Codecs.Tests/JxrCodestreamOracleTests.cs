@@ -40,8 +40,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(100, 60, "gradient")]
     public void OurEncode_DecodedByJxrDecApp_IsLossless(int w, int h, string kind)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind switch
         {
@@ -97,8 +96,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(272, 16, "gradient", 2)]
     public void OurEncode_Overlap_DecodedByJxrDecApp_IsLossless(int w, int h, string kind, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind switch
         {
@@ -154,8 +152,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(17, 13, "gradient", 1)]
     public void JxrlibEncode_Overlap_DecodedByUs_IsLossless(int w, int h, string kind, int overlap)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind switch
         {
@@ -214,9 +211,8 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(34, 30, "gradient", 2)]
     public void JxrlibChromaEncode_DecodedByUs_MatchesJxrDecApp(int w, int h, string kind, int sub)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (encApp is null || decApp is null) { _out.WriteLine("oracle binaries not found — skipping."); return; }
+        var encApp = JxrOracle.RequireEncApp();
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind switch
         {
@@ -309,9 +305,8 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(34, 30, "gradient", 2, 2)]
     public void JxrlibChromaEncode_Overlap_DecodedByUs_MatchesJxrDecApp(int w, int h, string kind, int sub, int ol)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (encApp is null || decApp is null) { _out.WriteLine("oracle binaries not found — skipping."); return; }
+        var encApp = JxrOracle.RequireEncApp();
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind switch
         {
@@ -411,8 +406,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(96, 64, "gradient", 2, 2)]
     public void OurEncode_Chroma_CodestreamMatchesJxrlib(int w, int h, string kind, int sub, int ol)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x7E5 + w * 31 + h + sub * 7 + ol) : Gradient(w, h);
 
@@ -453,8 +447,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(34, 30, "random", 2, 1)]
     public void JxrImageCodec_Chroma_RoundTripsViaJxrDecApp(int w, int h, string kind, int sub, int ol)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x33 + w * 7 + h + sub + ol) : Gradient(w, h);
         var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: ol,
@@ -510,8 +503,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", 2, 8, 1)]
     public void OurEncode_ChromaLossyQp_CodestreamMatchesJxrlib(int w, int h, string kind, int sub, int qp, int ol)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x1D + w * 23 + h + sub * 11 + qp + ol) : Gradient(w, h);
         var ours = JxrCodestream.Encode(r, g, b, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: ol,
@@ -549,8 +541,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(34, 30, "random", 2, 32, 1)]
     public void OurEncode_ChromaLossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int sub, int qp, int ol)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x5C + w * 9 + h + sub + qp + ol) : Gradient(w, h);
         var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: ol,
@@ -600,8 +591,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", 9, 2)]
     public void OurEncode_TrimFlexBits_CodestreamMatchesJxrlib(int w, int h, string kind, int trim, int ol)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x7E5 + w * 31 + h + trim) : Gradient(w, h);
 
@@ -648,8 +638,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", 1)]
     public void OurEncode_NoFlexBits_CodestreamMatchesJxrlib(int w, int h, string kind, int ol)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x4F + w * 17 + h + ol) : Gradient(w, h);
         var ours = JxrCodestream.Encode(r, g, b, w, h, overlap: ol, noFlexBits: true);
@@ -685,8 +674,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", 1)]
     public void OurEncode_NoFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int ol)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0xC3 + w * 5 + h + ol) : Gradient(w, h);
         var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: ol, noFlexBits: true);
@@ -727,8 +715,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", 9, 1)]
     public void OurEncode_TrimFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int trim, int ol)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x91 + w * 13 + h + trim) : Gradient(w, h);
         var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: ol, trimFlexBits: trim);
@@ -782,8 +769,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", 16, 1)]
     public void OurEncode_LossyQp_CodestreamMatchesJxrlib(int w, int h, string kind, int qp, int ol)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x2B + w * 11 + h + qp + ol) : Gradient(w, h);
         var ours = JxrCodestream.Encode(r, g, b, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: ol);
@@ -822,8 +808,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", 16, 0)]   // non-16-aligned
     public void OurEncode_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int ol)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x77 + w * 7 + h + qp + ol) : Gradient(w, h);
         var jxr = JxrImageCodec.EncodeRgb24(r, g, b, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: ol);
@@ -869,9 +854,8 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", "0.5", 1)]   // non-16-aligned
     public void JxrlibQualityMode_DecodedByUs_MatchesJxrDecApp(int w, int h, string kind, string quality, int ol)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (encApp is null || decApp is null) { _out.WriteLine("oracle not found — skipping."); return; }
+        var encApp = JxrOracle.RequireEncApp();
+        var decApp = JxrOracle.RequireDecApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x4A + w * 3 + h + ol) : Gradient(w, h);
         var tmp = Path.Combine(Path.GetTempPath(), $"jxr_qual_{Guid.NewGuid():N}");
@@ -924,8 +908,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", 1)]
     public void OurEncode_Frequency_CodestreamMatchesJxrlib(int w, int h, string kind, int ol)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x6D + w * 19 + h + ol) : Gradient(w, h);
         var ours = JxrContainer.Read(JxrImageCodec.EncodeRgb24(r, g, b, w, h, overlap: ol, frequencyMode: true)).Codestream;
@@ -962,8 +945,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(33, 40, "random", 0)]
     public void JxrlibEncode_Frequency_DecodedByUs_IsLossless(int w, int h, string kind, int ol)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x2E + w * 7 + h + ol) : Gradient(w, h);
         var tmp = Path.Combine(Path.GetTempPath(), $"jxr_freqd_{Guid.NewGuid():N}");
@@ -1031,8 +1013,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(100, 60, "gradient", 2)]
     public void OurEncode_Overlap_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind switch
         {
@@ -1079,8 +1060,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(128, 64, "gradient", 2, 4, 2)]  // overlap OL_TWO
     public void OurEncode_Tiled_CodestreamMatchesJxrlib(int w, int h, string kind, int overlap, int cols, int rows)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x7E5 + w * 31 + h) : Gradient(w, h);
 
@@ -1130,8 +1110,7 @@ public sealed class JxrCodestreamOracleTests
     [InlineData(128, 64, "gradient", 2, 4, 2)]
     public void JxrlibEncode_Tiled_DecodedByUs_IsLossless(int w, int h, string kind, int overlap, int cols, int rows)
     {
-        var encApp = FindOracle("JxrEncApp.exe");
-        if (encApp is null) { _out.WriteLine("JxrEncApp.exe not found — skipping oracle test."); return; }
+        var encApp = JxrOracle.RequireEncApp();
 
         var (r, g, b) = kind == "random" ? Random(w, h, seed: 0x7E5 + w * 31 + h) : Gradient(w, h);
 
@@ -1333,19 +1312,5 @@ public sealed class JxrCodestreamOracleTests
         var se = p.StandardError.ReadToEnd();
         p.WaitForExit(30_000);
         return (p.ExitCode, so, se);
-    }
-
-    /// <summary>Walk up from the test output directory to find Oracle/bin/&lt;exe&gt;.</summary>
-    private static string? FindOracle(string exe)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
-        {
-            var direct = Path.Combine(dir.FullName, "Oracle", "bin", exe);
-            if (File.Exists(direct)) return direct;
-            var nested = Path.Combine(dir.FullName, "tests", "SharpAstro.Codecs.Tests", "Oracle", "bin", exe);
-            if (File.Exists(nested)) return nested;
-        }
-        return null;
     }
 }

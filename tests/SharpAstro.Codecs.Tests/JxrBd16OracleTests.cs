@@ -32,8 +32,7 @@ public sealed class JxrBd16OracleTests
     [InlineData(33, 40, "random", 0)]
     public void OurEncodeGray16_DecodedByJxrDecApp_IsLossless(int w, int h, string kind, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var y = JxrBd16Tests.Pattern(w, h, kind, 7);
         var jxr = JxrImageCodec.EncodeGray16(y, w, h, overlap: overlap);
@@ -66,8 +65,7 @@ public sealed class JxrBd16OracleTests
     [InlineData(33, 40, "random", 0)]
     public void OurEncodeRgb48_DecodedByJxrDecApp_IsLossless(int w, int h, string kind, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var r = JxrBd16Tests.Pattern(w, h, kind, 1);
         var g = JxrBd16Tests.Pattern(w, h, kind, 2);
@@ -108,8 +106,7 @@ public sealed class JxrBd16OracleTests
     [InlineData(33, 40, "random", 8, 0)]    // non-16-aligned
     public void OurEncodeGray16_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var y = JxrBd16Tests.Pattern(w, h, kind, 7);
         var jxr = JxrImageCodec.EncodeGray16(y, w, h, qpDc: qp, qpLp: qp, qpHp: qp, overlap: overlap);
@@ -140,8 +137,7 @@ public sealed class JxrBd16OracleTests
     [InlineData(33, 40, "random", 8, 0)]    // non-16-aligned
     public void OurEncodeRgb48_LossyQp_DecodesLikeJxrDecApp(int w, int h, string kind, int qp, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var r = JxrBd16Tests.Pattern(w, h, kind, 1);
         var g = JxrBd16Tests.Pattern(w, h, kind, 2);
@@ -180,8 +176,7 @@ public sealed class JxrBd16OracleTests
     [InlineData(33, 40, "random", 0)]   // non-16-aligned
     public void OurEncodeGray16_NoFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var y = JxrBd16Tests.Pattern(w, h, kind, 7);
         var jxr = JxrImageCodec.EncodeGray16(y, w, h, overlap: overlap, noFlexBits: true);
@@ -212,8 +207,7 @@ public sealed class JxrBd16OracleTests
     [InlineData(33, 40, "random", 0)]   // non-16-aligned
     public void OurEncodeRgb48_NoFlexBits_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var r = JxrBd16Tests.Pattern(w, h, kind, 1);
         var g = JxrBd16Tests.Pattern(w, h, kind, 2);
@@ -250,8 +244,7 @@ public sealed class JxrBd16OracleTests
     [InlineData(128, 64, "gradient", 2, 4, 2)]
     public void OurEncodeGray16_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap, int cols, int rows)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var y = JxrBd16Tests.Pattern(w, h, kind, 7);
         int mbW = (w + 15) / 16, mbH = (h + 15) / 16;
@@ -280,8 +273,7 @@ public sealed class JxrBd16OracleTests
     [InlineData(128, 64, "gradient", 2, 4, 2)]
     public void OurEncodeRgb48_Tiled_DecodesLikeJxrDecApp(int w, int h, string kind, int overlap, int cols, int rows)
     {
-        var decApp = FindOracle("JxrDecApp.exe");
-        if (decApp is null) { _out.WriteLine("JxrDecApp.exe not found — skipping oracle test."); return; }
+        var decApp = JxrOracle.RequireDecApp();
 
         var r = JxrBd16Tests.Pattern(w, h, kind, 1);
         var g = JxrBd16Tests.Pattern(w, h, kind, 2);
@@ -348,18 +340,5 @@ public sealed class JxrBd16OracleTests
         var se = p.StandardError.ReadToEnd();
         p.WaitForExit(30_000);
         return (p.ExitCode, so, se);
-    }
-
-    private static string? FindOracle(string exe)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
-        {
-            var direct = Path.Combine(dir.FullName, "Oracle", "bin", exe);
-            if (File.Exists(direct)) return direct;
-            var nested = Path.Combine(dir.FullName, "tests", "SharpAstro.Codecs.Tests", "Oracle", "bin", exe);
-            if (File.Exists(nested)) return nested;
-        }
-        return null;
     }
 }

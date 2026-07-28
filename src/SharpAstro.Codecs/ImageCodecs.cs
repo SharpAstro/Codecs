@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics.CodeAnalysis;
 using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Exr;
+using SharpAstro.Jbig2;
 using SharpAstro.Jpeg;
 using SharpAstro.Jxl;
 using SharpAstro.Jxr;
@@ -16,11 +17,19 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, and JPEG XL. To add a format,
-/// implement <see cref="IImageDecoder"/> in its codec package and add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, and JBIG2. To add a
+/// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
 /// at byte 2, so the two II-prefixed sniffs never collide).
+/// </para>
+/// <para>
+/// JBIG2 is registered for standalone <c>.jb2</c> files only. Its real use -
+/// PDF's <c>/JBIG2Decode</c> filter - cannot come through here at all: an
+/// embedded JBIG2 stream has no file header to sniff, keeps its segment
+/// dictionaries in a separate <c>/JBIG2Globals</c> stream, and takes its
+/// dimensions from the image dictionary. Those callers use
+/// <c>Jbig2Decoder.Decode(embedded, globals, width, height)</c> directly.
 /// </para>
 /// <para>
 /// Float-sample content (EXR, HDR float JXR/JXL/TIFF) decodes through
@@ -71,6 +80,7 @@ public static class ImageCodecs
         Register<JxrImageDecoder>(),
         Register<ExrImageDecoder>(),
         Register<JxlImageDecoder>(),
+        Register<Jbig2ImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>
