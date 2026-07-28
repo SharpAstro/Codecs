@@ -102,15 +102,56 @@ public sealed class Jbig2FacadeTests
         Jbig2ImageDecoder.TryDecodeIntoRgba8(BuildFile(), new byte[16]).ShouldBeFalse();
     }
 
+    /// <summary>
+    /// Symbol-coded pages come through the facade too — the adapter is not
+    /// limited to the generic regions it was written against. This is a real
+    /// jbig2enc file, so it exercises the whole §6.4/§6.5 path behind a plain
+    /// <c>TryDecode</c>.
+    /// </summary>
+    [Fact]
+    public void TryDecode_SymbolCodedFile_ProducesTheSamePageAsTheDirectApi()
+    {
+        var file = File.ReadAllBytes(Path.Combine(Jbig2SymbolFixtureTests.FixtureDirectory, "sym.jb2"));
+
+        ImageCodecs.CanDecode(file).ShouldBeTrue();
+        ImageCodecs.TryDecode(file, out var image).ShouldBeTrue();
+
+        var direct = Jbig2Decoder.DecodeFile(file);
+        image!.Width.ShouldBe(direct.Width);
+        image.Height.ShouldBe(direct.Height);
+        image.Pixels.ToArray().ShouldBe(direct.ToGray8());
+    }
+
+    /// <summary>
+    /// And a halftone page, which reaches the facade through an entirely
+    /// different §6.6/§6.7 path — pattern dictionary, Gray-coded bitplanes, and a
+    /// grid of stamped patterns rather than a coded raster.
+    /// </summary>
+    [Fact]
+    public void TryDecode_HalftoneFile_ProducesTheSamePageAsTheDirectApi()
+    {
+        var (segments, expected) = Jbig2HalftoneTests.BuildSegments(levels: 4);
+        var file = Jbig2StreamBuilder.SequentialFile([.. segments,
+            Jbig2StreamBuilder.Segment(9, SegmentType.EndOfFile, 0, [])]);
+
+        ImageCodecs.TryDecode(file, out var image).ShouldBeTrue();
+        image!.Width.ShouldBe(expected.Width);
+        image.Pixels.ToArray().ShouldBe(new Jbig2Image(expected.Width, expected.Height, expected.Data).ToGray8());
+    }
+
     [Fact]
     public void TryDecode_OnAFileNeedingAnUnimplementedFeature_ReturnsFalse()
     {
-        // The facade contract is "false for undecodable", not "throws". A .jb2
-        // full of text regions is exactly that until rung 3 lands.
+        // The facade contract is "false for undecodable", not "throws". Every
+        // region type decodes now, so the case has to be a genuinely refused
+        // feature: a Huffman-coded symbol dictionary.
+        var dictionary = Jbig2SymbolBuilder.SymbolDictionarySegment(Jbig2TextRegionTests.Alphabet());
+        dictionary[1] |= 0x01;   // SDHUFF
+
         var file = Jbig2StreamBuilder.SequentialFile(
             Jbig2StreamBuilder.Segment(0, SegmentType.PageInformation, 1,
                 Jbig2StreamBuilder.PageInformation(8, 8)),
-            Jbig2StreamBuilder.Segment(1, SegmentType.SymbolDictionary, 1, [0, 0, 0, 0]));
+            Jbig2StreamBuilder.Segment(1, SegmentType.SymbolDictionary, 1, dictionary));
 
         Jbig2ImageDecoder.TryDecode(file, out var image).ShouldBeFalse();
         image.ShouldBeNull();

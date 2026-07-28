@@ -26,7 +26,7 @@ public sealed class Jbig2SymbolFixtureTests(ITestOutputHelper output)
 {
     private readonly ITestOutputHelper _out = output;
 
-    private static string FixtureDirectory
+    internal static string FixtureDirectory
     {
         get
         {

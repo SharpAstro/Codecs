@@ -101,6 +101,19 @@ public sealed class Jbig2HalftoneTests
     /// ramp, and the raster it should produce — computed by stamping the patterns
     /// directly, so the test and the decoder agree only if both are right.
     /// </summary>
+    /// <summary>The segments and expected raster, for callers that want to wrap them differently.</summary>
+    internal static (byte[][] Segments, Jbig2Bitmap Expected) BuildSegments(
+        int levels, int gridWidth = 6, int gridHeight = 5, int patternWidth = 4, int patternHeight = 4,
+        int vectorX = 0, int vectorY = 0)
+    {
+        var (stream, expected) = Build(levels, gridWidth, gridHeight, patternWidth, patternHeight, vectorX, vectorY);
+        return (Split(stream), expected);
+    }
+
+    /// <summary>Splits an embedded stream back into its segments, so it can be re-wrapped as a file.</summary>
+    private static byte[][] Split(byte[] stream) =>
+        [.. Jbig2FixtureReader.ReadSegments(stream).Select(s => s.Raw)];
+
     internal static (byte[] Stream, Jbig2Bitmap Expected) Build(
         int levels, int gridWidth, int gridHeight, int patternWidth, int patternHeight,
         int vectorX = 0, int vectorY = 0)

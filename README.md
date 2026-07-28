@@ -8,11 +8,21 @@ Each format ships as an independent NuGet, and **`SharpAstro.Codecs`** is a thin
 byte stream by its magic bytes and dispatches to the right decoder, so a consumer can reference one
 package instead of cherry-picking codecs.
 
-Formats: **PNG** (read/write), **JPEG** (baseline + progressive decode, incl. scaled 1/2–1/8 LOD;
-baseline encode), **TIFF** (read/write), **JPEG XR** (read/write, jxrlib-exact), **OpenEXR**
-(read/write), **JPEG XL** (read/write), **JBIG2** (bilevel decode, for PDF's `/JBIG2Decode`), plus
-**EXIF** reading and a bundled **sRGB ICC** profile. See **[CODECS.md](CODECS.md)** for the full
-per-package decode/encode matrix and how to pick the right one.
+| Format | Decode | Encode | Notes |
+|---|:---:|:---:|---|
+| **PNG** | ✅ | ✅ | 8/16-bit RGBA/Gray, ICC + HDR chunks (`cICP` / `mDCv` / `cLLI`) |
+| **JPEG** | ✅ | ✅ | baseline + progressive; **scaled 1/2–1/8 LOD decode**; baseline encode. Plus lossless JPEG (T.81 Annex H) as a separate decoder |
+| **Ultra HDR** | ✅ | ✅ | gain-map JPEG; decodes transparently through the facade — float path is HDR, 8-bit path the SDR base |
+| **TIFF** | ✅ | ✅ | multi-page, 8/16/32-bit uint + float, Deflate/Zlib |
+| **JPEG XR** | ✅ | ✅ | jxrlib-exact — codestream byte-identical to the reference encoder |
+| **OpenEXR** | ✅ | ✅ | scanline, HALF/FLOAT/UINT, NONE/RLE/ZIP/ZIPS/PIZ |
+| **JPEG XL** | ✅ | ✅ | clean-room; lossless Modular + lossy VarDCT |
+| **JBIG2** | ✅ | — | bilevel, for PDF's `/JBIG2Decode`. Every region type T.88 defines, on the arithmetic path |
+| **EXIF** | ✅ | — | metadata only, from JPEG / TIFF / PNG |
+
+See **[CODECS.md](CODECS.md)** for the full per-package matrix, what each codec does and does not
+support, and how to pick the right one. A bundled **sRGB ICC** profile ships in
+`SharpAstro.Color.Icc` for embedding.
 
 All packages target `net10.0`, are `IsAotCompatible`, ship SourceLink debugging, and publish in
 lockstep (shared Major.Minor + CI run-number patch).
@@ -60,7 +70,14 @@ var bits = page.Bits;        // one byte per pixel, 1 = black (T.88 polarity)
 var gray = page.ToGray8();   // ...or the 8-bit projection, black 0 / white 255
 ```
 
-Standalone `.jb2` files do have a signature, and decode through the facade like anything else.
+Standalone `.jb2` files do have a signature, and decode through the facade like anything else —
+generic, symbol-coded and halftone pages alike.
+
+JBIG2 covers every region type T.88 defines on the arithmetic path: generic regions (both the
+template coder and MMR / ITU-T T.6, the Group 4 fax coding), refinement regions, symbol dictionaries
+and text regions, and pattern dictionaries with halftone regions. The Huffman-coded variants
+(SDHUFF / SBHUFF) are refused rather than guessed at — no available encoder emits them, so an
+implementation would have nothing to validate itself against.
 
 ## Building from source
 
