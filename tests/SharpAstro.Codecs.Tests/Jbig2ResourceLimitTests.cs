@@ -91,23 +91,31 @@ public sealed class Jbig2ResourceLimitTests
     /// a timeout so that a regression fails this test instead of hanging the run.
     /// </summary>
     [Fact]
-    public void NonTerminatingSymbolDictionaryWitness_Terminates()
+    public async Task NonTerminatingSymbolDictionaryWitness_Terminates()
     {
-        var bytes = File.ReadAllBytes(
-            Path.Combine(AppContext.BaseDirectory, "Fixtures", "jbig2", "nonterminating-symbol-dict.jb2"));
+        var cancellation = TestContext.Current.CancellationToken;
+        var bytes = await File.ReadAllBytesAsync(
+            Path.Combine(AppContext.BaseDirectory, "Fixtures", "jbig2", "nonterminating-symbol-dict.jb2"),
+            cancellation);
 
         // The exception is captured rather than left to fault the task, because
-        // Task.Wait(timeout) rethrows a faulted task instead of reporting that it
-        // finished — and "did it finish" is the whole assertion here.
+        // "did it finish at all" is the whole assertion here — a faulted task has
+        // still terminated, which is the property under test.
         Exception? caught = null;
-        var decode = Task.Run(() =>
-        {
-            try { Jbig2Decoder.DecodeFile(bytes); }
-            catch (Exception e) { caught = e; }
-        });
+        var decode = Task.Run(
+            () =>
+            {
+                try { Jbig2Decoder.DecodeFile(bytes); }
+                catch (Exception e) { caught = e; }
+            },
+            cancellation);
 
-        decode.Wait(TimeSpan.FromSeconds(30))
-              .ShouldBeTrue("decoding must terminate rather than spin on malformed input");
+        // WhenAny rather than a blocking Wait: the decode cannot be cancelled from
+        // outside (it is a tight synchronous loop by nature), so the timeout has to
+        // be a racing task rather than a token the decoder would have to observe.
+        var first = await Task.WhenAny(decode, Task.Delay(TimeSpan.FromSeconds(30), cancellation));
+
+        first.ShouldBe(decode, "decoding must terminate rather than spin on malformed input");
         caught.ShouldBeOfType<InvalidDataException>();
     }
 

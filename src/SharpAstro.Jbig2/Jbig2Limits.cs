@@ -78,6 +78,10 @@ internal static class Jbig2Limits
 /// </summary>
 internal sealed class Jbig2PixelBudget(long total)
 {
+    // An explicit field rather than reading the primary-constructor parameter from
+    // Charge: referencing `total` in a method body makes the compiler capture the
+    // parameter as a second hidden field alongside _remaining.
+    private readonly long _total = total;
     private long _remaining = total;
 
     /// <summary>
@@ -94,7 +98,7 @@ internal sealed class Jbig2PixelBudget(long total)
         if (pixels > _remaining)
             throw new InvalidDataException(
                 $"JBIG2: the stream asks to decode {pixels:N0} more pixels than its remaining budget of " +
-                $"{_remaining:N0} allows (total {total:N0}, scaled to the page). A stream needing this much " +
+                $"{_remaining:N0} allows (total {_total:N0}, scaled to the page). A stream needing this much " +
                 "work relative to its own page size is a decompression bomb, not an image.");
 
         _remaining -= pixels;
