@@ -48,12 +48,19 @@ internal static class SymbolDictionaryDecoder
     /// <param name="inputSymbols">SDINSYMS, gathered from the dictionaries this segment refers to.</param>
     /// <param name="at">SDAT, the generic template's AT pixels.</param>
     /// <param name="refinementAt">SDRAT, used only when SDREFAGG is set.</param>
+    /// <param name="budget">
+    /// The decode's remaining pixel allowance. A dictionary is metered like any
+    /// other producer of pixels: symbol widths and heights accumulate from coded
+    /// deltas and are bounded only by "&gt; 0", so the declared symbol count times
+    /// the per-bitmap ceiling is not a useful bound on its own.
+    /// </param>
     public static Jbig2Bitmap[] Decode(
         ref MqDecoder mq,
         SymbolDictionaryParameters p,
         Jbig2Bitmap[] inputSymbols,
         scoped ReadOnlySpan<sbyte> at,
-        scoped ReadOnlySpan<sbyte> refinementAt)
+        scoped ReadOnlySpan<sbyte> refinementAt,
+        Jbig2PixelBudget budget)
     {
         var dh = new ArithIntDecoder();
         var dw = new ArithIntDecoder();
@@ -88,6 +95,7 @@ internal static class SymbolDictionaryDecoder
             if (height <= 0)
                 throw new InvalidDataException($"JBIG2: symbol dictionary height class has non-positive height {height}.");
 
+            var countBeforeClass = newSymbols.Count;
             var width = 0;
             while (true)
             {
@@ -105,11 +113,24 @@ internal static class SymbolDictionaryDecoder
                 newSymbols.Add(p.RefinementAggregate
                     ? DecodeAggregate(
                         ref mq, p, inputSymbols, newSymbols, width, height, codeLength,
-                        ai, fields, idContexts, refinementContexts, refinementAt)
+                        ai, fields, idContexts, refinementContexts, refinementAt, budget)
                     : GenericRegionDecoder.Decode(
                         ref mq, genericContexts, width, height, p.Template,
-                        typicalPrediction: false, at));
+                        typicalPrediction: false, at, budget));
             }
+
+            // Progress guard — the same discipline MmrDecoder applies to its own
+            // row loop, and for the same reason. A height class that closes on the
+            // first IADW without coding a symbol advances nothing, and the MQ
+            // decoder never runs dry: T.88 E.3.4 has it read every byte past the
+            // end of its data as 0xFF, so a stream that keeps yielding "empty
+            // class" spins here for ever. Nothing is allocated on that path, so
+            // there is no memory growth for the pixel budget to catch — found by
+            // fuzzing, not by reading. With this, each pass adds at least one
+            // symbol, so the loop is bounded by SDNUMNEWSYMS.
+            if (newSymbols.Count == countBeforeClass)
+                throw new InvalidDataException(
+                    $"JBIG2: symbol dictionary height class at height {height} codes no symbols.");
         }
 
         return SelectExported(ref mq, ex, inputSymbols, newSymbols, p.ExportedSymbols);
@@ -133,7 +154,8 @@ internal static class SymbolDictionaryDecoder
         TextRegionDecoder.Fields fields,
         scoped Span<byte> idContexts,
         scoped Span<byte> refinementContexts,
-        scoped ReadOnlySpan<sbyte> refinementAt)
+        scoped ReadOnlySpan<sbyte> refinementAt,
+        Jbig2PixelBudget budget)
     {
         var instances = ai.Decode(ref mq);
         if (instances == ArithIntDecoder.OutOfBand || instances < 1)
@@ -159,7 +181,7 @@ internal static class SymbolDictionaryDecoder
 
             return RefinementRegionDecoder.Decode(
                 ref mq, refinementContexts, width, height, p.RefinementTemplate,
-                alphabet[id], rdx, rdy, typicalPrediction: false, refinementAt);
+                alphabet[id], rdx, rdy, typicalPrediction: false, refinementAt, budget);
         }
 
         // §6.5.8.2.1: more than one instance means the symbol is literally a small
@@ -178,7 +200,7 @@ internal static class SymbolDictionaryDecoder
             RefinementTemplate: p.RefinementTemplate);
 
         return TextRegionDecoder.Decode(
-            ref mq, parameters, alphabet, fields, idContexts, refinementContexts, refinementAt);
+            ref mq, parameters, alphabet, fields, idContexts, refinementContexts, refinementAt, budget);
     }
 
     /// <summary>
@@ -198,8 +220,22 @@ internal static class SymbolDictionaryDecoder
         var index = 0;
         var exporting = false;
 
+        // The same non-termination trap as the height-class loop above: a run of
+        // length zero advances nothing, and a never-dry MQ decoder can yield zero
+        // for ever. A *leading* zero run is completely normal — a dictionary that
+        // exports from index 0 codes one — so this is a ceiling on the number of
+        // runs rather than a ban on empty ones. Every run that advances costs at
+        // least one symbol, so any real encoding is far below the bound.
+        var runs = 0;
+        var maxRuns = 2 * total + 8;
+
         while (index < total)
         {
+            if (++runs > maxRuns)
+                throw new InvalidDataException(
+                    $"JBIG2: symbol dictionary export runs do not terminate — more than {maxRuns} runs " +
+                    $"over {total} symbols.");
+
             var run = ex.Decode(ref mq);
             if (run == ArithIntDecoder.OutOfBand || run < 0)
                 throw new InvalidDataException("JBIG2: symbol dictionary export run length is not a non-negative integer.");

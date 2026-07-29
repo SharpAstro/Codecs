@@ -94,6 +94,9 @@ internal static class GenericRegionDecoder
     /// <param name="at">
     /// AT pixel offsets as (x,y) sbyte pairs: four pairs for GBTEMPLATE 0, one for 1..3.
     /// </param>
+    /// <param name="budget">
+    /// The decode's remaining pixel allowance, charged before anything is allocated.
+    /// </param>
     public static Jbig2Bitmap Decode(
         ref MqDecoder mq,
         scoped Span<byte> contexts,
@@ -101,7 +104,8 @@ internal static class GenericRegionDecoder
         int height,
         int template,
         bool typicalPrediction,
-        scoped ReadOnlySpan<sbyte> at)
+        scoped ReadOnlySpan<sbyte> at,
+        Jbig2PixelBudget budget)
     {
         var expectedAt = template == 0 ? 8 : 2;
         if (at.Length < expectedAt)
@@ -109,6 +113,7 @@ internal static class GenericRegionDecoder
         if (contexts.Length < 1 << ContextBits(template))
             throw new ArgumentException("Context array too small for this GBTEMPLATE.", nameof(contexts));
 
+        budget.Charge(width, height);
         var bitmap = new Jbig2Bitmap(width, height);
         var sltpContext = TypicalPredictionContexts[template];
         var ltp = 0;

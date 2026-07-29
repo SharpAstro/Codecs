@@ -81,6 +81,9 @@ internal static class RefinementRegionDecoder
     /// <param name="dy">GRREFERENCEDY, likewise vertically.</param>
     /// <param name="typicalPrediction">TPGRON — enables the uniform-neighbourhood shortcut.</param>
     /// <param name="at">A1 and A2 as (x,y) sbyte pairs; ignored for GRTEMPLATE 1.</param>
+    /// <param name="budget">
+    /// The decode's remaining pixel allowance, charged before anything is allocated.
+    /// </param>
     public static Jbig2Bitmap Decode(
         ref MqDecoder mq,
         scoped Span<byte> contexts,
@@ -91,7 +94,8 @@ internal static class RefinementRegionDecoder
         int dx,
         int dy,
         bool typicalPrediction,
-        scoped ReadOnlySpan<sbyte> at)
+        scoped ReadOnlySpan<sbyte> at,
+        Jbig2PixelBudget budget)
     {
         if (template == 0 && at.Length < 4)
             throw new ArgumentException("GRTEMPLATE 0 needs two AT pixels.", nameof(at));
@@ -106,6 +110,7 @@ internal static class RefinementRegionDecoder
                 "JBIG2: TPGRON (typical prediction) in a refinement region is not implemented — the decoded " +
                 "result cannot be reconciled with the reference decoder, and a wrong page is worse than none.");
 
+        budget.Charge(width, height);
         var bitmap = new Jbig2Bitmap(width, height);
         var sltpContext = TypicalPredictionContexts[template];
         var ltp = 0;

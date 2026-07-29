@@ -1,4 +1,4 @@
-using SharpAstro.Jbig2;
+﻿using SharpAstro.Jbig2;
 using Shouldly;
 
 namespace SharpAstro.Codecs.Tests;
@@ -64,7 +64,7 @@ public sealed class Jbig2MmrOracleTests(ITestOutputHelper output)
         _out.WriteLine($"{pattern} {width}x{height}: {encoded.Coded.Length} coded bytes, " +
                        $"photometric {(encoded.MinIsWhite ? "MinIsWhite" : "MinIsBlack")}");
 
-        var bitmap = MmrDecoder.Decode(encoded.Coded, width, height);
+        var bitmap = MmrDecoder.Decode(encoded.Coded, width, height, Jbig2PixelBudget.Unmetered());
         ShouldMatch(bitmap.Data, expected, width, height);
     }
 
@@ -174,7 +174,7 @@ public sealed class Jbig2MmrOracleTests(ITestOutputHelper output)
         _out.WriteLine($"{(colour == 0 ? "white" : "black")} runs 0-{runs.Max()}: " +
                        $"{runs.Count} lengths, {width}x{height}, {encoded.Coded.Length} coded bytes");
 
-        var actual = MmrDecoder.Decode(encoded.Coded, width, height).Data;
+        var actual = MmrDecoder.Decode(encoded.Coded, width, height, Jbig2PixelBudget.Unmetered()).Data;
 
         for (var i = 0; i < runs.Count; i++)
         {

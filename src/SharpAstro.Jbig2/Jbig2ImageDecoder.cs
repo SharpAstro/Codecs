@@ -56,7 +56,7 @@ public sealed class Jbig2ImageDecoder : IImageDecoder
             image = Jbig2Decoder.DecodeFile(data).ToRaster();
             return true;
         }
-        catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
+        catch (Exception e) when (IsUndecodable(e))
         {
             return false;
         }
@@ -82,9 +82,28 @@ public sealed class Jbig2ImageDecoder : IImageDecoder
 
             return true;
         }
-        catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
+        catch (Exception e) when (IsUndecodable(e))
         {
             return false;
         }
     }
+
+    /// <summary>
+    /// What "undecodable" means for a <c>bool</c>-returning <c>Try</c> method: the
+    /// payload is hostile or unsupported, and the caller wants <c>false</c> rather
+    /// than an exception.
+    /// <para>
+    /// <see cref="OverflowException"/> and <see cref="OutOfMemoryException"/> are
+    /// in the list because dimension arithmetic on attacker-chosen numbers used to
+    /// reach both, and a <c>Try</c> method that throws on hostile input is a
+    /// contract break the facade cannot paper over —
+    /// <c>ImageCodecs.TryDecode</c> delegates here without a catch of its own.
+    /// <see cref="Jbig2Limits"/> should now make both unreachable from geometry, so
+    /// this is the belt to that braces: a 256 MiB bitmap can still fail to allocate
+    /// on a small device, and <c>false</c> is the honest answer there too.
+    /// </para>
+    /// </summary>
+    private static bool IsUndecodable(Exception e) =>
+        e is InvalidDataException or ArgumentException or NotSupportedException
+          or OverflowException or OutOfMemoryException;
 }

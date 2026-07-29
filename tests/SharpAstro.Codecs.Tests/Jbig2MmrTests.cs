@@ -1,4 +1,4 @@
-using SharpAstro.Jbig2;
+﻿using SharpAstro.Jbig2;
 using Shouldly;
 
 namespace SharpAstro.Codecs.Tests;
@@ -165,7 +165,7 @@ public sealed class Jbig2MmrTests
 
     [Fact]
     public void EmptyData_Fails() =>
-        Should.Throw<InvalidDataException>(() => MmrDecoder.Decode([], 8, 2));
+        Should.Throw<InvalidDataException>(() => MmrDecoder.Decode([], 8, 2, Jbig2PixelBudget.Unmetered()));
 
     [Fact]
     public void ExtensionCode_IsRefusedByName()
@@ -305,7 +305,7 @@ public sealed class Jbig2MmrTests
             if (bits[i] == '1')
                 bytes[i >> 3] |= (byte)(0x80 >> (i & 7));
 
-        var bitmap = MmrDecoder.Decode(bytes, width, height);
+        var bitmap = MmrDecoder.Decode(bytes, width, height, Jbig2PixelBudget.Unmetered());
         return Jbig2StreamBuilder.ToRows(width, height, bitmap.Data);
     }
 }

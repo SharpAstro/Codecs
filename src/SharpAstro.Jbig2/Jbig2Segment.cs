@@ -135,8 +135,10 @@ internal static class Jbig2Segment
 
         if (width == 0 || height == 0 || width > int.MaxValue || height > int.MaxValue)
             throw new InvalidDataException($"JBIG2: implausible region size {width}x{height}.");
-        if ((long)width * height > 1L << 31)
-            throw new InvalidDataException($"JBIG2: region {width}x{height} exceeds the addressable pixel limit.");
+        if ((long)width * height > Jbig2Limits.MaxBitmapPixels)
+            throw new InvalidDataException(
+                $"JBIG2: region {width}x{height} is {(long)width * height:N0} pixels, past the " +
+                $"{Jbig2Limits.MaxBitmapPixels:N0} pixel ceiling for one bitmap.");
 
         var op = (CombinationOperator)(flags & 0x07);
         if (op > CombinationOperator.Replace)
