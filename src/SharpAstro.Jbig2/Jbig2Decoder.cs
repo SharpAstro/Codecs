@@ -56,10 +56,21 @@ public static class Jbig2Decoder
     /// <param name="height">Page height, from the image dictionary's <c>/Height</c>.</param>
     /// <exception cref="InvalidDataException">The stream is malformed or truncated.</exception>
     /// <exception cref="NotSupportedException">The stream needs a JBIG2 feature this decoder does not implement yet.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The requested page is not positive, or is larger than
+    /// <see cref="Jbig2Limits.MaxBitmapPixels"/> pixels. These dimensions come from
+    /// a PDF image dictionary, so they are no more trustworthy than the codestream
+    /// and are checked rather than multiplied out.
+    /// </exception>
     public static Jbig2Image Decode(ReadOnlySpan<byte> embedded, ReadOnlySpan<byte> globals, int width, int height)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "Width and height must be positive.");
+        if ((long)width * height > Jbig2Limits.MaxBitmapPixels)
+            throw new ArgumentOutOfRangeException(
+                nameof(width),
+                $"A {width}x{height} page is {(long)width * height:N0} pixels, past the " +
+                $"{Jbig2Limits.MaxBitmapPixels:N0} this decoder will allocate for one bitmap.");
 
         var state = new DecodingState(new Jbig2Bitmap(width, height));
 
@@ -217,7 +228,8 @@ public static class Jbig2Decoder
             if (h == uint.MaxValue && !TryFindStripedHeight(stream, segments, out h))
                 return false;
 
-            if (w == 0 || h == 0 || w > int.MaxValue || h > int.MaxValue || (long)w * h > 1L << 31)
+            if (w == 0 || h == 0 || w > int.MaxValue || h > int.MaxValue
+                || (long)w * h > Jbig2Limits.MaxBitmapPixels)
                 return false;
 
             width = (int)w;
@@ -266,6 +278,14 @@ public static class Jbig2Decoder
 
         /// <summary>The page being composited onto.</summary>
         public Jbig2Bitmap Page { get; } = page;
+
+        /// <summary>
+        /// The pixel allowance for this whole decode, sized from the page — the one
+        /// dimension in the transaction the stream does not choose. Shared across
+        /// every segment, so a stream cannot get around it by splitting its work
+        /// into many individually-plausible regions.
+        /// </summary>
+        public Jbig2PixelBudget Budget { get; } = new(Jbig2Limits.BudgetFor(page.Width, page.Height));
 
         /// <summary>Whether any region has been composited yet — see <see cref="ApplyPageInformation"/>.</summary>
         public bool Composited { get; set; }
@@ -350,14 +370,14 @@ public static class Jbig2Decoder
 
             case SegmentType.ImmediateGenericRegion:
             case SegmentType.ImmediateLosslessGenericRegion:
-                Compose(state, DecodeGenericRegion(data, out var genericInfo), genericInfo);
+                Compose(state, DecodeGenericRegion(data, state.Budget, out var genericInfo), genericInfo);
                 break;
 
             case SegmentType.IntermediateGenericRegion:
                 // Not composited onto the page: an intermediate region is an
                 // auxiliary buffer that some later refinement region names as its
                 // reference (§7.4.1.1).
-                state.StoreIntermediateRegion(segment.Number, DecodeGenericRegion(data, out _));
+                state.StoreIntermediateRegion(segment.Number, DecodeGenericRegion(data, state.Budget, out _));
                 break;
 
             case SegmentType.ImmediateRefinementRegion:
@@ -395,7 +415,7 @@ public static class Jbig2Decoder
                     "arithmetic symbol dictionaries and text regions only.");
 
             case SegmentType.PatternDictionary:
-                state.StorePatterns(segment.Number, DecodePatternDictionary(data));
+                state.StorePatterns(segment.Number, DecodePatternDictionary(data, state.Budget));
                 break;
 
             case SegmentType.ImmediateHalftoneRegion:
@@ -443,7 +463,8 @@ public static class Jbig2Decoder
     }
 
     /// <summary>Generic region segment (T.88 §7.4.6): region info, flags, AT pixels, then MQ-coded data.</summary>
-    private static Jbig2Bitmap DecodeGenericRegion(ReadOnlySpan<byte> data, out RegionInfo info)
+    private static Jbig2Bitmap DecodeGenericRegion(
+        ReadOnlySpan<byte> data, Jbig2PixelBudget budget, out RegionInfo info)
     {
         var position = 0;
         var region = Jbig2Segment.ReadRegionInfo(data, ref position);
@@ -466,7 +487,7 @@ public static class Jbig2Decoder
             // TPGDON are required to be 0 here and mean nothing to T.6 coding —
             // a stream that sets them anyway still decodes to the right pixels,
             // so they are ignored rather than made fatal.
-            bitmap = MmrDecoder.Decode(data[position..], region.Width, region.Height);
+            bitmap = MmrDecoder.Decode(data[position..], region.Width, region.Height, budget);
         }
         else
         {
@@ -487,7 +508,7 @@ public static class Jbig2Decoder
             var contexts = new byte[1 << GenericRegionDecoder.ContextBits(template)];
             var mq = new MqDecoder(data[position..]);
             bitmap = GenericRegionDecoder.Decode(
-                ref mq, contexts, region.Width, region.Height, template, typicalPrediction, at);
+                ref mq, contexts, region.Width, region.Height, template, typicalPrediction, at, budget);
         }
 
         return bitmap;
@@ -552,7 +573,7 @@ public static class Jbig2Decoder
         // dictionary or text region, which position each refinement themselves.
         return RefinementRegionDecoder.Decode(
             ref mq, contexts, region.Width, region.Height, template,
-            reference, dx: 0, dy: 0, typicalPrediction, at);
+            reference, dx: 0, dy: 0, typicalPrediction, at, state.Budget);
     }
 
     /// <summary>
@@ -627,7 +648,8 @@ public static class Jbig2Decoder
             (int)created, (int)exported, template, refinementAggregate, refinementTemplate);
 
         var mq = new MqDecoder(data[position..]);
-        return SymbolDictionaryDecoder.Decode(ref mq, parameters, inputSymbols, at, refinementAt);
+        return SymbolDictionaryDecoder.Decode(
+            ref mq, parameters, inputSymbols, at, refinementAt, state.Budget);
     }
 
     /// <summary>
@@ -702,14 +724,14 @@ public static class Jbig2Decoder
         var mq = new MqDecoder(data[position..]);
         return TextRegionDecoder.Decode(
             ref mq, parameters, symbols, new TextRegionDecoder.Fields(),
-            idContexts, refinementContexts, refinementAt);
+            idContexts, refinementContexts, refinementAt, state.Budget);
     }
 
     /// <summary>
     /// Pattern dictionary segment (T.88 §7.4.4): flags, the pattern size, the
     /// highest grey level, then one wide collective bitmap holding every pattern.
     /// </summary>
-    private static Jbig2Bitmap[] DecodePatternDictionary(ReadOnlySpan<byte> data)
+    private static Jbig2Bitmap[] DecodePatternDictionary(ReadOnlySpan<byte> data, Jbig2PixelBudget budget)
     {
         if (data.Length < 7)
             throw new InvalidDataException("JBIG2: truncated pattern dictionary segment.");
@@ -734,7 +756,7 @@ public static class Jbig2Decoder
 
         var mq = new MqDecoder(data[7..]);
         return HalftoneDecoder.DecodePatternDictionary(
-            ref mq, patternWidth, patternHeight, (int)maxIndex, template);
+            ref mq, patternWidth, patternHeight, (int)maxIndex, template, budget);
     }
 
     /// <summary>
@@ -778,8 +800,11 @@ public static class Jbig2Decoder
         var vectorY = BinaryPrimitives.ReadUInt16BigEndian(data[(position + 18)..]);
         position += 20;
 
-        if (gridWidth == 0 || gridHeight == 0 || (long)gridWidth * gridHeight > 1L << 28)
-            throw new InvalidDataException($"JBIG2: implausible halftone grid {gridWidth}x{gridHeight}.");
+        if (gridWidth == 0 || gridHeight == 0
+            || (long)gridWidth * gridHeight > Jbig2Limits.MaxHalftoneGridCells)
+            throw new InvalidDataException(
+                $"JBIG2: halftone grid {gridWidth}x{gridHeight} is {(long)gridWidth * gridHeight:N0} cells, " +
+                $"past the {Jbig2Limits.MaxHalftoneGridCells:N0} cell ceiling.");
 
         var patterns = state.FindPatterns(segment)
             ?? throw new InvalidDataException("JBIG2: halftone region refers to no pattern dictionary.");
@@ -789,7 +814,7 @@ public static class Jbig2Decoder
             gridX, gridY, vectorX, vectorY, template, defaultPixel, combination);
 
         var mq = new MqDecoder(data[position..]);
-        return HalftoneDecoder.DecodeHalftoneRegion(ref mq, parameters, patterns);
+        return HalftoneDecoder.DecodeHalftoneRegion(ref mq, parameters, patterns, state.Budget);
     }
 
 }

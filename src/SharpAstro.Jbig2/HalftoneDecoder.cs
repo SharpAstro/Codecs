@@ -44,15 +44,17 @@ internal static class HalftoneDecoder
     /// <param name="patternHeight">HDPH.</param>
     /// <param name="maxIndex">GRAYMAX — the dictionary holds one more pattern than this.</param>
     /// <param name="template">HDTEMPLATE.</param>
+    /// <param name="budget">The decode's remaining pixel allowance.</param>
     public static Jbig2Bitmap[] DecodePatternDictionary(
-        ref MqDecoder mq, int patternWidth, int patternHeight, int maxIndex, int template)
+        ref MqDecoder mq, int patternWidth, int patternHeight, int maxIndex, int template,
+        Jbig2PixelBudget budget)
     {
         var count = maxIndex + 1;
         var contexts = new byte[1 << GenericRegionDecoder.ContextBits(template)];
 
         var collective = GenericRegionDecoder.Decode(
             ref mq, contexts, count * patternWidth, patternHeight, template,
-            typicalPrediction: false, CollectiveAt(patternWidth));
+            typicalPrediction: false, CollectiveAt(patternWidth), budget);
 
         var patterns = new Jbig2Bitmap[count];
         for (var i = 0; i < count; i++)
@@ -87,14 +89,19 @@ internal static class HalftoneDecoder
         CombinationOperator Combination);
 
     /// <summary>Decodes a halftone region (T.88 §6.6.5).</summary>
+    /// <param name="mq">The arithmetic decoder, positioned at the grey-scale bitplanes.</param>
+    /// <param name="p">The region parameters, read from the segment header.</param>
+    /// <param name="patterns">The dither patterns from the pattern dictionary this region names.</param>
+    /// <param name="budget">The decode's remaining pixel allowance.</param>
     public static Jbig2Bitmap DecodeHalftoneRegion(
-        ref MqDecoder mq, HalftoneParameters p, Jbig2Bitmap[] patterns)
+        ref MqDecoder mq, HalftoneParameters p, Jbig2Bitmap[] patterns, Jbig2PixelBudget budget)
     {
         if (patterns.Length == 0)
             throw new InvalidDataException("JBIG2: halftone region refers to an empty pattern dictionary.");
 
+        budget.Charge(p.Width, p.Height);
         var region = new Jbig2Bitmap(p.Width, p.Height, p.DefaultPixel);
-        var grey = DecodeGrayscale(ref mq, p.GridWidth, p.GridHeight, patterns.Length, p.Template);
+        var grey = DecodeGrayscale(ref mq, p.GridWidth, p.GridHeight, patterns.Length, p.Template, budget);
 
         for (var m = 0; m < p.GridHeight; m++)
         {
@@ -124,7 +131,8 @@ internal static class HalftoneDecoder
     /// region per bitplane, most significant first, each XOR-ed with the plane
     /// above it to undo the Gray coding.
     /// </summary>
-    private static int[] DecodeGrayscale(ref MqDecoder mq, int width, int height, int levels, int template)
+    private static int[] DecodeGrayscale(
+        ref MqDecoder mq, int width, int height, int levels, int template, Jbig2PixelBudget budget)
     {
         var planes = 0;
         while (1 << planes < levels) planes++;
@@ -132,13 +140,17 @@ internal static class HalftoneDecoder
 
         var contexts = new byte[1 << GenericRegionDecoder.ContextBits(template)];
         var at = GrayscaleAt(template);
-        var values = new int[width * height];
+
+        // The caller has already bounded the grid by Jbig2Limits.MaxHalftoneGridCells,
+        // which is what keeps this product inside int and these two arrays (five
+        // bytes per cell between them) proportionate.
+        var values = new int[checked(width * height)];
         var previous = new byte[width * height];
 
         for (var bit = planes - 1; bit >= 0; bit--)
         {
             var plane = GenericRegionDecoder.Decode(
-                ref mq, contexts, width, height, template, typicalPrediction: false, at);
+                ref mq, contexts, width, height, template, typicalPrediction: false, at, budget);
 
             // C.5: every plane but the first is coded relative to the one above,
             // so the running XOR is what turns Gray code back into binary.

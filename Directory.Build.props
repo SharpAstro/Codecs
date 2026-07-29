@@ -9,10 +9,13 @@
        csprojs were bumped). Per-package release notes stay as comments in the
        individual csprojs. 3.6: baseline JPEG encoder (JpegEncoder) joins
        SharpAstro.Jpeg. 3.7: the new SharpAstro.Jbig2 package (ITU-T T.88
-       generic regions) joins the family. -->
+       generic regions) joins the family. 3.8: SharpAstro.Jbig2 resource limits —
+       a per-bitmap pixel ceiling and a page-scaled decode budget against
+       decompression bombs, plus progress guards on the two symbol-dictionary
+       loops that could otherwise never terminate. -->
   <PropertyGroup>
-    <VersionPrefix>3.7.0</VersionPrefix>
-    <AssemblyVersion>3.7.0.0</AssemblyVersion>
+    <VersionPrefix>3.8.0</VersionPrefix>
+    <AssemblyVersion>3.8.0.0</AssemblyVersion>
   </PropertyGroup>
 
 </Project>

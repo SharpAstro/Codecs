@@ -1,4 +1,4 @@
-using SharpAstro.Jbig2;
+﻿using SharpAstro.Jbig2;
 using Shouldly;
 
 namespace SharpAstro.Codecs.Tests;
@@ -326,7 +326,8 @@ public sealed class Jbig2GenericRegionTests
 
         var contexts = new byte[1 << GenericRegionDecoder.ContextBits(0)];
         var mq = new MqDecoder(coded.AsSpan(0, 1));
-        var decoded = GenericRegionDecoder.Decode(ref mq, contexts, 8, 4, 0, false, at);
+        var decoded = GenericRegionDecoder.Decode(
+            ref mq, contexts, 8, 4, 0, false, at, Jbig2PixelBudget.Unmetered());
 
         decoded.Width.ShouldBe(8);
         decoded.Height.ShouldBe(4);
@@ -339,7 +340,8 @@ public sealed class Jbig2GenericRegionTests
         var contexts = new byte[1 << GenericRegionDecoder.ContextBits(template)];
         var mq = new MqDecoder(coded);
         var decoded = GenericRegionDecoder.Decode(
-            ref mq, contexts, source.Width, source.Height, template, typicalPrediction, at);
+            ref mq, contexts, source.Width, source.Height, template, typicalPrediction, at,
+            Jbig2PixelBudget.Unmetered());
 
         Jbig2StreamBuilder.ToRows(decoded.Width, decoded.Height, decoded.Data)
             .ShouldBe(Jbig2StreamBuilder.ToRows(source.Width, source.Height, source.Data));

@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Runtime.CompilerServices;
 
 namespace SharpAstro.Jbig2;
@@ -47,6 +48,17 @@ internal sealed class Jbig2Bitmap
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "Bitmap dimensions must be positive.");
+
+        // The backstop for every sizing path at once. The segment layer bounds
+        // region and page geometry before it gets here, but symbol dictionaries
+        // do not go through region info at all — a symbol's width and height
+        // accumulate from coded deltas (§6.5.8) with nothing but "> 0" on them, so
+        // a one-symbol dictionary could otherwise name a 46000 x 46000 glyph.
+        // Malformed data rather than a bad argument: the numbers came off the wire.
+        if ((long)width * height > Jbig2Limits.MaxBitmapPixels)
+            throw new InvalidDataException(
+                $"JBIG2: a {width}x{height} bitmap is {(long)width * height:N0} pixels, past the " +
+                $"{Jbig2Limits.MaxBitmapPixels:N0} this decoder will allocate for one bitmap.");
 
         Width = width;
         Height = height;

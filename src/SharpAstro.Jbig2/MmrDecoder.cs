@@ -49,8 +49,9 @@ internal ref struct MmrDecoder
     /// </summary>
     /// <exception cref="InvalidDataException">The coded data is malformed or ends early.</exception>
     /// <exception cref="NotSupportedException">The data uses a 2D extension code, which includes T.6's uncompressed mode.</exception>
-    public static Jbig2Bitmap Decode(ReadOnlySpan<byte> data, int width, int height)
+    public static Jbig2Bitmap Decode(ReadOnlySpan<byte> data, int width, int height, Jbig2PixelBudget budget)
     {
+        budget.Charge(width, height);
         var bitmap = new Jbig2Bitmap(width, height);
         var decoder = new MmrDecoder(data);
 

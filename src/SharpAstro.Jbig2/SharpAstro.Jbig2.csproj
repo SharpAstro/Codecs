@@ -8,10 +8,30 @@
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 
 
+    <!-- 3.8: hardening for untrusted streams; no API change, and no change to
+         what a well-formed stream decodes to. The shipped 3.7.651 decoder could
+         be made to allocate 2 GiB and burn 20+ seconds of CPU from 82 input
+         bytes: a region's declared width and height are attacker-chosen, and
+         T.88's MQ decoder never runs dry (E.3.4 reads every byte past the end of
+         the data as 0xFF), so running out of input is not a backstop. Compression
+         ratio cannot bound it either - a blank 1200 dpi page with TPGDON codes
+         about one decision per row. So Jbig2Limits caps any single bitmap at 2^28
+         pixels, enforced in the Jbig2Bitmap constructor because symbol
+         dictionaries size glyphs from coded deltas and never pass through region
+         info at all, and a Jbig2PixelBudget scaled to the caller's page bounds
+         the total across every segment. Two symbol-dictionary loops (a height
+         class that codes no symbol, zero-length export runs) could also spin for
+         ever with flat memory, where no allocation ceiling can help, so both now
+         enforce progress. Malformed input reads as InvalidDataException
+         throughout: the old ceiling was off by one, letting an area of exactly
+         2^31 reach a checked multiply, and TryDecode caught neither the
+         resulting OverflowException nor OutOfMemoryException, so both escaped a
+         bool-returning Try method and the facade. -->
+
     <PackageId>SharpAstro.Jbig2</PackageId>
     <Product>SharpAstro.Jbig2</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed JBIG2 (ITU-T T.88) bilevel image decoder for .NET, written clean-room from the specification and aimed at PDF's /JBIG2Decode filter. A PDF-embedded JBIG2 stream is not a file — it has no file header, its segment dictionaries live out of band in /DecodeParms /JBIG2Globals, and its dimensions come from the image dictionary — so the primary entry point takes exactly those pieces: Jbig2Decoder.Decode(embedded, globals, width, height). Standalone .jb2 files (sequential and random-access organisation) also decode, and register with the SharpAstro.Codecs facade by magic bytes. Scope in 3.7: the complete arithmetic decoding path — MQ arithmetic decoder (Annex E), generic regions both ways (templates 0-3 with TPGDON and arbitrary AT pixels, and MMR / ITU-T T.6, the CCITT Group 4 coding), generic refinement regions, symbol dictionaries and text regions (every reference corner, transposed strips, per-instance refinement, refine/aggregate symbols, and cross-stream dictionaries via /JBIG2Globals), pattern dictionaries and halftone regions, page information, and region composition (OR/AND/XOR/XNOR/REPLACE). Validated against jbig2enc output, libtiff Group 4 output, and the jbig2dec reference decoder. Not implemented: the Huffman-coded variants (SDHUFF/SBHUFF and custom table segments), MMR inside pattern dictionaries and halftone regions, HENABLESKIP, and TPGRON in a refinement region — each throws NotSupportedException naming the feature rather than returning a wrong raster. Output is one byte per pixel (1 = black, T.88's own polarity) plus an 8-bit grey projection; /Decode inversion and ImageMask semantics stay in the caller's PDF layer. AOT-compatible.</Description>
+    <Description>Pure-managed JBIG2 (ITU-T T.88) bilevel image decoder for .NET, written clean-room from the specification and aimed at PDF's /JBIG2Decode filter. A PDF-embedded JBIG2 stream is not a file — it has no file header, its segment dictionaries live out of band in /DecodeParms /JBIG2Globals, and its dimensions come from the image dictionary — so the primary entry point takes exactly those pieces: Jbig2Decoder.Decode(embedded, globals, width, height). Standalone .jb2 files (sequential and random-access organisation) also decode, and register with the SharpAstro.Codecs facade by magic bytes. Scope in 3.7: the complete arithmetic decoding path — MQ arithmetic decoder (Annex E), generic regions both ways (templates 0-3 with TPGDON and arbitrary AT pixels, and MMR / ITU-T T.6, the CCITT Group 4 coding), generic refinement regions, symbol dictionaries and text regions (every reference corner, transposed strips, per-instance refinement, refine/aggregate symbols, and cross-stream dictionaries via /JBIG2Globals), pattern dictionaries and halftone regions, page information, and region composition (OR/AND/XOR/XNOR/REPLACE). Validated against jbig2enc output, libtiff Group 4 output, and the jbig2dec reference decoder. Not implemented: the Huffman-coded variants (SDHUFF/SBHUFF and custom table segments), MMR inside pattern dictionaries and halftone regions, HENABLESKIP, and TPGRON in a refinement region — each throws NotSupportedException naming the feature rather than returning a wrong raster. Output is one byte per pixel (1 = black, T.88's own polarity) plus an 8-bit grey projection; /Decode inversion and ImageMask semantics stay in the caller's PDF layer. Hardened in 3.8 against hostile streams — since a PDF-supplied codestream chooses its own region dimensions and T.88's arithmetic decoder keeps producing decisions past the end of its data, decoding is bounded by a 2^28-pixel ceiling per bitmap plus a total budget scaled to the caller's page size, and every decoding loop is guaranteed to make progress; malformed input raises InvalidDataException rather than exhausting memory or spinning. AOT-compatible.</Description>
     <PackageTags>jbig2 t88 bilevel pdf jbig2decode mmr group4 image codec decoder aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

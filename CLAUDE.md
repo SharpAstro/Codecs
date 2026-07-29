@@ -32,7 +32,7 @@ DCT-domain decimation — deliberately NOT ported from libjpeg's `jidctred.c`, w
 lossless sub-frame) through it. Keep it working — `LosslessJpegTests` uses hand-crafted minimal
 bitstreams, because real CR2 payloads are too large to commit.
 
-`SharpAstro.Jbig2` (3.7) is the odd one out in the family: its primary entry point is **not** the
+`SharpAstro.Jbig2` (3.8) is the odd one out in the family: its primary entry point is **not** the
 facade. PDF's `/JBIG2Decode` filter hands over an *embedded stream* (T.88 §D.3) that has no file
 header to sniff, keeps its shared segment dictionaries in a separate `/JBIG2Globals` stream, and
 takes its dimensions from the image dictionary — none of which fits `(bytes) -> image`. So the API
@@ -285,6 +285,68 @@ What is still refused, and why each is a refusal rather than a guess:
 The deliberate *non*-refusal is worth knowing too: an MMR region that also sets TPGDON violates
 §7.4.6.2 but still decodes to the right pixels, so it is tolerated. Loud failure is for streams
 this decoder would otherwise get **wrong**, not for cosmetic flag violations.
+
+### Resource limits — `Jbig2Limits` and the threaded pixel budget
+
+Every number this codec reads is attacker-chosen (PDF's `/JBIG2Decode` carries whatever the
+document says), and two of them size work directly: a region's width and height. **Running out of
+input is not a backstop** — T.88 E.3.4 has the MQ decoder read every byte past the end of its data
+as `0xFF`, deliberately, so a truncated segment keeps producing decisions forever. Mutation-fuzzing
+the committed fixtures found this immediately: flipping four bytes of a region's height made a
+127-byte file declare 536 million pixels, and a hand-built worst case reached **2 GiB and 20+
+seconds of CPU from 82 input bytes** — while the page it composited onto was 32×16, so every one of
+those pixels was clipped away. The old ceiling of `1L << 31` was also off by one: an area of exactly
+2^31 passed a `>` test and then overflowed the `checked` multiply in `Jbig2Bitmap`, so a malformed
+stream surfaced as `OverflowException` — and `Jbig2ImageDecoder.TryDecode` did not catch that, nor
+`OutOfMemoryException`, so both escaped a `bool`-returning `Try` method and the facade
+(`ImageCodecs.TryDecode` delegates with no catch of its own).
+
+**Compression ratio cannot be the bound.** A blank 1200 dpi page with TPGDON costs about one
+decision per row, so "pixels must be proportional to coded bytes" would reject ordinary faxes.
+What works instead is two limits in `Jbig2Limits.cs`:
+
+- **`MaxBitmapPixels` (2^28)** — any single bitmap, enforced in the `Jbig2Bitmap` constructor. That
+  placement is load-bearing: **symbol dictionaries never touch region info**, since §6.5 accumulates
+  a glyph's width and height from coded deltas with nothing but `> 0` on them, so a one-symbol
+  dictionary could otherwise name a 46000×46000 glyph. 2^28 admits a 1200 dpi A4 (≈139 Mpixels)
+  with headroom and keeps `width * height` an order of magnitude clear of int overflow.
+- **`Jbig2PixelBudget`** — total pixels one decode may produce, `BudgetFor(page) = max(2^26,
+  4 × page)`, held on `DecodingState` and **threaded into every decoder that produces pixels**
+  (generic, refinement, MMR, text, halftone), charged *before* allocating. It is shared across
+  segments precisely so a stream cannot get around it by splitting work into many individually
+  plausible regions. Unit tests that drive one decoder directly pass `Jbig2PixelBudget.Unmetered()`.
+  The parameter is **required, not optional-with-a-default**, so a new call site cannot silently
+  opt out of metering.
+
+The asymmetry worth knowing: in the **PDF path the budget is anchored to the caller's dimensions**
+(from the image dictionary), so no codestream can talk its way past it — that is
+`EmbeddedPath_BudgetsAgainstTheCallersPageNotTheCodestreams`. The **standalone `.jb2` path has no
+such anchor**, because the page size is itself read from the page-information segment. So a hostile
+`.jb2` can still declare a large-but-legal page and get a proportionate budget: measured residual is
+**≈3.7 s and ≈475 MiB from 127 bytes** (a 16711712×16 page — an absurd shape, but its *area* is
+inside 1200-dpi-scan territory). That floor is inherent to supporting large scans at all; a caller
+wanting a harder ceiling should pass smaller dimensions or impose its own timeout. Down from
+unbounded, not down to zero — `Jbig2ResourceLimitTests` states it as measured rather than implying
+the problem is gone.
+
+**Non-termination is a separate trap, and no allocation ceiling can catch it.** Fuzzing also found a
+277-byte mutation of `sym.jb2` that spun for ever with **flat memory**: §6.5's outer loop opens a
+height class, the first IADW comes back out-of-band, the class closes having coded no symbol, and
+nothing has advanced — so with a never-dry MQ decoder it repeats for ever, allocating nothing for a
+budget to notice. `SelectExported` had the same shape (an export run of length zero advances no
+index, and a *leading* zero run is legitimate, so the guard there is a ceiling on the number of runs
+rather than a ban on empty ones). Both now enforce progress explicitly, which is the discipline
+`MmrDecoder` already applied to its own row loop — `if (next <= a0) throw`, commented "Standing
+still would loop forever". The witness is committed as
+`Fixtures/jbig2/nonterminating-symbol-dict.jb2` and its test is **bounded by a timeout**, so a
+regression fails the run instead of hanging it. Worth remembering when auditing any other loop here:
+the audit question is not "can this overflow" but **"is every iteration guaranteed to advance
+something"**, because T.88's decoder will happily feed it `0xFF` for ever.
+
+`Jbig2ResourceLimitTests` is the only place here that builds streams **lying about their size** —
+every other builder in the test project encodes a bitmap it actually holds, and so can only declare
+dimensions it told the truth about. It also carries the counterweight: A4 at 300/600/1200 dpi must
+stay comfortably inside every limit, because a ceiling that rejects real scans is also a bug.
 
 ## Oracle harnesses (all codecs)
 

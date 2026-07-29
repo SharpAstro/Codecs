@@ -93,6 +93,10 @@ internal static class TextRegionDecoder
     /// <param name="idContexts">Adaptive contexts for the symbol ID tree (A.3).</param>
     /// <param name="refinementContexts">Adaptive contexts for per-instance refinement, when SBREFINE is set.</param>
     /// <param name="refinementAt">SBRAT, the refinement AT pixels.</param>
+    /// <param name="budget">
+    /// The decode's remaining pixel allowance, charged for the region canvas and
+    /// again by each per-instance refinement.
+    /// </param>
     public static Jbig2Bitmap Decode(
         ref MqDecoder mq,
         TextRegionParameters p,
@@ -100,8 +104,10 @@ internal static class TextRegionDecoder
         Fields fields,
         scoped Span<byte> idContexts,
         scoped Span<byte> refinementContexts,
-        scoped ReadOnlySpan<sbyte> refinementAt)
+        scoped ReadOnlySpan<sbyte> refinementAt,
+        Jbig2PixelBudget budget)
     {
+        budget.Charge(p.Width, p.Height);
         var region = new Jbig2Bitmap(p.Width, p.Height, p.DefaultPixel);
         var codeLength = SymbolCodeLength(symbols.Length);
 
@@ -140,7 +146,7 @@ internal static class TextRegionDecoder
                     if (ri == ArithIntDecoder.OutOfBand)
                         throw new InvalidDataException("JBIG2: unexpected OOB in a text region refinement flag.");
 
-                    symbol = RefineInstance(ref mq, p, fields, symbol, refinementContexts, refinementAt);
+                    symbol = RefineInstance(ref mq, p, fields, symbol, refinementContexts, refinementAt, budget);
                 }
 
                 curs = PlaceSymbol(region, symbol, p, curs, t);
@@ -168,7 +174,8 @@ internal static class TextRegionDecoder
         Fields fields,
         Jbig2Bitmap symbol,
         scoped Span<byte> refinementContexts,
-        scoped ReadOnlySpan<sbyte> refinementAt)
+        scoped ReadOnlySpan<sbyte> refinementAt,
+        Jbig2PixelBudget budget)
     {
         var rdw = Require(fields.Rdw.Decode(ref mq), "IARDW");
         var rdh = Require(fields.Rdh.Decode(ref mq), "IARDH");
@@ -183,7 +190,7 @@ internal static class TextRegionDecoder
         return RefinementRegionDecoder.Decode(
             ref mq, refinementContexts, width, height, p.RefinementTemplate, symbol,
             FloorHalf(rdw) + rdx, FloorHalf(rdh) + rdy,
-            typicalPrediction: false, refinementAt);
+            typicalPrediction: false, refinementAt, budget);
     }
 
     /// <summary>

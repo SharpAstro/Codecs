@@ -1,4 +1,4 @@
-using SharpAstro.Jbig2;
+﻿using SharpAstro.Jbig2;
 using Shouldly;
 
 namespace SharpAstro.Codecs.Tests;
@@ -48,7 +48,7 @@ public sealed class Jbig2RefinementTests
         var mq = new MqDecoder(coded);
         var decoded = RefinementRegionDecoder.Decode(
             ref mq, contexts, target.Width, target.Height, template,
-            reference, 0, 0, tpgron, RefinementRegionDecoder.NominalAt);
+            reference, 0, 0, tpgron, RefinementRegionDecoder.NominalAt, Jbig2PixelBudget.Unmetered());
 
         decoded.Data.ShouldBe(target.Data);
     }
@@ -152,7 +152,8 @@ public sealed class Jbig2RefinementTests
             var mq = new MqDecoder(new byte[16]);
             RefinementRegionDecoder.Decode(
                 ref mq, contexts, target.Width, target.Height, template,
-                reference, 0, 0, typicalPrediction: true, RefinementRegionDecoder.NominalAt);
+                reference, 0, 0, typicalPrediction: true, RefinementRegionDecoder.NominalAt,
+                Jbig2PixelBudget.Unmetered());
         });
 
         exception.Message.ShouldContain("TPGRON");
