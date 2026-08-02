@@ -1,12 +1,13 @@
 <Project>
 
-  <!-- Family-lockstep version shared by every package in the repo. This is the
-       LOCAL default only: CI publishes with an explicit -p:Version whose
-       Major.Minor comes from VERSION_PREFIX in .github/workflows/dotnet.yml —
-       that variable is the single source of truth for what ships to NuGet.
-       Bump BOTH together when bumping the family Major.Minor (lesson learned:
-       the 3.5 facade-adapters work first shipped as 3.4.49 because only the
-       csprojs were bumped). Per-package release notes stay as comments in the
+  <!-- Family-lockstep version shared by every package in the repo, and now the ONLY
+       place it is written. It used to be written twice, here and as VERSION_PREFIX
+       in .github/workflows/dotnet.yml, under an instruction to bump BOTH together,
+       with a recorded case of that failing: the 3.5 facade-adapters work shipped as
+       3.4.49 because only this file moved. The workflow now READS this back with
+       dotnet msbuild -getProperty:VersionMajorMinor, so there is no second copy to
+       forget and CI cannot publish a version the packages disagree with.
+       Per-package release notes stay as comments in the
        individual csprojs. 3.6: baseline JPEG encoder (JpegEncoder) joins
        SharpAstro.Jpeg. 3.7: the new SharpAstro.Jbig2 package (ITU-T T.88
        generic regions) joins the family. 3.8: SharpAstro.Jbig2 resource limits —
@@ -14,8 +15,11 @@
        decompression bombs, plus progress guards on the two symbol-dictionary
        loops that could otherwise never terminate. -->
   <PropertyGroup>
-    <VersionPrefix>3.8.0</VersionPrefix>
-    <AssemblyVersion>3.8.0.0</AssemblyVersion>
+    <VersionMajorMinor>3.8</VersionMajorMinor>
+    <!-- Local builds get Major.Minor.0; CI passes -p:Version=Major.Minor.<run><attempt>+<sha>, and
+         the condition lets it win. -->
+    <VersionPrefix Condition="'$(VersionPrefix)' == ''">$(VersionMajorMinor).0</VersionPrefix>
+    <AssemblyVersion>$(VersionMajorMinor).0.0</AssemblyVersion>
   </PropertyGroup>
 
 </Project>

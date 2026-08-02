@@ -37,12 +37,19 @@ env:
   # end of the data as 0xFF), so 82 bytes could demand 2 GiB and 20+ seconds of
   # CPU, and two symbol-dictionary loops could spin for ever on flat memory. 3.8
   # adds a per-bitmap pixel ceiling, a decode budget scaled to the caller's page,
-  # and progress guards. When bumping the family Major.Minor, bump it HERE (and
-  # keep Directory.Build.props in sync for local builds).
-  VERSION_PREFIX: 3.8.${{ github.run_number }}
+  # and progress guards.
+  #
+  # The NUMBER is deliberately no longer here. It lives in Directory.Build.props
+  # (VersionMajorMinor) and the build job reads it back, so the old instruction to
+  # bump it in two places and keep them in sync is gone with it. That instruction
+  # had already failed once: the 3.5 facade-adapters work shipped as 3.4.49 because
+  # only the props file moved. Add the release note above when you bump it there.
   VERSION_REV: ${{ github.run_attempt }}
   VERSION_HASH: +${{ github.sha }}
   BUILD_CONF: Release
+  # The build job CAPTURES a dotnet invocation's stdout to resolve the version, so
+  # the SDK's first-run banner must not be able to land in it.
+  DOTNET_NOLOGO: 1
 
 jobs:
   build:
@@ -52,6 +59,21 @@ jobs:
     - uses: actions/setup-dotnet@v5
       with:
         dotnet-version: 10.0.x
+    - name: Resolve version prefix
+      # Read the family Major.Minor back from the one place it is written
+      # (Directory.Build.props) instead of restating it here. -getProperty only EVALUATES
+      # the file: nothing is built and no restore is needed, so this can run before either.
+      # The value is CAPTURED, so nothing else may print to stdout: DOTNET_NOLOGO (workflow
+      # env) keeps the SDK first-run banner out, and the shape check makes anything
+      # unexpected, or a renamed property, fail the run rather than quietly publishing the
+      # whole family as ".<run>".
+      run: |
+        MM="$(dotnet msbuild Directory.Build.props -getProperty:VersionMajorMinor -nologo)"
+        case "$MM" in
+          [0-9]*.[0-9]*) ;;
+          *) echo "::error::VersionMajorMinor did not resolve from Directory.Build.props (got '$MM')"; exit 1 ;;
+        esac
+        echo "VERSION_PREFIX=${MM}.${{ github.run_number }}" >> "$GITHUB_ENV"
     # Oracles are built BEFORE dotnet build. JxrOracle finds the binaries by
     # walking up from the test output directory to Oracle/bin/, so strictly the
     # order does not matter today -- but the csproj also has a <None
