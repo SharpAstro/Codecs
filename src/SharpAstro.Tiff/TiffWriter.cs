@@ -52,11 +52,25 @@ public sealed class TiffWriter : IAsyncDisposable
             }
             else
             {
+                // Refuse a compression this writer cannot APPLY, rather than falling through to the
+                // raw bytes. The IFD is stamped with options.Compression regardless (see BuildIfd), so
+                // the fall-through produced a file whose data and label disagreed -- uncompressed bytes
+                // announced as LZW. Nothing reports that: the writer succeeds, the file is the right
+                // size, and the reader dutifully LZW-decodes raw bytes into garbage that still has the
+                // correct dimensions. It cost two test suites their meaning before it was noticed,
+                // because a reader and a streaming reader decode the same garbage identically, so an
+                // equivalence test over it passes while asserting nothing.
+                //
+                // Uncompressed is the only compression whose "encoder" is legitimately the identity.
                 var compressed = options.Compression switch
                 {
                     TiffCompression.Deflate or TiffCompression.ZlibPkzip =>
                         DeflateZlib(data.Span),
-                    _ => data.ToArray(),
+                    TiffCompression.Uncompressed => data.ToArray(),
+                    var unsupported => throw new NotSupportedException(
+                        $"TiffWriter cannot encode {unsupported}; writing the bytes uncompressed while "
+                        + "labelling them otherwise would produce a file no reader can decode. "
+                        + "Supported: Uncompressed, Deflate, ZlibPkzip."),
                 };
                 await _target.WriteAsync(compressed, ct).ConfigureAwait(false);
             }

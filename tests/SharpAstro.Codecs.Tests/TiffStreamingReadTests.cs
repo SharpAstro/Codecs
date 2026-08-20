@@ -68,10 +68,16 @@ public class TiffStreamingReadTests
     /// merely concatenated could get all of this wrong and still produce a correct raster, which is
     /// why it was never pinned before.
     /// </summary>
+    /// <remarks>
+    /// No LZW row, and that is not an oversight: TiffWriter cannot ENCODE LZW, so a fixture
+    /// asking for it produced raw bytes LABELLED LZW -- a corrupt file. These tests originally
+    /// had one and it PASSED, because a corrupt file decodes to the same garbage through both
+    /// readers, so an equivalence assertion over it holds while asserting nothing whatsoever.
+    /// LZW DECODE is covered properly by TiffLzwTests, with its own known-good encoder.
+    /// </remarks>
     [Theory]
     [InlineData(TiffCompression.Uncompressed)]
     [InlineData(TiffCompression.Deflate)]
-    [InlineData(TiffCompression.Lzw)]
     public async Task StripRowsAreContiguousAndCoverThePageExactly(TiffCompression compression)
     {
         const int width = 24, height = 37;   // deliberately not a multiple of any likely RowsPerStrip
@@ -144,8 +150,6 @@ public class TiffStreamingReadTests
     [InlineData(TiffCompression.Uncompressed, 16, 3)]
     [InlineData(TiffCompression.Deflate, 8, 3)]
     [InlineData(TiffCompression.Deflate, 16, 1)]
-    [InlineData(TiffCompression.Lzw, 8, 3)]
-    [InlineData(TiffCompression.Lzw, 16, 3)]
     public async Task StreamedStripsReassembleToTheBufferedRaster(
         TiffCompression compression, int bitsPerSample, int samplesPerPixel)
     {
@@ -159,6 +163,22 @@ public class TiffStreamingReadTests
         TiffReader.ReadInto(tiff, ref sink);
 
         sink.Assembled.ShouldBe(buffered);
+    }
+
+    /// <summary>
+    /// The bug those LZW fixtures were hiding. Asking for a compression the writer cannot apply used
+    /// to write the bytes RAW while stamping the requested value into the IFD, so the data and the
+    /// label disagreed and no reader could decode it -- silently, at a plausible size with correct
+    /// dimensions. Refusing is the only safe answer: a caller can choose a supported compression, but
+    /// nobody can recover a file that lies about its own encoding.
+    /// </summary>
+    [Fact]
+    public async Task AskingForACompressionTheWriterCannotApplyIsRefusedRatherThanMislabelled()
+    {
+        var attempt = async () => await WriteAsync(Ramp(64), 8, 8, TiffCompression.Lzw, 8, 1);
+
+        var ex = await attempt.ShouldThrowAsync<NotSupportedException>();
+        ex.Message.ShouldContain("Lzw");
     }
 
     // ---------------------------------------------------------------- sinks
