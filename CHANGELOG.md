@@ -14,6 +14,23 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.11
+
+`SharpAstro.Tiff` gains a streaming read: `TiffReader.ReadInto<TSink>(span, ref sink)` hands each
+page's metadata over before any pixels are decoded, then each strip's samples, instead of returning
+one assembled raster. A caller converting those bytes into its own representation no longer holds
+both at once -- 354 MiB of intermediate for a 13228x9354 RGB page.
+
+`Read` is now that same machinery with a sink that concatenates, so there is one decode path and the
+existing round-trip suite covers it. `Read`'s behaviour is unchanged.
+
+An uncompressed page that needs no normalisation (no endian swap, `Predictor.None`) is handed over as
+a slice of the input, with nothing copied and no scratch rented. That is the case worth having: for
+an uncompressed page the decode is a memcpy, so it previously cost a file buffer plus a raster for
+bytes already in the required layout. Read from a memory-mapped file through the sink, neither
+exists. Since writers emit `II` and hosts are little-endian, no swap is needed at any bit depth in
+practice, so 16- and 32-bit uncompressed pages take that path too.
+
 ## 3.10
 
 - **`SharpAstro.Tiff` reads LZW (compression 5)**, the other compression a real-world TIFF is likely
