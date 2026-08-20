@@ -8,42 +8,8 @@ on:
   workflow_dispatch:
 
 env:
-  # Lockstep version: every package in this repo (the SharpAstro.Codecs facade +
-  # SharpAstro.Tiff / .Png / .Exif / .Color.Icc / .Jpeg / .Jxr / .Exr / .Jxl /
-  # .Jbig2 family) ships at the same Major.Minor and a shared run-number patch.
-  # Bumped from
-  # 2.30 -> 3.0 with the SharpAstro.Tiff IccProfile API break (byte[]? ->
-  # ReadOnlyMemory<byte>). Bumped 3.0 -> 3.1 with the SharpAstro.Png CicpChunk
-  # H.273-enum break (positional args switched from raw bytes to H.273 enums) +
-  # Color.Icc IccProfiles.WithCicp helper. Bumped 3.1 -> 3.2 with the new
-  # SharpAstro.Exr (OpenEXR read+write) package joining the family. Bumped
-  # 3.2 -> 3.3 with the new SharpAstro.Jxl (clean-room JPEG XL: lossless Modular
-  # + lossy VarDCT) package joining the family. This env var is the single source
-  # of truth for the family Major.Minor -- the -p:Version override below makes
-  # per-csproj VersionPrefix decorative for CI publishing. Bumped 3.4 -> 3.5 with
-  # ColorEncoding/ToFloats + the TIFF/JXR/EXR/JXL facade adapters (that work first
-  # shipped as 3.4.49 because only the csprojs were bumped, not this variable) and
-  # the SharpAstro.Jpeg.GainMap (Ultra HDR gain-map read/write) package joining
-  # the family. Bumped 3.5 -> 3.6 with the baseline JPEG encoder (JpegEncoder,
-  # a byte-exact stb_image_write port) joining SharpAstro.Jpeg. Bumped 3.6 -> 3.7
-  # with the new SharpAstro.Jbig2 (clean-room ITU-T T.88, for PDF's /JBIG2Decode)
-  # package joining the family. While 3.7 was unshipped no further bump was needed
-  # as JBIG2 grew from its first rung to every region type T.88 defines (generic +
-  # MMR/T.6, refinement, symbol dictionary + text region, pattern dictionary +
-  # halftone) -- that all landed in the first 3.7, which then shipped as 3.7.651.
-  # Bumped 3.7 -> 3.8 for JBIG2 resource limits, and this one is NOT foldable: the
-  # shipped 3.7.651 decoder accepts decompression bombs. A region's declared size
-  # is attacker-chosen and T.88's MQ decoder never runs dry (E.3.4 reads past the
-  # end of the data as 0xFF), so 82 bytes could demand 2 GiB and 20+ seconds of
-  # CPU, and two symbol-dictionary loops could spin for ever on flat memory. 3.8
-  # adds a per-bitmap pixel ceiling, a decode budget scaled to the caller's page,
-  # and progress guards.
-  #
-  # The NUMBER is deliberately no longer here. It lives in Directory.Build.props
-  # (VersionMajorMinor) and the build job reads it back, so the old instruction to
-  # bump it in two places and keep them in sync is gone with it. That instruction
-  # had already failed once: the 3.5 facade-adapters work shipped as 3.4.49 because
-  # only the props file moved. Add the release note above when you bump it there.
+  # The family Major.Minor lives in Directory.Build.props (VersionMajorMinor) and the
+  # build job reads it back. Release notes live in CHANGELOG.md at the repo root.
   VERSION_REV: ${{ github.run_attempt }}
   VERSION_HASH: +${{ github.sha }}
   BUILD_CONF: Release

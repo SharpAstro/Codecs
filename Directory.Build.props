@@ -1,23 +1,7 @@
 <Project>
 
-  <!-- Family-lockstep version shared by every package in the repo, and now the ONLY
-       place it is written. It used to be written twice, here and as VERSION_PREFIX
-       in .github/workflows/dotnet.yml, under an instruction to bump BOTH together,
-       with a recorded case of that failing: the 3.5 facade-adapters work shipped as
-       3.4.49 because only this file moved. The workflow now READS this back with
-       dotnet msbuild -getProperty:VersionMajorMinor, so there is no second copy to
-       forget and CI cannot publish a version the packages disagree with.
-       Per-package release notes stay as comments in the
-       individual csprojs. 3.6: baseline JPEG encoder (JpegEncoder) joins
-       SharpAstro.Jpeg. 3.7: the new SharpAstro.Jbig2 package (ITU-T T.88
-       generic regions) joins the family. 3.8: SharpAstro.Jbig2 resource limits —
-       a per-bitmap pixel ceiling and a page-scaled decode budget against
-       decompression bombs, plus progress guards on the two symbol-dictionary
-       loops that could otherwise never terminate. -->
   <PropertyGroup>
-    <VersionMajorMinor>3.9</VersionMajorMinor>
-    <!-- Local builds get Major.Minor.0; CI passes -p:Version=Major.Minor.<run><attempt>+<sha>, and
-         the condition lets it win. -->
+    <VersionMajorMinor>3.10</VersionMajorMinor>
     <VersionPrefix Condition="'$(VersionPrefix)' == ''">$(VersionMajorMinor).0</VersionPrefix>
     <AssemblyVersion>$(VersionMajorMinor).0.0</AssemblyVersion>
   </PropertyGroup>

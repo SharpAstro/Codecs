@@ -12,7 +12,7 @@
     <PackageId>SharpAstro.Tiff</PackageId>
     <Product>SharpAstro.Tiff</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed TIFF reader/writer for .NET. Supports multi-page, 8/16/32-bit uint and IEEE-Float samples, Uncompressed/Deflate/ZlibPkzip, contig planar config, SampleFormat/SMin/SMax/ICC round-trip, both II and MM byte order. AOT-compatible.</Description>
+    <Description>Pure-managed TIFF reader/writer for .NET. Supports multi-page, 8/16/32-bit uint and IEEE-Float samples, Uncompressed/Deflate/ZlibPkzip/LZW, Predictor 2 (horizontal differencing) on read, contig planar config, SampleFormat/SMin/SMax/ICC round-trip, both II and MM byte order. AOT-compatible.</Description>
     <PackageTags>tiff image codec aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

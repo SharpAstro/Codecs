@@ -13,7 +13,7 @@ package instead of cherry-picking codecs.
 | **PNG** | ✅ | ✅ | 8/16-bit RGBA/Gray, ICC + HDR chunks (`cICP` / `mDCv` / `cLLI`) |
 | **JPEG** | ✅ | ✅ | baseline + progressive; **scaled 1/2–1/8 LOD decode**; baseline encode. Plus lossless JPEG (T.81 Annex H) as a separate decoder |
 | **Ultra HDR** | ✅ | ✅ | gain-map JPEG; decodes transparently through the facade — float path is HDR, 8-bit path the SDR base |
-| **TIFF** | ✅ | ✅ | multi-page, 8/16/32-bit uint + float, Deflate/Zlib |
+| **TIFF** | ✅ | ✅ | multi-page, 8/16/32-bit uint + float, Deflate/Zlib/LZW, Predictor 2 |
 | **JPEG XR** | ✅ | ✅ | jxrlib-exact — codestream byte-identical to the reference encoder |
 | **OpenEXR** | ✅ | ✅ | scanline, HALF/FLOAT/UINT, NONE/RLE/ZIP/ZIPS/PIZ |
 | **JPEG XL** | ✅ | ✅ | clean-room; lossless Modular + lossy VarDCT |
