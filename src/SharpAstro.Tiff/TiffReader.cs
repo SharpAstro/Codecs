@@ -20,7 +20,7 @@ namespace SharpAstro.Tiff;
 ///       astronomy TIFFs are II; some scanner / Photoshop output is MM.</item>
 /// <item>Strip layout (no tile decoding yet — tiled TIFFs throw).</item>
 /// <item>Bit depths 8, 16, 32 — uniform across all samples (per TIFF norm).</item>
-/// <item>Compression: <see cref="TiffCompression.Uncompressed"/>,
+/// <item>Compression: <see cref="TiffCompression.Uncompressed"/>, <see cref="TiffCompression.Lzw"/>,
 ///       <see cref="TiffCompression.Deflate"/>, <see cref="TiffCompression.ZlibPkzip"/>.</item>
 /// <item>Sample formats: <see cref="TiffSampleFormat.Uint"/>, <see cref="TiffSampleFormat.IeeeFloat"/>.</item>
 /// <item>Predictors: <see cref="TiffPredictor.None"/> and
@@ -29,7 +29,7 @@ namespace SharpAstro.Tiff;
 ///       throws rather than decoding past it.</item>
 /// <item>Contiguous planar config only (one sample per pixel position; chunky).</item>
 /// </list>
-/// LZW / JPEG / Tile / BigTIFF / planar-separate are out of scope for v1 — when
+/// JPEG / Tile / BigTIFF / planar-separate are out of scope — when
 /// TianWen needs them, add them here (the existing code only loops over strips
 /// and dispatches on compression).
 /// </summary>
@@ -213,7 +213,7 @@ public static class TiffReader
         // contiguous buffer. An uncompressed page needs neither and allocates neither.
         byte[]? scratch = null;
         MemoryStream? scratchStream = null;
-        if (compression is not TiffCompression.Uncompressed)
+        if (compression is TiffCompression.Deflate or TiffCompression.ZlibPkzip)
         {
             var maxStrip = 0;
             foreach (var byteCount in stripByteCounts)
@@ -240,6 +240,11 @@ public static class TiffReader
                         var copy = Math.Min(stripSpan.Length, pixels.Length - pixelPos);
                         stripSpan[..copy].CopyTo(pixels.AsSpan(pixelPos, copy));
                         pixelPos += copy;
+                        break;
+                    case TiffCompression.Lzw:
+                        // Decoded straight from the file span -- LZW needs no zlib stream, so it needs
+                        // neither the scratch buffer nor the MemoryStream the inflate path reuses.
+                        pixelPos += TiffLzw.Decode(stripSpan, pixels.AsSpan(pixelPos));
                         break;
                     case TiffCompression.Deflate:
                     case TiffCompression.ZlibPkzip:
