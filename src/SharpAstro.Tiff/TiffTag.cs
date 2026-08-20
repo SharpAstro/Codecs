@@ -16,6 +16,7 @@ public static class TiffTag
     public const ushort YResolution       = 283;
     public const ushort PlanarConfig      = 284;
     public const ushort ResolutionUnit    = 296;
+    public const ushort Predictor         = 317;
     public const ushort PageNumber        = 297;
     public const ushort Software          = 305;
     public const ushort Artist            = 315;

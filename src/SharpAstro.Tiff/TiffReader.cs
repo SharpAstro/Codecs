@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
@@ -22,6 +23,10 @@ namespace SharpAstro.Tiff;
 /// <item>Compression: <see cref="TiffCompression.Uncompressed"/>,
 ///       <see cref="TiffCompression.Deflate"/>, <see cref="TiffCompression.ZlibPkzip"/>.</item>
 /// <item>Sample formats: <see cref="TiffSampleFormat.Uint"/>, <see cref="TiffSampleFormat.IeeeFloat"/>.</item>
+/// <item>Predictors: <see cref="TiffPredictor.None"/> and
+///       <see cref="TiffPredictor.HorizontalDifferencing"/> -- the default for
+///       every writer that emits ZIP compression. <see cref="TiffPredictor.FloatingPoint"/>
+///       throws rather than decoding past it.</item>
 /// <item>Contiguous planar config only (one sample per pixel position; chunky).</item>
 /// </list>
 /// LZW / JPEG / Tile / BigTIFF / planar-separate are out of scope for v1 — when
@@ -64,7 +69,11 @@ public static class TiffReader
         // TIFF readers need random access via the IFD chain — slurp the stream
         // and operate on the in-memory span. For very large TIFFs the caller
         // should map the file (MemoryMappedFile) and pass that span instead.
-        using var ms = new MemoryStream();
+        // Pre-size when the length is known: MemoryStream grows by doubling, so slurping a
+        // 100 MB TIFF into a default-capacity stream reallocates a dozen times and copies
+        // roughly twice the file before the first byte is ever decoded.
+        var capacity = stream.CanSeek ? (int)Math.Min(int.MaxValue, stream.Length - stream.Position) : 0;
+        using var ms = new MemoryStream(capacity);
         stream.CopyTo(ms);
         return Read(ms.GetBuffer().AsSpan(0, (int)ms.Length));
     }
@@ -88,6 +97,7 @@ public static class TiffReader
         var photometric = TiffPhotometric.MinIsBlack;
         var sampleFormat = TiffSampleFormat.Uint;
         var planarConfig = TiffPlanarConfig.Contig;
+        var predictor = TiffPredictor.None;
         var rowsPerStrip = 0;
         uint[]? stripOffsets = null;
         uint[]? stripByteCounts = null;
@@ -124,6 +134,9 @@ public static class TiffReader
                     break;
                 case TiffTag.PhotometricInterp:
                     photometric = (TiffPhotometric)ReadScalar(type, valueSpan, fileIsLE);
+                    break;
+                case TiffTag.Predictor:
+                    predictor = (TiffPredictor)ReadScalar(type, valueSpan, fileIsLE);
                     break;
                 case TiffTag.PlanarConfig:
                     planarConfig = (TiffPlanarConfig)ReadScalar(type, valueSpan, fileIsLE);
@@ -178,34 +191,78 @@ public static class TiffReader
             throw new NotSupportedException($"BitsPerSample={bitsPerSample} not supported (expected 8/16/32)");
         if (sampleFormat is not (TiffSampleFormat.Uint or TiffSampleFormat.Int or TiffSampleFormat.IeeeFloat))
             throw new NotSupportedException($"SampleFormat={sampleFormat} not supported");
+        // Refuse an unhandled predictor rather than decoding past it. An un-inverted predictor
+        // yields a full-size, entirely plausible buffer of WRONG pixels -- no exception, no
+        // short read, correct dimensions -- so staying quiet here is indistinguishable from
+        // success to every caller downstream.
+        if (predictor is not (TiffPredictor.None or TiffPredictor.HorizontalDifferencing))
+            throw new NotSupportedException($"Predictor={predictor} not supported in this reader");
 
         // ---- Decode every strip into one contiguous byte buffer -----------
         var bytesPerPixel = samplesPerPixel * (bitsPerSample / 8);
         var expectedBytes = width * height * bytesPerPixel;
         var pixels = new byte[expectedBytes];
         var pixelPos = 0;
-        for (var i = 0; i < stripOffsets.Length; i++)
-        {
-            var stripStart = (int)stripOffsets[i];
-            var stripLen = (int)stripByteCounts[i];
-            if (stripStart < 0 || stripLen < 0 || stripStart + stripLen > tiff.Length)
-                throw new InvalidDataException($"Strip {i} extents out of bounds");
-            var stripSpan = tiff.Slice(stripStart, stripLen);
 
-            switch (compression)
+        // ONE scratch buffer and ONE MemoryStream for every strip, instead of one of each per
+        // strip. The comment this replaces reasoned that the per-strip copy was irrelevant
+        // because "strips are large enough" -- but a writer that emits ZIP compression almost
+        // always emits RowsPerStrip=1, so a real file is thousands of strips: measured over a
+        // corpus of 16-bit RGB frames, 2,009 to 5,529 of them. That was thousands of short-lived
+        // arrays plus thousands of streams per decode, on a path whose entire output is one
+        // contiguous buffer. An uncompressed page needs neither and allocates neither.
+        byte[]? scratch = null;
+        MemoryStream? scratchStream = null;
+        if (compression is not TiffCompression.Uncompressed)
+        {
+            var maxStrip = 0;
+            foreach (var byteCount in stripByteCounts)
+                maxStrip = Math.Max(maxStrip, (int)byteCount);
+            scratch = ArrayPool<byte>.Shared.Rent(maxStrip);
+            // writable + publiclyVisible so each strip is presented by moving Length/Position
+            // rather than by constructing a new stream over a new array.
+            scratchStream = new MemoryStream(scratch, 0, scratch.Length, writable: true, publiclyVisible: true);
+        }
+
+        try
+        {
+            for (var i = 0; i < stripOffsets.Length; i++)
             {
-                case TiffCompression.Uncompressed:
-                    var copy = Math.Min(stripSpan.Length, pixels.Length - pixelPos);
-                    stripSpan[..copy].CopyTo(pixels.AsSpan(pixelPos, copy));
-                    pixelPos += copy;
-                    break;
-                case TiffCompression.Deflate:
-                case TiffCompression.ZlibPkzip:
-                    pixelPos += InflateInto(stripSpan, pixels.AsSpan(pixelPos));
-                    break;
-                default:
-                    throw new NotSupportedException($"Compression {compression} not supported in this reader");
+                var stripStart = (int)stripOffsets[i];
+                var stripLen = (int)stripByteCounts[i];
+                if (stripStart < 0 || stripLen < 0 || stripStart + stripLen > tiff.Length)
+                    throw new InvalidDataException($"Strip {i} extents out of bounds");
+                var stripSpan = tiff.Slice(stripStart, stripLen);
+
+                switch (compression)
+                {
+                    case TiffCompression.Uncompressed:
+                        var copy = Math.Min(stripSpan.Length, pixels.Length - pixelPos);
+                        stripSpan[..copy].CopyTo(pixels.AsSpan(pixelPos, copy));
+                        pixelPos += copy;
+                        break;
+                    case TiffCompression.Deflate:
+                    case TiffCompression.ZlibPkzip:
+                        // SetLength BEFORE the copy, never after: MemoryStream ZERO-FILLS when it
+                        // grows, so setting the length second wipes the tail of any strip longer
+                        // than the previous one. That is silent and data-dependent -- strips of a
+                        // smooth image all deflate to near-identical sizes and never grow, so it
+                        // only bites once the content compresses unevenly.
+                        scratchStream!.SetLength(stripLen);
+                        stripSpan.CopyTo(scratch!);
+                        scratchStream.Position = 0;
+                        pixelPos += InflateInto(scratchStream, pixels.AsSpan(pixelPos));
+                        break;
+                    default:
+                        throw new NotSupportedException($"Compression {compression} not supported in this reader");
+                }
             }
+        }
+        finally
+        {
+            scratchStream?.Dispose();
+            if (scratch is not null)
+                ArrayPool<byte>.Shared.Return(scratch);
         }
 
         // ---- Endian-normalise pixels to host order ------------------------
@@ -214,6 +271,13 @@ public static class TiffReader
         // a meaningful ushort/float view. 8-bit samples need no swap.
         if (fileIsLE != BitConverter.IsLittleEndian)
             SwapPixelsToHostOrder(pixels, bitsPerSample);
+
+        // ---- Invert the predictor -----------------------------------------
+        // AFTER the endian swap, deliberately: differencing is arithmetic on sample VALUES, so
+        // running it here makes the sum plain host-order arithmetic instead of decoding and
+        // re-encoding every sample in file order.
+        if (predictor == TiffPredictor.HorizontalDifferencing)
+            UndoHorizontalDifferencing(pixels, width, samplesPerPixel, bitsPerSample);
 
         var page = new TiffPage(
             Width: width,
@@ -232,6 +296,79 @@ public static class TiffReader
             GpsInfoIfdOffset: gpsIfdOffset,
             FileIsLittleEndian: fileIsLE);
         return (page, nextIfdOffset);
+    }
+
+    /// <summary>
+    /// Invert TIFF Predictor 2 (horizontal differencing, TIFF 6.0 section 14): each stored sample
+    /// is the difference from the sample one pixel to its left in the same row and the same
+    /// channel, so recovering the image is a running sum along each row, per channel.
+    ///
+    /// Differencing restarts at every row, which is what lets this run over the assembled buffer
+    /// instead of per strip: strips hold whole rows, so the row boundaries are identical either
+    /// way and a strip seam is never a special case.
+    ///
+    /// The addition WRAPS at the sample width on purpose -- the encoder computed the differences
+    /// with the same wrap, so unchecked addition is exactly what reverses it. A trailing partial
+    /// row (truncated file) is left alone rather than half-summed.
+    /// </summary>
+    private static void UndoHorizontalDifferencing(Span<byte> pixels, int width, int samplesPerPixel, int bitsPerSample)
+    {
+        var stride = width * samplesPerPixel;   // samples per row, every channel interleaved
+        if (stride <= 0 || samplesPerPixel <= 0) return;
+
+        switch (bitsPerSample)
+        {
+            case 8:
+                AccumulateBytes(pixels, stride, samplesPerPixel);
+                break;
+            case 16:
+                AccumulateUInt16(pixels, stride, samplesPerPixel);
+                break;
+            case 32:
+                AccumulateUInt32(pixels, stride, samplesPerPixel);
+                break;
+        }
+    }
+
+    private static void AccumulateBytes(Span<byte> pixels, int stride, int samplesPerPixel)
+    {
+        var rows = pixels.Length / stride;
+        for (var y = 0; y < rows; y++)
+        {
+            var row = pixels.Slice(y * stride, stride);
+            for (var i = samplesPerPixel; i < row.Length; i++)
+                row[i] = (byte)(row[i] + row[i - samplesPerPixel]);
+        }
+    }
+
+    private static void AccumulateUInt16(Span<byte> pixels, int stride, int samplesPerPixel)
+    {
+        var samples = MemoryMarshal.Cast<byte, ushort>(pixels);
+        var rows = samples.Length / stride;
+        for (var y = 0; y < rows; y++)
+        {
+            var row = samples.Slice(y * stride, stride);
+            for (var i = samplesPerPixel; i < row.Length; i++)
+                row[i] = (ushort)(row[i] + row[i - samplesPerPixel]);
+        }
+    }
+
+    /// <summary>
+    /// 32-bit samples are summed as uint even when the page is IEEE float: Predictor 2 is defined
+    /// on integer samples, and float data is what <see cref="TiffPredictor.FloatingPoint"/>
+    /// exists for. An encoder that pairs float samples with Predictor 2 therefore differenced the
+    /// raw bit patterns as integers, and this reverses exactly that.
+    /// </summary>
+    private static void AccumulateUInt32(Span<byte> pixels, int stride, int samplesPerPixel)
+    {
+        var samples = MemoryMarshal.Cast<byte, uint>(pixels);
+        var rows = samples.Length / stride;
+        for (var y = 0; y < rows; y++)
+        {
+            var row = samples.Slice(y * stride, stride);
+            for (var i = samplesPerPixel; i < row.Length; i++)
+                row[i] += row[i - samplesPerPixel];
+        }
     }
 
     /// <summary>
@@ -258,18 +395,18 @@ public static class TiffReader
     }
 
     /// <summary>
-    /// Inflate the zlib-wrapped strip into the destination span, returning the
-    /// number of bytes written. ZLibStream is forgiving of trailing zero
+    /// Inflate one zlib-wrapped strip from <paramref name="src"/> into the destination span,
+    /// returning the number of bytes written. ZLibStream is forgiving of trailing zero
     /// padding the writer may have left after the deflate trailer (none for
     /// our writer, but some encoders pad strips up to the row boundary).
     /// </summary>
-    private static int InflateInto(ReadOnlySpan<byte> strip, Span<byte> dst)
+    private static int InflateInto(Stream src, Span<byte> dst)
     {
-        // ZLibStream needs a MemoryStream → minor allocation per strip; in
-        // practice strips are large enough that this is irrelevant.
-        var srcArray = strip.ToArray();
-        using var src = new MemoryStream(srcArray);
-        using var z = new ZLibStream(src, CompressionMode.Decompress);
+        // leaveOpen is required: the source is the caller's reused scratch stream. Each strip
+        // IS an independent zlib stream and so needs its own ZLibStream -- that one remaining
+        // per-strip allocation is inherent to the format, not to this code -- but disposing it
+        // must not take the shared source with it.
+        using var z = new ZLibStream(src, CompressionMode.Decompress, leaveOpen: true);
         var written = 0;
         while (written < dst.Length)
         {

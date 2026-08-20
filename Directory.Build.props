@@ -15,7 +15,7 @@
        decompression bombs, plus progress guards on the two symbol-dictionary
        loops that could otherwise never terminate. -->
   <PropertyGroup>
-    <VersionMajorMinor>3.8</VersionMajorMinor>
+    <VersionMajorMinor>3.9</VersionMajorMinor>
     <!-- Local builds get Major.Minor.0; CI passes -p:Version=Major.Minor.<run><attempt>+<sha>, and
          the condition lets it win. -->
     <VersionPrefix Condition="'$(VersionPrefix)' == ''">$(VersionMajorMinor).0</VersionPrefix>

@@ -42,6 +42,34 @@ public enum TiffSampleFormat : ushort
     Undefined = 4, // void / opaque data
 }
 
+/// <summary>
+/// TIFF Predictor tag (317) values per TIFF 6.0 section 14. A predictor is a reversible
+/// transform applied BEFORE compression so the compressor sees smaller, more repetitive
+/// numbers. A reader that inflates the bytes but never inverts the predictor gets the
+/// horizontal DERIVATIVE of the image rather than the image, which decodes without error and
+/// looks like an embossed relief map -- or, on high-frequency content, like pure noise.
+/// The spec default when the tag is absent is <see cref="None"/>.
+/// </summary>
+public enum TiffPredictor : ushort
+{
+    /// <summary>No transform; samples are stored as-is.</summary>
+    None = 1,
+
+    /// <summary>
+    /// Each sample is stored as the difference from the sample one pixel to its left in the
+    /// same row and the same channel. This is what essentially every writer that emits ZIP
+    /// compression turns on by default: Photoshop, PixInsight, GraXpert, libtiff -c zip.
+    /// </summary>
+    HorizontalDifferencing = 2,
+
+    /// <summary>
+    /// Floating-point predictor (TIFF Technical Note #3): bytes are split into byte planes per
+    /// row and then differenced byte-wise. A different transform from
+    /// <see cref="HorizontalDifferencing"/>, and not interchangeable with it.
+    /// </summary>
+    FloatingPoint = 3,
+}
+
 public enum TiffLayout
 {
     Strip,
