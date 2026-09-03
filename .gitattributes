@@ -23,6 +23,18 @@
 # which surfaces as a baffling codec bug rather than as a diff. Be explicit.
 *.jb2 binary
 
+# The JPEG 2000 fixtures, and this is not a precaution — it already happened.
+# Git classifies by looking for NUL bytes, and a PGM raster need not contain one:
+# `flat64.pgm` is 4096 bytes of 0x80, and `odd1x1.pgm` is a single pixel, so both
+# were staged as TEXT and would have been CRLF-rewritten on a Windows checkout.
+# Any 0x0A in a raster becomes 0x0D 0x0A and the fixture stops being the image it
+# was generated from -- while the .j2k beside it, which does contain NULs, would
+# have been left alone. The test comparing them would then fail in a way that
+# looks like a decoder bug.
+*.j2k binary
+*.pgm binary
+*.ppm binary
+
 # Vendored C headers (jxrlib reference sources under tests/.../Oracle/, and the
 # stb_image_write.h the jpegenc oracle downloads at build time) — mark them so
 # GitHub language stats don't attribute them to this repo.

@@ -68,6 +68,15 @@ jobs:
     # self-consistent fiction.
     - name: Build JPEG encoder oracle (stb_image_write)
       run: bash tests/SharpAstro.Codecs.Tests/Oracle/jpegenc/build.sh
+    # OpenJPEG's opj_compress / opj_decompress, the JPEG 2000 reference tools.
+    # Downloaded rather than built: OpenJPEG wants CMake, and upstream publishes
+    # official builds for both platforms that matter, so this runner and the dev
+    # box execute the SAME BYTES rather than merely the same source. Pinned by
+    # version and SHA-256 in the script. Deliberately NOT `apt-get install
+    # libopenjp2-tools`, which is 2.4.0 on jammy and 2.5.x on noble -- CI and the
+    # dev box would then quietly disagree about what the reference is.
+    - name: Fetch JPEG 2000 oracle (OpenJPEG)
+      run: bash tests/SharpAstro.Codecs.Tests/Oracle/jpeg2000/fetch.sh
     - name: Restore dependencies
       run: dotnet restore Codecs.JustTests.sln
     - name: Build
@@ -77,8 +86,9 @@ jobs:
       # oracle harness degrades to a skip so a clean clone stays green, which is
       # right locally and misleading here -- without this, a CI job that stopped
       # installing jbig2dec or building an oracle would look exactly like one
-      # that did. All three external oracles (jbig2dec, jxrlib, jpegenc) are now
-      # gated and built above, so this run has no silently-absent oracle left.
+      # that did. All four external oracles (jbig2dec, jxrlib, jpegenc and
+      # OpenJPEG) are gated and fetched or built above, so this run has no
+      # silently-absent oracle left.
       env:
         REQUIRE_ORACLES: 1
       run: dotnet test Codecs.JustTests.sln -c $BUILD_CONF --no-build

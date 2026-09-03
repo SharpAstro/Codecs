@@ -83,7 +83,17 @@ internal static class Jbig2Oracle
             output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
             if (!process.WaitForExit(15_000)) { try { process.Kill(true); } catch { /* best effort */ } return false; }
 
-            return output.Contains("jbig2dec", StringComparison.OrdinalIgnoreCase);
+            // The exit code is checked FIRST, and it is load-bearing rather than
+            // belt-and-braces. A shell that cannot find the program says so by
+            // NAME — `/bin/bash: line 1: jbig2dec: command not found`, exit 127 —
+            // so a substring test on the combined output matches the very
+            // message that proves the tool is absent. That made `wsl.exe --
+            // jbig2dec` resolve as available on a box with no jbig2dec in WSL,
+            // turning 75 tests from honest skips into red failures. Loud, so it
+            // was never wrong output, but it is exactly backwards from the
+            // OracleGate contract.
+            return process.ExitCode == 0
+                && output.Contains("jbig2dec", StringComparison.OrdinalIgnoreCase);
         }
         catch
         {

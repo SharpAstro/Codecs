@@ -1,6 +1,6 @@
 using System;
 
-namespace SharpAstro.Jbig2;
+namespace SharpAstro.Codecs.Abstractions;
 
 /// <summary>
 /// One row of the MQ-coder probability estimation table (ITU-T T.88 Table E.1):
@@ -12,12 +12,28 @@ namespace SharpAstro.Jbig2;
 internal readonly record struct MqState(ushort Qe, byte Nmps, byte Nlps, byte Switch);
 
 /// <summary>
-/// The MQ arithmetic decoder of ITU-T T.88 Annex E — the entropy back-end every
-/// arithmetically-coded JBIG2 region runs through.
+/// The MQ arithmetic decoder that ITU-T T.88 Annex E and ITU-T T.800 Annex C
+/// both specify — the same coder, byte for byte, with the same <c>Qe</c> table
+/// (T.88 Table E.1 = T.800 Table C.2). It is the entropy back-end under every
+/// arithmetically-coded JBIG2 region and every JPEG 2000 code-block.
 /// <para>
-/// This is the same coder, with the same <c>Qe</c> table, that ITU-T T.800
-/// Annex C specifies for JPEG 2000; it is kept internal until a second consumer
-/// in this repo actually needs it.
+/// It lives in the abstractions package because it has two consumers in two
+/// separately shipped packages, and <c>InternalsVisibleTo</c> does not reach
+/// across those. Every codec here already references this package, so nothing
+/// gains a dependency it did not have; what this placement costs is the two
+/// <c>InternalsVisibleTo</c> lines in the csproj naming those consumers, and it
+/// buys a single copy that cannot drift. Deliberately still <c>internal</c>
+/// rather than public API: JPEG 2000's arithmetic-bypass, RESTART and
+/// predictable-termination modes may yet want to reshape the surface, and that
+/// freedom is worth more than exporting a spec primitive.
+/// </para>
+/// <para>
+/// <b>The coder is shared; its initialisation is not.</b> T.88 and T.800 seed
+/// their context state differently — T.800 starts context 0 at index 4,
+/// RUNLENGTH at 3 and UNIFORM at 46, where T.88 starts every context at 0. That
+/// is the caller's table, not this class's, which is why the contexts live in a
+/// caller-owned span (below). Getting it wrong decodes the first code-block
+/// plausibly and then drifts.
 /// </para>
 /// <para>
 /// A <c>ref struct</c> so the coded bytes stay a <see cref="ReadOnlySpan{T}"/>
@@ -34,7 +50,8 @@ internal readonly record struct MqState(ushort Qe, byte Nmps, byte Nlps, byte Sw
 /// </summary>
 internal ref struct MqDecoder
 {
-    // T.88 Table E.1. Index 46 is the non-renormalizing terminal state.
+    // T.88 Table E.1, which is T.800 Table C.2. Index 46 is the
+    // non-renormalizing terminal state.
     private static readonly MqState[] Table =
     [
         new(0x5601,  1,  1, 1), new(0x3401,  2,  6, 0), new(0x1801,  3,  9, 0), new(0x0AC1,  4, 12, 0),
@@ -73,10 +90,10 @@ internal ref struct MqDecoder
         _a = 0x8000;
     }
 
-    /// <summary>The T.88 Table E.1 row for a state index; exposed for table-conformance tests.</summary>
+    /// <summary>The T.88 Table E.1 / T.800 Table C.2 row for a state index; exposed for table-conformance tests.</summary>
     internal static MqState StateAt(int index) => Table[index];
 
-    /// <summary>Number of rows in T.88 Table E.1.</summary>
+    /// <summary>Number of rows in T.88 Table E.1 / T.800 Table C.2.</summary>
     internal static int StateCount => Table.Length;
 
     /// <summary>

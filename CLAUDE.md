@@ -11,9 +11,9 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Exif`, `Color.Icc`,
-  `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered *ahead of* the
-  plain JPEG decoder).
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Exif`,
+  `Color.Icc`, `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered
+  *ahead of* the plain JPEG decoder).
 
 `SharpAstro.Jpeg`'s full-scale decode was built as a faithful port of the stb_image (StbImageSharp)
 JPEG path (IDCT constants, upsampling kernels, fixed-point colour convert) and validated
@@ -48,7 +48,8 @@ codec" below, which lists them and why each is refused rather than guessed.
 the jxrlib re-port). See "JXR codec" below for the architecture and validation discipline.
 Longer-horizon work lives in the root roadmap docs: [`ROADMAP-jpeg-encoder.md`](ROADMAP-jpeg-encoder.md),
 [`ROADMAP-gain-map.md`](ROADMAP-gain-map.md), [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md)
-(JPX / JBIG2's remaining Huffman variants), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
+(JBIG2's remaining Huffman variants), [`ROADMAP-jpx.md`](ROADMAP-jpx.md) (the JPEG 2000 rung
+table, rung 1 of 5 shipped), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
 ## Build & test
 
@@ -348,9 +349,132 @@ every other builder in the test project encodes a bitmap it actually holds, and 
 dimensions it told the truth about. It also carries the counterweight: A4 at 300/600/1200 dpi must
 stay comfortably inside every limit, because a ceiling that rejects real scans is also a bug.
 
+## JPEG 2000 codec — clean-room from T.800, staged by feature not by stage
+
+`SharpAstro.Jpeg2000` is **clean-room from ITU-T T.800** (ISO/IEC 15444-1, Part 1), forced by the
+same licence arithmetic as JBIG2: this repo is Unlicense, and OpenJPEG (BSD-2), PDFium and pdf.js
+(Apache-2.0 / BSD-3) are all notice-retaining. Binaries as oracles, yes; read-and-transcribe, never.
+
+**On the name.** `SharpAstro.Jpx` would have matched the family convention and PDF's `/JPXDecode`
+filter. It is not what shipped, because "JPX" also names **Part 2** — the extended format with
+arbitrary colour spaces and multiple codestreams — and Part 2 is precisely what this package
+refuses. A package id naming the thing it does not do is a trap for whoever reads the NuGet listing
+instead of the csproj. The reasoning is recorded in the csproj too.
+
+### The staging is by feature axis, and that is the whole design
+
+JBIG2's rung 1 was "MQ decoder plus generic region" and it decoded real PDFs on its own, because
+T.88's region types are genuinely independent. **JPEG 2000 has no such slice.** Producing one
+correct pixel needs marker parsing, tier-2 packet headers, tier-1 EBCOT, the inverse DWT and the DC
+level shift all working together; there is no ordering in which an early stop yields an image. So
+rung 1 is the *entire pipeline for the simplest legal configuration*, and later rungs widen what it
+accepts. Do not try to reproduce JBIG2's shape here — it gives four rungs that each decode nothing,
+with no way to tell which one is wrong.
+
+Rung 1's envelope, and everything outside it throws `NotSupportedException` naming the feature *and
+the rung that owns it*: one 8-to-16-bit unsigned component, one tile, one tile-part, one quality
+layer, maximal precincts, LRCP, reversible 5/3, raw J2K, no code-block style flags.
+
+```
+Jpeg2000Decoder      (public: Decode(codestream) / IsCodestream)
+  → CodestreamReader (Annex A markers; ALSO where every out-of-envelope refusal lives, by name,
+                      before any of the pipeline runs)
+  → TileComponent    (Annex B geometry: resolutions, subbands, precincts, code-block grid --
+                      computed from DECLARED numbers, so this is where the ceilings are charged)
+  → Tier2            (B.9/B.10 packet headers: inclusion, zero bit-planes, pass counts, lengths)
+  →   TagTree        (B.10.2) + PacketBitReader (B.10.1, the 0xFF bit-stuffing rule)
+  → BlockDecoder     (Annex D EBCOT: three passes per bit-plane over the Table D.1/D.2/D.3 contexts)
+  →   MqDecoder      (shared with SharpAstro.Jbig2 -- see below)
+  → InverseWavelet   (Annex F: 2D interleave, then HOR_SR then VER_SR, reversible 5/3 lifting)
+  → DC level shift   (G.1.2) + clamp to the declared precision
+```
+
+### The MQ coder moved, and its initialisation did not come with it
+
+`MqDecoder` now lives in **`SharpAstro.Codecs.Abstractions`** (still `internal`, with
+`InternalsVisibleTo` for `SharpAstro.Jbig2` and `SharpAstro.Jpeg2000`). T.88 Annex E and T.800
+Annex C specify the same coder with the same `Qe` table, so two copies could only drift.
+`InternalsVisibleTo` cannot cross two separately shipped packages, and every codec already depends
+on the abstractions package, so this placement adds **no** dependency edge — it costs two lines in a
+csproj. The alternative, a linked `<Compile Include>` into both projects, was rejected because two
+assemblies would then export the same type name to the test assembly, and CS0433 is not fixable by
+qualifying, only by `extern alias`.
+
+**The coder is shared; the initialisation is not.** T.800 Table D.7 seeds three of its nineteen
+contexts away from zero — zero-coding context 0 at index 4, run-length at 3, uniform at 46 — where
+T.88 starts everything at 0. Inheriting JBIG2's initialisation decodes the first code-block
+plausibly and then drifts, which is the worst failure signature available. It is pinned in
+`Jpeg2000ComponentTests`.
+
+### Validation: the reversible path is exact, and that is the sharpest tool the format offers
+
+A reversible (5/3) codestream reconstructs its encoder's input **byte for byte**. So the committed
+`Fixtures/jpeg2000/<name>.pgm` *is* the expected output for `<name>.j2k` beside it: the assertion is
+byte equality, with **no tolerance and no oracle process at test time**. That is a better position
+than JBIG2 got, where symbol matching is lossy and the expected raster had to come from jbig2dec.
+
+`Oracle/jpeg2000/make-fixtures.sh` verifies the lossless claim with `opj_decompress` per fixture
+*before it will commit a pair*, so a fixture that is somehow not lossless is refused rather than
+baked in as a wrong answer.
+
+**Keep the exact and the tolerant assertions apart.** Rung 2's 9/7 irreversible path is
+irrational-coefficient lifting and will need a tolerance, sourced from T.803 rather than invented.
+Letting that tolerance leak back over these cases would throw away the strongest claim here.
+
+### What the mutation check measured
+
+Seven deliberate bugs were introduced one at a time and the suite re-run. All seven were caught:
+dropped sign XOR bit; raster scan instead of 4-row stripes; T.88's context initialisation instead of
+T.800's; HL reading the LL/LH table unswapped; no `0xFF` bit-stuffing in the packet header reader;
+`/ 4` and `/ 2` instead of arithmetic shift in the lifting steps; HOR_SR and VER_SR swapped.
+
+The eighth was a **control**, and it behaved as the roadmap predicted: rebuilding the tag trees on
+every packet instead of keeping them across layers is **not** caught — the whole corpus still
+passes. Tag-tree state spans the packets of successive quality layers, and rung 1 has one layer, so
+no fixture here can see the difference. That is hazard 5, confirmed by measurement rather than
+argument, and rung 3 must bring a multi-layer fixture built specifically for it.
+
+Bit-stuffing is worth a second note: it was caught by only **2** of the 13 fixtures, because it can
+only bite a packet header that happens to contain an `0xFF`. It survives small test images and fails
+on real ones.
+
+### Hardened at rung 1, not in a follow-up release
+
+`Jbig2Limits` / `Jbig2PixelBudget` needed a 3.8 release to add after shipping; `Jpeg2000Limits` /
+`Jpeg2000SampleBudget` are here from the start. The reason is the same and it is worth restating:
+**running out of input is not a backstop.** T.800 C.3.4, exactly like T.88 E.3.4, has the MQ decoder
+read every byte past the end of its data as `0xFF`, deliberately and for ever.
+
+So the ceilings are charged against **declared** geometry, up front, in `TileComponent.Build` —
+before a coded byte is touched. 2^28 samples per tile-component (a 1200 dpi A4 is ≈139 Mpixels, so
+this admits the largest plausible scan while staying clear of `int` overflow), 2^22 code-blocks
+total (a separate limit, because `COD` picks the code-block size independently of the image size and
+4x4 is legal, so block count is not proportional to sample count in the direction that matters),
+plus a total sample budget scaled to the declared image.
+
+One real bug the limit tests found rather than merely confirmed: `SizMarker`'s tile-count ceiling
+division used `(numerator + denominator - 1) / denominator` on two 32-bit codestream fields, which
+**overflows** for an image declaring an extent near `int.MaxValue` — so a decompression bomb was
+refused for the wrong reason and with the wrong exception type. It computes in `long` now.
+
+The asymmetry JBIG2 documents applies here too, mirrored. JBIG2's *PDF* path anchors its budget to
+the caller's dimensions; a raw J2K codestream carries its own, so rung 1's budget is a multiple of
+what the stream itself declares. That bounds amplification without bounding absolute size. Rung 4's
+PDF entry point gets the tighter anchor.
+
+### Not facade-registered yet, deliberately
+
+Unlike JBIG2, JPEG 2000 would fit the facade perfectly — JP2 and raw J2K both have magic bytes
+(`00 00 00 0C 6A 50 20 20 0D 0A 87 0A` and `FF 4F FF 51`). It is still not registered, because the
+facade would then advertise JPEG 2000 support for a format only this narrow slice of which decodes.
+Registration lands with colour at rung 2. The roadmap's related open question — whether the decoder
+should *report* what the codestream said about colour rather than silently applying or ignoring it,
+since `SMaskInData` and the `/ColorSpace` override are out-of-band PDF signalling — is still open,
+and must be settled before rung 4 because it shapes the public surface.
+
 ## Oracle harnesses (all codecs)
 
-There are now **six** oracle mechanisms, with different acquisition stories. All of them
+There are now **eight** oracle mechanisms, with different acquisition stories. All of them
 **skip gracefully** when their dependency is missing, so a clean clone still builds and tests
 green — which also means *a silently skipped oracle is not a passing oracle*. Check the skip
 messages when a change should have been caught, and see `REQUIRE_ORACLES` below for how CI
@@ -364,11 +488,15 @@ refuses to accept that silence.
 | JXL, EXR | Magick.NET (libjxl / OpenEXR) | Just a NuGet reference — no build step. |
 | JBIG2 **MMR** | Magick.NET (libtiff, CCITT Group 4) | Just a NuGet reference. `Group4Tiff` has libtiff encode the raster as Group 4 and unwraps the codestream — T.6 is exactly what T.88 §6.2.6 carries. Nothing to install, nothing to skip. |
 | JBIG2 **decode** | committed jbig2enc fixtures + spec vectors | No external dependency, nothing to skip — `Fixtures/jbig2/*.jb2` (real jbig2enc output) plus the T.88 Annex H.2 MQ vector and one-hot template tests. Regenerate the fixtures with `Oracle/jbig2/make-fixtures.sh` (needs jbig2enc). |
+| JPEG 2000 **decode** | committed OpenJPEG fixtures | No external dependency, nothing to skip. A reversible 5/3 codestream reproduces its source raster **exactly**, so `Fixtures/jpeg2000/<name>.pgm` is the expected output for `<name>.j2k` — byte equality, no tolerance, no subprocess. Regenerate with `Oracle/jpeg2000/make-fixtures.sh`, which verifies each pair lossless before it will commit it. |
+| JPEG 2000 **conformance** | `opj_decompress` / `opj_compress` (OpenJPEG, BSD-2 — **binary only**) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpeg2000/fetch.sh` — **downloads** the pinned v2.5.4 release build (verified by SHA-256) into `dist/`, git-ignored. The only oracle here that is not compiled from source: OpenJPEG wants CMake, and upstream ships official builds for both platforms that matter, so this dev box and CI run the *same bytes* rather than merely the same source. **CI fetches it.** |
 | JBIG2 **conformance** | `jbig2dec` (Artifex, AGPL — **binary only**) | `apt-get install jbig2dec`, or on Windows `wsl -- sudo apt-get install -y jbig2dec` — `Jbig2Oracle` finds it on PATH or through WSL. CI installs it with a one-line apt step. |
 
 Byte-exactness claims that depend on a *pinned* reference break if the pin moves; treat the
-SHA-256 in `jpegenc/build.sh` and the `JXRLIB_COMMIT` in `Oracle/build.sh` as part of the
-contract.
+SHA-256 in `jpegenc/build.sh`, the `JXRLIB_COMMIT` in `Oracle/build.sh`, and the `OPJ_VERSION` +
+archive SHA-256s in `jpeg2000/fetch.sh` as part of the contract. The JPEG 2000 pin is the one that
+matters least on the reversible path (lossless output cannot drift) and most on the lossy one
+(rung 2's expected pixels are whatever that build computes).
 
 ### `REQUIRE_ORACLES` — making a skipped oracle a red build
 
@@ -377,14 +505,15 @@ installing its oracle looks exactly like a job that runs it. `REQUIRE_ORACLES=1`
 unavailable" from a skip into a **failure**, and CI's test step sets it.
 
 `OracleGate.RequireOrSkip(available, name, reason)` is the shared entry point. **Every external
-oracle is now on it, and CI installs or builds all three** — so a CI run has no silently-absent
-oracle left.
+oracle is now on it, and CI installs, builds or fetches all four** — so a CI run has no
+silently-absent oracle left.
 
 | Harness | Gated? | Installed/built in CI | Missing ⇒ |
 |---|---|---|---|
 | jbig2dec | yes | `apt-get install jbig2dec` | skip locally, **fail** in CI |
 | JXR (jxrlib) | yes | `Oracle/build.sh`, ~20s | skip locally, **fail** in CI |
 | jpegenc (stbiw) | yes | `Oracle/jpegenc/build.sh`, ~5s | skip locally, **fail** in CI |
+| OpenJPEG | yes | `Oracle/jpeg2000/fetch.sh`, ~5s | skip locally, **fail** in CI |
 
 **Why JXR mattered most.** Its guards used to be `if (encApp is null) { _out.WriteLine(...);
 return; }` — which makes the test **pass**. On a dev box with `Oracle/bin/` populated that is
@@ -405,7 +534,9 @@ Local and CI skip counts should now match at **4** (the `RegenerateGolden` opt-i
 header tests). They previously differed — local 4, CI 56 — purely because a dev box has
 `Oracle/bin/` populated and CI built nothing.
 
-Related knob: `JBIG2DEC=<path>` overrides jbig2dec resolution — point it at a custom build, or at
+Related knobs: `OPJ_HOME=<prefix>` points the JPEG 2000 oracle at a prefix containing
+`bin/opj_decompress` — a local build, or a bogus path to exercise the failure branch.
+`JBIG2DEC=<path>` overrides jbig2dec resolution — point it at a custom build, or at
 a bogus path to exercise the failure branch. For the built oracles, temporarily renaming the
 binary does the same job — but note `jpegenc.exe` resolves from **two** places (`Oracle/bin/` and
 the copy in the test output directory), so hiding one is not enough to test the failure path.

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using SharpAstro.Codecs.Abstractions;
 
 namespace SharpAstro.Jbig2;
 

@@ -1,4 +1,5 @@
-﻿using SharpAstro.Jbig2;
+﻿using SharpAstro.Codecs.Abstractions;
+using SharpAstro.Jbig2;
 using Shouldly;
 
 namespace SharpAstro.Codecs.Tests;
