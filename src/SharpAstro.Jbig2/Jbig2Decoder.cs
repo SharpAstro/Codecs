@@ -2,6 +2,7 @@ using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
+using SharpAstro.Codecs.Abstractions;
 
 namespace SharpAstro.Jbig2;
 

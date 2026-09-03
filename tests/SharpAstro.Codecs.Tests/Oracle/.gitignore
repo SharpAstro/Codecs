@@ -3,3 +3,6 @@ jxrlib-src/
 probe/*.exe
 probe/*.obj
 jpegenc/stb_image_write.h
+jpeg2000/dist/
+jpeg2000/*.zip
+jpeg2000/*.tar.gz

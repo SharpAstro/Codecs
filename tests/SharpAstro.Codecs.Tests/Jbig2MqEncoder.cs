@@ -1,3 +1,4 @@
+using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Jbig2;
 
 namespace SharpAstro.Codecs.Tests;
