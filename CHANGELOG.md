@@ -16,6 +16,43 @@ those notes, verbatim in substance. 3.4 has no recorded note; it was never writt
 
 ## 3.14
 
+`SharpAstro.Png` can **encode across cores**, via `PngWriteOptions.ParallelFragments`. Deflate is
+inherently serial and was the largest single cost in a big encode, so the only way to move it is to
+run several of it: each fragment is ended with a SYNC FLUSH rather than a final block, which leaves
+it byte-aligned and open-ended, so independently compressed fragments CONCATENATE into one perfectly
+ordinary deflate stream. No reader needs to know; there is nothing unusual in the result.
+
+Row filtering is split along the same seams, and that is what makes the whole encode scale instead of
+just its compression. A PNG row is predicted from the UNFILTERED row above it, so a band depends on
+the source image and not on anything the band before it produced -- no state, no ordering, one
+re-read source row at each seam. It is a property of the format rather than an arrangement here.
+
+31.3 MP of 16-bit RGB, same 96 MB file at every setting:
+
+| fragments | time |
+|---|---|
+| 1 (default) | 5013 ms |
+| 4 | 1718 ms |
+| 8 | 968 ms |
+| 12 | 825 ms |
+
+**The count is the caller's and deliberately not derived from `Environment.ProcessorCount`**, because
+a fragment can only back-reference its own data: output is deterministic for a given count and
+differs between counts, so deriving it from the machine would make a file's bytes depend on which
+machine wrote it, and no golden-file test could survive that. Asking for more fragments than there
+are cores is free, so a fixed 8 gets most of the benefit on a big machine and byte-identical output
+on a small one. `1` remains the default and remains byte-for-byte the old encoder.
+
+The costs are a join's worth of unexploited redundancy (+0.1% size at 24 fragments) and holding the
+compressed fragments in memory while they are assembled, about doubling peak footprint. A request
+larger than the image can carry is reduced silently rather than refused.
+
+`PngWriterParallelDeflateTests` pins this by MEANING rather than by bytes, since there are no bytes to
+compare against. Each of the three ways the construction fails silently has its own case, because
+each produces a file that looks entirely plausible until read: a fragment disposed rather than flushed
+carries a final block and truncates the image at the first join; a missing terminating block leaves
+the stream unfinished; and a mis-combined Adler-32 sails past our own reader, which does not check it.
+
 `SharpAstro.Png`'s **writer can emit RGB (colour type 2)**, and its 16-bit paths no longer copy the
 whole image to swap it. The reader has accepted colour type 2 since it was written; the writer could
 only produce 4 and 6, so an opaque render paid for an alpha plane that was a constant `0xFF(FF)` all
