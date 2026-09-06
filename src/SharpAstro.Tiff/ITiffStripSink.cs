@@ -18,6 +18,12 @@ namespace SharpAstro.Tiff;
 /// interface materialises NEITHER the file bytes nor a raster. Otherwise the span is a reused
 /// per-strip scratch buffer.</para>
 ///
+/// <para><b>A tiled page arrives here too, as bands of whole rows.</b> Tiles do not each hold a
+/// run of rows, so the reader decodes one ROW of tiles and hands it over as a
+/// <c>TileLength</c>-tall band: one contract for both layouts, and a caller need not know which
+/// one the file used. The zero-copy case above is therefore strips only -- assembling a band is a
+/// copy by definition.</para>
+///
 /// <para><b>So the span is valid only for the duration of the call.</b> Copy or convert what you
 /// need; do not retain it. It is read-only because a mapped view is, and because a shared scratch
 /// buffer must not be edited by one strip's handler and observed by the next.</para>
@@ -52,9 +58,10 @@ public interface ITiffStripSink
     /// <param name="pageIndex">The page these rows belong to.</param>
     /// <param name="firstRow">0-based row this strip starts at.</param>
     /// <param name="rowCount">
-    /// Rows in this strip. Every strip but the last holds <see cref="TiffPage.RowsPerStrip"/> rows;
-    /// the last holds the remainder. A truncated file can yield fewer bytes than
-    /// <paramref name="rowCount"/> rows would imply, so trust <paramref name="samples"/>.Length.
+    /// Rows in this band. Every one but the last holds <see cref="TiffPage.RowsPerStrip"/> rows on a
+    /// stripped page and <see cref="TiffPage.TileHeight"/> on a tiled one; the last holds the
+    /// remainder. A truncated file can yield fewer bytes than <paramref name="rowCount"/> rows would
+    /// imply, so trust <paramref name="samples"/>.Length.
     /// </param>
     /// <param name="samples">
     /// The strip's bytes. Valid ONLY for this call -- see the remarks on the interface.

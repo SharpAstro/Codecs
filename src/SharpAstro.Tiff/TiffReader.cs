@@ -7,8 +7,8 @@ namespace SharpAstro.Tiff;
 
 /// <summary>
 /// Pure-managed TIFF reader — the dual of <see cref="TiffWriter"/>. Reads
-/// every IFD in chain order and decodes its strips into a single contiguous
-/// byte buffer per page. <see cref="TiffPage.Pixels"/> is normalised to the
+/// every IFD in chain order and decodes its strips or tiles into a single
+/// contiguous byte buffer per page. <see cref="TiffPage.Pixels"/> is normalised to the
 /// host's byte order: file-byte-order is detected from the "II" / "MM"
 /// header and a final per-sample swap runs when (file order != host order)
 /// so callers can re-interpret the bytes as <c>ushort</c> / <c>float</c>
@@ -18,7 +18,9 @@ namespace SharpAstro.Tiff;
 /// <list type="bullet">
 /// <item>Both byte orders: "II" (little-endian) and "MM" (big-endian). Most
 ///       astronomy TIFFs are II; some scanner / Photoshop output is MM.</item>
-/// <item>Strip layout (no tile decoding yet — tiled TIFFs throw).</item>
+/// <item>Both layouts: strips, and tiles (<see cref="TiffPage.TileWidth"/> says which a
+///       page used). A page carrying tags for both is refused -- TIFF 6.0 p.68 makes them
+///       exclusive.</item>
 /// <item>Bit depths 8, 16, 32 — uniform across all samples (per TIFF norm).</item>
 /// <item>Compression: <see cref="TiffCompression.Uncompressed"/>, <see cref="TiffCompression.Lzw"/>,
 ///       <see cref="TiffCompression.Deflate"/>, <see cref="TiffCompression.ZlibPkzip"/>.</item>
@@ -29,9 +31,8 @@ namespace SharpAstro.Tiff;
 ///       throws rather than decoding past it.</item>
 /// <item>Contiguous planar config only (one sample per pixel position; chunky).</item>
 /// </list>
-/// JPEG / Tile / BigTIFF / planar-separate are out of scope — when
-/// TianWen needs them, add them here (the existing code only loops over strips
-/// and dispatches on compression).
+/// JPEG / BigTIFF / planar-separate are out of scope -- when TianWen needs them, add them
+/// here (the existing code loops over segments and dispatches on compression).
 /// </summary>
 public static class TiffReader
 {
@@ -189,6 +190,10 @@ public static class TiffReader
         var rowsPerStrip = 0;
         uint[]? stripOffsets = null;
         uint[]? stripByteCounts = null;
+        var tileWidth = 0;
+        var tileHeight = 0;
+        uint[]? tileOffsets = null;
+        uint[]? tileByteCounts = null;
         float? sMin = null;
         float? sMax = null;
         byte[]? icc = null;
@@ -238,6 +243,18 @@ public static class TiffReader
                 case TiffTag.StripByteCounts:
                     stripByteCounts = ReadLongOrShortArray(tiff, type, count, valueSpan, fileIsLE);
                     break;
+                case TiffTag.TileWidth:
+                    tileWidth = (int)ReadScalar(type, valueSpan, fileIsLE);
+                    break;
+                case TiffTag.TileLength:
+                    tileHeight = (int)ReadScalar(type, valueSpan, fileIsLE);
+                    break;
+                case TiffTag.TileOffsets:
+                    tileOffsets = ReadLongOrShortArray(tiff, type, count, valueSpan, fileIsLE);
+                    break;
+                case TiffTag.TileByteCounts:
+                    tileByteCounts = ReadLongOrShortArray(tiff, type, count, valueSpan, fileIsLE);
+                    break;
                 case TiffTag.SampleFormat:
                     sampleFormat = (TiffSampleFormat)ReadShortArray(tiff, type, count, valueSpan, fileIsLE)[0];
                     break;
@@ -271,10 +288,39 @@ public static class TiffReader
             throw new InvalidDataException("ImageWidth/ImageLength missing or invalid");
         if (planarConfig != TiffPlanarConfig.Contig)
             throw new NotSupportedException("Only PlanarConfig=Contig is supported");
-        if (stripOffsets is null || stripByteCounts is null)
-            throw new NotSupportedException("Tiled or stripless TIFFs are not supported in this reader");
-        if (stripOffsets.Length != stripByteCounts.Length)
-            throw new InvalidDataException("StripOffsets/StripByteCounts length mismatch");
+
+        // Which layout a page uses is decided by the tags PRESENT, never by a preference. TIFF 6.0
+        // p.68 makes strips and tiles mutually exclusive, so a page carrying both is malformed and is
+        // refused here rather than read as whichever kind this reader happens to look for first.
+        var isTiled = tileOffsets is not null || tileByteCounts is not null || tileWidth > 0 || tileHeight > 0;
+        if (isTiled && (stripOffsets is not null || stripByteCounts is not null))
+            throw new InvalidDataException("Page carries both strip and tile tags; TIFF 6.0 makes the two layouts exclusive");
+
+        var segmentOffsets = isTiled ? tileOffsets : stripOffsets;
+        var segmentByteCounts = isTiled ? tileByteCounts : stripByteCounts;
+        if (segmentOffsets is null || segmentByteCounts is null)
+            throw new NotSupportedException(isTiled
+                ? "Tiled page is missing TileOffsets or TileByteCounts"
+                : "Page has neither strip nor tile offsets");
+        if (segmentOffsets.Length != segmentByteCounts.Length)
+            throw new InvalidDataException("Segment offset / byte-count arrays differ in length");
+
+        var tilesAcross = 0;
+        var tilesDown = 0;
+        if (isTiled)
+        {
+            if (tileWidth <= 0 || tileHeight <= 0)
+                throw new InvalidDataException("TileWidth/TileLength missing or invalid on a tiled page");
+
+            // Deliberately NOT checked: the spec's "multiple of 16" rule. That constrains writers; a
+            // file breaking it still states its own geometry unambiguously, and refusing to read one
+            // would lose data for a rule the reader does not depend on.
+            tilesAcross = (width + tileWidth - 1) / tileWidth;
+            tilesDown = (height + tileHeight - 1) / tileHeight;
+            if (segmentOffsets.Length < tilesAcross * tilesDown)
+                throw new InvalidDataException(
+                    $"Tiled page lists {segmentOffsets.Length} tiles, but {tilesAcross}x{tilesDown} are needed to cover {width}x{height}");
+        }
         if (bitsPerSample != 8 && bitsPerSample != 16 && bitsPerSample != 32)
             throw new NotSupportedException($"BitsPerSample={bitsPerSample} not supported (expected 8/16/32)");
         if (sampleFormat is not (TiffSampleFormat.Uint or TiffSampleFormat.Int or TiffSampleFormat.IeeeFloat))
@@ -308,7 +354,9 @@ public static class TiffReader
             IccProfile: icc,
             ExifIfdOffset: exifIfdOffset,
             GpsInfoIfdOffset: gpsIfdOffset,
-            FileIsLittleEndian: fileIsLE);
+            FileIsLittleEndian: fileIsLE,
+            TileWidth: isTiled ? tileWidth : 0,
+            TileHeight: isTiled ? tileHeight : 0);
 
         if (!sink.BeginPage(pageIndex, page))
         {
@@ -330,25 +378,45 @@ public static class TiffReader
         // so the sink gets a slice of the INPUT and no scratch is allocated at all. Reading a
         // memory-mapped uncompressed TIFF this way materialises neither the file bytes nor a raster.
         // Both guards are about mutation -- normalising would have to write, and a mapped view is
-        // read-only.
+        // read-only. It is a STRIP-only promise: see the band buffer below for why a tile cannot be
+        // handed over in place.
         var passFileBytesThrough = compression is TiffCompression.Uncompressed && !needsSwap && !needsPredictor;
 
-        // ONE scratch buffer for every strip, plus ONE MemoryStream for the inflate path -- not one of
-        // each per strip. A writer emitting ZIP almost always emits RowsPerStrip=1, so a real file is
-        // thousands of strips: measured over a corpus of 16-bit RGB frames, 2,009 to 5,529 of them.
-        // That was thousands of short-lived arrays plus thousands of streams per decode.
-        byte[]? scratch = passFileBytesThrough
-            ? null
-            : ArrayPool<byte>.Shared.Rent(checked(rowsPerStripEffective * bytesPerRow));
+        // One decoded segment: a strip's rows, or a tile's. A tile is always STORED full-size with
+        // the overhang padded (TIFF 6.0 p.67), but the rows past the image's last are padding by
+        // definition and the useful ones come first, so nothing below the image is ever decoded --
+        // which also stops a page that declares a tile taller than itself from sizing the buffers off
+        // that declaration rather than off the picture.
+        var tileRowBytes = tileWidth * bytesPerPixel;
+        var bandRows = Math.Min(tileHeight, height);
+        var segmentCapacity = isTiled
+            ? checked(tileRowBytes * bandRows)
+            : checked(rowsPerStripEffective * bytesPerRow);
+
+        // ONE scratch buffer for every segment, plus ONE MemoryStream for the inflate path -- not one
+        // of each per segment. A writer emitting ZIP almost always emits RowsPerStrip=1, so a real
+        // file is thousands of strips: measured over a corpus of 16-bit RGB frames, 2,009 to 5,529 of
+        // them. That was thousands of short-lived arrays plus thousands of streams per decode.
+        byte[]? scratch = passFileBytesThrough ? null : ArrayPool<byte>.Shared.Rent(segmentCapacity);
+
+        // A tile spans part of a row, and the sink's unit is whole rows, so tiles cannot be handed
+        // over one at a time. One ROW of tiles is assembled here and passed on as a band. That keeps a
+        // single sink contract for both layouts, and costs bandRows rows of the image rather than the
+        // raster -- but it is a copy, which is why the zero-copy case above excludes tiles. It is
+        // assembled unconditionally: a tile as wide as the image would already BE a band and could go
+        // straight through, but that needs width to be a multiple of 16 (the spec's tile rule) and is
+        // not worth a second path through this loop.
+        byte[]? band = isTiled ? ArrayPool<byte>.Shared.Rent(checked(bandRows * bytesPerRow)) : null;
+
         byte[]? inflateSource = null;
         MemoryStream? scratchStream = null;
         if (compression is TiffCompression.Deflate or TiffCompression.ZlibPkzip)
         {
-            var maxStrip = 0;
-            foreach (var byteCount in stripByteCounts)
-                maxStrip = Math.Max(maxStrip, (int)byteCount);
-            inflateSource = ArrayPool<byte>.Shared.Rent(maxStrip);
-            // writable + publiclyVisible so each strip is presented by moving Length/Position
+            var maxSegment = 0;
+            foreach (var byteCount in segmentByteCounts)
+                maxSegment = Math.Max(maxSegment, (int)byteCount);
+            inflateSource = ArrayPool<byte>.Shared.Rent(maxSegment);
+            // writable + publiclyVisible so each segment is presented by moving Length/Position
             // rather than by constructing a new stream over a new array.
             scratchStream = new MemoryStream(inflateSource, 0, inflateSource.Length, writable: true,
                 publiclyVisible: true);
@@ -356,65 +424,74 @@ public static class TiffReader
 
         try
         {
-            var rowCursor = 0;
-            for (var i = 0; i < stripOffsets.Length && rowCursor < height; i++)
+            if (isTiled)
             {
-                var stripStart = (int)stripOffsets[i];
-                var stripLen = (int)stripByteCounts[i];
-                if (stripStart < 0 || stripLen < 0 || stripStart + stripLen > tiff.Length)
-                    throw new InvalidDataException($"Strip {i} extents out of bounds");
-                var stripSpan = tiff.Slice(stripStart, stripLen);
-
-                var rowCount = Math.Min(rowsPerStripEffective, height - rowCursor);
-                var capacity = rowCount * bytesPerRow;
-                int decoded;
-                ReadOnlySpan<byte> samples;
-
-                switch (compression)
+                for (var tileY = 0; tileY < tilesDown; tileY++)
                 {
-                    case TiffCompression.Uncompressed when passFileBytesThrough:
-                        decoded = Math.Min(stripSpan.Length, capacity);
-                        samples = stripSpan[..decoded];
-                        break;
-                    case TiffCompression.Uncompressed:
-                        decoded = Math.Min(stripSpan.Length, capacity);
-                        stripSpan[..decoded].CopyTo(scratch!.AsSpan());
-                        samples = scratch.AsSpan(0, decoded);
-                        break;
-                    case TiffCompression.Lzw:
-                        // Decoded straight from the file span -- LZW needs no zlib stream, so it needs
-                        // neither the inflate source buffer nor the MemoryStream.
-                        decoded = TiffLzw.Decode(stripSpan, scratch!.AsSpan(0, capacity));
-                        samples = scratch.AsSpan(0, decoded);
-                        break;
-                    case TiffCompression.Deflate:
-                    case TiffCompression.ZlibPkzip:
-                        // SetLength BEFORE the copy, never after: MemoryStream ZERO-FILLS when it
-                        // grows, so setting the length second wipes the tail of any strip longer
-                        // than the previous one. That is silent and data-dependent -- strips of a
-                        // smooth image all deflate to near-identical sizes and never grow, so it
-                        // only bites once the content compresses unevenly.
-                        scratchStream!.SetLength(stripLen);
-                        stripSpan.CopyTo(inflateSource!.AsSpan());
-                        scratchStream.Position = 0;
-                        decoded = InflateInto(scratchStream, scratch!.AsSpan(0, capacity));
-                        samples = scratch.AsSpan(0, decoded);
-                        break;
-                    default:
-                        throw new NotSupportedException($"Compression {compression} not supported in this reader");
+                    var firstRow = tileY * tileHeight;
+                    var rowsInBand = Math.Min(tileHeight, height - firstRow);
+
+                    for (var tileX = 0; tileX < tilesAcross; tileX++)
+                    {
+                        var index = (tileY * tilesAcross) + tileX;
+                        var samples = DecodeSegment(tiff, segmentOffsets[index], segmentByteCounts[index],
+                            index, compression, passFileBytesThrough, scratch, inflateSource, scratchStream,
+                            segmentCapacity);
+
+                        // Normalise the TILE, at the TILE's width. Horizontal differencing restarts at
+                        // every row of every tile (TIFF 6.0 section 14) and a tile's row is tileWidth
+                        // wide, not the image's -- run it at image width and the picture decodes
+                        // without complaint, correct down its first tile column and drifting across
+                        // the rest.
+                        if (needsSwap)
+                            SwapPixelsToHostOrder(scratch!.AsSpan(0, samples.Length), bitsPerSample);
+                        if (needsPredictor)
+                            UndoHorizontalDifferencing(scratch!.AsSpan(0, samples.Length), tileWidth, samplesPerPixel, bitsPerSample);
+
+                        // Copy the part of the tile the image actually covers, dropping an edge tile's
+                        // padding. What a SHORT (truncated) tile cannot supply is zeroed rather than
+                        // left behind: the band is reused across tile rows, so "not written" would
+                        // mean the previous band's pixels, which is the one failure here that looks
+                        // like real image content.
+                        var firstCol = tileX * tileWidth;
+                        var colBytes = Math.Min(tileWidth, width - firstCol) * bytesPerPixel;
+                        for (var row = 0; row < rowsInBand; row++)
+                        {
+                            var dst = (row * bytesPerRow) + (firstCol * bytesPerPixel);
+                            var src = row * tileRowBytes;
+                            var have = Math.Clamp(samples.Length - src, 0, colBytes);
+                            if (have > 0)
+                                samples.Slice(src, have).CopyTo(band!.AsSpan(dst, have));
+                            if (have < colBytes)
+                                band!.AsSpan(dst + have, colBytes - have).Clear();
+                        }
+                    }
+
+                    sink.Strip(pageIndex, firstRow, rowsInBand, band!.AsSpan(0, rowsInBand * bytesPerRow));
                 }
+            }
+            else
+            {
+                var rowCursor = 0;
+                for (var i = 0; i < segmentOffsets.Length && rowCursor < height; i++)
+                {
+                    var rowCount = Math.Min(rowsPerStripEffective, height - rowCursor);
+                    var samples = DecodeSegment(tiff, segmentOffsets[i], segmentByteCounts[i], i,
+                        compression, passFileBytesThrough, scratch, inflateSource, scratchStream,
+                        rowCount * bytesPerRow);
 
-                // Normalise this strip, not the assembled image. Both passes are row-local -- the swap
-                // is per sample, and differencing restarts at every row (TIFF 6.0 section 14) -- and
-                // strips hold whole rows, so a strip seam is never a special case and the result is
-                // identical to running them once over a whole raster.
-                if (needsSwap)
-                    SwapPixelsToHostOrder(scratch!.AsSpan(0, decoded), bitsPerSample);
-                if (needsPredictor)
-                    UndoHorizontalDifferencing(scratch!.AsSpan(0, decoded), width, samplesPerPixel, bitsPerSample);
+                    // Normalise this strip, not the assembled image. Both passes are row-local -- the
+                    // swap is per sample, and differencing restarts at every row (TIFF 6.0 section 14)
+                    // -- and strips hold whole rows, so a strip seam is never a special case and the
+                    // result is identical to running them once over a whole raster.
+                    if (needsSwap)
+                        SwapPixelsToHostOrder(scratch!.AsSpan(0, samples.Length), bitsPerSample);
+                    if (needsPredictor)
+                        UndoHorizontalDifferencing(scratch!.AsSpan(0, samples.Length), width, samplesPerPixel, bitsPerSample);
 
-                sink.Strip(pageIndex, rowCursor, rowCount, samples);
-                rowCursor += rowCount;
+                    sink.Strip(pageIndex, rowCursor, rowCount, samples);
+                    rowCursor += rowCount;
+                }
             }
         }
         finally
@@ -424,9 +501,63 @@ public static class TiffReader
                 ArrayPool<byte>.Shared.Return(inflateSource);
             if (scratch is not null)
                 ArrayPool<byte>.Shared.Return(scratch);
+            if (band is not null)
+                ArrayPool<byte>.Shared.Return(band);
         }
 
         return (page, nextIfdOffset);
+    }
+
+    /// <summary>
+    /// One SEGMENT -- a strip or a tile, the two being the same thing to every stage but geometry --
+    /// from the file into decoded samples, returned as a slice of <paramref name="scratch"/> or, on
+    /// the pass-through path, of the file itself. Shared by both layouts so that a tile can never
+    /// come to decompress differently from a strip.
+    /// </summary>
+    private static ReadOnlySpan<byte> DecodeSegment(ReadOnlySpan<byte> tiff, uint offset, uint byteCount,
+        int index, TiffCompression compression, bool passFileBytesThrough, byte[]? scratch,
+        byte[]? inflateSource, MemoryStream? scratchStream, int capacity)
+    {
+        var start = (int)offset;
+        var length = (int)byteCount;
+        if (start < 0 || length < 0 || start + length > tiff.Length)
+            throw new InvalidDataException($"Segment {index} extents out of bounds");
+        var segment = tiff.Slice(start, length);
+
+        switch (compression)
+        {
+            case TiffCompression.Uncompressed when passFileBytesThrough:
+                return segment[..Math.Min(segment.Length, capacity)];
+            case TiffCompression.Uncompressed:
+            {
+                var decoded = Math.Min(segment.Length, capacity);
+                segment[..decoded].CopyTo(scratch!.AsSpan());
+                return scratch.AsSpan(0, decoded);
+            }
+            case TiffCompression.Lzw:
+            {
+                // Decoded straight from the file span -- LZW needs no zlib stream, so it needs
+                // neither the inflate source buffer nor the MemoryStream.
+                var decoded = TiffLzw.Decode(segment, scratch!.AsSpan(0, capacity));
+                return scratch.AsSpan(0, decoded);
+            }
+            case TiffCompression.Deflate:
+            case TiffCompression.ZlibPkzip:
+            {
+                // SetLength BEFORE the copy, never after: MemoryStream ZERO-FILLS when it grows, so
+                // setting the length second wipes the tail of any segment longer than the previous
+                // one. That is silent and data-dependent -- segments of a smooth image all deflate to
+                // near-identical sizes and never grow, so it only bites once the content compresses
+                // unevenly.
+                scratchStream!.SetLength(length);
+                segment.CopyTo(inflateSource!.AsSpan());
+                scratchStream.Position = 0;
+                var decoded = InflateInto(scratchStream, scratch!.AsSpan(0, capacity));
+                return scratch.AsSpan(0, decoded);
+            }
+            default:
+                throw new NotSupportedException($"Compression {compression} not supported in this reader");
+        }
     }
 
     /// <summary>
@@ -641,7 +772,10 @@ public sealed record TiffDocument(IReadOnlyList<TiffPage> Pages);
 /// file-byte-order mismatch (e.g. MM file on an LE host) — so callers on
 /// x64/arm64 can reinterpret-cast it as <c>ushort[]</c> / <c>float[]</c>
 /// with <c>System.Runtime.InteropServices.MemoryMarshal.Cast</c> for
-/// zero-copy access.
+/// zero-copy access. Which layout the page was STORED in makes no difference to those bytes:
+/// <see cref="TileWidth"/> and <see cref="TileHeight"/> are non-zero for a tiled page and zero
+/// for a stripped one (where <see cref="RowsPerStrip"/> is the meaningful one instead), and
+/// re-assembling the tiles is the reader's job, not the caller's.
 /// </summary>
 public sealed record TiffPage(
     int Width,
@@ -658,4 +792,6 @@ public sealed record TiffPage(
     byte[]? IccProfile,
     int? ExifIfdOffset,
     int? GpsInfoIfdOffset,
-    bool FileIsLittleEndian);
+    bool FileIsLittleEndian,
+    int TileWidth = 0,
+    int TileHeight = 0);
