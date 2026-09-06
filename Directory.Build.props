@@ -1,7 +1,7 @@
 <Project>
 
   <PropertyGroup>
-    <VersionMajorMinor>3.12</VersionMajorMinor>
+    <VersionMajorMinor>3.13</VersionMajorMinor>
     <VersionPrefix Condition="'$(VersionPrefix)' == ''">$(VersionMajorMinor).0</VersionPrefix>
     <AssemblyVersion>$(VersionMajorMinor).0.0</AssemblyVersion>
   </PropertyGroup>

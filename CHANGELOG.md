@@ -14,6 +14,41 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.13
+
+`SharpAstro.Tiff` **reads tiled pages**. `TiffLayout.Tiled` had been write-only: the writer could
+emit a TIFF this package could not open, which made a tiled export a one-way door and put every
+tiled file from any other tool out of reach. `TiffReader` now decodes
+`TileWidth`/`TileLength`/`TileOffsets`/`TileByteCounts`, and `TiffPage.TileWidth` / `TileHeight`
+report which layout the file used (zero on a stripped page, where `RowsPerStrip` is the meaningful
+one).
+
+A tile holds part of a row while the sink's unit is whole rows, so the reader assembles one ROW of
+tiles into a band and hands it over exactly as it hands over a strip. One contract for both layouts:
+`Read`, `ReadInto` and `TiffImageDecoder` take a tiled page with no caller-visible difference. The
+cost is one extra sequential pass over the image, which is the price of that contract; the
+zero-copy hand-over of an uncompressed page stays a strip-only promise and now says so.
+
+Strips and tiles are exclusive (TIFF 6.0 p.68), so a page carrying both sets of tags is refused
+rather than read as whichever kind the reader happens to look for first, and a tile list too short
+to cover the page is refused rather than decoded into a part-blank raster.
+
+**The predictor is the trap this path is built around.** Horizontal differencing restarts at every
+row of every TILE, and a tile's row is `TileWidth` wide, not the image's -- invert it at image width
+and the picture decodes with no error, correct down its first tile column and drifting across the
+rest. Nothing this package writes could catch that, because `TiffWriter` emits no predictor at all,
+so the regression fixture is written by **libtiff** with Predictor 2 on and a width that is not a
+multiple of the tile width. A round trip could not be the whole test either: writer and reader agree
+about tile order by construction, so a consistent transpose would survive one. `TiffTiledReadTests`
+therefore checks three independent things -- tiled and stripped writes of one raster decode
+identically, a libtiff-written file reads pixel for pixel, and a tiled decode equals the PNG of the
+same pixels, which is the golden-comparison shape the read path was wanted for.
+
+Both buffers (the tile scratch and the band) are rented once per page rather than per tile, and both
+are sized off `min(TileHeight, Height)`, so a page declaring a tile taller than itself sizes them
+from the picture rather than from the declaration and the padding rows below the image are never
+decoded.
+
 ## 3.12
 
 **New package: `SharpAstro.Jpeg2000`** — a pure-managed, clean-room JPEG 2000 (ITU-T T.800 /
