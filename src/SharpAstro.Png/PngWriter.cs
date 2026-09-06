@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 
 namespace SharpAstro.Png;
 
@@ -300,8 +301,7 @@ public static class PngWriter
             WriteChunk(ms, "cHRM"u8, buf);
         }
 
-        WriteIdatChunk(ms, samples, width, height, bitDepth / 8, srcChannels, dstChannels,
-            options.CompressionLevel);
+        WriteIdatChunk(ms, samples, width, height, bitDepth / 8, srcChannels, dstChannels, options);
 
         // eXIf is allowed before OR after IDAT per the PNG extensions; we put
         // it after so the pixel-critical chunks aren't pushed further from
@@ -330,12 +330,89 @@ public static class PngWriter
     /// the bytes while they are still in registers.</para>
     /// </remarks>
     private static void WriteIdatChunk(MemoryStream ms, ReadOnlySpan<byte> samples, int width, int height,
-        int sampleBytes, int srcChannels, int dstChannels, CompressionLevel level)
+        int sampleBytes, int srcChannels, int dstChannels, PngWriteOptions options)
     {
         var bpp = dstChannels * sampleBytes;   // PNG's "bpp": the filter's left-neighbour offset
         var stride = width * bpp;
         var srcStride = width * srcChannels * sampleBytes;
 
+        long lengthFieldPos = ms.Position;
+        Span<byte> placeholder = stackalloc byte[4];
+        ms.Write(placeholder);
+        long typeAndDataStart = ms.Position;
+        ms.Write("IDAT"u8);
+
+        var fragments = EffectiveFragmentCount(options.ParallelFragments, height, stride);
+        if (fragments > 1)
+        {
+            WriteFragmentedZlibStream(ms, samples, height, stride, srcStride, bpp,
+                srcChannels, dstChannels, sampleBytes, options.CompressionLevel, fragments);
+        }
+        else
+        {
+            // Scope the ZLibStream so its trailing zlib bytes are flushed before we
+            // measure ms.Position to compute the chunk length.
+            using var z = new ZLibStream(ms, options.CompressionLevel, leaveOpen: true);
+            CompressRows(z, samples, 0, height, stride, srcStride, bpp,
+                srcChannels, dstChannels, sampleBytes, checksum: false);
+        }
+
+        long idatEnd = ms.Position;
+        long idatDataLength = idatEnd - typeAndDataStart - 4; // -4 for "IDAT" type
+        Span<byte> lenBuf = stackalloc byte[4];
+        WriteBE(lenBuf, (uint)idatDataLength);
+        ms.Position = lengthFieldPos;
+        ms.Write(lenBuf);
+        ms.Position = idatEnd;
+
+        var crcSpan = ms.GetBuffer().AsSpan((int)typeAndDataStart, (int)(idatEnd - typeAndDataStart));
+        Span<byte> crcBuf = stackalloc byte[4];
+        WriteBE(crcBuf, Crc32(crcSpan, ReadOnlySpan<byte>.Empty));
+        ms.Write(crcBuf);
+    }
+
+    /// <summary>
+    /// A fragment carrying less payload than this is not worth its own deflate stream, so
+    /// <see cref="PngWriteOptions.ParallelFragments"/> is reduced until every fragment clears it.
+    /// </summary>
+    public const int MinimumParallelFragmentBytes = 256 * 1024;
+
+    /// <summary>
+    /// How many fragments this image can usefully be split into: what the caller asked for, reduced
+    /// so that every fragment holds at least two rows and at least
+    /// <see cref="MinimumParallelFragmentBytes"/>.
+    /// </summary>
+    private static int EffectiveFragmentCount(int requested, int height, int stride)
+    {
+        if (requested <= 1)
+        {
+            return 1;
+        }
+
+        var payload = (long)height * (stride + 1);
+        var byBytes = (int)(payload / MinimumParallelFragmentBytes);
+        var byRows = height / 2;
+        return Math.Max(1, Math.Min(requested, Math.Min(byBytes, byRows)));
+    }
+
+    /// <summary>
+    /// Filter rows <c>[firstRow, firstRow + rowCount)</c> and write each one to
+    /// <paramref name="destination"/> as PNG wants it: the chosen filter's number, then the filtered
+    /// scanline. Returns the Adler-32 of exactly those bytes when <paramref name="checksum"/> is set,
+    /// which is what the fragmented path needs and the single-stream path gets from
+    /// <see cref="ZLibStream"/> for free.
+    /// </summary>
+    /// <remarks>
+    /// <b>A band can start anywhere</b>, because the row above it is a row of the SOURCE image rather
+    /// than anything the previous band produced. PNG's filters predict from the unfiltered values
+    /// above, so band <c>k</c> needs no output, no state and no ordering from band <c>k-1</c>: it
+    /// re-reads one source row and proceeds. That is the property that makes the parallel path
+    /// possible at all, and it is a fact about the format rather than anything arranged here.
+    /// </remarks>
+    private static uint CompressRows(Stream destination, ReadOnlySpan<byte> samples,
+        int firstRow, int rowCount, int stride, int srcStride, int bpp,
+        int srcChannels, int dstChannels, int sampleBytes, bool checksum)
+    {
         // current row + previous row + five filter candidates, in one rent.
         var scratch = ArrayPool<byte>.Shared.Rent(checked(stride * 7));
         try
@@ -343,65 +420,212 @@ public static class PngWriter
             var current = scratch.AsSpan(0, stride);
             var prevRow = scratch.AsSpan(stride, stride);
             var candidates = scratch.AsSpan(2 * stride, 5 * stride);
-            prevRow.Clear();                   // row -1 is all zeros per spec
 
-            long lengthFieldPos = ms.Position;
-            Span<byte> placeholder = stackalloc byte[4];
-            ms.Write(placeholder);
-            long typeAndDataStart = ms.Position;
-            ms.Write("IDAT"u8);
-
-            // Scope the ZLibStream so its trailing zlib bytes are flushed before we
-            // measure ms.Position to compute the chunk length.
-            using (var z = new ZLibStream(ms, level, leaveOpen: true))
+            if (firstRow == 0)
             {
-                for (var y = 0; y < height; y++)
-                {
-                    FillRow(samples.Slice(y * srcStride, srcStride), current, srcChannels, dstChannels, sampleBytes);
-
-                    var bestFilter = 0;
-                    var bestSum = long.MaxValue;
-                    for (var candidate = 0; candidate < 5; candidate++)
-                    {
-                        var sum = FilterRow(current, prevRow, candidates.Slice(candidate * stride, stride),
-                            candidate, bpp);
-                        if (sum < bestSum)
-                        {
-                            bestSum = sum;
-                            bestFilter = candidate;
-                        }
-                    }
-
-                    z.WriteByte((byte)bestFilter);
-                    z.Write(candidates.Slice(bestFilter * stride, stride));
-
-                    // The filter formulas reference the ORIGINAL values of the row above, not the
-                    // encoded ones, so this row becomes the next one's "prev". Swapping the two spans
-                    // says that without copying a row to say it. (A tuple swap cannot: a Span is a
-                    // ref struct and may not be a tuple element.)
-                    var reuse = prevRow;
-                    prevRow = current;
-                    current = reuse;
-                }
+                prevRow.Clear();               // row -1 of the IMAGE is all zeros per spec
+            }
+            else
+            {
+                FillRow(samples.Slice((firstRow - 1) * srcStride, srcStride), prevRow,
+                    srcChannels, dstChannels, sampleBytes);
             }
 
-            long idatEnd = ms.Position;
-            long idatDataLength = idatEnd - typeAndDataStart - 4; // -4 for "IDAT" type
-            Span<byte> lenBuf = stackalloc byte[4];
-            WriteBE(lenBuf, (uint)idatDataLength);
-            ms.Position = lengthFieldPos;
-            ms.Write(lenBuf);
-            ms.Position = idatEnd;
+            uint a = 1, b = 0;
+            Span<byte> filterByte = stackalloc byte[1];
+            for (var y = firstRow; y < firstRow + rowCount; y++)
+            {
+                FillRow(samples.Slice(y * srcStride, srcStride), current, srcChannels, dstChannels, sampleBytes);
 
-            var crcSpan = ms.GetBuffer().AsSpan((int)typeAndDataStart, (int)(idatEnd - typeAndDataStart));
-            Span<byte> crcBuf = stackalloc byte[4];
-            WriteBE(crcBuf, Crc32(crcSpan, ReadOnlySpan<byte>.Empty));
-            ms.Write(crcBuf);
+                var bestFilter = 0;
+                var bestSum = long.MaxValue;
+                for (var candidate = 0; candidate < 5; candidate++)
+                {
+                    var sum = FilterRow(current, prevRow, candidates.Slice(candidate * stride, stride),
+                        candidate, bpp);
+                    if (sum < bestSum)
+                    {
+                        bestSum = sum;
+                        bestFilter = candidate;
+                    }
+                }
+
+                filterByte[0] = (byte)bestFilter;
+                var chosen = candidates.Slice(bestFilter * stride, stride);
+                destination.Write(filterByte);
+                destination.Write(chosen);
+
+                if (checksum)
+                {
+                    AdlerUpdate(ref a, ref b, filterByte);
+                    AdlerUpdate(ref a, ref b, chosen);
+                }
+
+                // The filter formulas reference the ORIGINAL values of the row above, not the
+                // encoded ones, so this row becomes the next one's "prev". Swapping the two spans
+                // says that without copying a row to say it. (A tuple swap cannot: a Span is a
+                // ref struct and may not be a tuple element.)
+                var reuse = prevRow;
+                prevRow = current;
+                current = reuse;
+            }
+
+            return (b << 16) | a;
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(scratch);
         }
+    }
+
+    /// <summary>
+    /// Write the IDAT's zlib stream as <paramref name="fragments"/> independently deflated pieces,
+    /// compressed in parallel and concatenated.
+    /// </summary>
+    /// <remarks>
+    /// <para>Three details make the concatenation legal. Each fragment is ended with
+    /// <see cref="Stream.Flush"/>, which emits a sync flush (an empty NON-final stored block) and
+    /// leaves the fragment byte-aligned — the length is taken at that moment, because disposing
+    /// the <see cref="DeflateStream"/> appends a FINAL block, and a fragment carrying one stops every
+    /// decoder at the first join. A final empty block is appended once, after the last fragment. And
+    /// the zlib header and trailing Adler-32 are written by hand, the checksum being the combination
+    /// of the fragments' own, since no single <see cref="ZLibStream"/> saw the whole payload.</para>
+    /// <para>The pinning is what lets a span reach the worker threads at all: a
+    /// <see cref="ReadOnlySpan{T}"/> cannot be captured, and copying the image to get something that
+    /// can would reintroduce the whole-image buffer this encoder was recently rid of. The
+    /// <c>fixed</c> scope strictly encloses the parallel region, so nothing moves under a worker.</para>
+    /// </remarks>
+    private static unsafe void WriteFragmentedZlibStream(MemoryStream ms, ReadOnlySpan<byte> samples,
+        int height, int stride, int srcStride, int bpp, int srcChannels, int dstChannels,
+        int sampleBytes, CompressionLevel level, int fragments)
+    {
+        var rowsPerFragment = (height + fragments - 1) / fragments;
+        var deflated = new byte[fragments][];
+        var lengths = new int[fragments];
+        var checksums = new uint[fragments];
+        var payloadLengths = new long[fragments];
+
+        fixed (byte* pinned = samples)
+        {
+            var origin = (nint)pinned;
+            var total = samples.Length;
+
+            Parallel.For(0, fragments, index =>
+            {
+                var firstRow = index * rowsPerFragment;
+                var rowCount = Math.Min(rowsPerFragment, height - firstRow);
+                if (rowCount <= 0)
+                {
+                    deflated[index] = [];
+                    checksums[index] = 1;      // the Adler-32 of nothing
+                    return;
+                }
+
+                var view = new ReadOnlySpan<byte>((byte*)origin, total);
+                using var buffer = new MemoryStream(rowCount * (stride + 1) / 2);
+                var d = new DeflateStream(buffer, level, leaveOpen: true);
+                checksums[index] = CompressRows(d, view, firstRow, rowCount, stride, srcStride, bpp,
+                    srcChannels, dstChannels, sampleBytes, checksum: true);
+
+                d.Flush();
+                lengths[index] = (int)buffer.Length;   // BEFORE Dispose writes the final block
+                d.Dispose();
+
+                deflated[index] = buffer.GetBuffer();
+                payloadLengths[index] = (long)rowCount * (stride + 1);
+            });
+        }
+
+        WriteZlibHeader(ms, level);
+        for (var i = 0; i < fragments; i++)
+        {
+            ms.Write(deflated[i], 0, lengths[i]);
+        }
+
+        // BFINAL=1 with a fixed-Huffman block holding nothing but end-of-block. Two bytes, and the
+        // only thing standing between a pile of sync-flushed fragments and a complete deflate stream.
+        ms.WriteByte(0x03);
+        ms.WriteByte(0x00);
+
+        var adler = checksums[0];
+        for (var i = 1; i < fragments; i++)
+        {
+            adler = AdlerCombine(adler, checksums[i], payloadLengths[i]);
+        }
+
+        Span<byte> adlerBuf = stackalloc byte[4];
+        WriteBE(adlerBuf, adler);
+        ms.Write(adlerBuf);
+    }
+
+    /// <summary>
+    /// The two-byte zlib header: deflate with a 32K window, the level's own FLEVEL hint, and the
+    /// FCHECK bits that make the pair divisible by 31 (RFC 1950 s2.2).
+    /// </summary>
+    private static void WriteZlibHeader(Stream destination, CompressionLevel level)
+    {
+        const int Cmf = 0x78;              // compression method 8 (deflate), window 32K
+        var flevel = level switch
+        {
+            CompressionLevel.NoCompression => 0,
+            CompressionLevel.Fastest => 1,
+            CompressionLevel.SmallestSize => 3,
+            _ => 2,
+        };
+
+        var header = (Cmf << 8) | (flevel << 6);
+        header += 31 - (header % 31);
+        destination.WriteByte((byte)(header >> 8));
+        destination.WriteByte((byte)header);
+    }
+
+    /// <summary>
+    /// Fold <paramref name="data"/> into a running Adler-32 (RFC 1950 s9), reducing only every
+    /// <c>Nmax</c> bytes rather than on every one.
+    /// </summary>
+    private static void AdlerUpdate(ref uint a, ref uint b, ReadOnlySpan<byte> data)
+    {
+        const uint Base = 65521;
+        const int Nmax = 5552;             // the most iterations that cannot overflow a uint
+
+        var at = 0;
+        while (at < data.Length)
+        {
+            var run = Math.Min(Nmax, data.Length - at);
+            for (var i = 0; i < run; i++)
+            {
+                a += data[at + i];
+                b += a;
+            }
+
+            a %= Base;
+            b %= Base;
+            at += run;
+        }
+    }
+
+    /// <summary>
+    /// zlib's <c>adler32_combine</c>: the checksum of two payloads concatenated, from their own
+    /// checksums and the length of the second. This is what lets fragments be checksummed on the
+    /// threads that produced them instead of in a serial pass over the whole payload afterwards.
+    /// </summary>
+    private static uint AdlerCombine(uint first, uint second, long secondLength)
+    {
+        const uint Base = 65521;
+
+        var rem = (uint)(secondLength % Base);
+        var sum1 = first & 0xFFFF;
+        var sum2 = (uint)((rem * (ulong)sum1) % Base);
+
+        sum1 += (second & 0xFFFF) + Base - 1;
+        sum2 += ((first >> 16) & 0xFFFF) + ((second >> 16) & 0xFFFF) + Base - rem;
+
+        if (sum1 >= Base) { sum1 -= Base; }
+        if (sum1 >= Base) { sum1 -= Base; }
+        if (sum2 >= Base << 1) { sum2 -= Base << 1; }
+        if (sum2 >= Base) { sum2 -= Base; }
+
+        return sum1 | (sum2 << 16);
     }
 
     /// <summary>

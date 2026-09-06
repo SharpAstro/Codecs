@@ -87,4 +87,39 @@ public sealed record PngWriteOptions
     /// not.
     /// </remarks>
     public CompressionLevel CompressionLevel { get; init; } = CompressionLevel.Optimal;
+
+    /// <summary>
+    /// Split the image's compressed data into this many independently deflated fragments, produced
+    /// in parallel. <c>1</c> (the default) is a single deflate stream, exactly as before.
+    /// </summary>
+    /// <remarks>
+    /// <para>Deflate is the largest single cost in a big encode and it is inherently serial, so the
+    /// only way to move it is to run several of it. Each fragment ends at a SYNC FLUSH rather than a
+    /// final block, which leaves it byte-aligned and open-ended, so the fragments CONCATENATE into
+    /// one ordinary deflate stream. Nothing on the reading side needs to know or cooperate: every
+    /// PNG decoder already handles this, because it is just a stream whose blocks happen not to
+    /// reference across certain points.</para>
+    /// <para><b>The output is deterministic for a given fragment count and differs between counts</b>,
+    /// since a fragment can only back-reference its own data. A golden-file test therefore has to pin
+    /// the value it was generated with, and deriving the value from <c>Environment.ProcessorCount</c>
+    /// would make a file's bytes depend on the machine that wrote it. That is why this is a count the
+    /// caller chooses rather than an "auto" flag.</para>
+    /// <para>Row FILTERING is split along the same seams, not just the compression, because a PNG
+    /// row is predicted from the unfiltered row above it and so depends on the source image rather
+    /// than on anything the previous band produced. That is what makes the whole encode scale rather
+    /// than just its deflate: 31.3 MP of 16-bit RGB, measured, 5013 ms in one stream against 1718 at
+    /// four fragments, 968 at eight and 825 at twelve.</para>
+    /// <para><b>Pick a fixed number rather than the core count.</b> More fragments than there are
+    /// cores costs nothing but the size fraction above, so a constant like 8 gets most of the benefit
+    /// on a large machine and stays correct, and byte-identical, on a small one. That is the whole
+    /// reason to prefer a constant: the file does not change when the hardware does.</para>
+    /// <para>The costs are a fraction of a percent of file size (a join cannot back-reference across
+    /// itself; measured +0.1% at 24 fragments) and holding the compressed fragments in memory while
+    /// they are assembled, which roughly doubles the encoder's peak footprint over the single-stream
+    /// path. Neither scales with the fragment count in any way worth tuning.</para>
+    /// <para>A value above what the image can usefully carry is reduced silently: fragments below
+    /// <see cref="PngWriter.MinimumParallelFragmentBytes"/> of payload are not worth their overhead,
+    /// and a fragment must hold at least two rows.</para>
+    /// </remarks>
+    public int ParallelFragments { get; init; } = 1;
 }
