@@ -1,3 +1,5 @@
+using System.IO.Compression;
+
 namespace SharpAstro.Png;
 
 /// <summary>
@@ -56,4 +58,33 @@ public sealed record PngWriteOptions
 
     /// <summary>When set, emit a PNG-3 <c>cLLI</c> Content Light Level Information chunk.</summary>
     public ClliChunk? Clli { get; init; }
+
+    /// <summary>
+    /// Write RGB (PNG colour type 2) rather than RGBA, discarding the alpha channel of an RGBA
+    /// input. Ignored by the grayscale and packed-RGB entry points, which have no alpha to drop.
+    /// </summary>
+    /// <remarks>
+    /// <para>A render with no transparency -- an astronomical frame, a chart, anything already
+    /// composited against its background -- still carries a constant-0xFF(FF) alpha plane, and that
+    /// plane is filtered, scored, deflated and stored exactly like real data. Dropping it removes a
+    /// quarter of the encoder's per-byte work as well as a quarter of the bytes handed to deflate,
+    /// so this is a speed option at least as much as a size one.</para>
+    /// <para>The caller asserts the image is opaque: the alpha samples are not examined, because
+    /// discovering a transparent pixel halfway through a multi-second encode is no more useful than
+    /// not having looked. When the source is already packed RGB, use
+    /// <see cref="PngWriter.EncodeRgb8"/> / <see cref="PngWriter.EncodeRgb16"/> instead.</para>
+    /// </remarks>
+    public bool DiscardAlpha { get; init; }
+
+    /// <summary>
+    /// Deflate level for the IDAT stream. Defaults to <see cref="CompressionLevel.Optimal"/> (zlib
+    /// level 6), which is what every caller got before this was settable.
+    /// </summary>
+    /// <remarks>
+    /// Deflate is the single largest term in a large encode, so this is the one knob that moves it
+    /// without changing a pixel. It is exposed rather than re-defaulted because the trade belongs to
+    /// the caller: an interactive "save this frame" wants the seconds back, an archival write does
+    /// not.
+    /// </remarks>
+    public CompressionLevel CompressionLevel { get; init; } = CompressionLevel.Optimal;
 }

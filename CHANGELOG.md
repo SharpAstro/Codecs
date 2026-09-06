@@ -14,6 +14,49 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.14
+
+`SharpAstro.Png`'s **writer can emit RGB (colour type 2)**, and its 16-bit paths no longer copy the
+whole image to swap it. The reader has accepted colour type 2 since it was written; the writer could
+only produce 4 and 6, so an opaque render paid for an alpha plane that was a constant `0xFF(FF)` all
+the way through filtering, scoring, deflate and the file on disk.
+
+Two ways in, because there are two kinds of caller. `PngWriter.EncodeRgb8` / `EncodeRgb16` take
+packed three-channel input. `PngWriteOptions.DiscardAlpha` takes the RGBA a renderer already has and
+drops the fourth channel during the per-row gather, so no repacking pass is needed to reach the same
+file -- and it IS the same file, byte for byte, which is what `PngWriterRgbTests` pins.
+
+**The whole-image byte-swap buffer is gone.** The 16-bit entry points used to hand the IDAT writer a
+second copy of the picture, big-endian, built up front: 250 MB for a 31.3 MP RGBA16 frame, allocated
+so it could be read exactly once, sequentially, and dropped. Rows are gathered and swapped one at a
+time now, out of a pooled scratch buffer, which is also where dropping alpha becomes free.
+
+**The filter score is computed while filtering, and without a branch.** Row selection used to filter
+all five candidates and then re-read all five to total them; worse, it totalled them with
+`s < 0 ? -s : s`, a data-dependent branch over essentially unpredictable bytes. `FilterRow` returns
+its own score now, computed branchlessly. The branch was the larger half of that by some way.
+
+`PngWriteOptions.CompressionLevel` exposes the deflate level, defaulting to `Optimal` exactly as
+before. It is offered rather than re-defaulted because the trade belongs to the caller: an
+interactive "save this frame" wants the seconds back, an archival write does not.
+
+Measured on a 31.3 MP synthetic frame (smooth sky, 4000 stars, a noise floor -- random bytes would
+have flattered every one of these changes, being incompressible):
+
+| | time | file | allocated |
+|---|---|---|---|
+| RGBA16, 3.13 | 6462 ms | 107 MB | 603 MB |
+| RGBA16, 3.14 (byte-identical output) | 5186 ms | 107 MB | 364 MB |
+| RGB16 via `DiscardAlpha` | 4551 ms | 96 MB | 354 MB |
+| RGB16 + `CompressionLevel.Fastest` | 3216 ms | 135 MB | 649 MB |
+
+**What did NOT change, having been measured and rejected: the adaptive filter search.** On that
+synthetic frame a fixed `Up` filter is 36% faster AND 5% smaller than the five-way minsum search,
+which reads as a clear win and is not one -- on a real 9 MP display raster the search gives the
+smallest file of any strategy at both depths (10.4 MB against 11.1-11.6 fixed at 8-bit; 12.2 against
+12.9-13.5 at 16-bit). The synthetic scene's noise floor is what inverts it. A filter default is not
+something to change on one image, and certainly not on a generated one.
+
 ## 3.13
 
 `SharpAstro.Tiff` **reads tiled pages**. `TiffLayout.Tiled` had been write-only: the writer could
