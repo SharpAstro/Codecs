@@ -48,10 +48,6 @@
          that WithCicp consumes lives in Abstractions as of 3.5, alongside the
          codec-neutral ColorEncoding that shares it. -->
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
   </ItemGroup>
 
 </Project>

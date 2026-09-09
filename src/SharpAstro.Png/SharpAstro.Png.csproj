@@ -52,10 +52,6 @@
          IccProfiles.WithCicp - one vocabulary for PNG cICP signalling, ICC cicp
          signalling, and the codec-neutral decode contract. -->
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
   </ItemGroup>
 
 </Project>

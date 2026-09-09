@@ -43,10 +43,6 @@
          and MqDecoder: T.800 Annex C's arithmetic coder is T.88 Annex E's, so
          the two codecs share one internal copy from here. -->
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
   </ItemGroup>
 
   <ItemGroup>

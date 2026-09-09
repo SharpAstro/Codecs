@@ -30,10 +30,6 @@
   <ItemGroup>
     <!-- IImageDecoder / IDecodedImage contract for the SharpAstro.Codecs facade. -->
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
   </ItemGroup>
 
 </Project>
