@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace SharpAstro.Jxl;
 
 internal enum JxlDctDirection
@@ -30,22 +32,39 @@ internal static class JxlDct
     private const float Sqrt2 = 1.41421356237309504880f;
 
     // sec_half(n)[k] = 1 / (2·cos((2k+1)π / 2n)), k = 0 … n/2-1 — the "secant-half" twiddle table
-    // that drives the recursive split. Computed once per size and cached.
-    private static readonly Dictionary<int, float[]> SecHalfCache = new();
+    // that drives the recursive split.
+    //
+    // Indexed by log2(n) and built eagerly, because this sits in the innermost kernel: Dct8 asks
+    // for its table once per 1-D transform, so a 256×256 VarDCT decode made ~49,000 calls. When
+    // that was a lock(...) + Dictionary lookup it cost more than the arithmetic it was feeding —
+    // one decode's worth of 8×8 transforms measured 5.42 ms, of which only ~1.06 ms was float
+    // math. Sizes are powers of two, so an array indexed by log2 needs no hashing and no lock.
+    private const int MaxLog2 = 8; // JPEG XL's largest DCT dimension is 256.
+    private static readonly float[][] SecHalfBySize = BuildSecHalfTables();
+
+    private static float[][] BuildSecHalfTables()
+    {
+        var tables = new float[MaxLog2 + 1][];
+        for (int log2 = 1; log2 <= MaxLog2; log2++)
+            tables[log2] = BuildSecHalf(1 << log2);
+        tables[0] = [];
+        return tables;
+    }
+
+    private static float[] BuildSecHalf(int n)
+    {
+        var table = new float[n / 2];
+        for (int k = 0; k < table.Length; k++)
+            table[k] = (float)(1.0 / Math.Cos((2 * k + 1) * Math.PI / (2 * n)) / 2.0);
+        return table;
+    }
 
     private static float[] SecHalf(int n)
     {
-        lock (SecHalfCache)
-        {
-            if (SecHalfCache.TryGetValue(n, out float[]? cached))
-                return cached;
-
-            var table = new float[n / 2];
-            for (int k = 0; k < table.Length; k++)
-                table[k] = (float)(1.0 / Math.Cos((2 * k + 1) * Math.PI / (2 * n)) / 2.0);
-            SecHalfCache[n] = table;
-            return table;
-        }
+        int log2 = BitOperations.Log2((uint)n);
+        // Anything past MaxLog2 is outside JPEG XL's transform sizes, but the recursion is
+        // size-agnostic, so build on demand rather than refusing a mathematically valid call.
+        return log2 <= MaxLog2 ? SecHalfBySize[log2] : BuildSecHalf(n);
     }
 
     /// <summary>
@@ -53,19 +72,34 @@ internal static class JxlDct
     /// Both dimensions must be 1 or a power of two. Equivalent to a 1-D <see cref="Dct1d"/> on every
     /// row, then on every column.
     /// </summary>
+    /// <remarks>
+    /// The three working buffers are stack-allocated for every size JPEG XL actually uses. They
+    /// used to be <c>new float[]</c> per call, which is once per 8×8 block per channel — 3,072
+    /// calls and ~500 KiB of garbage for a single 256×256 decode, for buffers that never outlive
+    /// the call.
+    /// </remarks>
     public static void Dct2d(float[] data, int width, int height, JxlDctDirection direction)
     {
-        var scratch = new float[Math.Max(width, height)];
+        // 256 is MaxLog2's dimension, so the heap branch is unreachable for conformant input and
+        // exists only because the recursion itself is size-agnostic.
+        const int StackMax = 256;
+        int longest = Math.Max(width, height);
+        bool onStack = longest <= StackMax;
+
+        Span<float> scratch = onStack ? stackalloc float[StackMax] : new float[longest];
 
         // Horizontal pass: a 1-D DCT along each row.
         for (int y = 0; y < height; y++)
-            Dct1d(data.AsSpan(y * width, width), scratch.AsSpan(0, width), direction);
+            Dct1d(data.AsSpan(y * width, width), scratch[..width], direction);
 
         // Vertical pass: a 1-D DCT down each column (gathered into a contiguous buffer first).
         if (height > 1)
         {
-            var col = new float[height];
-            var colScratch = new float[height];
+            Span<float> col = onStack ? stackalloc float[StackMax] : new float[height];
+            Span<float> colScratch = onStack ? stackalloc float[StackMax] : new float[height];
+            col = col[..height];
+            colScratch = colScratch[..height];
+
             for (int x = 0; x < width; x++)
             {
                 for (int y = 0; y < height; y++)
