@@ -32,4 +32,10 @@
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- JpegIdctEquivalenceTests drives Idct8x8Scalar / Idct8x8Simd against each other
+         directly; the golden digests only cover whichever path this machine dispatches to. -->
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
 </Project>
