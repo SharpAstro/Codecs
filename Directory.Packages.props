@@ -15,6 +15,9 @@
     <!-- Visual-diff judge for the JXR codec (RMSE pixel comparison + red-highlighted diff artifacts).
          Q16-HDR variant so 16-bit and float (BD16/BD16F/BD32F) rasters compare faithfully. -->
     <PackageVersion Include="Magick.NET-Q16-HDRI-AnyCPU" Version="14.13.1" />
+    <!-- SharpAstro.Codecs.Benchmarks. Matches the pin in the sibling tianwen repo, which
+         already benchmarks this repo's SharpAstro.Jpeg via a local ProjectReference. -->
+    <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
   </ItemGroup>
 
 </Project>
