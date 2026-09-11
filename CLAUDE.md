@@ -24,6 +24,31 @@ the guarantee is preserved as a committed golden digest baseline
 DCT-domain decimation — deliberately NOT ported from libjpeg's `jidctred.c`, which is IJG-licensed
 (this repo is Unlicense).
 
+The full 8×8 IDCT ships **two kernels**: `Idct8x8Scalar` (the stb transliteration) and
+`Idct8x8Simd`, a four-lane `Vector128<int>` form that `Idct8x8` dispatches to wherever the
+hardware has SSE2/NEON — i.e. essentially always. It is worth **−27% on a 4:2:0 decode and
+−38% on 4:4:4** (measured; see "Benchmarks" below). Three things about it are load-bearing:
+
+- **It is derived from our own scalar kernel, not read from libjpeg-turbo's SIMD IDCT.** Same
+  line already drawn around `jidctred.c` — libjpeg-turbo is BSD-ish but notice-retaining, which
+  Unlicense cannot absorb.
+- **It stays in int32 lanes.** libjpeg-turbo packs eight 16-bit lanes per register, which needs
+  extra descaling and *changes the rounding*. Int32 lanes are only four wide, but they make every
+  lane bit-identical to the scalar path by construction — and byte-exactness against the digests
+  is the entire point. A faster-but-differently-rounded IDCT would be worthless here.
+- **The all-AC-zero shortcut is diluted, deliberately.** The scalar test is per column; the vector
+  one is per group of four, so it only fires when all four columns are DC-only. That was the main
+  risk — but measured against zigzag-clustered coefficients the vector path still wins ~2× even on
+  very sparse blocks, because AC energy concentrates in the low columns and the high group keeps
+  hitting the shortcut. Benchmark against *uniformly scattered* AC and you will flatter it by
+  hiding exactly this effect.
+
+Because the dispatch means any one machine only ever exercises **one** of the two kernels, the
+golden digests alone cannot catch the other one rotting. `JpegIdctEquivalenceTests` drives both
+directly and demands byte equality — including at the clamp rails, at `short` extremes where the
+int32 intermediates overflow (both must overflow the *same* way), and with a non-trivial
+offset/stride, which is where the SIMD row pass's scatter-by-stride would show an indexing slip.
+
 `SharpAstro.Jpeg` also ships a **second, structurally unrelated decoder**: `LosslessJpeg`
 (ITU-T T.81 Annex H, SOF3) — Huffman-coded sample-difference predictors 1–7, no quantisation,
 **up to 16-bit precision**, DRI/RSTn restarts, point transform. It shares no code with
@@ -77,6 +102,39 @@ dotnet test tests/SharpAstro.Codecs.Tests/SharpAstro.Codecs.Tests.csproj --filte
 
 Tests: `SharpAstro.Codecs.Tests` uses **xunit v3 + Shouldly** (+ Magick.NET for visual
 diffing and deterministic input encoding) and covers the whole codec family.
+
+### Benchmarks
+
+`benchmarks/SharpAstro.Codecs.Benchmarks` (BenchmarkDotNet, pinned to the same 0.15.8 the
+sibling `tianwen` repo uses). It is in `Codecs.sln` but **deliberately not in
+`Codecs.JustTests.sln`**, so CI's build/test/pack contract is untouched and CI does not restore
+BenchmarkDotNet to run an exe it would never use.
+
+```bash
+dotnet run -c Release --project benchmarks/SharpAstro.Codecs.Benchmarks -- --filter '*'
+```
+
+Note the filter matches `namespace.type.method`, **not** the `[Benchmark(Description = ...)]`
+text — `--filter '*full scale*'` silently returns zero benchmarks.
+
+It measures **whole decodes through the public API**, not internal kernels, and that is the
+point rather than laziness: a kernel that gets faster in isolation but does not move this number
+has not made decoding faster. That mistake has already been made here once — a `Vector<T>`
+colour-convert kernel was written, reasoned to be an improvement, and measured afterwards at
+**42% slower** than the scalar loop it replaced. The lesson generalises past that one kernel:
+
+- **`YCbCrToRgbaRow` is store-bound, not compute-bound.** Writing 4 bytes/pixel is ~6.2 ms of a
+  ~7.7 ms kernel; all the fixed-point colour math is the other ~1.4 ms. So the ceiling for
+  vectorizing it is ~1.5% of decode, and the best attempt (`Vector128` + a real shuffle-based
+  interleaved store) captured about a third of that. `JpegResample` is the same shape, worse —
+  one `(3*a+b+2)>>2` per output byte.
+- **`Vector<T>` has no portable interleaved store.** Extracting lanes to scratch and then running
+  the same per-pixel byte loop adds the vector work *on top of* the scalar work instead of
+  replacing it. Where an interleaved store is needed, `Vector128.Shuffle` (pshufb / tbl) is the
+  tool; `Vector<T>` suits planar, elementwise, same-width work like tianwen's float kernels.
+- **A/B back-to-back, in one sitting.** Run-to-run machine state moved these numbers by >10% here
+  (one early baseline read 29.1 ms for a decode that measured 33.6 ms half an hour later), which
+  is more than most wins being chased. A number from a previous session is not a baseline.
 
 Package versions are **centrally managed** in `Directory.Packages.props` — add a
 `<PackageVersion>` there and reference it without a version in the `.csproj`. All packages
