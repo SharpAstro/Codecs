@@ -74,7 +74,9 @@ the jxrlib re-port). See "JXR codec" below for the architecture and validation d
 Longer-horizon work lives in the root roadmap docs: [`ROADMAP-jpeg-encoder.md`](ROADMAP-jpeg-encoder.md),
 [`ROADMAP-gain-map.md`](ROADMAP-gain-map.md), [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md)
 (JBIG2's remaining Huffman variants), [`ROADMAP-jpx.md`](ROADMAP-jpx.md) (the JPEG 2000 rung
-table, rung 1 of 5 shipped), plus [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
+table, rung 1 of 5 shipped), [`ROADMAP-jxl.md`](ROADMAP-jxl.md) (the VarDCT decode's LOH
+allocation question, and the feature envelope the codec currently refuses), plus
+[`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
 ## Build & test
 
