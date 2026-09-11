@@ -135,6 +135,12 @@ colour-convert kernel was written, reasoned to be an improvement, and measured a
 - **A/B back-to-back, in one sitting.** Run-to-run machine state moved these numbers by >10% here
   (one early baseline read 29.1 ms for a decode that measured 33.6 ms half an hour later), which
   is more than most wins being chased. A number from a previous session is not a baseline.
+- **An isolated kernel measurement over-predicts, sometimes by a lot.** Removing a lock and three
+  per-call allocations from `JxlDct` measured 5.42 ms → 1.06 ms on "one decode's worth" of calls
+  in a tight loop, which projected to ~34% off a JXL decode. The decode moved **5.7%**. A kernel
+  timed in a loop with nothing else competing for cache or memory bandwidth is not the same kernel
+  running inside a decoder. Micro-measurements are for *deciding what to try*; only the end-to-end
+  number decides whether it worked.
 
 Package versions are **centrally managed** in `Directory.Packages.props` — add a
 `<PackageVersion>` there and reference it without a version in the `.csproj`. All packages
