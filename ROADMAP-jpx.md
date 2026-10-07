@@ -1,6 +1,11 @@
 # Roadmap: JPEG 2000 (PDF's `/JPXDecode`)
 
-> **Status: rung 1 of 5 shipped, in 3.12.** This file was written on 2026-09-03 as an
+> **Status: rungs 1 and 2 shipped, rung 1 in 3.12 and rung 2 in 3.15, with the two parts of
+> rungs 3 and 4 that real PDFs need brought forward: quality layers, main-header COC/QCC, and the
+> JP2 container without palette, component mapping or channel definition.** All six
+> `/JPXDecode` images measured in real PDFs now decode (see "What PDF files actually need").
+>
+> This file was written on 2026-09-03 as an
 > uncommitted working note, offering itself to be committed, folded into
 > [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md) or deleted once the work started.
 > The work started, so it is committed, and it is now kept current: the rung table
@@ -103,9 +108,9 @@ across its five rungs, so the estimating method here is calibrated), `SharpAstro
 |---|---|---|---|
 | 0 | **Oracle and corpus, no decoder code.** Get `opj_decompress` and `opj_compress` running and committed fixtures generated, before a line of decoder exists. | ~150 (scripts + harness) | ✅ **~370** — `Oracle/jpeg2000/{fetch.sh,make-fixtures.sh,gen-sources.py,README.md}`, `OpenJpegOracle`, `Pnm`, 13 fixtures. Over estimate because the fixtures verify themselves lossless before committing, and because the README records the probe answers. |
 | 1 | **The irreducible core, constrained.** Markers SOC/SIZ/COD/QCD/SOT/SOD/EOC; tier-2 for one tile, one quality layer, maximal precincts, LRCP, with tag trees; tier-1 EBCOT (three passes per bit-plane, the context tables, MQ); 5/3 reversible inverse DWT; DC level shift. Restricted to: single tile, single layer, no subsampling, one component, 8-bit unsigned, raw J2K with no JP2 box. | ~3000-4500 | ✅ **2400** — under estimate, and the reason is worth knowing: the constrained envelope removes more than it looks like. One tile, one layer and one precinct means no precinct iteration, no progression-order machinery and no cross-layer state, which is most of what makes tier-2 big. Rung 3 gets that back. 16-bit came free, so the envelope is 8-**to-16**-bit. |
-| 2 | **Colour and the lossy path.** RCT and ICT component transforms, the 9/7 irreversible DWT, dequantisation from QCD (exponent/mantissa, guard bits), multiple components. Most JPX inside real PDFs is 9/7 plus ICT, so this is the rung that makes the package useful rather than merely correct. | ~800-1200 | |
-| 3 | **Tier-2 in full.** Multiple tiles and tile-parts, precincts, multiple quality layers, all five progression orders (LRCP/RLCP/RPCL/PCRL/CPRL), POC, packed headers (PPM/PPT), SOP/EPH, and the COC/QCC per-component overrides. This is where real encoder output stops resembling rung 1's constrained case. | ~1200-1800 | |
-| 4 | **JP2 container and the PDF rules.** Box parsing (`jP  `, `ftyp`, `jp2h` with `ihdr`/`colr`/`pclr`/`cmap`/`cdef`, `jp2c`), palette, channel definition and alpha. Then PDF's own two: `SMaskInData`, and the rule that a JPX codestream may override the PDF `/ColorSpace`. | ~500-800 | |
+| 2 | **Colour and the lossy path.** RCT and ICT component transforms, the 9/7 irreversible DWT, dequantisation from QCD (exponent/mantissa, guard bits), multiple components. Most JPX inside real PDFs is 9/7 plus ICT, so this is the rung that makes the package useful rather than merely correct. | ~800-1200 | ✅ **about 600**, in 3.15, of a 2400 → 3260 line package whose other 260 are rung 4's JP2 reader. Multiple components with one precision, RCT, ICT, the 9/7 wavelet in floats, expounded and derived quantization, and the midpoint reconstruction of E.1.1.2, which the reversible path turned out to need as well (see "What PDF files actually need"). Mixed precisions and subsampling are still refused. |
+| 3 | **Tier-2 in full.** Multiple tiles and tile-parts, precincts, multiple quality layers, all five progression orders (LRCP/RLCP/RPCL/PCRL/CPRL), POC, packed headers (PPM/PPT), SOP/EPH, and the COC/QCC per-component overrides. This is where real encoder output stops resembling rung 1's constrained case. | ~1200-1800 | 🟡 **Partly, in 3.15**: multiple quality layers in LRCP, and COC/QCC in the main header, which is what real PDFs needed. Tiles, tile-parts, precincts, the other four orders, POC, PPM/PPT, SOP/EPH and tile-part-header overrides are still refused. |
+| 4 | **JP2 container and the PDF rules.** Box parsing (`jP  `, `ftyp`, `jp2h` with `ihdr`/`colr`/`pclr`/`cmap`/`cdef`, `jp2c`), palette, channel definition and alpha. Then PDF's own two: `SMaskInData`, and the image dictionary's `/ColorSpace`, which when present makes the decoder ignore the JPEG 2000 colour specification (ISO 32000-2 8.9.5; this row used to say the codestream overrides the dictionary, which is backwards). | ~500-800 | 🟡 **Partly, in 3.15**: the boxes, with the first `colr` box reported on `Jpeg2000Image.Colour` and never applied. `pclr`, `cmap` and `cdef` are refused by name. The two PDF rules are the caller's, since only it holds the dictionary. |
 | 5 | **Resolution-level decode (free 1/2^n LOD).** Stop tier-2 at resolution level *r* and run that many DWT levels. Mostly a matter of not doing work. | ~200-400 | |
 
 Refused, and say so in the package the way `SharpAstro.Jbig2` refuses SDHUFF: **encoding**
@@ -123,30 +128,38 @@ those come back, so does the headline number.
 
 `JpxCorpusProbe` in drawboard/pdf-viewer reads the codestream markers of every `/JPXDecode`
 image on page 1 of a local corpus of 235 PDFs, without going through the decoder. It found six
-images in two documents, a floor-plan set and a user's manual, all small (306x263 to 395x219):
+images in two documents, a user's manual and a floor-plan set, from 306x263 to 381x540:
 
-| | Images |
-|---|---|
-| 3 components, 8 bit, with the multiple component transform | 6 |
-| 9/7 irreversible wavelet, 5 or 6 decomposition levels | 6 |
-| Multiple quality layers (2, or 20) | 6 |
-| One tile, LRCP, maximal precincts | 6 |
-| Wrapped in a JP2 container | 2 |
+| | Manual (4 images) | Floor plans (2 images) |
+|---|---|---|
+| Container | bare codestream | JP2, `colr` sRGB, no palette or channel boxes |
+| Components | 3, 8 bit | 3, 8 bit |
+| Wavelet and component transform | **5/3 with RCT**, lossless | 9/7 with ICT |
+| Quantization | none | expounded, with a QCC for each chroma component |
+| Quality layers | 2 | 20 |
+| Tiles, order, precincts | one tile, LRCP, maximal | one tile, LRCP, maximal |
 
-Three things follow.
+> **Correction.** This section first said all six were 9/7. The probe read COD's code-block
+> style byte, always 0 here, where the wavelet byte is, one byte later, so every image read as
+> 9/7. `opj_dump` and the bytes themselves say four are 5/3. Fixed in the probe.
 
-- **Rung 2 alone decodes none of them.** Every one has more than one quality layer, which the
-  table puts in rung 3. Nothing else of rung 3 appears: no tiles or tile-parts, no precincts, no
-  other progression order, no POC, packed headers or SOP/EPH. So the smallest step that decodes
-  a real PDF image is rung 2 plus multiple quality layers in LRCP, and pulling layers forward
-  out of rung 3 is what makes the package useful to a PDF reader soonest. Not because layers
-  are trivial (they are what makes tier-2 stateful, see `Geometry.cs`) but because they are the
-  only part of rung 3 these files need.
-- **"Most JPX inside real PDFs is 9/7 plus ICT" holds**: six of six, since the component
-  transform alongside the 9/7 wavelet is the irreversible one.
-- **The JP2 container is on the critical path for some documents.** A survey of the same kind in
-  August (221 files) found four images, all bare codestreams; this one finds two JP2-wrapped,
-  in one of the two documents. Rung 4, colour boxes included, is what that document needs.
+What followed from it, as built:
+
+- **Neither half of rung 2 alone decodes any of them**, because every one has more than one
+  quality layer. Nothing else of rung 3 appears: no tiles or tile-parts, no precincts, no other
+  progression order, no POC, packed headers or SOP/EPH. So layers were pulled forward out of rung
+  3, and the COC/QCC overrides with them, since the 9/7 pair carries a QCC per chroma component.
+  Rebuilding the tag trees per packet, hazard 5, now fails all three layered fixtures.
+- **Rung 2's exact half was worth more than it looked.** Components, RCT and layers decode the
+  manual's four images, exactly as `opj_decompress` does, with no tolerance. Exact only once the
+  decoder also put each coefficient whose low bits a layer cut off at the middle of the range
+  those bits leave open (E.1.1.2's r = 1/2): the encoder had truncated the last layer of one
+  image, and without the rule 1,007 of its 458,955 samples came out one below OpenJPEG's.
+- **"Most JPX inside real PDFs is 9/7 plus ICT" is half true here**: two of six. The 9/7 pair
+  decodes within 1 of `opj_decompress` in every sample, 0.05% and 0.15% of samples differing.
+- **The JP2 container is on the critical path for one of the two documents**, and that document
+  needs only the colour box, which says sRGB. A survey of the same kind in August (221 files)
+  found four images, all bare codestreams.
 
 ## Rung 5 deserves a note
 
@@ -164,6 +177,11 @@ at the pixels kept, JBIG2 averaged into the thumbnail as it is decoded. JPX is t
 still decoded whole there, so the viewer caps it at 16 megapixels a thumbnail and leaves a larger
 image out. An entry point shaped like the JPEG one, `Decode(data, maxDim)` returning the size it
 actually produced, is what would lift that cap.
+
+With rungs 1 and 2 in, the reason for waiting has thinned: tier-2 now iterates every layer,
+resolution and component, and of rung 3's iteration only precincts and the other orders remain.
+It is still a separate change, and the images that have reached it so far are small enough that
+the cap has not bitten.
 
 ## Validation plan
 
@@ -195,6 +213,14 @@ one opportunity JBIG2 did not have.
    from T.803 (part 4) conformance rather than being invented. Splitting the assertion
    this way is not a detail: an exact-match test on the reversible path is the sharpest
    tool available on this format, and burying it under a global tolerance throws it away.
+   → **Split as planned, but the tolerance is measured, not from T.803**, which is not to
+   hand. `Jpeg2000IrreversibleTests` asserts what OpenJPEG and this decoder were measured to
+   agree to, and says so: every sample within 1, and at most 1% of samples differing, where
+   the six 9/7 fixtures reach 0.32% and the two real 9/7 images 0.15%. The share is the half
+   that has teeth. A wrong rounding rule or a missing reconstruction offset can stay inside
+   a peak of 1 everywhere and still move a third of the samples. The lossy *reversible*
+   fixtures are asserted exact against `opj_decompress`, since nothing irrational happens on
+   that path.
 4. **Foreign-encoder bytes, and this time they are plentiful.** JBIG2 was constrained by
    jbig2enc emitting only GBTEMPLATE 0 with nominal AT, which is why a fourth layer had
    to be invented out of libtiff. `opj_compress` has no such limit: it takes progression
@@ -245,6 +271,17 @@ Each was written down before rung 1 began. The verdicts are what happened.
    introduced deliberately and **the entire corpus still passes**. This is the one hazard
    rung 1 is provably blind to. Rung 3 must add a multi-layer fixture *for this specific
    reason*, and must not treat multi-layer support as merely "more of the same".
+   → **Closed when layers arrived, in 3.15.** Three layered fixtures, each over a grid of
+   code-blocks so the trees have state to carry (`layers3-noise64`, `layers3-struct64`,
+   `rgb-layers2-struct64`), and the same deliberate rebuild now fails all three. The rest of
+   that change's mutation check: dropping later layers' segments, leaving out RCT, dividing
+   instead of shifting in it, swapping its U and V, dropping the midpoint reconstruction,
+   nesting the packets component-outside-resolution, and ignoring COC or QCC each fail the
+   suite. For the 9/7 path: swapping K and 1/K, reconstructing at r = 0, the wrong band gain,
+   ignoring the mantissa, swapping ICT's chroma coefficients, truncating instead of
+   rounding, misordering the lifting steps, a margin of 2, and inverting the derived rule
+   each fail it. Rounding halves away from zero rather than to even does not, and cannot be
+   made to: float arithmetic all but never lands on an exact half.
 
 6. **Harden from day one, not in a follow-up release.**
    → **Done at rung 1** (`Jpeg2000Limits`, `Jpeg2000SampleBudget`), and it earned its keep
@@ -286,6 +323,15 @@ jbig2dec in WSL. Check the exit code first.
   decodes. Registration lands with colour at rung 2. The real question underneath — whether
   the decoder should *report* what the codestream said about colour rather than silently
   applying or ignoring it — is untouched and still must be settled before rung 4.
+  → **Settled in 3.15: it reports.** The component transform, which is how the samples were
+  coded, is undone; the JP2 `colr` box, which is what the samples mean, comes back on
+  `Jpeg2000Image.Colour` and is applied by nobody here. PDF settles it the same way from the
+  other side: when the image dictionary has a `/ColorSpace`, the JPEG 2000 colour
+  specification is ignored (ISO 32000-2 8.9.5), so a decoder that applied it would be wrong for
+  every such image. **Facade registration did not land with it**, and is now the only part of
+  this decision left: the facade promises colour-signalled RGBA, and mapping `Jp2Colour` onto
+  `ColorEncoding` (sYCC, ICC, a raw codestream that names no colour at all) deserves a change of
+  its own rather than a corner of this one.
 
 - **Is `opj_decompress` apt-installable?** → **Yes, and it was the wrong answer.**
   `libopenjp2-tools` is in the Ubuntu repo, but it is OpenJPEG **2.4.0** on jammy and 2.5.x
@@ -302,6 +348,9 @@ jbig2dec in WSL. Check the exit code first.
   5/3 codestream reconstructs its encoder's input exactly, so the committed source raster
   *is* the expected output. T.803 matters for rung 2, where the 9/7 tolerance has to come
   from somewhere principled.
+  → **Still open after rung 2.** The 9/7 tolerance came from measurement against OpenJPEG
+  instead (see "Validation plan"), which is honest about what it is and weaker than a
+  conformance bound.
 
 ## What rung 2 should do first
 
@@ -324,3 +373,7 @@ the test suite stops being able to say "exact". Keep those tests in their own fi
 need"): all six in the measured corpus are 9/7 with ICT and several quality layers. The order
 above is still the right one for keeping the suite exact. Just know that the PDF payoff arrives
 only once 9/7, ICT and multiple layers are all in, and plan rung 2's end to include layers.
+
+> **What happened.** The order held, and the paragraph above was wrong about the payoff: it was
+> written from a probe that misread the wavelet byte, and four of the six images are 5/3 with
+> RCT. The two cheap wins plus layers decoded those four exactly, before the 9/7 filter existed.
