@@ -14,6 +14,40 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.15
+
+`SharpAstro.Jpeg2000` **decodes what real PDFs carry.** Rung 1 decoded one component in one layer,
+and a probe over 235 PDFs found six `/JPXDecode` images, none of them inside that. All six decode
+now: the four lossless ones exactly as `opj_decompress` does, the two lossy ones within 1 of it in
+every sample.
+
+- **Several components**, of one precision, interleaved in `Jpeg2000Image.Samples` with
+  `Components` saying how many. `ToGray8` refuses more than one; `To8Bit` takes any number.
+- **Quality layers**, brought forward from rung 3 because every real image had them. Tag-tree state
+  carries across layers, and three layered fixtures now catch it when it does not (hazard 5, which
+  rung 1's corpus could not see).
+- **COC and QCC** in the main header, applied per component.
+- **RCT and ICT**, between the wavelet and the level shift.
+- **The 9/7 wavelet** in floats, with scalar dequantisation, expounded or derived, and coefficients
+  reconstructed at the middle of their interval (T.800 E.1.1.2). The 5/3 path needed that rule too:
+  one real image's last layer was truncated, and without it 1,007 samples came out one off.
+- **The JP2 file format.** `Decode` takes a JP2 file as well as a raw codestream (`IsJp2` tells
+  them apart) and reports the first colour specification on `Jpeg2000Image.Colour` without applying
+  it, since a PDF's `/ColorSpace`, when present, overrides it (ISO 32000-2 8.9.5). Palette,
+  component-mapping and channel-definition boxes are refused by name.
+
+The 9/7 tests assert a tolerance measured against OpenJPEG rather than one from T.803: every sample
+within 1, at most 1% differing (the fixtures reach 0.32%, the real images 0.15%). They live in a
+file of their own, apart from the exact assertions.
+
+**Small public API change:** `Jpeg2000Image` gained `Components` (defaulting to 1, so the old
+constructor call still compiles) and `Colour`, and `ToGray8` now throws on a multi-component image
+rather than returning something that is not one.
+
+Still refused: tiles, precincts, the other progression orders, POC/PPM/PPT/SOP/EPH, code-block
+style flags, subsampling, mixed precisions, signed components. Still not registered with the
+`SharpAstro.Codecs` facade: mapping a JP2 colour onto `ColorEncoding` is its own change.
+
 ## 3.14
 
 `SharpAstro.Png` can **encode across cores**, via `PngWriteOptions.ParallelFragments`. Deflate is

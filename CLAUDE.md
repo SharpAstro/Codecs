@@ -74,7 +74,7 @@ the jxrlib re-port). See "JXR codec" below for the architecture and validation d
 Longer-horizon work lives in the root roadmap docs: [`ROADMAP-jpeg-encoder.md`](ROADMAP-jpeg-encoder.md),
 [`ROADMAP-gain-map.md`](ROADMAP-gain-map.md), [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md)
 (JBIG2's remaining Huffman variants), [`ROADMAP-jpx.md`](ROADMAP-jpx.md) (the JPEG 2000 rung
-table, rung 1 of 5 shipped), [`ROADMAP-jxl.md`](ROADMAP-jxl.md) (the VarDCT decode's LOH
+table, rungs 1 and 2 of 5 shipped), [`ROADMAP-jxl.md`](ROADMAP-jxl.md) (the VarDCT decode's LOH
 allocation question, and the feature envelope the codec currently refuses), plus
 [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
@@ -437,23 +437,40 @@ rung 1 is the *entire pipeline for the simplest legal configuration*, and later 
 accepts. Do not try to reproduce JBIG2's shape here — it gives four rungs that each decode nothing,
 with no way to tell which one is wrong.
 
-Rung 1's envelope, and everything outside it throws `NotSupportedException` naming the feature *and
-the rung that owns it*: one 8-to-16-bit unsigned component, one tile, one tile-part, one quality
-layer, maximal precincts, LRCP, reversible 5/3, raw J2K, no code-block style flags.
+The envelope as of 3.15 (rungs 1 and 2, plus the parts of rungs 3 and 4 that real PDFs carry), and
+everything outside it throws `NotSupportedException` naming the feature *and the rung that owns it*:
+any number of 1-to-16-bit unsigned components of one precision with no subsampling, one tile, one
+tile-part, any number of quality layers, maximal precincts, LRCP, no code-block style flags; 5/3 with
+no quantization or 9/7 with scalar quantization (derived or expounded), RCT or ICT when COD asks;
+COC/QCC in the main header; a raw codestream, or a JP2 file with no `pclr`, `cmap` or `cdef` box.
 
 ```
-Jpeg2000Decoder      (public: Decode(codestream) / IsCodestream)
-  → CodestreamReader (Annex A markers; ALSO where every out-of-envelope refusal lives, by name,
-                      before any of the pipeline runs)
-  → TileComponent    (Annex B geometry: resolutions, subbands, precincts, code-block grid --
-                      computed from DECLARED numbers, so this is where the ceilings are charged)
-  → Tier2            (B.9/B.10 packet headers: inclusion, zero bit-planes, pass counts, lengths)
+Jpeg2000Decoder      (public: Decode(codestream or JP2) / IsCodestream / IsJp2)
+  → Jp2Reader        (Annex I boxes: signature, ftyp, jp2h/ihdr/colr, jp2c; the first colr box is
+                      REPORTED on Jpeg2000Image.Colour, never applied; pclr/cmap/cdef refused)
+  → CodestreamReader (Annex A markers, COC/QCC resolved per component; ALSO where every
+                      out-of-envelope refusal lives, by name, before any of the pipeline runs)
+  → TileComponent    (Annex B geometry, one per component: resolutions, subbands with their E-3
+                      step sizes, code-block grid -- computed from DECLARED numbers, so this is
+                      where the ceilings are charged)
+  → Tier2            (B.9/B.10 packet headers, LRCP over layer/resolution/component: inclusion,
+                      zero bit-planes, pass counts, lengths -- state carried ACROSS layers)
   →   TagTree        (B.10.2) + PacketBitReader (B.10.1, the 0xFF bit-stuffing rule)
-  → BlockDecoder     (Annex D EBCOT: three passes per bit-plane over the Table D.1/D.2/D.3 contexts)
+  → BlockDecoder     (Annex D EBCOT: three passes per bit-plane over the Table D.1/D.2/D.3 contexts,
+                      a block's segments from every layer read as one codeword; E.1.1.2's midpoint
+                      reconstruction; dequantisation for a 9/7 band)
   →   MqDecoder      (shared with SharpAstro.Jbig2 -- see below)
-  → InverseWavelet   (Annex F: 2D interleave, then HOR_SR then VER_SR, reversible 5/3 lifting)
-  → DC level shift   (G.1.2) + clamp to the declared precision
+  → InverseWavelet   (Annex F: 2D interleave, then HOR_SR then VER_SR; 5/3 lifting in ints, 9/7 in
+                      floats)
+  → ComponentTransform (G.2.2 RCT / G.3.2 ICT on components 0-2, between the wavelet and the shift)
+  → DC level shift   (G.1.2) + rounding (9/7 only, to nearest, ties to even) + clamp, interleaved
 ```
+
+**Colour is reported, not applied, and that is the PDF rule, not caution.** The component transform
+is how the samples were coded, so the decoder undoes it. The JP2 `colr` box is what the samples mean,
+and ISO 32000-2 8.9.5 says a PDF image dictionary's `/ColorSpace`, when present, makes the JPEG 2000
+colour specification be ignored; only without one is it used. Only the caller holds the dictionary.
+The roadmap used to state that rule the other way round.
 
 ### The MQ coder moved, and its initialisation did not come with it
 
@@ -483,9 +500,21 @@ than JBIG2 got, where symbol matching is lossy and the expected raster had to co
 *before it will commit a pair*, so a fixture that is somehow not lossless is refused rather than
 baked in as a wrong answer.
 
-**Keep the exact and the tolerant assertions apart.** Rung 2's 9/7 irreversible path is
-irrational-coefficient lifting and will need a tolerance, sourced from T.803 rather than invented.
-Letting that tolerance leak back over these cases would throw away the strongest claim here.
+**Keep the exact and the tolerant assertions apart.** The 9/7 irreversible path is
+irrational-coefficient lifting and needs a tolerance, so it lives in its own file
+(`Jpeg2000IrreversibleTests`) over its own fixtures (`Fixtures/jpeg2000-lossy/lossy97-*`). The
+tolerance is **measured against OpenJPEG, not taken from T.803** (not to hand), and the test says so:
+every sample within 1, at most 1% of samples differing, where the fixtures reach 0.32% and the two
+real 9/7 images 0.15%. The share is the half with teeth: a wrong rounding rule can stay inside a peak
+of 1 and move a third of the samples. Letting that tolerance leak back over the exact cases would
+throw away the strongest claim here.
+
+**Lossy is not the same as inexact.** A 5/3 codestream whose rate cut its code-blocks short
+(`lossy53-*`) has an expected output that is not its source, but nothing irrational happens on the
+way, so it is asserted EXACT against `opj_decompress` at test time. That is what caught the midpoint
+rule: T.800 E.1.1.2 reconstructs a coefficient whose low bits were cut at the middle of the range they
+leave open, reversible path included, and a real PDF image decoded 1,007 samples one off OpenJPEG's
+without it.
 
 ### What the mutation check measured
 
@@ -503,6 +532,16 @@ argument, and rung 3 must bring a multi-layer fixture built specifically for it.
 Bit-stuffing is worth a second note: it was caught by only **2** of the 13 fixtures, because it can
 only bite a packet header that happens to contain an `0xFF`. It survives small test images and fails
 on real ones.
+
+**3.15 closed the control.** Layers brought three layered fixtures, each with a grid of code-blocks so
+the trees have state to carry, and the same deliberate rebuild now fails all three. Eighteen more
+deliberate bugs were tried against the new code, one at a time; seventeen fail the suite. Components
+and layers: later layers' segments dropped, RCT left out, divided instead of shifted, U and V swapped,
+the midpoint reconstruction dropped, packets nested component-outside-resolution, COC or QCC ignored.
+9/7: K and 1/K swapped, r = 0, the wrong HH gain, the mantissa ignored, ICT's chroma coefficients
+swapped, truncation instead of rounding, the lifting steps misordered, a margin of 2, the derived
+exponent rule inverted. The one that passes is rounding halves away from zero instead of to even,
+which no fixture can see because float arithmetic all but never lands on an exact half.
 
 ### Hardened at rung 1, not in a follow-up release
 
@@ -531,12 +570,11 @@ PDF entry point gets the tighter anchor.
 ### Not facade-registered yet, deliberately
 
 Unlike JBIG2, JPEG 2000 would fit the facade perfectly — JP2 and raw J2K both have magic bytes
-(`00 00 00 0C 6A 50 20 20 0D 0A 87 0A` and `FF 4F FF 51`). It is still not registered, because the
-facade would then advertise JPEG 2000 support for a format only this narrow slice of which decodes.
-Registration lands with colour at rung 2. The roadmap's related open question — whether the decoder
-should *report* what the codestream said about colour rather than silently applying or ignoring it,
-since `SMaskInData` and the `/ColorSpace` override are out-of-band PDF signalling — is still open,
-and must be settled before rung 4 because it shapes the public surface.
+(`00 00 00 0C 6A 50 20 20 0D 0A 87 0A` and `FF 4F FF 51`). It is still not registered. The plan was
+to register with colour at rung 2, and the colour question it waited on is settled (reported, never
+applied; see above). What is left is the mapping itself: the facade promises colour-signalled RGBA,
+and turning `Jp2Colour` into `ColorEncoding` — sYCC, which still needs converting, an ICC profile, a
+raw codestream that names no colour at all — is a change of its own rather than a corner of 3.15.
 
 ## Oracle harnesses (all codecs)
 
@@ -556,7 +594,7 @@ refuses to accept that silence.
 | TIFF **tiled write** | Magick.NET (libtiff) | Just a NuGet reference. `TiffWriterTiledOracleTests` has libtiff read back what `TiffWriter` emits in `TiffLayout.Tiled`. Nothing to install, nothing to skip. Kept as an oracle even though `TiffReader` reads tiles now: writer and reader agree about tile order by construction, so a round trip cannot see a consistent transpose. |
 | TIFF **tiled read** | Magick.NET (libtiff) | The same reference, run the other way: `TiffTiledReadTests` has libtiff WRITE the tiled file (`tile-geometry` + `predictor` defines) and reads it back with `TiffReader`. **The predictor is why it must be a foreign encoder** -- `TiffWriter` emits none, so nothing we write exercises Predictor 2, and inverting it at image width rather than TILE width decodes with no error into a picture that is right in its first tile column and drifts across the rest. That sabotage fails exactly the two libtiff cases and nothing else in the suite. |
 | JBIG2 **decode** | committed jbig2enc fixtures + spec vectors | No external dependency, nothing to skip — `Fixtures/jbig2/*.jb2` (real jbig2enc output) plus the T.88 Annex H.2 MQ vector and one-hot template tests. Regenerate the fixtures with `Oracle/jbig2/make-fixtures.sh` (needs jbig2enc). |
-| JPEG 2000 **decode** | committed OpenJPEG fixtures | No external dependency, nothing to skip. A reversible 5/3 codestream reproduces its source raster **exactly**, so `Fixtures/jpeg2000/<name>.pgm` is the expected output for `<name>.j2k` — byte equality, no tolerance, no subprocess. Regenerate with `Oracle/jpeg2000/make-fixtures.sh`, which verifies each pair lossless before it will commit it. |
+| JPEG 2000 **decode** | committed OpenJPEG fixtures | No external dependency, nothing to skip. A lossless 5/3 codestream reproduces its source raster **exactly**, so `Fixtures/jpeg2000/<name>.pgm` (or `.ppm`) is the expected output for `<name>.j2k` (or `.jp2`) — byte equality, no tolerance, no subprocess. Regenerate with `Oracle/jpeg2000/make-fixtures.sh`, which verifies each pair lossless before it will commit it. The lossy fixtures in `Fixtures/jpeg2000-lossy/` have no committed expected output and are compared against `opj_decompress` at run time: exactly for `lossy53-*`, within the measured tolerance for `lossy97-*`. |
 | JPEG 2000 **conformance** | `opj_decompress` / `opj_compress` (OpenJPEG, BSD-2 — **binary only**) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpeg2000/fetch.sh` — **downloads** the pinned v2.5.4 release build (verified by SHA-256) into `dist/`, git-ignored. The only oracle here that is not compiled from source: OpenJPEG wants CMake, and upstream ships official builds for both platforms that matter, so this dev box and CI run the *same bytes* rather than merely the same source. **CI fetches it.** |
 | JBIG2 **conformance** | `jbig2dec` (Artifex, AGPL — **binary only**) | `apt-get install jbig2dec`, or on Windows `wsl -- sudo apt-get install -y jbig2dec` — `Jbig2Oracle` finds it on PATH or through WSL. CI installs it with a one-line apt step. |
 
