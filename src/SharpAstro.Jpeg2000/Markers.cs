@@ -239,4 +239,39 @@ internal sealed record Quantization(
     QuantizationStyle Style,
     int GuardBits,
     int[] Exponents,
-    int[] Mantissas);
+    int[] Mantissas)
+{
+    /// <summary>
+    /// The exponent and mantissa (eps_b, mu_b) of one subband.
+    /// <para>
+    /// Expounded and unquantized styles signal one pair per subband, in the codestream's order.
+    /// The derived style signals only the LL band's, and every other band's follows from it by
+    /// T.800 Equation E-5: <c>eps_b = eps_0 - N_L + n_b</c>, <c>mu_b = mu_0</c>, where N_L is the
+    /// number of decomposition levels and n_b the level the band comes from — so each level
+    /// nearer full resolution halves the step.
+    /// </para>
+    /// </summary>
+    /// <param name="bandIndex">The band's position in the codestream's order: LL, then HL, LH, HH per resolution upward.</param>
+    /// <param name="decompositionLevel">n_b: the decomposition level the band comes from, N_L for the LL band.</param>
+    /// <param name="levels">N_L, the tile-component's decomposition levels.</param>
+    /// <param name="component">For the error message.</param>
+    /// <exception cref="InvalidDataException">The marker carries too few pairs for the bands it must describe.</exception>
+    public (int Exponent, int Mantissa) StepFor(int bandIndex, int decompositionLevel, int levels, int component)
+    {
+        if (Style == QuantizationStyle.ScalarDerived)
+        {
+            if (Exponents.Length == 0)
+                throw new InvalidDataException(
+                    $"JPEG 2000: component {component}'s derived quantization carries no step size.");
+
+            return (Exponents[0] - levels + decompositionLevel, Mantissas[0]);
+        }
+
+        if (bandIndex >= Exponents.Length)
+            throw new InvalidDataException(
+                $"JPEG 2000: component {component}'s quantization carries {Exponents.Length} subband " +
+                $"exponents, too few for {levels} decomposition levels (needs {3 * levels + 1}).");
+
+        return (Exponents[bandIndex], Mantissas[bandIndex]);
+    }
+}

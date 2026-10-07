@@ -3,7 +3,8 @@ using System;
 namespace SharpAstro.Jpeg2000;
 
 /// <summary>
-/// The inverse discrete wavelet transform of T.800 Annex F, reversible 5/3 only.
+/// The inverse discrete wavelet transform of T.800 Annex F: the reversible 5/3
+/// filter in integers, and the irreversible 9/7 filter in single-precision floats.
 /// <para>
 /// Reconstruction climbs the resolutions: level 0's LL band is the starting
 /// image, and each level up interleaves that image with the level's HL, LH and
@@ -41,6 +42,150 @@ internal static class InverseWavelet
         }
 
         return current;
+    }
+
+    /// <summary>
+    /// <see cref="Reconstruct"/> for a 9/7 tile-component: the same climb over the
+    /// same interleave, from the dequantized coefficients, in floats.
+    /// <para>
+    /// Single precision, deliberately. The 9/7 coefficients are irrational, so no
+    /// width makes this exact, and the reference decoders compute in floats too:
+    /// matching their arithmetic is what keeps the difference from them to the
+    /// rounding of the last step rather than a drift built up over five levels.
+    /// </para>
+    /// </summary>
+    /// <returns>The samples, row-major over the tile-component's bounds, before rounding.</returns>
+    public static float[] ReconstructIrreversible(TileComponent tile)
+    {
+        var lowPass = tile.Resolutions[0].Bands[0];
+        var current = (float[])lowPass.Values.Clone();
+        var currentBounds = lowPass.Bounds;
+
+        for (var r = 1; r < tile.Resolutions.Length; r++)
+        {
+            var resolution = tile.Resolutions[r];
+            current = LiftIrreversible(current, currentBounds, resolution);
+            currentBounds = resolution.Bounds;
+        }
+
+        return current;
+    }
+
+    /// <summary>
+    /// <see cref="Lift"/> for the 9/7 filter: the same interleave and the same row-then-column
+    /// order, over floats.
+    /// </summary>
+    private static float[] LiftIrreversible(float[] lowPass, Rect lowPassBounds, Resolution resolution)
+    {
+        var bounds = resolution.Bounds;
+        var width = bounds.Width;
+        var height = bounds.Height;
+        var samples = new float[(long)width * height];
+        if (width == 0 || height == 0) return samples;
+
+        Scatter(samples, bounds, lowPass, lowPassBounds, xOdd: false, yOdd: false);
+        foreach (var band in resolution.Bands)
+        {
+            switch (band.Kind)
+            {
+                case BandKind.Hl:
+                    Scatter(samples, bounds, band.Values, band.Bounds, xOdd: true, yOdd: false);
+                    break;
+                case BandKind.Lh:
+                    Scatter(samples, bounds, band.Values, band.Bounds, xOdd: false, yOdd: true);
+                    break;
+                case BandKind.Hh:
+                    Scatter(samples, bounds, band.Values, band.Bounds, xOdd: true, yOdd: true);
+                    break;
+            }
+        }
+
+        var scratch = new float[Math.Max(width, height) + 2 * IrreversibleMargin];
+        var line = new float[Math.Max(width, height)];
+
+        for (var y = 0; y < height; y++)
+        {
+            Array.Copy(samples, (long)y * width, line, 0, width);
+            Filter97(line.AsSpan(0, width), bounds.X0, bounds.X1, scratch);
+            Array.Copy(line, 0, samples, (long)y * width, width);
+        }
+
+        for (var x = 0; x < width; x++)
+        {
+            for (var y = 0; y < height; y++) line[y] = samples[(long)y * width + x];
+            Filter97(line.AsSpan(0, height), bounds.Y0, bounds.Y1, scratch);
+            for (var y = 0; y < height; y++) samples[(long)y * width + x] = line[y];
+        }
+
+        return samples;
+    }
+
+    // T.800 Table F.4: the 9/7 lifting parameters and scaling factor.
+    private const float Alpha = -1.586134342059924f;
+    private const float Beta = -0.052980118572961f;
+    private const float Gamma = 0.882911075530934f;
+    private const float Delta = 0.443506852043971f;
+    private const float K = 1.230174104914001f;
+    private const float InverseK = 1f / K;
+
+    /// <summary>
+    /// How far the signal is extended past each end before filtering. Each of the four lifting
+    /// steps reads one neighbour each way, so a value computed next to the end of the extended
+    /// buffer, where one neighbour is missing, is wrong, and the wrongness moves one sample
+    /// inward per step: four steps, four samples. With this margin every wrong value is in the
+    /// extension and none is in the signal.
+    /// </summary>
+    private const int IrreversibleMargin = 4;
+
+    /// <summary>
+    /// T.800 F.3.7 (1D_SR) with the irreversible filter of F.3.8.2, over the half-open index range
+    /// <c>[i0, i1)</c>: undo the scaling (the low-pass samples by K, the high-pass by 1/K), then
+    /// the four lifting steps in reverse, each subtracting what the forward transform added.
+    /// </summary>
+    private static void Filter97(Span<float> signal, int i0, int i1, float[] scratch)
+    {
+        var length = i1 - i0;
+        if (length <= 0) return;
+
+        if (length == 1)
+        {
+            // F.3.7's degenerate case, as in Filter: a lone low-pass sample passes through.
+            if ((i0 & 1) == 0) return;
+
+            throw new NotSupportedException(
+                "JPEG 2000: a subband one sample wide starting at an odd coordinate is not implemented. " +
+                "It needs an odd image or tile origin, which opj_compress cannot emit, so this path has " +
+                "no reference to be validated against.");
+        }
+
+        var origin = i0 - IrreversibleMargin;
+        var count = length + 2 * IrreversibleMargin;
+        var x = scratch.AsSpan(0, count);
+        for (var j = 0; j < count; j++) x[j] = signal[Mirror(origin + j, i0, i1) - i0];
+
+        // x[j] holds the sample at absolute index origin + j, and which samples are low-pass is
+        // decided by the parity of that ABSOLUTE index, not of j.
+        var firstEven = (origin & 1) == 0 ? 0 : 1;
+        var firstOdd = 1 - firstEven;
+
+        // Steps 1 and 2.
+        for (var j = firstEven; j < count; j += 2) x[j] *= K;
+        for (var j = firstOdd; j < count; j += 2) x[j] *= InverseK;
+
+        // Steps 3 to 6, each over every sample of its parity that has both neighbours.
+        Lift97(x, firstEven, Delta);
+        Lift97(x, firstOdd, Gamma);
+        Lift97(x, firstEven, Beta);
+        Lift97(x, firstOdd, Alpha);
+
+        x.Slice(IrreversibleMargin, length).CopyTo(signal);
+    }
+
+    /// <summary>One lifting step: every sample of one parity less <paramref name="c"/> times the sum of its neighbours.</summary>
+    private static void Lift97(Span<float> x, int first, float c)
+    {
+        var start = first == 0 ? 2 : first;
+        for (var j = start; j + 1 < x.Length; j += 2) x[j] -= c * (x[j - 1] + x[j + 1]);
     }
 
     /// <summary>
@@ -103,8 +248,8 @@ internal static class InverseWavelet
     /// Places one band's coefficients on the interleaved grid at the parity its
     /// orientation dictates.
     /// </summary>
-    private static void Scatter(
-        int[] destination, Rect destinationBounds, int[] source, Rect sourceBounds, bool xOdd, bool yOdd)
+    private static void Scatter<T>(
+        T[] destination, Rect destinationBounds, T[] source, Rect sourceBounds, bool xOdd, bool yOdd)
     {
         if (sourceBounds.IsEmpty) return;
 
@@ -224,6 +369,14 @@ internal static class InverseWavelet
     {
         var signal = (int[])interleaved.Clone();
         Filter(signal.AsSpan(), i0, i1, new int[signal.Length + 8]);
+        return signal;
+    }
+
+    /// <summary>The 9/7 counterpart of <see cref="FilterForTests"/>.</summary>
+    internal static float[] Filter97ForTests(float[] interleaved, int i0, int i1)
+    {
+        var signal = (float[])interleaved.Clone();
+        Filter97(signal.AsSpan(), i0, i1, new float[signal.Length + 2 * IrreversibleMargin]);
         return signal;
     }
 }

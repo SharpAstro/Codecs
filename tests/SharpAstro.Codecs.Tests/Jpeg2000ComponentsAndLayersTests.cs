@@ -26,12 +26,17 @@ public class Jpeg2000ComponentsAndLayersTests
     private static byte[] Fixture(string name) =>
         File.ReadAllBytes(Path.Combine(FixtureDirectory, name + ".j2k"));
 
+    /// <summary>
+    /// The lossy REVERSIBLE fixtures only. The 9/7 ones beside them are compared within a
+    /// tolerance, in <see cref="Jpeg2000IrreversibleTests"/>, and must never reach the exact
+    /// assertion here, nor this one theirs.
+    /// </summary>
     public static TheoryData<string> LossyCodestreams
     {
         get
         {
             var data = new TheoryData<string>();
-            foreach (var path in Directory.GetFiles(LossyDirectory, "*.j2k").OrderBy(p => p))
+            foreach (var path in Directory.GetFiles(LossyDirectory, "lossy53-*.j2k").OrderBy(p => p))
                 data.Add(Path.GetFileNameWithoutExtension(path));
 
             return data;

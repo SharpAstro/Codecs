@@ -117,11 +117,30 @@ internal sealed class Subband
     public required CodeBlock[] Blocks { get; init; }
 
     /// <summary>
-    /// Decoded coefficients, row-major over <see cref="Bounds"/>. Signed: tier-1
-    /// produces a magnitude and a sign, and the reversible path needs no
-    /// scaling on top.
+    /// Whether this band belongs to a 9/7 tile-component, whose coefficients are
+    /// quantization indices to be scaled by <see cref="StepSize"/> rather than
+    /// the integers the 5/3 wavelet takes as they are.
+    /// </summary>
+    public required bool Irreversible { get; init; }
+
+    /// <summary>
+    /// Delta_b, the dequantisation step (T.800 Equation E-3), for an
+    /// irreversible band; 1 for a reversible one, where nothing is quantized.
+    /// </summary>
+    public required float StepSize { get; init; }
+
+    /// <summary>
+    /// Decoded coefficients, row-major over <see cref="Bounds"/>, for a
+    /// reversible band; empty for an irreversible one. Signed: tier-1 produces a
+    /// magnitude and a sign, and the reversible path needs no scaling on top.
     /// </summary>
     public required int[] Coefficients { get; init; }
+
+    /// <summary>
+    /// Dequantized coefficients, row-major over <see cref="Bounds"/>, for an
+    /// irreversible band; empty for a reversible one.
+    /// </summary>
+    public required float[] Values { get; init; }
 
     /// <summary>
     /// The precinct's inclusion tag tree: for each code-block, the quality layer
@@ -189,6 +208,9 @@ internal sealed class TileComponent
     /// <summary>Resolutions from 0 (smallest) to <c>DecompositionLevels</c>.</summary>
     public required Resolution[] Resolutions { get; init; }
 
+    /// <summary>Whether this tile-component uses the 9/7 wavelet, and so reconstructs in floats.</summary>
+    public required bool Irreversible { get; init; }
+
     /// <summary>
     /// Builds the geometry for one component of a single-tile codestream, from that component's own
     /// coding style and quantization (COD and QCD with its COC and QCC applied).
@@ -245,17 +267,20 @@ internal sealed class TileComponent
                 // resolution upward. Deriving the index rather than carrying a
                 // running counter keeps it correct if bands are ever built out
                 // of order.
-                var exponentIndex = r == 0 ? 0 : 3 * (r - 1) + b + 1;
-                if (exponentIndex >= quantization.Exponents.Length)
-                    throw new InvalidDataException(
-                        $"JPEG 2000: component {componentIndex}'s quantization carries " +
-                        $"{quantization.Exponents.Length} subband exponents, too few for {levels} " +
-                        $"decomposition levels (needs {3 * levels + 1}).");
+                var bandIndex = r == 0 ? 0 : 3 * (r - 1) + b + 1;
+                var (exponent, mantissa) = quantization.StepFor(bandIndex, decompositionLevel, levels, componentIndex);
 
-                var exponent = quantization.Exponents[exponentIndex];
+                // T.800 Equation E-3 and Table E.1: Delta_b = 2^(R_b - eps_b) * (1 + mu_b / 2^11),
+                // where R_b, the band's nominal dynamic range, is the component's precision
+                // plus the log2 gain of its orientation (0 for LL, 1 for HL and LH, 2 for HH).
+                var irreversible = cod.Transform == WaveletTransform.Irreversible97;
+                var gain = kind switch { BandKind.Ll => 0, BandKind.Hh => 2, _ => 1 };
+                var stepSize = irreversible
+                    ? (float)(Math.ScaleB(1.0, component.BitDepth + gain - exponent) * (1.0 + mantissa / 2048.0))
+                    : 1f;
 
                 budget.Charge(bandBounds.Width, bandBounds.Height);
-                var band = BuildBand(kind, bandBounds, exponent, quantization.GuardBits, cod, r);
+                var band = BuildBand(kind, bandBounds, exponent, quantization.GuardBits, cod, r, irreversible, stepSize);
                 budget.ChargeCodeBlocks(band.Blocks.Length);
 
                 bands[b] = band;
@@ -264,11 +289,17 @@ internal sealed class TileComponent
             resolutions[r] = new Resolution { Index = r, Bounds = resolutionBounds, Bands = bands };
         }
 
-        return new TileComponent { Bounds = bounds, Resolutions = resolutions };
+        return new TileComponent
+        {
+            Bounds = bounds,
+            Resolutions = resolutions,
+            Irreversible = cod.Transform == WaveletTransform.Irreversible97,
+        };
     }
 
     private static Subband BuildBand(
-        BandKind kind, Rect bounds, int exponent, int guardBits, CodingStyle cod, int resolution)
+        BandKind kind, Rect bounds, int exponent, int guardBits, CodingStyle cod, int resolution,
+        bool irreversible, float stepSize)
     {
         // T.800 Equation B-16: the code-block size is capped by the precinct's,
         // and above resolution 0 a precinct maps onto a subband at half size, so
@@ -326,7 +357,10 @@ internal sealed class TileComponent
             BlocksWide = blocksWide,
             BlocksHigh = blocksHigh,
             Blocks = blocks,
-            Coefficients = new int[bounds.Area],
+            Irreversible = irreversible,
+            StepSize = stepSize,
+            Coefficients = irreversible ? [] : new int[bounds.Area],
+            Values = irreversible ? new float[bounds.Area] : [],
         };
     }
 

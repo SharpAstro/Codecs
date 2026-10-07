@@ -418,6 +418,12 @@ internal sealed class BlockState
         var offsetX = block.Bounds.X0 - band.Bounds.X0;
         var offsetY = block.Bounds.Y0 - band.Bounds.Y0;
 
+        if (band.Irreversible)
+        {
+            WriteDequantized(band, bandWidth, offsetX, offsetY);
+            return;
+        }
+
         for (var y = 0; y < _height; y++)
         {
             for (var x = 0; x < _width; x++)
@@ -431,6 +437,31 @@ internal sealed class BlockState
 
                 band.Coefficients[(offsetY + y) * bandWidth + offsetX + x] =
                     _negative[i] != 0 ? -magnitude : magnitude;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The irreversible counterpart of <see cref="WriteTo"/>: T.800 Equation E-6 with r = 1/2,
+    /// <c>(q + r * 2^(Mb - Nb)) * Delta_b</c>. Here the half is added even when every bit-plane was
+    /// decoded, because a quantization index stands for an interval of width Delta_b, not for its
+    /// lower edge, and the middle of it is the best guess. On the reversible path the same half
+    /// falls below the last bit and rounds away.
+    /// </summary>
+    private void WriteDequantized(Subband band, int bandWidth, int offsetX, int offsetY)
+    {
+        var step = band.StepSize;
+
+        for (var y = 0; y < _height; y++)
+        {
+            for (var x = 0; x < _width; x++)
+            {
+                var i = Index(x, y);
+                var magnitude = _magnitude[i];
+                if (magnitude == 0) continue;
+
+                var value = (magnitude + MathF.ScaleB(0.5f, _lowestPlane[i])) * step;
+                band.Values[(offsetY + y) * bandWidth + offsetX + x] = _negative[i] != 0 ? -value : value;
             }
         }
     }

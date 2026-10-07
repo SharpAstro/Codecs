@@ -41,4 +41,26 @@ internal static class ComponentTransform
             y2[i] = b;
         }
     }
+
+    /// <summary>
+    /// G.3.2: the irreversible component transform, inverted. This is the YCbCr to RGB of JPEG
+    /// with T.800's own rounded coefficients, applied to the 9/7 path's unrounded samples; the
+    /// rounding to integers waits for the level shift, so it happens once.
+    /// </summary>
+    /// <param name="y0">Component 0 (Y), rewritten in place as the first output component.</param>
+    /// <param name="y1">Component 1 (Cb), rewritten in place as the second.</param>
+    /// <param name="y2">Component 2 (Cr), rewritten in place as the third.</param>
+    public static void InverseIct(float[] y0, float[] y1, float[] y2)
+    {
+        for (var i = 0; i < y0.Length; i++)
+        {
+            var y = y0[i];
+            var cb = y1[i];
+            var cr = y2[i];
+
+            y0[i] = y + 1.402f * cr;
+            y1[i] = y - 0.34413f * cb - 0.71414f * cr;
+            y2[i] = y + 1.772f * cb;
+        }
+    }
 }
