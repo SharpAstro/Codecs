@@ -16,9 +16,11 @@
 API shape has survived contact with a real consumer. The first half is met. The second is
 not, and it is worth knowing precisely why, because closing it is small:
 
-- The wiring exists. `PdfLibDocumentView.cs:897` in drawboard/pdf-viewer calls
+- The wiring exists. `PdfLibDocumentView`'s image path in drawboard/pdf-viewer calls
   `Jbig2ImageDecode.TryDecode` on the draw path, and `PDF.Lib` carries the out-of-band
-  pieces (`PdfObjectResolver.GetJbig2Globals` into `ImageData.Jbig2Globals`).
+  pieces (`PdfObjectResolver.GetJbig2Globals` into `ImageData.Jbig2Globals`). Since
+  2026-10-07 the CPU thumbnail path calls it too, as `TryDecode(data, maxDim)`, which averages
+  the decoded bits straight into the thumbnail rather than expanding them to full-size RGBA.
 - No document has ever gone through it. `src/PDF.Lib.Tests/Assets/` holds no JBIG2
   fixture, and the only JBIG2 tests there are negative ones (non-JBIG2 bytes return null)
   plus a disk-cache round trip. So the API has been exercised by synthetic byte arrays
@@ -36,6 +38,13 @@ family now depends on is right.
 > it slipped. It is still worth doing before rung 4, which is where this decoder grows its
 > own PDF entry point and would otherwise be the *second* unvalidated embedded-stream
 > contract in the family.
+
+> **Update 2026-10-07: real streams have now been through it, though not as a fixture.** Every
+> JBIG2 image on the first six pages of the pdf-viewer's local corpus documents that use JBIG2
+> decoded through `Jbig2ImageDecode.TryDecode`: five images in three documents (building
+> drawings and a thesis), each 0.1 to 0.4 megapixels, marks and stamps rather than page scans.
+> Those are client documents, so the committed fixture the gate asks for is still missing, and
+> the gate stays open. What changed is that the contract has met real streams and held.
 
 ## What already exists and transfers
 
@@ -110,6 +119,35 @@ Note the sum (about 5700 to 8700) lands below the 8 to 15k headline in
 `ROADMAP-pdf-codecs.md`. The difference is the refusals above, mostly ROI and part 2. If
 those come back, so does the headline number.
 
+## What PDF files actually need (measured 2026-10-07)
+
+`JpxCorpusProbe` in drawboard/pdf-viewer reads the codestream markers of every `/JPXDecode`
+image on page 1 of a local corpus of 235 PDFs, without going through the decoder. It found six
+images in two documents, a floor-plan set and a user's manual, all small (306x263 to 395x219):
+
+| | Images |
+|---|---|
+| 3 components, 8 bit, with the multiple component transform | 6 |
+| 9/7 irreversible wavelet, 5 or 6 decomposition levels | 6 |
+| Multiple quality layers (2, or 20) | 6 |
+| One tile, LRCP, maximal precincts | 6 |
+| Wrapped in a JP2 container | 2 |
+
+Three things follow.
+
+- **Rung 2 alone decodes none of them.** Every one has more than one quality layer, which the
+  table puts in rung 3. Nothing else of rung 3 appears: no tiles or tile-parts, no precincts, no
+  other progression order, no POC, packed headers or SOP/EPH. So the smallest step that decodes
+  a real PDF image is rung 2 plus multiple quality layers in LRCP, and pulling layers forward
+  out of rung 3 is what makes the package useful to a PDF reader soonest. Not because layers
+  are trivial (they are what makes tier-2 stateful, see `Geometry.cs`) but because they are the
+  only part of rung 3 these files need.
+- **"Most JPX inside real PDFs is 9/7 plus ICT" holds**: six of six, since the component
+  transform alongside the 9/7 wavelet is the irreversible one.
+- **The JP2 container is on the critical path for some documents.** A survey of the same kind in
+  August (221 files) found four images, all bare codestreams; this one finds two JP2-wrapped,
+  in one of the two documents. Rung 4, colour boxes included, is what that document needs.
+
 ## Rung 5 deserves a note
 
 `ROADMAP-pdf-codecs.md` calls the LOD property "the single most attractive property of the
@@ -118,6 +156,14 @@ codestream structure, where `SharpAstro.Jpeg`'s scaled decode had to be bolted o
 transform as DCT-domain decimation. But it is last in the table on purpose. Tier-2 already
 iterates resolution levels for rung 3; rung 5 is the flag that makes it stop early, and
 implementing it before tier-2 is complete means writing the iteration twice.
+
+**A consumer is now waiting on it.** Since 2026-10-07 drawboard/pdf-viewer draws every sidebar
+thumbnail on the CPU (its GPU thumbnail path wedged an Adreno driver), with images drawn at the
+size the thumbnail needs: JPEG through `SharpAstro.Jpeg`'s scaled decode, raw samples read only
+at the pixels kept, JBIG2 averaged into the thumbnail as it is decoded. JPX is the one format
+still decoded whole there, so the viewer caps it at 16 megapixels a thumbnail and leaves a larger
+image out. An entry point shaped like the JPEG one, `Decode(data, maxDim)` returning the size it
+actually produced, is what would lift that cap.
 
 ## Validation plan
 
@@ -273,3 +319,8 @@ Not the 9/7 filter. Take the two cheap wins that widen the envelope without new 
 
 Only then the 9/7 filter and dequantisation, which is where the tolerance arrives and where
 the test suite stops being able to say "exact". Keep those tests in their own file.
+
+**For PDF, though, neither cheap win decodes a single real image** (see "What PDF files actually
+need"): all six in the measured corpus are 9/7 with ICT and several quality layers. The order
+above is still the right one for keeping the suite exact. Just know that the PDF payoff arrives
+only once 9/7, ICT and multiple layers are all in, and plan rung 2's end to include layers.
