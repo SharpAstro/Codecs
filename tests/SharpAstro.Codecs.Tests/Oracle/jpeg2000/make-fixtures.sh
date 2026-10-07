@@ -106,6 +106,20 @@ FIXTURES=(
 LOSSY=(
     "lossy53-struct64|struct|64|64|-r 6"
     "lossy53-rgb-layers2|rgbstruct|64|64|-r 20,6 -b 16,16"
+
+    # The 9/7 wavelet (-I). Lossy by construction, even with every pass kept,
+    # because its coefficients are quantized; with three components opj_compress
+    # pairs it with ICT unless told -mct 0. Its expected output is OpenJPEG's
+    # float arithmetic, so these are compared within a tolerance, in their own
+    # test file, and never alongside the exact cases.
+    "lossy97-struct64|struct|64|64|-I"
+    "lossy97-noise64|noise|64|64|-I -r 4"
+    "lossy97-odd37x23|struct|37|23|-I -n 3"
+    "lossy97-rgb-struct64|rgbstruct|64|64|-I"
+    "lossy97-rgb-nomct-struct64|rgbstruct|64|64|-I -mct 0"
+    # The shape of the two 9/7 images measured in real PDFs: RGB, ICT, several
+    # layers.
+    "lossy97-rgb-layers3|rgbstruct|64|64|-I -r 40,20,8 -b 16,16"
 )
 
 source_extension() {

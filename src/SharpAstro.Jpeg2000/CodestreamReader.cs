@@ -545,16 +545,19 @@ internal static class CodestreamReader
             var coding = header.ComponentCoding[c];
             var quantization = header.ComponentQuantization[c];
 
-            if (coding.Transform != WaveletTransform.Reversible53)
+            // The 5/3 wavelet carries integers that need no step size, the 9/7 one quantization
+            // indices that do. Encoders pair them that way, and the other two pairings would each
+            // need a reading of the step this decoder has no fixture for: refused, not guessed.
+            var reversible = coding.Transform == WaveletTransform.Reversible53;
+            if (reversible && quantization.Style != QuantizationStyle.None)
                 throw new NotSupportedException(
-                    "JPEG 2000: the 9/7 irreversible wavelet is not implemented; only the reversible 5/3 " +
-                    "filter is. It needs dequantisation from QCD's exponent/mantissa pairs and a " +
-                    "tolerance-based test rather than the exact one the reversible path gets.");
-
-            if (quantization.Style != QuantizationStyle.None)
+                    $"JPEG 2000: component {c} uses the reversible 5/3 wavelet with {quantization.Style} " +
+                    "quantization. Only unquantized coefficients are implemented for the 5/3 wavelet.");
+            if (!reversible && quantization.Style == QuantizationStyle.None)
                 throw new NotSupportedException(
-                    $"JPEG 2000: quantization style {quantization.Style} is not implemented. Only the " +
-                    "reversible path's unquantized coefficients are.");
+                    $"JPEG 2000: component {c} uses the irreversible 9/7 wavelet with no quantization step " +
+                    "sizes. Only scalar quantization, derived or expounded, is implemented for the 9/7 " +
+                    "wavelet.");
 
             if (coding.CodeBlockStyle != 0)
                 throw new NotSupportedException(

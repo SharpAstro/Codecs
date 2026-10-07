@@ -9,7 +9,7 @@ namespace SharpAstro.Jpeg2000;
 /// <para>
 /// The components are whatever the codestream coded, after the inverse
 /// multiple component transform when COD asked for one: so three components
-/// coded with RCT come back as the three the encoder started from,
+/// coded with RCT or ICT come back as the three the encoder started from,
 /// conventionally red, green and blue. What they mean is said by the JP2
 /// <c>colr</c> box or the PDF image dictionary, not by the codestream, and this
 /// type does not guess.
@@ -63,10 +63,11 @@ public sealed record Jpeg2000Image(int Width, int Height, int BitDepth, ushort[]
 /// <para>
 /// <b>What this decodes today.</b> A raw J2K codestream holding any number of
 /// 1-to-16-bit unsigned components of one precision, in a single tile, at full
-/// resolution, coded in any number of quality layers with the reversible 5/3
-/// wavelet, maximal precincts and LRCP progression, with or without the
-/// reversible component transform (RCT). That is rung 1 of <c>ROADMAP-jpx.md</c>
-/// and the first part of rung 2, with quality layers brought forward from rung 3
+/// resolution, coded in any number of quality layers with maximal precincts and
+/// LRCP progression: losslessly with the reversible 5/3 wavelet, or lossily with
+/// the irreversible 9/7 wavelet and scalar quantization, with or without the
+/// matching component transform (RCT or ICT). That is rungs 1 and 2 of
+/// <c>ROADMAP-jpx.md</c>, with quality layers brought forward from rung 3
 /// because every <c>/JPXDecode</c> image measured in real PDFs has several.
 /// Anything outside it raises <see cref="NotSupportedException"/> naming the
 /// feature and the rung that owns it — never a plausible-looking wrong raster.
@@ -111,8 +112,9 @@ public static class Jpeg2000Decoder
         Tier2.ReadPackets(header, components, tilePartData);
 
         // Then tier-1, block by block, and the inverse wavelet, component by
-        // component.
-        var planes = new int[components.Length][];
+        // component: in integers for a 5/3 component, in floats for a 9/7 one.
+        var integers = new int[components.Length][];
+        var reals = new float[components.Length][];
         for (var c = 0; c < components.Length; c++)
         {
             var tile = components[c];
@@ -128,15 +130,20 @@ public static class Jpeg2000Decoder
             }
 
             budget.Charge(tile.Bounds.Width, tile.Bounds.Height);
-            planes[c] = InverseWavelet.Reconstruct(tile);
+            if (tile.Irreversible) reals[c] = InverseWavelet.ReconstructIrreversible(tile);
+            else integers[c] = InverseWavelet.Reconstruct(tile);
         }
 
         // G.1.2: the component transform comes between the wavelet and the
         // level shift. The reader has already checked that components 0 to 2
-        // share one wavelet, and the 5/3 one is the only wavelet it accepts.
-        if (header.MultipleComponentTransform) ComponentTransform.InverseRct(planes[0], planes[1], planes[2]);
+        // share one wavelet, which picks RCT for the 5/3 and ICT for the 9/7.
+        if (header.MultipleComponentTransform)
+        {
+            if (components[0].Irreversible) ComponentTransform.InverseIct(reals[0], reals[1], reals[2]);
+            else ComponentTransform.InverseRct(integers[0], integers[1], integers[2]);
+        }
 
-        return LevelShift(planes, components[0].Bounds, siz.Components[0].BitDepth);
+        return LevelShift(integers, reals, components[0].Bounds, siz.Components[0].BitDepth);
     }
 
     /// <summary>
@@ -150,20 +157,38 @@ public static class Jpeg2000Decoder
     /// into a <see cref="ushort"/> unchecked would wrap a bright sample to a
     /// dark one.
     /// </para>
+    /// <para>
+    /// A 9/7 component arrives in floats and is rounded here, to nearest with
+    /// ties to even, which is the one rounding of the irreversible path: the
+    /// wavelet and ICT both work on unrounded values.
+    /// </para>
     /// </summary>
-    private static Jpeg2000Image LevelShift(int[][] planes, Rect bounds, int bitDepth)
+    /// <param name="integers">Each reversible component's samples, null for an irreversible one.</param>
+    /// <param name="reals">Each irreversible component's samples, null for a reversible one.</param>
+    private static Jpeg2000Image LevelShift(int[]?[] integers, float[]?[] reals, Rect bounds, int bitDepth)
     {
         var shift = 1 << (bitDepth - 1);
         var maximum = (1 << bitDepth) - 1;
-        var count = planes.Length;
+        var count = integers.Length;
 
         var output = new ushort[(long)bounds.Width * bounds.Height * count];
         for (var c = 0; c < count; c++)
         {
-            var plane = planes[c];
-            for (int i = 0, o = c; i < plane.Length; i++, o += count)
+            if (integers[c] is { } plane)
             {
-                output[o] = (ushort)Math.Clamp(plane[i] + shift, 0, maximum);
+                for (int i = 0, o = c; i < plane.Length; i++, o += count)
+                {
+                    output[o] = (ushort)Math.Clamp(plane[i] + shift, 0, maximum);
+                }
+            }
+            else
+            {
+                var real = reals[c]!;
+                for (int i = 0, o = c; i < real.Length; i++, o += count)
+                {
+                    // Clamped as a float, so a value no int can hold still lands on a rail.
+                    output[o] = (ushort)Math.Clamp(MathF.Round(real[i]) + shift, 0f, maximum);
+                }
             }
         }
 
