@@ -99,10 +99,13 @@ internal static class BlockDecoder
     /// <summary>
     /// Concatenates the block's coded segments.
     /// <para>
-    /// One layer means one segment, so this is a copy of a single range today.
-    /// It is written as a gather anyway because the alternative — assuming one
-    /// segment — would be an assumption with no assertion behind it, and rung 3
-    /// makes it false.
+    /// A block gets one segment from each quality layer that adds passes to it.
+    /// With no code-block style flags the encoder codes all of a block's passes as
+    /// ONE MQ codeword, terminated once at the end, and the layers only cut that
+    /// codeword at pass boundaries — so the segments are read back as the single
+    /// run of bytes they were cut from. (Termination on every pass, A.19's
+    /// <c>TERMALL</c>, would make each segment its own codeword and this a
+    /// different function; the reader refuses that flag.)
     /// </para>
     /// </summary>
     private static byte[] Gather(CodeBlock block, ReadOnlySpan<byte> tilePartData)
@@ -145,6 +148,14 @@ internal sealed class BlockState
     private readonly byte[] _refined;
     private readonly int[] _magnitude;
 
+    /// <summary>
+    /// The lowest bit-plane whose bit is known for each significant coefficient: where it became
+    /// significant, then each plane that refined it. Below it the magnitude is unknown, because the
+    /// codestream was cut there, and <see cref="WriteTo"/> reconstructs it at the middle of what
+    /// is unknown rather than at the bottom.
+    /// </summary>
+    private readonly byte[] _lowestPlane;
+
     public BlockState(int width, int height, BandKind kind)
     {
         _width = width;
@@ -158,6 +169,7 @@ internal sealed class BlockState
         _visited = new byte[cells];
         _refined = new byte[cells];
         _magnitude = new int[cells];
+        _lowestPlane = new byte[cells];
     }
 
     private int Index(int x, int y) => (y + 1) * _stride + (x + 1);
@@ -220,6 +232,7 @@ internal sealed class BlockState
 
                     if (mq.Decode(contexts, context) != 0) _magnitude[i] |= 1 << plane;
                     _refined[i] = 1;
+                    _lowestPlane[i] = (byte)plane;
                 }
             }
         }
@@ -281,6 +294,7 @@ internal sealed class BlockState
     {
         _magnitude[i] |= 1 << plane;
         _significant[i] = 1;
+        _lowestPlane[i] = (byte)plane;
 
         var (context, invert) = SignContext(i);
 
@@ -385,7 +399,19 @@ internal sealed class BlockState
     /// <summary>A neighbour's signed contribution: 0 if insignificant, else +1 or -1.</summary>
     private int Contribution(int i) => _significant[i] == 0 ? 0 : _negative[i] != 0 ? -1 : 1;
 
-    /// <summary>Copies the decoded magnitudes and signs into the subband's coefficient array.</summary>
+    /// <summary>
+    /// Copies the decoded magnitudes and signs into the subband's coefficient array.
+    /// <para>
+    /// A coefficient whose lowest bits were never decoded, because a quality layer cut the
+    /// code-block's passes short, is reconstructed by T.800 E.1.1.2 with r = 1/2: half of the
+    /// unknown range is added to what was decoded, so the value lands in the middle of the interval
+    /// the decoded bits leave open rather than at its floor. With every bit-plane decoded the half is
+    /// below the last bit and rounds away, so a lossless codestream still decodes exactly. Without
+    /// it, a lossy 5/3 codestream decodes a sample or two off OpenJPEG's, which reconstructs the
+    /// same way — one of the four reversible images measured in real PDFs did, by 1 in 1,007
+    /// samples.
+    /// </para>
+    /// </summary>
     public void WriteTo(Subband band, CodeBlock block)
     {
         var bandWidth = band.Bounds.Width;
@@ -399,6 +425,9 @@ internal sealed class BlockState
                 var i = Index(x, y);
                 var magnitude = _magnitude[i];
                 if (magnitude == 0) continue;
+
+                var lowest = _lowestPlane[i];
+                if (lowest > 0) magnitude += 1 << (lowest - 1);
 
                 band.Coefficients[(offsetY + y) * bandWidth + offsetX + x] =
                     _negative[i] != 0 ? -magnitude : magnitude;

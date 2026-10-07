@@ -30,11 +30,12 @@ public class Jpeg2000DecoderTests
     [MemberData(nameof(Jpeg2000FixtureTests.Codestreams), MemberType = typeof(Jpeg2000FixtureTests))]
     public void EveryFixture_DecodesExactly(string name)
     {
-        var expected = Pnm.Read(Path.Combine(FixtureDirectory, name + ".pgm"));
+        var expected = Pnm.Read(Jpeg2000FixtureTests.SourceRaster(name));
         var decoded = Jpeg2000Decoder.Decode(File.ReadAllBytes(Path.Combine(FixtureDirectory, name + ".j2k")));
 
         decoded.Width.ShouldBe(expected.Width);
         decoded.Height.ShouldBe(expected.Height);
+        decoded.Components.ShouldBe(expected.Components);
         decoded.BitDepth.ShouldBe(8);
         decoded.Samples.ShouldBe(expected.Samples);
     }

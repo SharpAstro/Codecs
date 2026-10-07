@@ -18,6 +18,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HERE/dist/bin"
 OUT="$HERE/../../Fixtures/jpeg2000"
+LOSSY_OUT="$HERE/../../Fixtures/jpeg2000-lossy"
 
 # Windows dev boxes here have `python` (3.x) and no `python3`; ubuntu-latest has
 # `python3` and no bare `python`. Probe by RUNNING each candidate: Windows ships
@@ -44,11 +45,12 @@ trap 'rm -rf "$SCRATCH"' EXIT
 
 # name | pattern | w | h | extra opj_compress args
 #
-# Every entry stays inside rung 1's declared envelope -- one 8-bit unsigned
-# component, one tile, one quality layer, maximal precincts, LRCP, reversible
-# 5/3, raw J2K -- and varies exactly one thing that rung 1 must nonetheless get
-# right. Anything needing a second tile, a second layer, ICT or 9/7 belongs to a
-# later rung and to a later fixture file.
+# Every entry is lossless and inside the decoder's envelope -- 8-bit unsigned
+# components, one tile, maximal precincts, LRCP, reversible 5/3, raw J2K -- and
+# varies one thing the decoder must get right. The first block is rung 1's: one
+# component, one layer. Anything lossy goes in LOSSY below, since its expected
+# output is not its source; anything needing a second tile or 9/7 belongs to a
+# later rung.
 FIXTURES=(
     # The DWT is switched off entirely (-n 1 = zero decomposition levels), so a
     # failure here is tier-1 or tier-2 and cannot be the wavelet. This is the
@@ -74,12 +76,50 @@ FIXTURES=(
     "odd1x1|struct|1|1|-n 1"
     "odd5x64|struct|5|64|-n 2"
     "odd64x5|struct|64|5|-n 2"
+
+    # Rung 2's exact half: three components. opj_compress applies RCT to three
+    # reversibly coded components unless told -mct 0, so these are RCT except
+    # the one that says otherwise, which pins that components decode
+    # independently when no transform is signalled.
+    "rgb-struct64|rgbstruct|64|64|"
+    "rgb-noise64|rgbnoise|64|64|"
+    "rgb-nomct-struct64|rgbstruct|64|64|-mct 0"
+    "rgb-odd37x23|rgbstruct|37|23|-n 3"
+
+    # Quality layers, brought forward from rung 3. The last layer's ratio of 1
+    # makes the codestream lossless, so the source is still the answer, but
+    # every code-block's passes arrive split across layers. The code-block grid
+    # is what gives the tag trees state to carry from one layer to the next:
+    # hazard 5, which a single-layer fixture cannot see.
+    "layers3-noise64|noise|64|64|-r 40,10,1 -b 16,16"
+    "layers3-struct64|struct|64|64|-r 20,5,1 -b 8,8"
+    # The shape of the four reversible images measured in real PDFs: RGB, RCT,
+    # two layers.
+    "rgb-layers2-struct64|rgbstruct|64|64|-r 10,1 -b 16,16"
 )
+
+# Lossy codestreams: the 5/3 filter with a rate that stops short of lossless,
+# so code-blocks lose their last passes and the source raster is NOT the
+# answer. These go to their own directory without a source raster, and their
+# tests compare against opj_decompress at run time. Their expected output is a
+# reconstruction rule (T.800 E.1.1.2's midpoint), not the encoder's input.
+LOSSY=(
+    "lossy53-struct64|struct|64|64|-r 6"
+    "lossy53-rgb-layers2|rgbstruct|64|64|-r 20,6 -b 16,16"
+)
+
+source_extension() {
+    case "$1" in
+        rgb*) echo ppm ;;
+        *) echo pgm ;;
+    esac
+}
 
 echo "[jpeg2000 fixtures] writing to $OUT"
 for spec in "${FIXTURES[@]}"; do
     IFS='|' read -r name pattern w h extra <<< "$spec"
-    src="$OUT/$name.pgm"
+    ext="$(source_extension "$pattern")"
+    src="$OUT/$name.$ext"
     j2k="$OUT/$name.j2k"
 
     "$PY" "$HERE/gen-sources.py" "$src" "$pattern" "$w" "$h"
@@ -90,8 +130,8 @@ for spec in "${FIXTURES[@]}"; do
     # own decoder does not reproduce the source byte-for-byte then the fixture
     # is not a valid expected-output pair, and committing it would bake a wrong
     # answer into a test that asserts exact equality.
-    "$DECOMPRESS" -i "$j2k" -o "$SCRATCH/rt.pgm" > /dev/null 2>&1
-    "$PY" - "$src" "$SCRATCH/rt.pgm" <<'PYEOF'
+    "$DECOMPRESS" -i "$j2k" -o "$SCRATCH/rt.$ext" > /dev/null 2>&1
+    "$PY" - "$src" "$SCRATCH/rt.$ext" <<'PYEOF'
 import sys
 
 def payload(path):
@@ -118,3 +158,16 @@ PYEOF
 done
 
 echo "[jpeg2000 fixtures] done -- $(ls "$OUT"/*.j2k | wc -l) codestreams, each verified lossless"
+
+mkdir -p "$LOSSY_OUT"
+echo "[jpeg2000 fixtures] writing lossy codestreams to $LOSSY_OUT"
+for spec in "${LOSSY[@]}"; do
+    IFS='|' read -r name pattern w h extra <<< "$spec"
+    src="$SCRATCH/$name.$(source_extension "$pattern")"
+    j2k="$LOSSY_OUT/$name.j2k"
+
+    "$PY" "$HERE/gen-sources.py" "$src" "$pattern" "$w" "$h" > /dev/null
+    # shellcheck disable=SC2086 -- $extra is a deliberate argument list.
+    "$COMPRESS" -i "$src" -o "$j2k" $extra > /dev/null 2>&1
+    printf '  %-24s %6s bytes  %s\n' "$name.j2k" "$(wc -c < "$j2k")" "$extra"
+done

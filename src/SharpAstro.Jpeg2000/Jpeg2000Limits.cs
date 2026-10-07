@@ -121,6 +121,7 @@ internal sealed class Jpeg2000SampleBudget(long total)
     // capture it as a second hidden field alongside _remaining.
     private readonly long _total = total;
     private long _remaining = total;
+    private long _codeBlocks;
 
     /// <summary>
     /// An allowance nothing can exhaust, for unit tests that drive one stage
@@ -143,5 +144,21 @@ internal sealed class Jpeg2000SampleBudget(long total)
                 "decompression bomb, not a picture.");
 
         _remaining -= samples;
+    }
+
+    /// <summary>
+    /// Books <paramref name="count"/> more code-blocks against
+    /// <see cref="Jpeg2000Limits.MaxCodeBlocks"/>. Held here beside the samples so the ceiling is one
+    /// total across every component, as its documentation says, rather than one per component that a
+    /// many-component header would multiply.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The declared geometry has more code-blocks than the ceiling.</exception>
+    public void ChargeCodeBlocks(int count)
+    {
+        _codeBlocks += count;
+        if (_codeBlocks > Jpeg2000Limits.MaxCodeBlocks)
+            throw new InvalidDataException(
+                $"JPEG 2000: the declared geometry has more than {Jpeg2000Limits.MaxCodeBlocks:N0} " +
+                "code-blocks.");
     }
 }

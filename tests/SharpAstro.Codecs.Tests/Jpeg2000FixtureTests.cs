@@ -37,6 +37,16 @@ public class Jpeg2000FixtureTests
     }
 
     /// <summary>
+    /// The source raster a lossless fixture was made from, which is its expected output: a
+    /// <c>.pgm</c> for one component, a <c>.ppm</c> for three.
+    /// </summary>
+    internal static string SourceRaster(string name)
+    {
+        var pgm = Path.Combine(FixtureDirectory, name + ".pgm");
+        return File.Exists(pgm) ? pgm : Path.Combine(FixtureDirectory, name + ".ppm");
+    }
+
+    /// <summary>
     /// The corpus exists and every codestream has the source raster that is its
     /// expected output. Needs nothing installed — it is the check that a clone
     /// with no oracle can still tell the fixtures apart from an empty directory.
@@ -52,8 +62,8 @@ public class Jpeg2000FixtureTests
 
         foreach (var j2k in codestreams)
         {
-            var pgm = Path.ChangeExtension(j2k, ".pgm");
-            File.Exists(pgm).ShouldBeTrue($"{Path.GetFileName(j2k)} has no source raster beside it");
+            var name = Path.GetFileNameWithoutExtension(j2k);
+            File.Exists(SourceRaster(name)).ShouldBeTrue($"{Path.GetFileName(j2k)} has no source raster beside it");
         }
     }
 
@@ -92,8 +102,10 @@ public class Jpeg2000FixtureTests
     {
         OpenJpegOracle.RequireOrSkip();
 
-        var expected = Pnm.Read(Path.Combine(FixtureDirectory, name + ".pgm"));
-        var actual = OpenJpegOracle.Decode(File.ReadAllBytes(Path.Combine(FixtureDirectory, name + ".j2k")));
+        var source = SourceRaster(name);
+        var expected = Pnm.Read(source);
+        var actual = OpenJpegOracle.Decode(
+            File.ReadAllBytes(Path.Combine(FixtureDirectory, name + ".j2k")), Path.GetExtension(source));
 
         actual.Width.ShouldBe(expected.Width);
         actual.Height.ShouldBe(expected.Height);
