@@ -96,6 +96,13 @@ FIXTURES=(
     # The shape of the four reversible images measured in real PDFs: RGB, RCT,
     # two layers.
     "rgb-layers2-struct64|rgbstruct|64|64|-r 10,1 -b 16,16"
+
+    # The JP2 file format around a lossless codestream, which is what a .jp2
+    # output name makes opj_compress write: signature, file type, a header with
+    # an enumerated colour specification (sRGB for three components, greyscale
+    # for one), then the codestream.
+    "jp2-rgb-struct64|rgbstruct|64|64|"
+    "jp2-gray-struct64|struct|64|64|"
 )
 
 # Lossy codestreams: the 5/3 filter with a rate that stops short of lossless,
@@ -134,7 +141,11 @@ for spec in "${FIXTURES[@]}"; do
     IFS='|' read -r name pattern w h extra <<< "$spec"
     ext="$(source_extension "$pattern")"
     src="$OUT/$name.$ext"
-    j2k="$OUT/$name.j2k"
+    # opj_compress picks its container from the output name: .jp2 wraps the
+    # codestream in the JP2 file format, .j2k writes it bare.
+    container=j2k
+    case "$name" in jp2-*) container=jp2 ;; esac
+    j2k="$OUT/$name.$container"
 
     "$PY" "$HERE/gen-sources.py" "$src" "$pattern" "$w" "$h"
     # shellcheck disable=SC2086 -- $extra is a deliberate argument list.
@@ -168,10 +179,10 @@ a, b_ = payload(sys.argv[1]), payload(sys.argv[2])
 if a != b_:
     sys.exit("    NOT LOSSLESS -- refusing to commit this fixture")
 PYEOF
-    printf '  %-24s %6s bytes  %s\n' "$name.j2k" "$(wc -c < "$j2k")" "${extra:-(defaults)}"
+    printf '  %-24s %6s bytes  %s\n' "$name.$container" "$(wc -c < "$j2k")" "${extra:-(defaults)}"
 done
 
-echo "[jpeg2000 fixtures] done -- $(ls "$OUT"/*.j2k | wc -l) codestreams, each verified lossless"
+echo "[jpeg2000 fixtures] done -- $(ls "$OUT"/*.j2k "$OUT"/*.jp2 | wc -l) files, each verified lossless"
 
 mkdir -p "$LOSSY_OUT"
 echo "[jpeg2000 fixtures] writing lossy codestreams to $LOSSY_OUT"
