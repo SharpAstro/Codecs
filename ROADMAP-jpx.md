@@ -1,9 +1,10 @@
 # Roadmap: JPEG 2000 (PDF's `/JPXDecode`)
 
-> **Status: rungs 1 and 2 shipped, rung 1 in 3.12 and rung 2 in 3.15, with the two parts of
-> rungs 3 and 4 that real PDFs need brought forward: quality layers, main-header COC/QCC, and the
-> JP2 container without palette, component mapping or channel definition.** All six
-> `/JPXDecode` images measured in real PDFs now decode (see "What PDF files actually need").
+> **Status: rungs 1, 2 and 5 shipped, rung 1 in 3.12, rung 2 in 3.15 and rung 5 in 3.16, with
+> the two parts of rungs 3 and 4 that real PDFs need brought forward: quality layers, main-header
+> COC/QCC, and the JP2 container without palette, component mapping or channel definition.** All
+> six `/JPXDecode` images measured in real PDFs decode (see "What PDF files actually need"), at
+> full or reduced resolution, and 3.16 registers the format with the `SharpAstro.Codecs` facade.
 >
 > This file was written on 2026-09-03 as an
 > uncommitted working note, offering itself to be committed, folded into
@@ -111,7 +112,7 @@ across its five rungs, so the estimating method here is calibrated), `SharpAstro
 | 2 | **Colour and the lossy path.** RCT and ICT component transforms, the 9/7 irreversible DWT, dequantisation from QCD (exponent/mantissa, guard bits), multiple components. Most JPX inside real PDFs is 9/7 plus ICT, so this is the rung that makes the package useful rather than merely correct. | ~800-1200 | ✅ **about 600**, in 3.15, of a 2400 → 3260 line package whose other 260 are rung 4's JP2 reader. Multiple components with one precision, RCT, ICT, the 9/7 wavelet in floats, expounded and derived quantization, and the midpoint reconstruction of E.1.1.2, which the reversible path turned out to need as well (see "What PDF files actually need"). Mixed precisions and subsampling are still refused. |
 | 3 | **Tier-2 in full.** Multiple tiles and tile-parts, precincts, multiple quality layers, all five progression orders (LRCP/RLCP/RPCL/PCRL/CPRL), POC, packed headers (PPM/PPT), SOP/EPH, and the COC/QCC per-component overrides. This is where real encoder output stops resembling rung 1's constrained case. | ~1200-1800 | 🟡 **Partly, in 3.15**: multiple quality layers in LRCP, and COC/QCC in the main header, which is what real PDFs needed. Tiles, tile-parts, precincts, the other four orders, POC, PPM/PPT, SOP/EPH and tile-part-header overrides are still refused. |
 | 4 | **JP2 container and the PDF rules.** Box parsing (`jP  `, `ftyp`, `jp2h` with `ihdr`/`colr`/`pclr`/`cmap`/`cdef`, `jp2c`), palette, channel definition and alpha. Then PDF's own two: `SMaskInData`, and the image dictionary's `/ColorSpace`, which when present makes the decoder ignore the JPEG 2000 colour specification (ISO 32000-2 8.9.5; this row used to say the codestream overrides the dictionary, which is backwards). | ~500-800 | 🟡 **Partly, in 3.15**: the boxes, with the first `colr` box reported on `Jpeg2000Image.Colour` and never applied. `pclr`, `cmap` and `cdef` are refused by name. The two PDF rules are the caller's, since only it holds the dictionary. |
-| 5 | **Resolution-level decode (free 1/2^n LOD).** Stop tier-2 at resolution level *r* and run that many DWT levels. Mostly a matter of not doing work. | ~200-400 | |
+| 5 | **Resolution-level decode (free 1/2^n LOD).** Stop tier-2 at resolution level *r* and run that many DWT levels. Mostly a matter of not doing work. | ~200-400 | ✅ **about 100**, in 3.16: `Decode(data, reduce)` and `ReductionFor`. Under estimate because rung 2 had already made the wavelet take a level count. Tier-2 does not stop early (the packet headers of the levels left out sit between the ones that matter in LRCP), but tier-1 and the wavelet never touch those levels, and their subbands get no storage. |
 
 Refused, and say so in the package the way `SharpAstro.Jbig2` refuses SDHUFF: **encoding**
 (a non-goal for the whole family), **ROI, the RGN marker and MAXSHIFT**, **JPEG 2000
@@ -182,6 +183,17 @@ With rungs 1 and 2 in, the reason for waiting has thinned: tier-2 now iterates e
 resolution and component, and of rung 3's iteration only precincts and the other orders remain.
 It is still a separate change, and the images that have reached it so far are small enough that
 the cap has not bitten.
+
+> **Shipped in 3.16**, as `Decode(data, reduce)` (opj_decompress's `-r`) rather than
+> `Decode(data, maxDim)`: the primitive is the level count, which is what the codestream knows and
+> what the oracle takes, and `ReductionFor(width, height, minLongEdge)` turns a wanted size into
+> one. The note's guess about tier-2 was half right. It cannot stop early, because in LRCP the
+> packets of the levels left out are interleaved with the ones kept, and their headers must be read
+> to be skipped; what it buys is that tier-1 and the wavelet never touch those levels. On a
+> 2048x1536 lossless image that is 1110 ms in full and 488 / 174 / 79 ms at reductions 1 / 2 / 3,
+> and the reduced decodes are identical to `opj_decompress -r` (within 1 on the 9/7 path). A test
+> overwrites every coded byte of the finest level and checks a reduced decode does not notice,
+> which no comparison of outputs could show.
 
 ## Validation plan
 
@@ -332,6 +344,10 @@ jbig2dec in WSL. Check the exit code first.
   this decision left: the facade promises colour-signalled RGBA, and mapping `Jp2Colour` onto
   `ColorEncoding` (sYCC, ICC, a raw codestream that names no colour at all) deserves a change of
   its own rather than a corner of this one.
+  → **Registered in 3.16**, for what the facade's contract can carry: one component as grey,
+  three as RGB, a restricted ICC profile passed through, samples scaled to fill UInt8 or UInt16.
+  Two or four components (alpha or black, and nothing to say which without `cdef`) and sYCC
+  (still YCbCr) are refused, so `TryDecode` answers false rather than wrong colours.
 
 - **Is `opj_decompress` apt-installable?** → **Yes, and it was the wrong answer.**
   `libopenjp2-tools` is in the Ubuntu repo, but it is OpenJPEG **2.4.0** on jammy and 2.5.x

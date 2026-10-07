@@ -99,6 +99,12 @@ raw J2K.
 | `layers3-noise64`, `layers3-struct64` | `-r 40,10,1 -b 16,16`, `-r 20,5,1 -b 8,8` | Several quality layers over a grid of code-blocks, ending lossless. Hazard 5: rebuilding the tag trees per packet fails these, where rung 1's corpus could not tell. |
 | `rgb-layers2-struct64` | RGB, `-r 10,1 -b 16,16` | The shape of the four lossless images measured in real PDFs: RCT and two layers. |
 | `jp2-rgb-struct64.jp2`, `jp2-gray-struct64.jp2` | `.jp2` output | The JP2 file format around a lossless codestream, with an enumerated `colr` box: sRGB, greyscale. |
+| `deep12-ramp64` | a PGM with maxval 4095 | Twelve bits, which the facade has to scale into its 16-bit format. |
+
+`Fixtures/jpeg2000-raw/cmyk16.j2k` has four components, which no PNM carries, so
+its source is the planar `cmyk16.raw` opj_compress read (`-F 16,16,4,8,u -mct 0`),
+verified lossless the same way. It is what the facade refuses (an extra channel
+that could be alpha or black) and the decoder reads exactly.
 
 `Fixtures/jpeg2000-lossy/` holds codestreams with no committed expected output,
 because their expected output is not their source. Their tests decode them with
