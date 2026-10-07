@@ -109,27 +109,80 @@ public static class Jpeg2000Decoder
     /// </summary>
     /// <exception cref="InvalidDataException">The data is malformed, truncated or over the resource limits.</exception>
     /// <exception cref="NotSupportedException">It is well-formed but uses a feature this decoder does not implement.</exception>
-    public static Jpeg2000Image Decode(ReadOnlySpan<byte> data)
+    public static Jpeg2000Image Decode(ReadOnlySpan<byte> data) => Decode(data, reduce: 0);
+
+    /// <summary>
+    /// Decodes a JPEG 2000 image at reduced resolution: the <paramref name="reduce"/> finest
+    /// resolution levels are left out, so each side is halved that many times, rounding up. This is
+    /// rung 5 of the roadmap, and it is a decode of less, not a decode then a shrink: the levels left
+    /// out are never entropy-decoded and never get coefficient storage, so a reduction of 2 does about
+    /// a sixteenth of the full image's tier-1 and wavelet work. Their packet headers are still read,
+    /// because in the codestream they sit between the packets that matter.
+    /// <para>
+    /// <paramref name="reduce"/> is clamped to the decomposition levels the codestream has (the
+    /// fewest of any component's), so asking for more than there are gives the smallest image there
+    /// is. The result's <see cref="Jpeg2000Image.Width"/> and <see cref="Jpeg2000Image.Height"/> say
+    /// what was produced. <see cref="ReductionFor"/> picks a reduction for a wanted size. It is
+    /// <c>opj_decompress</c>'s <c>-r</c>, and checked against it.
+    /// </para>
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="reduce"/> is negative.</exception>
+    /// <exception cref="InvalidDataException">The data is malformed, truncated or over the resource limits.</exception>
+    /// <exception cref="NotSupportedException">It is well-formed but uses a feature this decoder does not implement.</exception>
+    public static Jpeg2000Image Decode(ReadOnlySpan<byte> data, int reduce)
     {
-        if (!Jp2Reader.LooksLikeJp2(data)) return DecodeCodestream(data);
+        ArgumentOutOfRangeException.ThrowIfNegative(reduce);
+        if (!Jp2Reader.LooksLikeJp2(data)) return DecodeCodestream(data, reduce);
 
         var layout = Jp2Reader.Read(data);
-        return DecodeCodestream(data.Slice(layout.CodestreamStart, layout.CodestreamLength)) with
+        return DecodeCodestream(data.Slice(layout.CodestreamStart, layout.CodestreamLength), reduce) with
         {
             Colour = layout.Colour,
         };
     }
 
-    private static Jpeg2000Image DecodeCodestream(ReadOnlySpan<byte> data)
+    /// <summary>
+    /// The largest reduction for <see cref="Decode(ReadOnlySpan{byte}, int)"/> that still leaves an
+    /// image whose longer side is at least <paramref name="minLongEdge"/>: what a caller wants that
+    /// will shrink the result to its own size, as a thumbnail does, and wants no less detail than
+    /// that size can show.
+    /// </summary>
+    /// <param name="width">The full image's width.</param>
+    /// <param name="height">The full image's height.</param>
+    /// <param name="minLongEdge">The smallest long edge the decoded image may have.</param>
+    public static int ReductionFor(int width, int height, int minLongEdge)
+    {
+        var edge = Math.Max(width, height);
+        var reduce = 0;
+        while (edge > 1 && (edge + 1) / 2 >= minLongEdge)
+        {
+            edge = (edge + 1) / 2;
+            reduce++;
+        }
+
+        return reduce;
+    }
+
+    private static Jpeg2000Image DecodeCodestream(ReadOnlySpan<byte> data, int reduce)
     {
         var header = CodestreamReader.Read(data);
         var siz = header.Siz;
+
+        // A component can have its own number of decomposition levels (COC), and every component
+        // must come out the same size, so the reduction is capped by the one with the fewest.
+        var levels = int.MaxValue;
+        foreach (var coding in header.ComponentCoding) levels = Math.Min(levels, coding.DecompositionLevels);
+        reduce = Math.Min(reduce, levels);
 
         var budget = new Jpeg2000SampleBudget(
             Jpeg2000Limits.BudgetFor(siz.Width, siz.Height, siz.Components.Length));
 
         var components = new TileComponent[siz.Components.Length];
-        for (var c = 0; c < components.Length; c++) components[c] = TileComponent.Build(header, c, budget);
+        for (var c = 0; c < components.Length; c++)
+        {
+            components[c] = TileComponent.Build(
+                header, c, budget, header.ComponentCoding[c].ResolutionCount - reduce);
+        }
 
         var part = header.TileParts[0];
         var tilePartData = data.Slice(part.Start, part.Length);
@@ -147,9 +200,9 @@ public static class Jpeg2000Decoder
         for (var c = 0; c < components.Length; c++)
         {
             var tile = components[c];
-            foreach (var resolution in tile.Resolutions)
+            for (var r = 0; r < tile.DecodedResolutions; r++)
             {
-                foreach (var band in resolution.Bands)
+                foreach (var band in tile.Resolutions[r].Bands)
                 {
                     foreach (var block in band.Blocks)
                     {
@@ -158,9 +211,10 @@ public static class Jpeg2000Decoder
                 }
             }
 
-            budget.Charge(tile.Bounds.Width, tile.Bounds.Height);
-            if (tile.Irreversible) reals[c] = InverseWavelet.ReconstructIrreversible(tile, tile.Resolutions.Length);
-            else integers[c] = InverseWavelet.Reconstruct(tile, tile.Resolutions.Length);
+            var decodedBounds = tile.Resolutions[tile.DecodedResolutions - 1].Bounds;
+            budget.Charge(decodedBounds.Width, decodedBounds.Height);
+            if (tile.Irreversible) reals[c] = InverseWavelet.ReconstructIrreversible(tile, tile.DecodedResolutions);
+            else integers[c] = InverseWavelet.Reconstruct(tile, tile.DecodedResolutions);
         }
 
         // G.1.2: the component transform comes between the wavelet and the
@@ -172,7 +226,9 @@ public static class Jpeg2000Decoder
             else ComponentTransform.InverseRct(integers[0], integers[1], integers[2]);
         }
 
-        return LevelShift(integers, reals, components[0].Bounds, siz.Components[0].BitDepth);
+        var first = components[0];
+        return LevelShift(
+            integers, reals, first.Resolutions[first.DecodedResolutions - 1].Bounds, siz.Components[0].BitDepth);
     }
 
     /// <summary>
