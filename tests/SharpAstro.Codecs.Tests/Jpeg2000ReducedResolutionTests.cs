@@ -164,6 +164,37 @@ public class Jpeg2000ReducedResolutionTests
     }
 
     /// <summary>
+    /// <see cref="Jpeg2000Decoder.ReadInfo"/> reads what a decode will produce without running one:
+    /// the size, components and depth, the levels a reduction can leave out, and the JP2 colour, and
+    /// <see cref="Jpeg2000Info.SizeAt"/> is the size a reduced decode really comes out at, clamping
+    /// included.
+    /// </summary>
+    [Theory]
+    [InlineData("odd37x23.j2k", 37, 23, 1, 2)]
+    [InlineData("rgb-struct64.j2k", 64, 64, 3, 5)]
+    [InlineData("nodwt-struct32.j2k", 32, 32, 1, 0)]
+    [InlineData("jp2-rgb-struct64.jp2", 64, 64, 3, 5)]
+    public void ReadInfo_ReadsWhatADecodeWillProduce(string file, int width, int height, int components, int levels)
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(FixtureDirectory, file));
+
+        var info = Jpeg2000Decoder.ReadInfo(bytes);
+
+        info.Width.ShouldBe(width);
+        info.Height.ShouldBe(height);
+        info.Components.ShouldBe(components);
+        info.BitDepth.ShouldBe(8);
+        info.DecompositionLevels.ShouldBe(levels);
+        (info.Colour is not null).ShouldBe(file.EndsWith(".jp2", StringComparison.Ordinal));
+
+        for (var reduce = 0; reduce <= levels + 1; reduce++)
+        {
+            var decoded = Jpeg2000Decoder.Decode(bytes, reduce);
+            info.SizeAt(reduce).ShouldBe((decoded.Width, decoded.Height), $"reduce {reduce}");
+        }
+    }
+
+    /// <summary>
     /// <see cref="Jpeg2000Decoder.ReductionFor"/> takes the largest reduction whose long edge still
     /// reaches the size asked for, halving with rounding up as the decode does.
     /// </summary>
