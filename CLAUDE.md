@@ -74,7 +74,7 @@ the jxrlib re-port). See "JXR codec" below for the architecture and validation d
 Longer-horizon work lives in the root roadmap docs: [`ROADMAP-jpeg-encoder.md`](ROADMAP-jpeg-encoder.md),
 [`ROADMAP-gain-map.md`](ROADMAP-gain-map.md), [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md)
 (JBIG2's remaining Huffman variants), [`ROADMAP-jpx.md`](ROADMAP-jpx.md) (the JPEG 2000 rung
-table, rungs 1 and 2 of 5 shipped), [`ROADMAP-jxl.md`](ROADMAP-jxl.md) (the VarDCT decode's LOH
+table, rungs 1, 2 and 5 shipped), [`ROADMAP-jxl.md`](ROADMAP-jxl.md) (the VarDCT decode's LOH
 allocation question, and the feature envelope the codec currently refuses), plus
 [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
@@ -437,7 +437,7 @@ rung 1 is the *entire pipeline for the simplest legal configuration*, and later 
 accepts. Do not try to reproduce JBIG2's shape here — it gives four rungs that each decode nothing,
 with no way to tell which one is wrong.
 
-The envelope as of 3.15 (rungs 1 and 2, plus the parts of rungs 3 and 4 that real PDFs carry), and
+The envelope as of 3.16 (rungs 1, 2 and 5, plus the parts of rungs 3 and 4 that real PDFs carry), and
 everything outside it throws `NotSupportedException` naming the feature *and the rung that owns it*:
 any number of 1-to-16-bit unsigned components of one precision with no subsampling, one tile, one
 tile-part, any number of quality layers, maximal precincts, LRCP, no code-block style flags; 5/3 with
@@ -445,7 +445,8 @@ no quantization or 9/7 with scalar quantization (derived or expounded), RCT or I
 COC/QCC in the main header; a raw codestream, or a JP2 file with no `pclr`, `cmap` or `cdef` box.
 
 ```
-Jpeg2000Decoder      (public: Decode(codestream or JP2) / IsCodestream / IsJp2)
+Jpeg2000Decoder      (public: Decode(codestream or JP2[, reduce]) / ReductionFor / IsCodestream / IsJp2;
+                      Jpeg2000ImageDecoder is the facade adapter over it)
   → Jp2Reader        (Annex I boxes: signature, ftyp, jp2h/ihdr/colr, jp2c; the first colr box is
                       REPORTED on Jpeg2000Image.Colour, never applied; pclr/cmap/cdef refused)
   → CodestreamReader (Annex A markers, COC/QCC resolved per component; ALSO where every
@@ -567,14 +568,38 @@ the caller's dimensions; a raw J2K codestream carries its own, so rung 1's budge
 what the stream itself declares. That bounds amplification without bounding absolute size. Rung 4's
 PDF entry point gets the tighter anchor.
 
-### Not facade-registered yet, deliberately
+### Reduced resolution (rung 5) is a decode of less
 
-Unlike JBIG2, JPEG 2000 would fit the facade perfectly — JP2 and raw J2K both have magic bytes
-(`00 00 00 0C 6A 50 20 20 0D 0A 87 0A` and `FF 4F FF 51`). It is still not registered. The plan was
-to register with colour at rung 2, and the colour question it waited on is settled (reported, never
-applied; see above). What is left is the mapping itself: the facade promises colour-signalled RGBA,
-and turning `Jp2Colour` into `ColorEncoding` — sYCC, which still needs converting, an ICC profile, a
-raw codestream that names no colour at all — is a change of its own rather than a corner of 3.15.
+`Decode(data, reduce)` leaves out the `reduce` finest resolution levels (`opj_decompress -r`), and
+`ReductionFor(width, height, minLongEdge)` picks one for a wanted size. Tier-2 still reads every
+packet header, because in LRCP the levels left out are interleaved with the ones kept; tier-1 and
+the wavelet never touch those levels, and their subbands get no coefficient storage. That last part
+is invisible in any output, so `Jpeg2000ReducedResolutionTests.TheLevelsLeftOut_AreNeverDecoded`
+overwrites every coded byte of the finest level and requires a full decode to change and a reduced
+one not to. The reduction is clamped to the fewest decomposition levels of any component.
+
+### Speed: where a decode's time goes
+
+Measured on a photo-like 2048x1536 RGB image (3.16 against 3.15, alternating, medians of 7):
+lossless 5/3 1750 → 1115 ms and 291 → 100 MB, lossy 9/7 548 → 276 ms and 187 → 100 MB, byte-identical
+output. Three changes did it, and their order of size is worth knowing before the next attempt:
+tier-1 keeps one packed flags word per coefficient (its own state, its eight neighbours'
+significance, the straight neighbours' signs), so a context is a table lookup rather than eight
+reads, and one `BlockState` serves the whole decode; the inverse wavelet filters columns a whole row
+at a time with `Vector<T>`, reading the mirror row at the edges (exact, because both filters are
+symmetric, so a lifted symmetric signal stays symmetric); and the passes decode through a local copy
+of the MQ coder (about 6%). After them a lossless decode is about 90% tier-1, essentially MQ
+decisions, and a lossy one about half and half.
+
+### Registered with the facade in 3.16
+
+JP2 and raw J2K both have magic bytes (`00 00 00 0C 6A 50 20 20 0D 0A 87 0A` and `FF 4F FF 51`), and
+`Jpeg2000ImageDecoder` presents what the facade's contract can carry: one component as grey, three
+as RGB, a JP2 restricted ICC profile as the image's profile, samples scaled to fill UInt8 or UInt16
+(the facade divides by the format's maximum, so a 12-bit 4095 must become 65535). It refuses two or
+four components, whose extra channel is alpha or black with nothing to say which (`cdef` is not
+read), and sYCC, whose samples are still YCbCr: `TryDecode` answers false rather than wrong colours,
+and `Jpeg2000Decoder.Decode` still hands back every component with the colour reported.
 
 ## Oracle harnesses (all codecs)
 

@@ -14,6 +14,27 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.16
+
+`SharpAstro.Jpeg2000` gets **faster, decodes at reduced resolution, and joins the facade.**
+
+- **Faster.** On a photo-like 2048x1536 RGB image, against 3.15, alternating runs: lossless 5/3
+  1750 → 1115 ms and 291 → 100 MB allocated; lossy 9/7 548 → 276 ms and 187 → 100 MB. The decoded
+  samples are byte-identical. Tier-1 keeps a packed flags word per coefficient, so contexts are table
+  lookups, and shares one state across code-blocks; the inverse wavelet filters columns a row at a
+  time, vectorised, without per-line allocation.
+- **Reduced resolution (rung 5).** `Jpeg2000Decoder.Decode(data, reduce)` leaves out the `reduce`
+  finest resolution levels, which are never entropy-decoded, and `ReductionFor(width, height,
+  minLongEdge)` picks the reduction for a wanted size. It is `opj_decompress -r` and matches it
+  (exactly for 5/3, within 1 for 9/7). The 2048x1536 lossless image decodes in 488 / 174 / 79 ms
+  at reductions 1 / 2 / 3.
+- **Facade.** `Jpeg2000ImageDecoder` registers raw J2K and JP2 with `ImageCodecs`: one component as
+  grey, three as RGB, ICC profiles passed through, samples scaled to fill UInt8 or UInt16. Two or
+  four components and sYCC are refused rather than presented in the wrong colours.
+
+**Public API additions:** `Jpeg2000Decoder.Decode(ReadOnlySpan<byte>, int)`,
+`Jpeg2000Decoder.ReductionFor`, `Jpeg2000ImageDecoder`. Nothing removed or changed.
+
 ## 3.15
 
 `SharpAstro.Jpeg2000` **decodes what real PDFs carry.** Rung 1 decoded one component in one layer,
