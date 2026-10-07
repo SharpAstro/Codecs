@@ -190,13 +190,15 @@ internal sealed class TileComponent
     public required Resolution[] Resolutions { get; init; }
 
     /// <summary>
-    /// Builds the geometry for a single-tile, single-component codestream.
+    /// Builds the geometry for one component of a single-tile codestream, from that component's own
+    /// coding style and quantization (COD and QCD with its COC and QCC applied).
     /// </summary>
-    public static TileComponent Build(CodestreamHeader header, Jpeg2000SampleBudget budget)
+    public static TileComponent Build(CodestreamHeader header, int componentIndex, Jpeg2000SampleBudget budget)
     {
         var siz = header.Siz;
-        var cod = header.Cod;
-        var component = siz.Components[0];
+        var cod = header.ComponentCoding[componentIndex];
+        var quantization = header.ComponentQuantization[componentIndex];
+        var component = siz.Components[componentIndex];
 
         // T.800 Equation B-12. With one tile the tile IS the image region, and
         // with no subsampling the separation divides out to 1 -- but the formula
@@ -215,7 +217,6 @@ internal sealed class TileComponent
 
         var levels = cod.DecompositionLevels;
         var resolutions = new Resolution[cod.ResolutionCount];
-        var totalBlocks = 0;
 
         for (var r = 0; r < resolutions.Length; r++)
         {
@@ -245,20 +246,17 @@ internal sealed class TileComponent
                 // running counter keeps it correct if bands are ever built out
                 // of order.
                 var exponentIndex = r == 0 ? 0 : 3 * (r - 1) + b + 1;
-                if (exponentIndex >= header.Qcd.Exponents.Length)
+                if (exponentIndex >= quantization.Exponents.Length)
                     throw new InvalidDataException(
-                        $"JPEG 2000: QCD carries {header.Qcd.Exponents.Length} subband exponents, too few for " +
-                        $"{levels} decomposition levels (needs {3 * levels + 1}).");
+                        $"JPEG 2000: component {componentIndex}'s quantization carries " +
+                        $"{quantization.Exponents.Length} subband exponents, too few for {levels} " +
+                        $"decomposition levels (needs {3 * levels + 1}).");
 
-                var exponent = header.Qcd.Exponents[exponentIndex];
+                var exponent = quantization.Exponents[exponentIndex];
 
                 budget.Charge(bandBounds.Width, bandBounds.Height);
-                var band = BuildBand(kind, bandBounds, exponent, header.Qcd.GuardBits, cod, r);
-                totalBlocks += band.Blocks.Length;
-                if (totalBlocks > Jpeg2000Limits.MaxCodeBlocks)
-                    throw new InvalidDataException(
-                        $"JPEG 2000: the declared geometry has more than {Jpeg2000Limits.MaxCodeBlocks:N0} " +
-                        "code-blocks.");
+                var band = BuildBand(kind, bandBounds, exponent, quantization.GuardBits, cod, r);
+                budget.ChargeCodeBlocks(band.Blocks.Length);
 
                 bands[b] = band;
             }

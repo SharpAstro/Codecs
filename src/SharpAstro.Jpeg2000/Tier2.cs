@@ -10,14 +10,20 @@ namespace SharpAstro.Jpeg2000;
 /// got and how many bytes those passes occupy, then hands the byte ranges to
 /// tier-1. It never touches a coefficient.
 /// <para>
-/// Rung 1's envelope makes the packet sequence trivial: one tile, one component,
-/// one quality layer, and maximal precincts so each resolution is a single
-/// precinct. Under LRCP that is exactly one packet per resolution, in ascending
-/// resolution order. The five progression orders differ only in how they nest
-/// four loops, and with three of them length 1 they all produce this same
-/// sequence — which is why <see cref="CodestreamReader"/> still refuses the
-/// other four rather than accepting them for free. Accepting them would be
-/// untested, not correct.
+/// The envelope keeps the packet sequence simple: one tile, and maximal precincts
+/// so each resolution of each component is a single precinct. Under LRCP that is
+/// one packet per layer, resolution and component, nested in that order. The five
+/// progression orders differ only in how they nest those loops, which is why
+/// <see cref="CodestreamReader"/> still refuses the other four rather than
+/// accepting them for free: with several layers and components they really do
+/// visit the packets in different sequences, and only this one has a fixture.
+/// </para>
+/// <para>
+/// <b>Layers are where tier-2 becomes stateful.</b> A code-block's inclusion,
+/// zero bit-planes, <c>Lblock</c> and pass count, and its precinct's tag trees,
+/// all carry over from one layer's packet to the next. A decoder that rebuilt any
+/// of them per packet would read layer 0 correctly and every later layer wrongly,
+/// which is hazard 5 of the roadmap and the reason the multi-layer fixtures exist.
 /// </para>
 /// </summary>
 internal static class Tier2
@@ -27,19 +33,27 @@ internal static class Tier2
     /// inclusion state and coded byte ranges.
     /// </summary>
     /// <param name="header">The parsed main header.</param>
-    /// <param name="tile">The tile-component geometry to fill in.</param>
+    /// <param name="components">Each component's tile-component geometry to fill in.</param>
     /// <param name="data">The tile-part's coded data, starting just after SOD.</param>
-    public static void ReadPackets(CodestreamHeader header, TileComponent tile, ReadOnlySpan<byte> data)
+    public static void ReadPackets(CodestreamHeader header, TileComponent[] components, ReadOnlySpan<byte> data)
     {
         var offset = 0;
 
-        // LRCP: layer, then resolution, then component, then precinct. The inner
-        // two are length 1 here.
+        var resolutions = 0;
+        foreach (var component in components) resolutions = Math.Max(resolutions, component.Resolutions.Length);
+
+        // B.12.1.1, LRCP: layer, then resolution, then component, then precinct, the last of which is
+        // length 1 here. A COC can give components different numbers of decomposition levels, and a
+        // component simply has no packet at a resolution it does not have.
         for (var layer = 0; layer < header.Layers; layer++)
         {
-            foreach (var resolution in tile.Resolutions)
+            for (var r = 0; r < resolutions; r++)
             {
-                offset = ReadPacket(resolution, data, offset, layer);
+                foreach (var component in components)
+                {
+                    if (r >= component.Resolutions.Length) continue;
+                    offset = ReadPacket(component.Resolutions[r], data, offset, layer);
+                }
             }
         }
     }

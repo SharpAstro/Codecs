@@ -5,8 +5,10 @@ same bytes: every pattern here is a closed-form function of (x, y) or a fixed
 linear-congruential sequence, with no library PRNG and no floating point, so
 the fixtures do not drift with a Python version.
 
-Written as PGM (P5, 8-bit) because opj_compress infers component count and bit
-depth from the input file, and one 8-bit component is the whole of rung 1.
+Written as PGM (P5, 8-bit) or, for the rgb* patterns, PPM (P6, 8-bit), because
+opj_compress infers component count and bit depth from the input file. A PPM is
+how a fixture gets three components, and with them the component transform:
+opj_compress turns RCT on by itself for three reversibly coded components.
 """
 import os
 import sys
@@ -69,7 +71,43 @@ def write_pgm(path, pattern, w, h):
         fh.write(bytes(px))
 
 
+def rgb_structure(x, y):
+    """Three channels that move together, as a picture's do: the component
+    transform has something to decorrelate, and a wrong RCT shows up as a
+    colour cast across the whole image rather than in one corner."""
+    v = structure(x, y)
+    return v, (v + 64) % 256, clamp(255 - v // 2 - y)
+
+
+def rgb_noise(x, y):
+    """Three independent LCG streams: no correlation for the transform to
+    exploit, so every bit-plane of every component is busy."""
+    return noise(x, y), noise(x + 17, y + 3), noise(y, x)
+
+
+RGB_PATTERNS = {
+    "rgbstruct": rgb_structure,
+    "rgbnoise": rgb_noise,
+}
+
+
+def write_ppm(path, pattern, w, h):
+    f = RGB_PATTERNS[pattern]
+    px = bytearray(w * h * 3)
+    i = 0
+    for y in range(h):
+        for x in range(w):
+            px[i:i + 3] = bytes(f(x, y))
+            i += 3
+    with open(path, "wb") as fh:
+        fh.write(b"P6\n%d %d\n255\n" % (w, h))
+        fh.write(bytes(px))
+
+
 if __name__ == "__main__":
     out, pattern, w, h = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-    write_pgm(out, pattern, w, h)
+    if pattern in RGB_PATTERNS:
+        write_ppm(out, pattern, w, h)
+    else:
+        write_pgm(out, pattern, w, h)
     print("  %-24s %s %dx%d" % (os.path.basename(out), pattern, w, h))

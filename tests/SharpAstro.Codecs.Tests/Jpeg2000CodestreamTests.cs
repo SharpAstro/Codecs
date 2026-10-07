@@ -95,22 +95,37 @@ public class Jpeg2000CodestreamTests
         header.Cod.CodeBlockHeightExponent.ShouldBe(heightExponent);
     }
 
-    /// <summary>Every fixture is inside rung 1's envelope, by construction and now by assertion.</summary>
+    /// <summary>
+    /// Every fixture is inside the exact envelope, by construction and now by assertion, and is
+    /// what its name says: <c>rgb*</c> has three components with RCT unless it says <c>nomct</c>,
+    /// <c>layers*</c> and <c>*-layers*</c> have several quality layers, and everything else is
+    /// rung 1's single component in a single layer. Tying the name to the header keeps a
+    /// regeneration from quietly turning a feature's only fixture into a plain one.
+    /// </summary>
     [Theory]
     [MemberData(nameof(Jpeg2000FixtureTests.Codestreams), MemberType = typeof(Jpeg2000FixtureTests))]
-    public void EveryFixture_IsInsideRung1Envelope(string name)
+    public void EveryFixture_IsWhatItsNameSays(string name)
     {
         var header = CodestreamReader.Read(Fixture(name));
 
-        header.Layers.ShouldBe(1);
         header.Progression.ShouldBe(ProgressionOrder.Lrcp);
-        header.Cod.Transform.ShouldBe(WaveletTransform.Reversible53);
-        header.Cod.CodeBlockStyle.ShouldBe(0);
-        header.Cod.PrecinctSizes.ShouldBeEmpty();
-        header.MultipleComponentTransform.ShouldBeFalse();
         header.UseSopMarkers.ShouldBeFalse();
         header.UseEphMarkers.ShouldBeFalse();
         header.TileParts.Count.ShouldBe(1);
+        foreach (var coding in header.ComponentCoding)
+        {
+            coding.Transform.ShouldBe(WaveletTransform.Reversible53);
+            coding.CodeBlockStyle.ShouldBe(0);
+            coding.PrecinctSizes.ShouldBeEmpty();
+        }
+
+        var rgb = name.StartsWith("rgb", StringComparison.Ordinal);
+        header.Siz.Components.Length.ShouldBe(rgb ? 3 : 1);
+        header.MultipleComponentTransform.ShouldBe(rgb && !name.Contains("nomct", StringComparison.Ordinal));
+
+        var layered = name.Contains("layers", StringComparison.Ordinal);
+        if (layered) header.Layers.ShouldBeGreaterThan(1);
+        else header.Layers.ShouldBe(1);
     }
 
     /// <summary>
