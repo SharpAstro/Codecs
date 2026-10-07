@@ -1,3 +1,4 @@
+using System.Numerics;
 using SharpAstro.Jpeg2000;
 using Shouldly;
 
@@ -36,7 +37,7 @@ public class Jpeg2000DecoderTests
         decoded.Width.ShouldBe(expected.Width);
         decoded.Height.ShouldBe(expected.Height);
         decoded.Components.ShouldBe(expected.Components);
-        decoded.BitDepth.ShouldBe(8);
+        decoded.BitDepth.ShouldBe(BitOperations.Log2((uint)expected.MaxValue) + 1);
         decoded.Samples.ShouldBe(expected.Samples);
     }
 

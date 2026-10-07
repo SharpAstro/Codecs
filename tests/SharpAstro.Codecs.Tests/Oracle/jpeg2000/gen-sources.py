@@ -104,10 +104,46 @@ def write_ppm(path, pattern, w, h):
         fh.write(bytes(px))
 
 
+def write_pgm12(path, w, h):
+    """A 12-bit horizontal ramp, as a PGM with maxval 4095, which opj_compress reads as a 12-bit
+    component. Deeper than 8 bits is where the facade has to scale samples into its 16-bit
+    format, and a ramp makes every code in the range turn up."""
+    with open(path, "wb") as fh:
+        fh.write(b"P5\n%d %d\n4095\n" % (w, h))
+        for y in range(h):
+            row = bytearray()
+            for x in range(w):
+                v = (x * 4095 // max(1, w - 1) + y * 7) % 4096
+                row += bytes((v >> 8, v & 0xFF))
+            fh.write(row)
+
+
+def write_planar4(path, w, h):
+    """Four 8-bit components, planar, as opj_compress reads a .raw: a component per quadrant of
+    ink plus a ramp, so a channel mix-up shows. Four components is what neither the facade nor a
+    PNM can carry, so its source is raw."""
+    planes = [bytearray(w * h) for _ in range(4)]
+    for y in range(h):
+        for x in range(w):
+            i = y * w + x
+            quadrant = (y >= h // 2) * 2 + (x >= w // 2)
+            c, m, ye, k = [(0, 0, 0, 0), (255, 0, 0, 0), (0, 200, 120, 0), (0, 0, 0, 255)][quadrant]
+            planes[0][i] = max(0, c - x * 3)
+            planes[1][i] = m
+            planes[2][i] = min(255, ye + y * 4)
+            planes[3][i] = k
+    with open(path, "wb") as fh:
+        fh.write(b"".join(planes))
+
+
 if __name__ == "__main__":
     out, pattern, w, h = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
     if pattern in RGB_PATTERNS:
         write_ppm(out, pattern, w, h)
+    elif pattern == "ramp12":
+        write_pgm12(out, w, h)
+    elif pattern == "planar4":
+        write_planar4(out, w, h)
     else:
         write_pgm(out, pattern, w, h)
     print("  %-24s %s %dx%d" % (os.path.basename(out), pattern, w, h))
