@@ -4,6 +4,7 @@ using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Exr;
 using SharpAstro.Jbig2;
 using SharpAstro.Jpeg;
+using SharpAstro.Jpeg2000;
 using SharpAstro.Jxl;
 using SharpAstro.Jxr;
 using SharpAstro.Png;
@@ -17,7 +18,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, and JBIG2. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2 and JPEG 2000. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -30,6 +31,13 @@ namespace SharpAstro.Codecs;
 /// dictionaries in a separate <c>/JBIG2Globals</c> stream, and takes its
 /// dimensions from the image dictionary. Those callers use
 /// <c>Jbig2Decoder.Decode(embedded, globals, width, height)</c> directly.
+/// </para>
+/// <para>
+/// JPEG 2000 is registered for the images whose samples are grey or RGB once
+/// decoded: one or three components, not sYCC. Its JP2 and raw-J2K signatures
+/// collide with nothing above. What the facade cannot present (alpha, CMYK,
+/// sYCC) is refused rather than guessed, and <c>Jpeg2000Decoder.Decode</c>
+/// still hands back every component, with the JP2 colour box reported.
 /// </para>
 /// <para>
 /// Float-sample content (EXR, HDR float JXR/JXL/TIFF) decodes through
@@ -81,6 +89,7 @@ public static class ImageCodecs
         Register<ExrImageDecoder>(),
         Register<JxlImageDecoder>(),
         Register<Jbig2ImageDecoder>(),
+        Register<Jpeg2000ImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>

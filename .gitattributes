@@ -35,6 +35,7 @@
 *.jp2 binary
 *.pgm binary
 *.ppm binary
+*.raw binary
 
 # Vendored C headers (jxrlib reference sources under tests/.../Oracle/, and the
 # stb_image_write.h the jpegenc oracle downloads at build time) — mark them so

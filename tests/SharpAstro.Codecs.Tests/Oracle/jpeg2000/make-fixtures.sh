@@ -103,6 +103,10 @@ FIXTURES=(
     # for one), then the codestream.
     "jp2-rgb-struct64|rgbstruct|64|64|"
     "jp2-gray-struct64|struct|64|64|"
+
+    # Twelve bits, from a PGM whose maxval is 4095: the depth past 8 at which
+    # the facade has to scale samples into its 16-bit format.
+    "deep12-ramp64|ramp12|64|64|"
 )
 
 # Lossy codestreams: the 5/3 filter with a rate that stops short of lossless,
@@ -196,3 +200,16 @@ for spec in "${LOSSY[@]}"; do
     "$COMPRESS" -i "$src" -o "$j2k" $extra > /dev/null 2>&1
     printf '  %-24s %6s bytes  %s\n' "$name.j2k" "$(wc -c < "$j2k")" "$extra"
 done
+
+# Four components, which no PNM carries, so the source is a planar .raw (what
+# opj_compress reads with -F) and lives in a directory of its own beside the
+# codestream. It is lossless with no component transform, so the raw is the
+# expected output, verified here the same way as the PNM fixtures.
+RAW_OUT="$HERE/../../Fixtures/jpeg2000-raw"
+mkdir -p "$RAW_OUT"
+echo "[jpeg2000 fixtures] writing raw-sourced codestreams to $RAW_OUT"
+"$PY" "$HERE/gen-sources.py" "$RAW_OUT/cmyk16.raw" planar4 16 16 > /dev/null
+"$COMPRESS" -i "$RAW_OUT/cmyk16.raw" -o "$RAW_OUT/cmyk16.j2k" -F 16,16,4,8,u -mct 0 -n 3 > /dev/null 2>&1
+"$DECOMPRESS" -i "$RAW_OUT/cmyk16.j2k" -o "$SCRATCH/rt.raw" > /dev/null 2>&1
+cmp -s "$RAW_OUT/cmyk16.raw" "$SCRATCH/rt.raw" || { echo "    cmyk16 NOT LOSSLESS -- refusing to commit it" >&2; exit 1; }
+printf '  %-24s %6s bytes  %s\n' "cmyk16.j2k" "$(wc -c < "$RAW_OUT/cmyk16.j2k")" "-F 16,16,4,8,u -mct 0 -n 3"
