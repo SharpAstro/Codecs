@@ -212,10 +212,23 @@ internal sealed class TileComponent
     public required bool Irreversible { get; init; }
 
     /// <summary>
+    /// How many resolution levels, from 0, a decode reconstructs: all of them for the full image,
+    /// fewer for a reduced one. The levels above are read by tier-2, because their packet headers
+    /// sit between the ones that matter and must be parsed to be skipped, but are never
+    /// entropy-decoded and hold no coefficients.
+    /// </summary>
+    public required int DecodedResolutions { get; init; }
+
+    /// <summary>
     /// Builds the geometry for one component of a single-tile codestream, from that component's own
     /// coding style and quantization (COD and QCD with its COC and QCC applied).
     /// </summary>
-    public static TileComponent Build(CodestreamHeader header, int componentIndex, Jpeg2000SampleBudget budget)
+    /// <param name="decodedResolutions">
+    /// How many resolution levels from 0 will be reconstructed; only their subbands get coefficient
+    /// storage, and only theirs are charged to the budget as samples.
+    /// </param>
+    public static TileComponent Build(
+        CodestreamHeader header, int componentIndex, Jpeg2000SampleBudget budget, int decodedResolutions)
     {
         var siz = header.Siz;
         var cod = header.ComponentCoding[componentIndex];
@@ -279,8 +292,10 @@ internal sealed class TileComponent
                     ? (float)(Math.ScaleB(1.0, component.BitDepth + gain - exponent) * (1.0 + mantissa / 2048.0))
                     : 1f;
 
-                budget.Charge(bandBounds.Width, bandBounds.Height);
-                var band = BuildBand(kind, bandBounds, exponent, quantization.GuardBits, cod, r, irreversible, stepSize);
+                var decoded = r < decodedResolutions;
+                if (decoded) budget.Charge(bandBounds.Width, bandBounds.Height);
+                var band = BuildBand(
+                    kind, bandBounds, exponent, quantization.GuardBits, cod, r, irreversible, stepSize, decoded);
                 budget.ChargeCodeBlocks(band.Blocks.Length);
 
                 bands[b] = band;
@@ -294,12 +309,13 @@ internal sealed class TileComponent
             Bounds = bounds,
             Resolutions = resolutions,
             Irreversible = cod.Transform == WaveletTransform.Irreversible97,
+            DecodedResolutions = decodedResolutions,
         };
     }
 
     private static Subband BuildBand(
         BandKind kind, Rect bounds, int exponent, int guardBits, CodingStyle cod, int resolution,
-        bool irreversible, float stepSize)
+        bool irreversible, float stepSize, bool decoded)
     {
         // T.800 Equation B-16: the code-block size is capped by the precinct's,
         // and above resolution 0 a precinct maps onto a subband at half size, so
@@ -359,8 +375,8 @@ internal sealed class TileComponent
             Blocks = blocks,
             Irreversible = irreversible,
             StepSize = stepSize,
-            Coefficients = irreversible ? [] : new int[bounds.Area],
-            Values = irreversible ? new float[bounds.Area] : [],
+            Coefficients = decoded && !irreversible ? new int[bounds.Area] : [],
+            Values = decoded && irreversible ? new float[bounds.Area] : [],
         };
     }
 
