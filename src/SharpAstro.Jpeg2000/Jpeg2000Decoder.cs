@@ -143,6 +143,7 @@ public static class Jpeg2000Decoder
         // component: in integers for a 5/3 component, in floats for a 9/7 one.
         var integers = new int[components.Length][];
         var reals = new float[components.Length][];
+        var blockState = new BlockState();
         for (var c = 0; c < components.Length; c++)
         {
             var tile = components[c];
@@ -152,14 +153,14 @@ public static class Jpeg2000Decoder
                 {
                     foreach (var block in band.Blocks)
                     {
-                        BlockDecoder.Decode(band, block, tilePartData);
+                        BlockDecoder.Decode(band, block, tilePartData, blockState);
                     }
                 }
             }
 
             budget.Charge(tile.Bounds.Width, tile.Bounds.Height);
-            if (tile.Irreversible) reals[c] = InverseWavelet.ReconstructIrreversible(tile);
-            else integers[c] = InverseWavelet.Reconstruct(tile);
+            if (tile.Irreversible) reals[c] = InverseWavelet.ReconstructIrreversible(tile, tile.Resolutions.Length);
+            else integers[c] = InverseWavelet.Reconstruct(tile, tile.Resolutions.Length);
         }
 
         // G.1.2: the component transform comes between the wavelet and the
