@@ -65,6 +65,36 @@ public sealed record Jpeg2000Image(int Width, int Height, int BitDepth, ushort[]
 }
 
 /// <summary>
+/// What <see cref="Jpeg2000Decoder.ReadInfo"/> reads from a JPEG 2000 image's headers.
+/// </summary>
+/// <param name="Width">Samples across, at full resolution.</param>
+/// <param name="Height">Samples down, at full resolution.</param>
+/// <param name="Components">Components per pixel.</param>
+/// <param name="BitDepth">Bits per sample of the first component; the decoder requires them all to match.</param>
+/// <param name="DecompositionLevels">How many resolution levels a decode can leave out: the fewest of any component's.</param>
+/// <param name="Colour">The JP2 colour specification, or null for a raw codestream.</param>
+public sealed record Jpeg2000Info(
+    int Width, int Height, int Components, int BitDepth, int DecompositionLevels, Jp2Colour? Colour)
+{
+    /// <summary>The image region on the reference grid, whose origin decides how a halving rounds.</summary>
+    internal Rect Region { get; init; }
+
+    /// <summary>
+    /// The size <see cref="Jpeg2000Decoder.Decode(ReadOnlySpan{byte}, int)"/> produces at this
+    /// reduction, clamped as it clamps: each level left out halves each side, rounding up on the
+    /// reference grid (T.800 Equation B-14), so a caller can know what a decode will cost before it
+    /// runs one.
+    /// </summary>
+    public (int Width, int Height) SizeAt(int reduce)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(reduce);
+        reduce = Math.Min(reduce, DecompositionLevels);
+        return (TileComponent.CeilDivPow2(Region.X1, reduce) - TileComponent.CeilDivPow2(Region.X0, reduce),
+                TileComponent.CeilDivPow2(Region.Y1, reduce) - TileComponent.CeilDivPow2(Region.Y0, reduce));
+    }
+}
+
+/// <summary>
 /// A pure-managed JPEG 2000 decoder, clean-room from ITU-T T.800 (ISO/IEC
 /// 15444-1, Part 1).
 /// <para>
@@ -138,6 +168,35 @@ public static class Jpeg2000Decoder
         return DecodeCodestream(data.Slice(layout.CodestreamStart, layout.CodestreamLength), reduce) with
         {
             Colour = layout.Colour,
+        };
+    }
+
+    /// <summary>
+    /// What a JPEG 2000 image is, read from its headers without decoding a coded byte: its size,
+    /// components, precision, how far it can be reduced, and its JP2 colour. Cheap enough to ask of
+    /// every image before deciding whether, and how small, to decode it.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The data is malformed or truncated.</exception>
+    /// <exception cref="NotSupportedException">It uses a feature this decoder does not implement, so it would not decode either.</exception>
+    public static Jpeg2000Info ReadInfo(ReadOnlySpan<byte> data)
+    {
+        var codestream = data;
+        Jp2Colour? colour = null;
+        if (Jp2Reader.LooksLikeJp2(data))
+        {
+            var layout = Jp2Reader.Read(data);
+            codestream = data.Slice(layout.CodestreamStart, layout.CodestreamLength);
+            colour = layout.Colour;
+        }
+
+        var header = CodestreamReader.Read(codestream);
+        var siz = header.Siz;
+        var levels = int.MaxValue;
+        foreach (var coding in header.ComponentCoding) levels = Math.Min(levels, coding.DecompositionLevels);
+
+        return new Jpeg2000Info(siz.Width, siz.Height, siz.Components.Length, siz.Components[0].BitDepth, levels, colour)
+        {
+            Region = new Rect(siz.X0, siz.Y0, siz.X1, siz.Y1),
         };
     }
 

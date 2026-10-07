@@ -33,7 +33,10 @@ those notes, verbatim in substance. 3.4 has no recorded note; it was never writt
   four components and sYCC are refused rather than presented in the wrong colours.
 
 **Public API additions:** `Jpeg2000Decoder.Decode(ReadOnlySpan<byte>, int)`,
-`Jpeg2000Decoder.ReductionFor`, `Jpeg2000ImageDecoder`. Nothing removed or changed.
+`Jpeg2000Decoder.ReductionFor`, `Jpeg2000Decoder.ReadInfo` with `Jpeg2000Info` (size, components,
+depth, the levels a reduction can leave out, the JP2 colour, and `SizeAt(reduce)`, all from the
+headers, so a caller can price a decode before running it), `Jpeg2000ImageDecoder`. Nothing removed
+or changed.
 
 ## 3.15
 
