@@ -55,13 +55,21 @@ public sealed record Jpeg2000Image(int Width, int Height, int BitDepth, ushort[]
 
         return bytes;
     }
+
+    /// <summary>
+    /// What the JP2 file's colour specification says the components mean, or null for a raw
+    /// codestream, which says nothing about colour at all. See <see cref="Jp2Colour"/> for why
+    /// this is reported rather than applied.
+    /// </summary>
+    public Jp2Colour? Colour { get; init; }
 }
 
 /// <summary>
 /// A pure-managed JPEG 2000 decoder, clean-room from ITU-T T.800 (ISO/IEC
 /// 15444-1, Part 1).
 /// <para>
-/// <b>What this decodes today.</b> A raw J2K codestream holding any number of
+/// <b>What this decodes today.</b> A raw J2K codestream, or one in a JP2 file
+/// with no palette, component mapping or channel definition, holding any number of
 /// 1-to-16-bit unsigned components of one precision, in a single tile, at full
 /// resolution, coded in any number of quality layers with maximal precincts and
 /// LRCP progression: losslessly with the reversible 5/3 wavelet, or lossily with
@@ -89,10 +97,30 @@ public static class Jpeg2000Decoder
     /// </summary>
     public static bool IsCodestream(ReadOnlySpan<byte> data) => CodestreamReader.LooksLikeCodestream(data);
 
-    /// <summary>Decodes a raw JPEG 2000 codestream.</summary>
-    /// <exception cref="InvalidDataException">The codestream is malformed, truncated or over the resource limits.</exception>
+    /// <summary>
+    /// True when <paramref name="data"/> begins with the JP2 file format's signature box
+    /// (<c>00 00 00 0C 6A 50 20 20 0D 0A 87 0A</c>).
+    /// </summary>
+    public static bool IsJp2(ReadOnlySpan<byte> data) => Jp2Reader.LooksLikeJp2(data);
+
+    /// <summary>
+    /// Decodes a JPEG 2000 image: a raw codestream, or a JP2 file, whose colour specification
+    /// comes back on <see cref="Jpeg2000Image.Colour"/>.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The data is malformed, truncated or over the resource limits.</exception>
     /// <exception cref="NotSupportedException">It is well-formed but uses a feature this decoder does not implement.</exception>
     public static Jpeg2000Image Decode(ReadOnlySpan<byte> data)
+    {
+        if (!Jp2Reader.LooksLikeJp2(data)) return DecodeCodestream(data);
+
+        var layout = Jp2Reader.Read(data);
+        return DecodeCodestream(data.Slice(layout.CodestreamStart, layout.CodestreamLength)) with
+        {
+            Colour = layout.Colour,
+        };
+    }
+
+    private static Jpeg2000Image DecodeCodestream(ReadOnlySpan<byte> data)
     {
         var header = CodestreamReader.Read(data);
         var siz = header.Siz;

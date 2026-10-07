@@ -32,6 +32,7 @@
 # have been left alone. The test comparing them would then fail in a way that
 # looks like a decoder bug.
 *.j2k binary
+*.jp2 binary
 *.pgm binary
 *.ppm binary
 
