@@ -65,7 +65,7 @@ public static class WebpDecoder
         else
         {
             rgba = new byte[checked(info.Width * info.Height * 4)];
-            Vp8Yuv yuv = Vp8Decoder.Decode(container.Vp8Bitstream, info.Width, info.Height);
+            using Vp8Yuv yuv = Vp8Decoder.DecodePooled(container.Vp8Bitstream, info.Width, info.Height);
             WriteRgba(yuv, rgba, checked(info.Width * 4), fancy: true);
             if (container.HasAlphaChunk)
             {
@@ -123,16 +123,11 @@ public static class WebpDecoder
 
         if (info.Format == WebpFormat.Lossless)
         {
-            byte[] decoded = Vp8LDecoder.DecodeRgba(container.Vp8Bitstream);
-            for (int row = 0; row < info.Height; row++)
-            {
-                decoded.AsSpan(row * minimumStride, minimumStride)
-                    .CopyTo(rgba.Slice(row * stride, minimumStride));
-            }
+            Vp8LDecoder.DecodeRgbaTo(container.Vp8Bitstream, rgba, stride);
         }
         else
         {
-            Vp8Yuv yuv = Vp8Decoder.Decode(container.Vp8Bitstream, info.Width, info.Height);
+            using Vp8Yuv yuv = Vp8Decoder.DecodePooled(container.Vp8Bitstream, info.Width, info.Height);
             WriteRgba(yuv, rgba, stride, fancy);
             if (container.HasAlphaChunk)
             {
@@ -276,11 +271,6 @@ public static class WebpDecoder
             throw new InvalidDataException("The WebP ALPH chunk is empty.");
         }
 
-        if (stride == 0)
-        {
-            stride = checked(width * 4);
-        }
-
         int header = alphaChunk[0];
         int compression = header & 3;
         int filter = (header >> 2) & 3;
@@ -302,6 +292,11 @@ public static class WebpDecoder
         else
         {
             throw new InvalidDataException("The WebP alpha compression method is unsupported.");
+        }
+
+        if (stride == 0)
+        {
+            stride = checked(width * 4);
         }
 
         if (filter != 0)
@@ -336,7 +331,6 @@ public static class WebpDecoder
         }
     }
 
-    // Fitted black-box to dwebp; approximately BT.601 limited-range with 14-bit coefficients.
     private static void ConvertYuvToRgb(int y, int u, int v, out byte red, out byte green, out byte blue)
     {
         // Black-box fit to dwebp (BT.601 limited-range, 14-bit coefficients); see

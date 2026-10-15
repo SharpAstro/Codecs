@@ -6,6 +6,17 @@ namespace SharpAstro.Webp;
 internal static class Vp8Decoder
 {
     public static Vp8Yuv Decode(ReadOnlySpan<byte> frame, int width, int height, bool applyLoopFilter = true)
+        => DecodeCore(frame, width, height, applyLoopFilter, pooledOutput: false);
+
+    internal static Vp8Yuv DecodePooled(ReadOnlySpan<byte> frame, int width, int height, bool applyLoopFilter = true)
+        => DecodeCore(frame, width, height, applyLoopFilter, pooledOutput: true);
+
+    private static Vp8Yuv DecodeCore(
+        ReadOnlySpan<byte> frame,
+        int width,
+        int height,
+        bool applyLoopFilter,
+        bool pooledOutput)
     {
         if (frame.Length < 10)
         {
@@ -186,8 +197,15 @@ internal static class Vp8Decoder
                             hasNonzeroCoefficients |= y2Nonzero;
                             aboveY2[mbX] = (byte)(y2Nonzero ? 1 : 0);
                             leftY2 = y2Nonzero ? (byte)1 : (byte)0;
-                            Dequantize(coefficients, y2DcQ, y2AcQ);
-                            InverseWalsh(coefficients, y2Dc);
+                            if (y2Nonzero)
+                            {
+                                Dequantize(coefficients, y2DcQ, y2AcQ);
+                                InverseWalsh(coefficients, y2Dc);
+                            }
+                            else
+                            {
+                                y2Dc.Clear();
+                            }
                         }
                         else
                         {
@@ -228,9 +246,12 @@ internal static class Vp8Decoder
                                 coefficients[0] = y2Dc[blockY * 4 + blockX];
                             }
 
-                            Dequantize(coefficients, yMode == 4 ? yDc : 1, yAc);
-                            InverseDct(coefficients, residual);
-                            AddResidual(yBuffer, yStride, x + blockX * 4, y + blockY * 4, residual);
+                            if (hasCoefficients || (yMode != 4 && coefficients[0] != 0))
+                            {
+                                bool hasAc = Dequantize(coefficients, yMode == 4 ? yDc : 1, yAc);
+                                InverseDct(coefficients, residual, hasAc);
+                                AddResidual(yBuffer, yStride, x + blockX * 4, y + blockY * 4, residual);
+                            }
                         }
                     }
 
@@ -250,9 +271,12 @@ internal static class Vp8Decoder
                                     2, 0, context, coefficients);
                                 hasNonzeroCoefficients |= hasCoefficients;
                                 above[mbX * 2 + blockX] = left[blockY] = hasCoefficients ? (byte)1 : (byte)0;
-                                Dequantize(coefficients, uvDc, uvAc);
-                                InverseDct(coefficients, residual);
-                                AddResidual(chroma, uvStride, uvX + blockX * 4, uvY + blockY * 4, residual);
+                                if (hasCoefficients)
+                                {
+                                    bool hasAc = Dequantize(coefficients, uvDc, uvAc);
+                                    InverseDct(coefficients, residual, hasAc);
+                                    AddResidual(chroma, uvStride, uvX + blockX * 4, uvY + blockY * 4, residual);
+                                }
                             }
                         }
                     }
@@ -265,11 +289,19 @@ internal static class Vp8Decoder
                 ApplyLoopFilter(yBuffer, yStride, uBuffer, vBuffer, uvStride, mbWidth, mbHeight,
                     filter, levels, nonzeroCoefficients, modes);
             }
-            byte[] yPlane = new byte[checked(width * height)];
+            int yPlaneLength = checked(width * height);
             int chromaWidth = (width + 1) >> 1;
             int chromaHeight = (height + 1) >> 1;
-            byte[] uPlane = new byte[checked(chromaWidth * chromaHeight)];
-            byte[] vPlane = new byte[uPlane.Length];
+            int chromaPlaneLength = checked(chromaWidth * chromaHeight);
+            byte[] yPlane = pooledOutput
+                ? ArrayPool<byte>.Shared.Rent(yPlaneLength)
+                : new byte[yPlaneLength];
+            byte[] uPlane = pooledOutput
+                ? ArrayPool<byte>.Shared.Rent(chromaPlaneLength)
+                : new byte[chromaPlaneLength];
+            byte[] vPlane = pooledOutput
+                ? ArrayPool<byte>.Shared.Rent(chromaPlaneLength)
+                : new byte[chromaPlaneLength];
             for (int row = 0; row < height; row++)
             {
                 yBuffer.AsSpan((row + 1) * yStride + 1, width).CopyTo(yPlane.AsSpan(row * width));
@@ -281,7 +313,7 @@ internal static class Vp8Decoder
                 vBuffer.AsSpan((row + 1) * uvStride + 1, chromaWidth).CopyTo(vPlane.AsSpan(row * chromaWidth));
             }
 
-            return new Vp8Yuv(width, height, yPlane, uPlane, vPlane);
+            return new Vp8Yuv(width, height, yPlane, uPlane, vPlane, pooledOutput);
         }
         finally
         {
@@ -488,14 +520,13 @@ internal static class Vp8Decoder
         int nodeContext = Math.Clamp(context, 0, 2);
         bool any = false;
         bool previousWasZero = false;
+        Vp8BoolDecoder decoder = tokens.GetPartition(partition);
         while (position < 16)
         {
             int band = Vp8Tables.CoefficientBands[position];
             int offset = (((type * 8 + band) * 3 + nodeContext) * 11);
             ReadOnlySpan<byte> nodeProbabilities = probabilities.AsSpan(offset, 11);
-            Vp8BoolDecoder decoder = tokens.GetPartition(partition);
             int tokenType = ReadTree(ref decoder, Vp8Tables.CoefficientTree, nodeProbabilities, previousWasZero ? 2 : 0);
-            tokens.SetPartition(partition, decoder);
             if (tokenType == 1)
             {
                 break;
@@ -515,15 +546,15 @@ internal static class Vp8Decoder
                 3 => 2,
                 4 => 3,
                 5 => 4,
-                6 => 5 + ReadExtra(ref tokens, partition, Vp8Tables.Pcat1),
-                7 => 7 + ReadExtra(ref tokens, partition, Vp8Tables.Pcat2),
-                8 => 11 + ReadExtra(ref tokens, partition, Vp8Tables.Pcat3),
-                9 => 19 + ReadExtra(ref tokens, partition, Vp8Tables.Pcat4),
-                10 => 35 + ReadExtra(ref tokens, partition, Vp8Tables.Pcat5),
-                11 => 67 + ReadExtra(ref tokens, partition, Vp8Tables.Pcat6),
+                6 => 5 + ReadExtra(ref decoder, Vp8Tables.Pcat1),
+                7 => 7 + ReadExtra(ref decoder, Vp8Tables.Pcat2),
+                8 => 11 + ReadExtra(ref decoder, Vp8Tables.Pcat3),
+                9 => 19 + ReadExtra(ref decoder, Vp8Tables.Pcat4),
+                10 => 35 + ReadExtra(ref decoder, Vp8Tables.Pcat5),
+                11 => 67 + ReadExtra(ref decoder, Vp8Tables.Pcat6),
                 _ => throw new InvalidDataException("The VP8 coefficient token is invalid."),
             };
-            int signed = tokens.ReadBit(partition, 128) != 0 ? -token : token;
+            int signed = decoder.ReadBit(128) != 0 ? -token : token;
             coefficients[Vp8Tables.Zigzag[position]] = signed;
             any = true;
             nodeContext = token == 1 ? 1 : 2;
@@ -531,27 +562,33 @@ internal static class Vp8Decoder
             position++;
         }
 
+        tokens.SetPartition(partition, decoder);
         return any;
     }
 
-    private static int ReadExtra(ref Vp8TokenPartitions tokens, int partition, ReadOnlySpan<byte> probabilities)
+    private static int ReadExtra(ref Vp8BoolDecoder decoder, ReadOnlySpan<byte> probabilities)
     {
         int value = 0;
         for (int i = 0; i < probabilities.Length && probabilities[i] != 0; i++)
         {
-            value = (value << 1) | tokens.ReadBit(partition, probabilities[i]);
+            value = (value << 1) | decoder.ReadBit(probabilities[i]);
         }
 
         return value;
     }
 
-    private static void Dequantize(Span<int> coefficients, int dc, int ac)
+    private static bool Dequantize(Span<int> coefficients, int dc, int ac)
     {
         coefficients[0] = unchecked((short)(coefficients[0] * dc));
+        bool hasAc = false;
         for (int i = 1; i < 16; i++)
         {
-            coefficients[i] = unchecked((short)(coefficients[i] * ac));
+            int value = unchecked((short)(coefficients[i] * ac));
+            coefficients[i] = value;
+            hasAc |= value != 0;
         }
+
+        return hasAc;
     }
 
     private static void InverseWalsh(Span<int> input, Span<short> output)
@@ -583,7 +620,18 @@ internal static class Vp8Decoder
         }
     }
 
-    private static void InverseDct(Span<int> input, Span<short> output)
+    internal static void InverseDct(Span<int> input, Span<short> output, bool hasAcCoefficients)
+    {
+        if (!hasAcCoefficients)
+        {
+            output.Fill((short)((input[0] + 4) >> 3));
+            return;
+        }
+
+        InverseDctGeneral(input, output);
+    }
+
+    internal static void InverseDctGeneral(Span<int> input, Span<short> output)
     {
         Span<short> horizontal = stackalloc short[16];
         for (int column = 0; column < 4; column++)
@@ -984,7 +1032,6 @@ internal static class Vp8Decoder
                 plane[cy * stride + cx - 2 * step] = (byte)Math.Clamp(p1 + inner, 0, 255);
                 plane[cy * stride + cx + step] = (byte)Math.Clamp(q1 - inner, 0, 255);
             }
-
         }
     }
 

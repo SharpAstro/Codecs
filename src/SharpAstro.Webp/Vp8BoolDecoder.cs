@@ -1,35 +1,28 @@
+using System.Runtime.CompilerServices;
+
 namespace SharpAstro.Webp;
 
 internal ref struct Vp8BoolDecoder
 {
     private readonly ReadOnlySpan<byte> _data;
-    private int _nextBit;
+    private int _nextByte;
+    private int _bitsAvailable;
+    private ulong _bitBuffer;
     private uint _value;
     private int _range;
 
     public Vp8BoolDecoder(ReadOnlySpan<byte> data)
     {
         _data = data;
-        _nextBit = 16;
+        _nextByte = Math.Min(data.Length, 2);
+        _bitsAvailable = 0;
+        _bitBuffer = 0;
         _range = 255;
-        _value = (uint)ReadInputBitAt(0) << 15 |
-                 (uint)ReadInputBitAt(1) << 14 |
-                 (uint)ReadInputBitAt(2) << 13 |
-                 (uint)ReadInputBitAt(3) << 12 |
-                 (uint)ReadInputBitAt(4) << 11 |
-                 (uint)ReadInputBitAt(5) << 10 |
-                 (uint)ReadInputBitAt(6) << 9 |
-                 (uint)ReadInputBitAt(7) << 8 |
-                 (uint)ReadInputBitAt(8) << 7 |
-                 (uint)ReadInputBitAt(9) << 6 |
-                 (uint)ReadInputBitAt(10) << 5 |
-                 (uint)ReadInputBitAt(11) << 4 |
-                 (uint)ReadInputBitAt(12) << 3 |
-                 (uint)ReadInputBitAt(13) << 2 |
-                 (uint)ReadInputBitAt(14) << 1 |
-                 (uint)ReadInputBitAt(15);
+        _value = (uint)(data.Length > 0 ? data[0] : 0) << 8 |
+                 (uint)(data.Length > 1 ? data[1] : 0);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public int ReadBit(byte probability)
     {
         int split = 1 + ((_range - 1) * probability >> 8);
@@ -50,7 +43,7 @@ internal ref struct Vp8BoolDecoder
         while (_range < 128)
         {
             _range <<= 1;
-            _value = ((_value << 1) | (uint)ReadInputBitAt(_nextBit++)) & 0xffff;
+            _value = ((_value << 1) | (uint)ReadInputBit()) & 0xffff;
         }
 
         return bit;
@@ -73,14 +66,32 @@ internal ref struct Vp8BoolDecoder
         return ReadBit(128) != 0 ? -value : value;
     }
 
-    private int ReadInputBitAt(int bitIndex)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int ReadInputBit()
     {
-        if (bitIndex < 0 || (bitIndex >> 3) >= _data.Length)
+        if (_bitsAvailable == 0)
         {
-            return 0;
+            int bytes = Math.Min(8, _data.Length - _nextByte);
+            if (bytes == 0)
+            {
+                return 0;
+            }
+
+            ulong buffer = 0;
+            for (int i = 0; i < bytes; i++)
+            {
+                buffer |= (ulong)_data[_nextByte + i] << ((7 - i) * 8);
+            }
+
+            _nextByte += bytes;
+            _bitBuffer = buffer;
+            _bitsAvailable = bytes * 8;
         }
 
-        return (_data[bitIndex >> 3] >> (7 - (bitIndex & 7))) & 1;
+        int bit = (int)(_bitBuffer >> 63);
+        _bitBuffer <<= 1;
+        _bitsAvailable--;
+        return bit;
     }
 }
 

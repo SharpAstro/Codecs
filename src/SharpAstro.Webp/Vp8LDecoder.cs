@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace SharpAstro.Webp;
 
 /// <summary>
@@ -31,22 +33,22 @@ internal static class Vp8LDecoder
 
     public static byte[] DecodeRgba(ReadOnlySpan<byte> stream)
     {
-        if (stream.Length < 5 || stream[0] != 0x2f)
+        (int width, int height, int[] argb) = DecodeArgb(stream);
+        byte[] result = new byte[checked(argb.Length * 4)];
+        ToRgba(argb, result, width, checked(width * 4));
+        return result;
+    }
+
+    public static void DecodeRgbaTo(ReadOnlySpan<byte> stream, Span<byte> output, int stride)
+    {
+        (int width, int height, int[] argb) = DecodeArgb(stream);
+        int rowLength = checked(width * 4);
+        if (stride < rowLength || output.Length < checked((height - 1) * stride + rowLength))
         {
-            throw new InvalidDataException("The VP8L stream header is truncated.");
+            throw new ArgumentException("The destination is too small for the decoded VP8L image.", nameof(output));
         }
 
-        uint header = (uint)stream[1] | ((uint)stream[2] << 8) |
-            ((uint)stream[3] << 16) | ((uint)stream[4] << 24);
-        int width = 1 + (int)(header & 0x3fff);
-        int height = 1 + (int)((header >> 14) & 0x3fff);
-        if ((header >> 29) != 0 || (long)width * height > WebpLimits.MaximumPixels)
-        {
-            throw new InvalidDataException("The VP8L dimensions or version are invalid.");
-        }
-
-        int[] argb = DecodeImage(new BitReader(stream[5..]), width, height, allowTransforms: true);
-        return ToRgba(argb);
+        ToRgba(argb, output, width, stride);
     }
 
     public static byte[] DecodeAlpha(ReadOnlySpan<byte> stream, int width, int height)
@@ -252,11 +254,25 @@ internal static class Vp8LDecoder
                     throw new InvalidDataException("The VP8L backward copy exceeds the image.");
                 }
 
-                for (int i = 0; i < length; i++)
+                if (distance >= length)
                 {
-                    int color = result[position - distance];
-                    result[position++] = color;
-                    AddCache(cache, color, cacheBits);
+                    Array.Copy(result, position - distance, result, position, length);
+                    int end = position + length;
+                    for (int i = position; i < end; i++)
+                    {
+                        AddCache(cache, result[i], cacheBits);
+                    }
+
+                    position = end;
+                }
+                else
+                {
+                    for (int i = 0; i < length; i++)
+                    {
+                        int color = result[position - distance];
+                        result[position++] = color;
+                        AddCache(cache, color, cacheBits);
+                    }
                 }
 
                 continue;
@@ -423,6 +439,7 @@ internal static class Vp8LDecoder
         return Math.Max(1, x + y * width);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void AddCache(int[]? cache, int color, int cacheBits)
     {
         if (cache is null) return;
@@ -611,18 +628,41 @@ internal static class Vp8LDecoder
         (Math.Clamp(a, 0, 255) << 24) | (Math.Clamp(r, 0, 255) << 16) |
         (Math.Clamp(g, 0, 255) << 8) | Math.Clamp(b, 0, 255);
 
-    private static byte[] ToRgba(int[] argb)
+    private static (int Width, int Height, int[] Pixels) DecodeArgb(ReadOnlySpan<byte> stream)
     {
-        byte[] result = new byte[checked(argb.Length * 4)];
-        for (int i = 0, j = 0; i < argb.Length; i++, j += 4)
+        if (stream.Length < 5 || stream[0] != 0x2f)
         {
-            result[j] = (byte)(argb[i] >> 16);
-            result[j + 1] = (byte)(argb[i] >> 8);
-            result[j + 2] = (byte)argb[i];
-            result[j + 3] = (byte)(argb[i] >> 24);
+            throw new InvalidDataException("The VP8L stream header is truncated.");
         }
 
-        return result;
+        uint header = (uint)stream[1] | ((uint)stream[2] << 8) |
+            ((uint)stream[3] << 16) | ((uint)stream[4] << 24);
+        int width = 1 + (int)(header & 0x3fff);
+        int height = 1 + (int)((header >> 14) & 0x3fff);
+        if ((header >> 29) != 0 || (long)width * height > WebpLimits.MaximumPixels)
+        {
+            throw new InvalidDataException("The VP8L dimensions or version are invalid.");
+        }
+
+        int[] pixels = DecodeImage(new BitReader(stream[5..]), width, height, allowTransforms: true);
+        return (width, height, pixels);
+    }
+
+    private static void ToRgba(int[] argb, Span<byte> output, int width, int stride)
+    {
+        int height = argb.Length / width;
+        for (int row = 0; row < height; row++)
+        {
+            int sourceIndex = row * width;
+            int outputIndex = row * stride;
+            for (int column = 0; column < width; column++, sourceIndex++, outputIndex += 4)
+            {
+                output[outputIndex] = (byte)(argb[sourceIndex] >> 16);
+                output[outputIndex + 1] = (byte)(argb[sourceIndex] >> 8);
+                output[outputIndex + 2] = (byte)argb[sourceIndex];
+                output[outputIndex + 3] = (byte)(argb[sourceIndex] >> 24);
+            }
+        }
     }
 
     private readonly record struct Transform(
@@ -643,8 +683,13 @@ internal static class Vp8LDecoder
     private sealed class PrefixCode
     {
         private readonly Node[] _nodes;
+        private readonly LookupEntry[]? _lookup;
 
-        private PrefixCode(Node[] nodes) => _nodes = nodes;
+        private PrefixCode(Node[] nodes)
+        {
+            _nodes = nodes;
+            _lookup = nodes[0].Symbol >= 0 ? null : BuildLookup(nodes);
+        }
 
         public static PrefixCode Build(int[] lengths)
         {
@@ -749,6 +794,36 @@ internal static class Vp8LDecoder
             }
 
             int node = 0;
+            if (reader.TryPeekBits(8, out int prefix))
+            {
+                LookupEntry entry = _lookup![prefix];
+                if (entry.Bits == 0)
+                {
+                    throw new InvalidDataException("The VP8L prefix code did not contain the input.");
+                }
+
+                reader.DropBits(entry.Bits);
+                if (entry.IsLeaf)
+                {
+                    return entry.Index;
+                }
+
+                node = entry.Index;
+                for (int i = 8; i < 15; i++)
+                {
+                    int bit = reader.ReadBit();
+                    node = bit == 0 ? _nodes[node].Zero : _nodes[node].One;
+                    if (node < 0)
+                    {
+                        throw new InvalidDataException("The VP8L prefix code did not contain the input.");
+                    }
+
+                    if (_nodes[node].Symbol >= 0) return _nodes[node].Symbol;
+                }
+
+                throw new InvalidDataException("The VP8L prefix code is too deep.");
+            }
+
             for (int i = 0; i < 15; i++)
             {
                 int bit = reader.ReadBit();
@@ -763,7 +838,41 @@ internal static class Vp8LDecoder
 
             throw new InvalidDataException("The VP8L prefix code is too deep.");
         }
+
+        private static LookupEntry[] BuildLookup(Node[] nodes)
+        {
+            var lookup = new LookupEntry[256];
+            for (int prefix = 0; prefix < lookup.Length; prefix++)
+            {
+                int node = 0;
+                for (int bitIndex = 0; bitIndex < 8; bitIndex++)
+                {
+                    int bit = prefix >> bitIndex & 1;
+                    node = bit == 0 ? nodes[node].Zero : nodes[node].One;
+                    if (node < 0)
+                    {
+                        lookup[prefix] = default;
+                        break;
+                    }
+
+                    if (nodes[node].Symbol >= 0)
+                    {
+                        lookup[prefix] = new LookupEntry((ushort)nodes[node].Symbol, (byte)(bitIndex + 1), true);
+                        break;
+                    }
+
+                    if (bitIndex == 7)
+                    {
+                        lookup[prefix] = new LookupEntry((ushort)node, 8, false);
+                    }
+                }
+            }
+
+            return lookup;
+        }
     }
+
+    private readonly record struct LookupEntry(ushort Index, byte Bits, bool IsLeaf);
 
     private struct Node
     {
@@ -783,7 +892,7 @@ internal static class Vp8LDecoder
     {
         private readonly ReadOnlySpan<byte> _data;
         private int _position;
-        private uint _buffer;
+        private ulong _buffer;
         private int _bits;
 
         public BitReader(ReadOnlySpan<byte> data)
@@ -798,6 +907,25 @@ internal static class Vp8LDecoder
 
         public int ReadBit() => ReadBits(1);
 
+        public bool TryPeekBits(int count, out int value)
+        {
+            EnsureBits(count);
+            if (_bits < count)
+            {
+                value = 0;
+                return false;
+            }
+
+            value = (int)(_buffer & ((1UL << count) - 1));
+            return true;
+        }
+
+        public void DropBits(int count)
+        {
+            _buffer >>= count;
+            _bits -= count;
+        }
+
         public int ReadBits(int count)
         {
             if (count is < 0 or > 24)
@@ -805,21 +933,31 @@ internal static class Vp8LDecoder
                 throw new InvalidDataException("The VP8L bit count is invalid.");
             }
 
-            while (_bits < count)
+            EnsureBits(count);
+            if (_bits < count)
             {
-                if (_position >= _data.Length)
-                {
-                    throw new InvalidDataException("The VP8L bitstream is truncated.");
-                }
-
-                _buffer |= (uint)_data[_position++] << _bits;
-                _bits += 8;
+                throw new InvalidDataException("The VP8L bitstream is truncated.");
             }
 
-            int result = (int)(_buffer & ((1u << count) - 1));
+            int result = (int)(_buffer & ((1UL << count) - 1));
             _buffer >>= count;
             _bits -= count;
             return result;
+        }
+
+        private void EnsureBits(int count)
+        {
+            while (_bits < count && _position < _data.Length)
+            {
+                int bytes = Math.Min((_data.Length - _position), (64 - _bits) >> 3);
+                for (int i = 0; i < bytes; i++)
+                {
+                    _buffer |= (ulong)_data[_position + i] << (_bits + i * 8);
+                }
+
+                _position += bytes;
+                _bits += bytes * 8;
+            }
         }
     }
 }

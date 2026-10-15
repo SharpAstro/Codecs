@@ -1,14 +1,19 @@
+using System.Buffers;
+
 namespace SharpAstro.Webp;
 
-internal sealed class Vp8Yuv
+internal sealed class Vp8Yuv : IDisposable
 {
-    public Vp8Yuv(int width, int height, byte[] y, byte[] u, byte[] v)
+    private readonly bool _pooled;
+
+    public Vp8Yuv(int width, int height, byte[] y, byte[] u, byte[] v, bool pooled = false)
     {
         Width = width;
         Height = height;
         Y = y;
         U = u;
         V = v;
+        _pooled = pooled;
     }
 
     public int Width { get; }
@@ -16,4 +21,14 @@ internal sealed class Vp8Yuv
     public byte[] Y { get; }
     public byte[] U { get; }
     public byte[] V { get; }
+
+    public void Dispose()
+    {
+        if (_pooled)
+        {
+            ArrayPool<byte>.Shared.Return(Y);
+            ArrayPool<byte>.Shared.Return(U);
+            ArrayPool<byte>.Shared.Return(V);
+        }
+    }
 }
