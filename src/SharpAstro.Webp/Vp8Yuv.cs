@@ -1,5 +1,3 @@
-using System.Buffers;
-
 namespace SharpAstro.Webp;
 
 internal sealed class Vp8Yuv : IDisposable
@@ -26,9 +24,9 @@ internal sealed class Vp8Yuv : IDisposable
     {
         if (_pooled)
         {
-            ArrayPool<byte>.Shared.Return(Y);
-            ArrayPool<byte>.Shared.Return(U);
-            ArrayPool<byte>.Shared.Return(V);
+            WebpBufferPool<byte>.Return(Y);
+            WebpBufferPool<byte>.Return(U);
+            WebpBufferPool<byte>.Return(V);
         }
     }
 }
