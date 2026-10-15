@@ -21,11 +21,14 @@ public sealed class WebpAnimationOracleTests
         new(LoadGolden);
 
     public static IEnumerable<object[]> AnimationFixtureCases() =>
+        OracleFixtureNames().Select(static name => new object[] { name });
+
+    public static IEnumerable<object[]> AllAnimationFixtureCases() =>
         FixtureNames().Select(static name => new object[] { name });
 
     public static IEnumerable<object[]> AnimationFrameCases()
     {
-        foreach (string fixture in FixtureNames())
+        foreach (string fixture in OracleFixtureNames())
         {
             string path = Path.Combine(FixtureDirectory(), fixture);
             int frameCount = WebpDecoder.ReadInfo(File.ReadAllBytes(path)).FrameCount;
@@ -39,7 +42,7 @@ public sealed class WebpAnimationOracleTests
     [Fact]
     public void GoldenManifestCoversEveryAnimationFrame()
     {
-        string[] expected = FixtureNames()
+        string[] expected = OracleFixtureNames()
             .SelectMany(fixture =>
             {
                 int frameCount = WebpDecoder.ReadInfo(
@@ -170,7 +173,7 @@ public sealed class WebpAnimationOracleTests
             "# fixture<TAB>frame<TAB>canvas-width<TAB>canvas-height<TAB>timestamp-ms<TAB>duration-ms<TAB>sha256(RGBA).",
             "# Regenerate with REGEN_ANIMATION_WEBP_ORACLE=1 and anim_dump on PATH or ANIM_DUMP.",
         };
-        foreach (string fixture in FixtureNames(fixtureDirectory))
+        foreach (string fixture in OracleFixtureNames(fixtureDirectory))
         {
             string input = Path.Combine(fixtureDirectory, fixture);
             var decoder = new WebpAnimationDecoder(File.ReadAllBytes(input));
@@ -198,7 +201,7 @@ public sealed class WebpAnimationOracleTests
     }
 
     [Theory]
-    [MemberData(nameof(AnimationFixtureCases))]
+    [MemberData(nameof(AllAnimationFixtureCases))]
     public void SeekReproducesSequentialFramesInRandomOrder(string fixture)
     {
         byte[] source = File.ReadAllBytes(Path.Combine(FixtureDirectory(), fixture));
@@ -239,7 +242,7 @@ public sealed class WebpAnimationOracleTests
     }
 
     [Theory]
-    [MemberData(nameof(AnimationFixtureCases))]
+    [MemberData(nameof(AllAnimationFixtureCases))]
     public void FrameIndexAtUsesDurationBoundaries(string fixture)
     {
         byte[] source = File.ReadAllBytes(Path.Combine(FixtureDirectory(), fixture));
@@ -265,7 +268,7 @@ public sealed class WebpAnimationOracleTests
     }
 
     [Theory]
-    [MemberData(nameof(AnimationFixtureCases))]
+    [MemberData(nameof(AllAnimationFixtureCases))]
     public void StillDecodeAndFacadeReturnCompositedFrameZero(string fixture)
     {
         byte[] source = File.ReadAllBytes(Path.Combine(FixtureDirectory(), fixture));
@@ -328,8 +331,42 @@ public sealed class WebpAnimationOracleTests
         Assert.Equal(decoder.BackgroundColor, animation.BackgroundColor);
     }
 
+    [Fact]
+    public void Vp8lAlphaHintDoesNotMakeBlendedFullCanvasFrameIndependent()
+    {
+        byte[] source = File.ReadAllBytes(Path.Combine(
+            FixtureDirectory(),
+            "anim-vp8l-alpha-hint.webp"));
+        WebpContainer container = WebpContainer.Read(source);
+        var decoder = new WebpAnimationDecoder(source);
+
+        Assert.Equal(WebpFormat.Lossless, container.Frames[1].Format);
+        Assert.False(container.Frames[1].HasAlpha);
+        Assert.True(container.Frames[1].Blend);
+        Assert.False(decoder.Frames[1].IsIndependent);
+
+        WebpFrameData frame = container.Frames[1];
+        byte[] sourceRgba = WebpDecoder.DecodeFrameRgba(
+            source.AsSpan(frame.BitstreamOffset, frame.BitstreamLength),
+            frame.Format,
+            ReadOnlySpan<byte>.Empty,
+            frame.Width,
+            frame.Height);
+        Assert.Equal((byte)0, sourceRgba[3]);
+        Assert.Contains(
+            Enumerable.Range(0, sourceRgba.Length)
+                .Where(static offset => (offset & 3) == 3)
+                .Select(offset => sourceRgba[offset]),
+            static alpha => alpha < 255);
+
+        WebpAnimation animation = WebpDecoder.DecodeAnimation(source);
+        Assert.Equal(
+            animation.Frames[0].Rgba.AsSpan(0, 4).ToArray(),
+            animation.Frames[1].Rgba.AsSpan(0, 4).ToArray());
+    }
+
     [Theory]
-    [MemberData(nameof(AnimationFixtureCases))]
+    [MemberData(nameof(AllAnimationFixtureCases))]
     public void DecoderValidatesDestinationAndSeekBounds(string fixture)
     {
         byte[] source = File.ReadAllBytes(Path.Combine(FixtureDirectory(), fixture));
@@ -468,10 +505,18 @@ public sealed class WebpAnimationOracleTests
 
     private static IEnumerable<string> FixtureNames() => FixtureNames(FixtureDirectory());
 
+    private static IEnumerable<string> OracleFixtureNames() =>
+        OracleFixtureNames(FixtureDirectory());
+
     private static IEnumerable<string> FixtureNames(string directory) =>
         Directory.EnumerateFiles(directory, "anim-*.webp")
             .Select(static path => Path.GetFileName(path)!)
             .OrderBy(static name => name, StringComparer.Ordinal);
+
+    private static IEnumerable<string> OracleFixtureNames(string directory) =>
+        FixtureNames(directory)
+            // anim_dump 1.6.0 emits this RFC-blended frame as uncomposited.
+            .Where(static name => name != "anim-vp8l-alpha-hint.webp");
 
     private static Dictionary<(string Fixture, int Frame), GoldenEntry> LoadGolden()
     {

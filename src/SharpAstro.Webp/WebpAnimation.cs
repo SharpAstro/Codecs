@@ -11,7 +11,17 @@ public sealed record WebpAnimation(
     int CanvasHeight,
     int LoopCount,
     uint BackgroundColor,
-    IReadOnlyList<WebpFrame> Frames);
+    IReadOnlyList<WebpFrame> Frames)
+{
+    /// <summary>The embedded ICC profile, or null when no ICCP chunk is present.</summary>
+    public byte[]? IccProfile { get; init; }
+
+    /// <summary>The embedded EXIF payload, or null when no EXIF chunk is present.</summary>
+    public byte[]? Exif { get; init; }
+
+    /// <summary>The embedded XMP payload, or null when no XMP chunk is present.</summary>
+    public byte[]? Xmp { get; init; }
+}
 
 /// <summary>A full-canvas frame with its presentation timestamp and duration.</summary>
 /// <param name="Rgba">Tightly packed, non-premultiplied RGBA8 canvas pixels.</param>
@@ -95,7 +105,9 @@ public sealed class WebpAnimationDecoder
                 _frameData[index - 1].Height == CanvasHeight &&
                 _frameData[index - 1].DisposeToBackground;
             bool independent = index == 0 ||
-                (fullCanvas && (!frame.Blend || !frame.HasAlpha)) ||
+                (fullCanvas &&
+                    (!frame.Blend ||
+                     (frame.Format != WebpFormat.Lossless && !frame.HasAlpha))) ||
                 previousDisposesFullCanvas;
 
             _frameInfos[index] = new WebpFrameInfo(

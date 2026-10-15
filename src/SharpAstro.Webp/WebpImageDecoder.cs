@@ -39,7 +39,8 @@ public sealed class WebpImageDecoder : IImageDecoder
                 channels,
                 SampleFormat.UInt8,
                 pixels,
-                decoded.IccProfile.ToArray());
+                decoded.IccProfile,
+                ColorEncoding.AssumedSrgb);
             return true;
         }
         catch (Exception)

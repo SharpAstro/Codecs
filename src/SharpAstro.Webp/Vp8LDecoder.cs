@@ -7,7 +7,6 @@ namespace SharpAstro.Webp;
 /// </summary>
 internal static class Vp8LDecoder
 {
-    private const int MaximumPixels = 1 << 28;
     private static readonly int[] CodeLengthCodeOrder =
         { 17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
 
@@ -41,7 +40,7 @@ internal static class Vp8LDecoder
             ((uint)stream[3] << 16) | ((uint)stream[4] << 24);
         int width = 1 + (int)(header & 0x3fff);
         int height = 1 + (int)((header >> 14) & 0x3fff);
-        if ((header >> 29) != 0 || (long)width * height > MaximumPixels)
+        if ((header >> 29) != 0 || (long)width * height > WebpLimits.MaximumPixels)
         {
             throw new InvalidDataException("The VP8L dimensions or version are invalid.");
         }
@@ -52,7 +51,7 @@ internal static class Vp8LDecoder
 
     public static byte[] DecodeAlpha(ReadOnlySpan<byte> stream, int width, int height)
     {
-        if ((long)width * height > MaximumPixels)
+        if ((long)width * height > WebpLimits.MaximumPixels)
         {
             throw new InvalidDataException("The VP8L alpha dimensions exceed the pixel limit.");
         }
@@ -150,7 +149,7 @@ internal static class Vp8LDecoder
         int height,
         bool hasMetaPrefix)
     {
-        if (width <= 0 || height <= 0 || (long)width * height > MaximumPixels)
+        if (width <= 0 || height <= 0 || (long)width * height > WebpLimits.MaximumPixels)
         {
             throw new InvalidDataException("The VP8L subimage dimensions are invalid.");
         }

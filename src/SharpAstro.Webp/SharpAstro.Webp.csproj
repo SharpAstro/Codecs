@@ -9,8 +9,8 @@
     <PackageId>SharpAstro.Webp</PackageId>
     <Product>SharpAstro.Webp</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure C# WebP lossy still-image decoder for .NET.</Description>
-    <PackageTags>webp image codec decoder lossy vp8 aot</PackageTags>
+    <Description>Pure C# WebP still and animated image decoder for .NET.</Description>
+    <PackageTags>webp image codec decoder lossy lossless vp8 vp8l alpha animation aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>

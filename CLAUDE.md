@@ -11,7 +11,7 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Exif`,
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Exif`,
   `Color.Icc`, `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered
   *ahead of* the plain JPEG decoder).
 
@@ -601,9 +601,43 @@ four components, whose extra channel is alpha or black with nothing to say which
 read), and sYCC, whose samples are still YCbCr: `TryDecode` answers false rather than wrong colours,
 and `Jpeg2000Decoder.Decode` still hands back every component with the colour reported.
 
+## WebP codec — clean-room from RFC 6386 and RFC 9649
+
+`SharpAstro.Webp` decodes VP8 lossy, VP8L lossless, ALPH transparency, and
+animated WebP. Animation frames are full-canvas RGBA8; both materialized
+decoding and seeking are supported. ICC, EXIF, and XMP payloads are preserved.
+There is no encoder, and the facade returns frame 0 for animated input.
+Declared canvases above 67,108,864 pixels are rejected before raster allocation.
+
+The implementation source is **RFC 6386 and RFC 9649 only**. Do not read or
+transcribe libwebp, libvpx, or ffmpeg source. Their command-line binaries
+(`cwebp`, `dwebp`, `webpinfo`, `webpmux`, `img2webp`, `gif2webp`, and ffmpeg
+with libvpx) are used only to generate fixtures or as black-box oracles.
+
+The VP8 YUV-to-RGB conversion was fitted black-box against `dwebp`; the
+reproducible fit helper is
+[`tests/SharpAstro.Codecs.Tests/Fixtures/webp/fit-yuv-to-rgb.py`](tests/SharpAstro.Codecs.Tests/Fixtures/webp/fit-yuv-to-rgb.py).
+The per-term truncation is intentional:
+
+```text
+mh(x, k) = (x * k) >> 8
+R = clamp((mh(Y,19077) + mh(V,26149) - 14234) >> 6, 0, 255)
+G = clamp((mh(Y,19077) - mh(U,6419) - mh(V,13320) + 8708) >> 6, 0, 255)
+B = clamp((mh(Y,19077) + mh(U,33050) - 17685) >> 6, 0, 255)
+```
+
+`tests/SharpAstro.Codecs.Tests/Oracle/webp/build.sh` builds `anim_dump` from
+the official libwebp 1.6.0 release archive to run as an oracle. Its source
+files are not read or used by the decoder. Still-image and animation frame
+digests are committed in `Fixtures/webp/webp-oracle-golden.tsv` and
+`Fixtures/webp/webp-animation-oracle-golden.tsv`; they run without external
+tools. Regenerate with `REGEN_WEBP_ORACLE=1` and
+`REGEN_ANIMATION_WEBP_ORACLE=1`. Live animation comparison finds `anim_dump`
+through `ANIM_DUMP` or PATH.
+
 ## Oracle harnesses (all codecs)
 
-There are now **eight** oracle mechanisms, with different acquisition stories. All of them
+There are multiple oracle mechanisms, with different acquisition stories. All of them
 **skip gracefully** when their dependency is missing, so a clean clone still builds and tests
 green — which also means *a silently skipped oracle is not a passing oracle*. Check the skip
 messages when a change should have been caught, and see `REQUIRE_ORACLES` below for how CI

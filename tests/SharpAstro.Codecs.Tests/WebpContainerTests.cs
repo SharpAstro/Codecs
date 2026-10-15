@@ -53,6 +53,14 @@ public sealed class WebpContainerTests
     }
 
     [Fact]
+    public void ReadInfoRejectsCanvasAbovePixelLimit()
+    {
+        byte[] data = BuildFile(("VP8L", BuildVp8L(8193, 8193, hasAlpha: false)));
+
+        Should.Throw<InvalidDataException>(() => WebpDecoder.ReadInfo(data));
+    }
+
+    [Fact]
     public void ReadInfoRejectsAnimationChunkWithoutAnimationFlag()
     {
         byte[] data = BuildFile(

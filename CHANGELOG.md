@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -15,6 +15,13 @@ longer holds the number) and the header comment in `Directory.Build.props`. Entr
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
 ## 3.16
+
+`SharpAstro.Webp` decodes VP8 lossy, VP8L lossless, alpha, and animation. It
+preserves ICC / EXIF / XMP metadata, offers full-canvas frame decoding and
+random seeking, and routes animated files through the facade as frame 0.
+Encoding is not supported. Inputs above 67,108,864 pixels are rejected to
+bound allocations. The package is in the existing 3.16 lockstep release; no
+version bump is required.
 
 `SharpAstro.Jpeg2000` gets **faster, decodes at reduced resolution, and joins the facade.**
 

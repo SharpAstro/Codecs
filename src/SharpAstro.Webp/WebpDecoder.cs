@@ -28,6 +28,7 @@ public static class WebpDecoder
     /// <param name="data">A still or animated WebP image.</param>
     public static WebpAnimation DecodeAnimation(ReadOnlySpan<byte> data)
     {
+        WebpContainer container = WebpContainer.Read(data);
         var decoder = new WebpAnimationDecoder(data.ToArray());
         byte[] canvas = new byte[checked(decoder.CanvasWidth * decoder.CanvasHeight * 4)];
         var frames = new List<WebpFrame>(decoder.FrameCount);
@@ -41,7 +42,12 @@ public static class WebpDecoder
             decoder.CanvasHeight,
             decoder.LoopCount,
             decoder.BackgroundColor,
-            frames.AsReadOnly());
+            frames.AsReadOnly())
+        {
+            IccProfile = container.HasIccProfile ? container.IccProfile.ToArray() : null,
+            Exif = container.HasExif ? container.Exif.ToArray() : null,
+            Xmp = container.HasXmp ? container.Xmp.ToArray() : null,
+        };
     }
 
     public static WebpImage Decode(ReadOnlySpan<byte> data)
@@ -68,8 +74,10 @@ public static class WebpDecoder
             }
         }
 
-        byte[]? icc = container.IccProfile.IsEmpty ? null : container.IccProfile.ToArray();
-        return new WebpImage(info.Width, info.Height, info.HasAlpha, rgba, icc);
+        byte[]? icc = container.HasIccProfile ? container.IccProfile.ToArray() : null;
+        byte[]? exif = container.HasExif ? container.Exif.ToArray() : null;
+        byte[]? xmp = container.HasXmp ? container.Xmp.ToArray() : null;
+        return new WebpImage(info.Width, info.Height, info.HasAlpha, rgba, icc, exif, xmp);
     }
 
     public static void DecodeTo(ReadOnlySpan<byte> data, Span<byte> rgba, int stride = 0)
@@ -329,6 +337,7 @@ public static class WebpDecoder
         }
     }
 
+    // Fitted black-box to dwebp; approximately BT.601 limited-range with 14-bit coefficients.
     private static void ConvertYuvToRgb(int y, int u, int v, out byte red, out byte green, out byte blue)
     {
         // Black-box fit to dwebp (BT.601 limited-range, 14-bit coefficients); see

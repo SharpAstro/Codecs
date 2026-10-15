@@ -4,12 +4,15 @@ namespace SharpAstro.Webp;
 
 internal readonly ref struct WebpContainer
 {
-    private const long MaximumPixels = 1L << 28;
-
     private WebpContainer(
         WebpInfo info,
         ReadOnlySpan<byte> vp8Bitstream,
         ReadOnlySpan<byte> iccProfile,
+        bool hasIccProfile,
+        ReadOnlySpan<byte> exif,
+        ReadOnlySpan<byte> xmp,
+        bool hasExif,
+        bool hasXmp,
         ReadOnlySpan<byte> alphaData,
         bool hasAlphaChunk,
         WebpChunkLocation[] metadataChunks,
@@ -20,6 +23,11 @@ internal readonly ref struct WebpContainer
         Info = info;
         Vp8Bitstream = vp8Bitstream;
         IccProfile = iccProfile;
+        HasIccProfile = hasIccProfile;
+        Exif = exif;
+        Xmp = xmp;
+        HasExif = hasExif;
+        HasXmp = hasXmp;
         AlphaData = alphaData;
         HasAlphaChunk = hasAlphaChunk;
         MetadataChunks = metadataChunks;
@@ -31,6 +39,11 @@ internal readonly ref struct WebpContainer
     public WebpInfo Info { get; }
     public ReadOnlySpan<byte> Vp8Bitstream { get; }
     public ReadOnlySpan<byte> IccProfile { get; }
+    public bool HasIccProfile { get; }
+    public ReadOnlySpan<byte> Exif { get; }
+    public ReadOnlySpan<byte> Xmp { get; }
+    public bool HasExif { get; }
+    public bool HasXmp { get; }
     public ReadOnlySpan<byte> AlphaData { get; }
     public bool HasAlphaChunk { get; }
     public WebpChunkLocation[] MetadataChunks { get; }
@@ -69,6 +82,10 @@ internal readonly ref struct WebpContainer
         bool primaryLossless = false;
         int iccOffset = -1;
         int iccLength = 0;
+        int exifOffset = -1;
+        int exifLength = 0;
+        int xmpOffset = -1;
+        int xmpLength = 0;
         int alphaOffset = -1;
         int alphaLength = 0;
         bool primaryHasAlpha = false;
@@ -170,12 +187,27 @@ internal readonly ref struct WebpContainer
                 iccLength = payloadLength;
                 metadataChunks.Add(new WebpChunkLocation("ICCP", payloadOffset, payloadLength));
             }
-            else if (type.SequenceEqual("EXIF"u8) || type.SequenceEqual("XMP "u8))
+            else if (type.SequenceEqual("EXIF"u8))
             {
-                metadataChunks.Add(new WebpChunkLocation(
-                    type.SequenceEqual("EXIF"u8) ? "EXIF" : "XMP ",
-                    payloadOffset,
-                    payloadLength));
+                if (exifOffset >= 0)
+                {
+                    throw new InvalidDataException("The WebP contains more than one EXIF chunk.");
+                }
+
+                exifOffset = payloadOffset;
+                exifLength = payloadLength;
+                metadataChunks.Add(new WebpChunkLocation("EXIF", payloadOffset, payloadLength));
+            }
+            else if (type.SequenceEqual("XMP "u8))
+            {
+                if (xmpOffset >= 0)
+                {
+                    throw new InvalidDataException("The WebP contains more than one XMP chunk.");
+                }
+
+                xmpOffset = payloadOffset;
+                xmpLength = payloadLength;
+                metadataChunks.Add(new WebpChunkLocation("XMP ", payloadOffset, payloadLength));
             }
             else if (type.SequenceEqual("ANIM"u8))
             {
@@ -208,7 +240,7 @@ internal readonly ref struct WebpContainer
             throw new InvalidDataException("The WebP container has no valid image bitstream.");
         }
 
-        if ((long)canvasWidth * canvasHeight > MaximumPixels)
+        if ((long)canvasWidth * canvasHeight > WebpLimits.MaximumPixels)
         {
             throw new InvalidDataException("The WebP dimensions exceed the supported pixel limit.");
         }
@@ -268,6 +300,11 @@ internal readonly ref struct WebpContainer
             info,
             primaryOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(primaryOffset, primaryLength),
             iccOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(iccOffset, iccLength),
+            iccOffset >= 0,
+            exifOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(exifOffset, exifLength),
+            xmpOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(xmpOffset, xmpLength),
+            exifOffset >= 0,
+            xmpOffset >= 0,
             alphaOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(alphaOffset, alphaLength),
             hasAlphaChunk,
             metadataChunks.ToArray(),

@@ -11,13 +11,14 @@ img2webp="${IMG2WEBP:-$(command -v img2webp)}"
 gif2webp="${GIF2WEBP:-$(command -v gif2webp)}"
 webpmux="${WEBPMUX:-$(command -v webpmux)}"
 
-python3 - "$tmp" <<'PY'
+python3 - "$tmp" "$root" <<'PY'
 import struct
 import sys
 import zlib
 from pathlib import Path
 
 directory = Path(sys.argv[1])
+fixture_directory = Path(sys.argv[2])
 
 def chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
@@ -76,6 +77,19 @@ write_png_rgba("lossy-alpha", 33, 19,
                              (x * 5 + y * 19) & 255,
                              (x * 11 + y * 13) & 255,
                              0 if (x + y) % 7 == 0 else (x * 17 + y * 31) & 255))
+write_png("anim-vp8l-alpha-hint-opaque", 33, 19,
+          lambda x, y: ((x * 23 + y * 7) & 255,
+                        (x * 5 + y * 19) & 255,
+                        (x * 11 + y * 13) & 255))
+write_png_rgba("anim-vp8l-alpha-hint", 33, 19,
+               lambda x, y: ((x * 23 + y * 7) & 255,
+                             (x * 5 + y * 19) & 255,
+                             (x * 11 + y * 13) & 255,
+                             0 if (x + y) % 5 == 0 else (x * 17 + y * 31) & 255))
+(fixture_directory / "metadata.icc").write_bytes(bytes.fromhex("00000010776562702d6963632d74657374"))
+(fixture_directory / "metadata.exif").write_bytes(bytes.fromhex("4578696600004d4d002a000000080000ff"))
+(fixture_directory / "metadata.xmp").write_bytes(
+    b"<x:xmpmeta xmlns:x='adobe:ns:meta/'>webp</x:xmpmeta>")
 for frame in range(3):
     write_png(f"anim-frame-{frame}", 12, 10,
               lambda x, y, frame=frame: ((x * 31 + y * 7 + frame * 61) & 255,
@@ -224,3 +238,53 @@ done
     -frame "$tmp/anim-mux-3.webp" +110+6+4+1-b \
     -frame "$tmp/anim-mux-4.webp" +120+8+4+0+b \
     -loop 3 -bgcolor 200,210,40,255 -o "$root/anim-webpmux-combinations.webp"
+
+cwebp -quiet -q 75 "$tmp/anim-vp8l-alpha-hint-opaque.png" \
+    -o "$tmp/anim-vp8l-alpha-hint-vp8.webp"
+cwebp -quiet -lossless -exact "$tmp/anim-vp8l-alpha-hint.png" \
+    -o "$tmp/anim-vp8l-alpha-hint-vp8l.webp"
+"$webpmux" \
+    -frame "$tmp/anim-vp8l-alpha-hint-vp8.webp" +80+0+0+0-b \
+    -frame "$tmp/anim-vp8l-alpha-hint-vp8l.webp" +120+0+0+0+b \
+    -loop 1 -o "$tmp/anim-vp8l-alpha-hint.webp"
+python3 - "$tmp/anim-vp8l-alpha-hint.webp" "$root/anim-vp8l-alpha-hint.webp" <<'PY'
+import struct
+import sys
+from pathlib import Path
+
+data = bytearray(Path(sys.argv[1]).read_bytes())
+offset = 12
+found = False
+while offset < len(data):
+    kind = data[offset:offset + 4]
+    length = struct.unpack_from("<I", data, offset + 4)[0]
+    if kind == b"ANMF":
+        subchunk = offset + 8 + 16
+        end = offset + 8 + length
+        while subchunk < end:
+            subkind = data[subchunk:subchunk + 4]
+            sublength = struct.unpack_from("<I", data, subchunk + 4)[0]
+            payload = subchunk + 8
+            if subkind == b"VP8L":
+                data[payload + 4] &= 0xEF
+                found = True
+            subchunk += 8 + sublength + (sublength & 1)
+    offset += 8 + length + (length & 1)
+
+if not found:
+    raise SystemExit("no VP8L animation frame found")
+Path(sys.argv[2]).write_bytes(data)
+PY
+
+"$webpmux" -set icc "$root/metadata.icc" "$root/flat-gray-16x16.webp" \
+    -o "$tmp/metadata-icc.webp"
+"$webpmux" -set exif "$root/metadata.exif" "$tmp/metadata-icc.webp" \
+    -o "$tmp/metadata-icc-exif.webp"
+"$webpmux" -set xmp "$root/metadata.xmp" "$tmp/metadata-icc-exif.webp" \
+    -o "$root/webp-metadata.webp"
+"$webpmux" -set icc "$root/metadata.icc" "$root/anim-webpmux-combinations.webp" \
+    -o "$tmp/anim-metadata-icc.webp"
+"$webpmux" -set exif "$root/metadata.exif" "$tmp/anim-metadata-icc.webp" \
+    -o "$tmp/anim-metadata-icc-exif.webp"
+"$webpmux" -set xmp "$root/metadata.xmp" "$tmp/anim-metadata-icc-exif.webp" \
+    -o "$root/anim-webpmux-metadata.webp"
