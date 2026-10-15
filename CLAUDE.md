@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-`src/SharpAstro.*/` — hand-written, clean-room / faithfully-ported image codec packages, each an
-independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch):
+`src/SharpAstro.*/` — hand-written image codec packages, including faithful ports where applicable,
+each an independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch):
 
 - **`SharpAstro.Codecs`** — the facade: magic-byte sniff + dispatch over `IImageDecoder`.
   Consumers reference this one package instead of cherry-picking individual codecs.
@@ -143,6 +143,18 @@ colour-convert kernel was written, reasoned to be an improvement, and measured a
   timed in a loop with nothing else competing for cache or memory bandwidth is not the same kernel
   running inside a decoder. Micro-measurements are for *deciding what to try*; only the end-to-end
   number decides whether it worked.
+
+The WebP A/B suite compares public `WebpDecoder.DecodeTo` against libwebp's
+`WebPDecodeRGBAInto` in one run for 1080p lossy opaque, lossy alpha, and
+lossless images. Its four generated WebP inputs are checked in under
+`benchmarks/SharpAstro.Codecs.Benchmarks/webp-inputs/`; each is below 200 KB.
+Regenerate them with
+`bash benchmarks/SharpAstro.Codecs.Benchmarks/generate-webp-inputs.sh`, then
+run `dotnet run -c Release --project benchmarks/SharpAstro.Codecs.Benchmarks
+-- --filter '*Webp*'`. Set `LIBWEBP_PATH` to override the default
+`/opt/homebrew/lib/libwebp.dylib`. The animation case measures full
+`DecodeAnimation` only. `--profile-webp-lossy` runs a single-thread decode loop
+for CPU sampling.
 
 Package versions are **centrally managed** in `Directory.Packages.props` — add a
 `<PackageVersion>` there and reference it without a version in the `.csproj`. All packages
@@ -601,7 +613,7 @@ four components, whose extra channel is alpha or black with nothing to say which
 read), and sYCC, whose samples are still YCbCr: `TryDecode` answers false rather than wrong colours,
 and `Jpeg2000Decoder.Decode` still hands back every component with the colour reported.
 
-## WebP codec — clean-room from RFC 6386 and RFC 9649
+## WebP codec — spec-derived from RFC 6386 and RFC 9649
 
 `SharpAstro.Webp` decodes VP8 lossy, VP8L lossless, ALPH transparency, and
 animated WebP. Animation frames are full-canvas RGBA8; both materialized
@@ -609,10 +621,12 @@ decoding and seeking are supported. ICC, EXIF, and XMP payloads are preserved.
 There is no encoder, and the facade returns frame 0 for animated input.
 Declared canvases above 67,108,864 pixels are rejected before raster allocation.
 
-The implementation source is **RFC 6386 and RFC 9649 only**. Do not read or
-transcribe libwebp, libvpx, or ffmpeg source. Their command-line binaries
+This decoder is spec-derived from RFC 6386 / RFC 9649; libwebp/libvpx source
+was not consulted — their binaries are used only as test oracles. Written with
+AI assistance, whose training data may include libwebp. Do not read or
+transcribe libwebp, libvpx, or ffmpeg source. The command-line tools
 (`cwebp`, `dwebp`, `webpinfo`, `webpmux`, `img2webp`, `gif2webp`, and ffmpeg
-with libvpx) are used only to generate fixtures or as black-box oracles.
+with libvpx) generate fixtures or serve as black-box oracles.
 
 The VP8 YUV-to-RGB conversion was fitted black-box against `dwebp`; the
 reproducible fit helper is
@@ -634,6 +648,13 @@ digests are committed in `Fixtures/webp/webp-oracle-golden.tsv` and
 tools. Regenerate with `REGEN_WEBP_ORACLE=1` and
 `REGEN_ANIMATION_WEBP_ORACLE=1`. Live animation comparison finds `anim_dump`
 through `ANIM_DUMP` or PATH.
+
+Known oracle divergence: `anim-vp8l-alpha-hint.webp` contains a VP8L animation
+frame whose `alpha_is_used` hint is cleared despite transparent decoded pixels.
+The frame's RFC 9649 blend flag requires alpha blending; this decoder follows
+that rule, while `anim_dump` 1.6.0 emits this fixture's frame uncomposited.
+The fixture is excluded from that oracle comparison and remains covered by
+compositing and seek-versus-sequential tests.
 
 ## Oracle harnesses (all codecs)
 

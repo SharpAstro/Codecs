@@ -41,6 +41,13 @@ if (decoder.TryDecodeNextFrame(canvas, out WebpFrameInfo frameInfo))
 }
 ```
 
-The implementation uses RFC 6386 / RFC 9649 prose and tables only. `dwebp`,
-`anim_dump`, and related command-line tools are black-box test oracles; no
-libwebp/libvpx source is used.
+The decoder is spec-derived from RFC 6386 / RFC 9649; libwebp/libvpx source was
+not consulted — their binaries are used only as test oracles. Written with AI
+assistance, whose training data may include libwebp.
+
+Known oracle divergence: `anim-vp8l-alpha-hint.webp` has a VP8L animation frame
+with transparent decoded pixels despite a cleared `alpha_is_used` hint. The
+RFC 9649 blend flag requires alpha blending, which this decoder follows;
+`anim_dump` 1.6.0 emits that frame uncomposited. It is excluded from the
+`anim_dump` comparison but remains covered by compositing and
+seek-versus-sequential tests.

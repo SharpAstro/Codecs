@@ -5,6 +5,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Not a shipped package: this project exists to measure the ones that are. -->
     <IsPackable>false</IsPackable>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
@@ -17,6 +18,11 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SharpAstro.Jpeg\SharpAstro.Jpeg.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jxl\SharpAstro.Jxl.csproj" />
+    <ProjectReference Include="..\..\src\SharpAstro.Webp\SharpAstro.Webp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="webp-inputs\*.webp" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

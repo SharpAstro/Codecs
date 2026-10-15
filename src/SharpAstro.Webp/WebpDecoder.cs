@@ -1,10 +1,9 @@
 namespace SharpAstro.Webp;
 
 /// <summary>
-/// Decodes still and animated WebP images. The implementation is derived from RFC 6386
-/// and RFC 9649 prose and mathematics, with standard specification tables copied
-/// as data. No libwebp or libvpx source was consulted or transcribed; their
-/// command-line binaries are used only as black-box test oracles.
+/// Decodes still and animated WebP images. Spec-derived from RFC 6386 / RFC 9649;
+/// libwebp/libvpx source was not consulted — their binaries are used only as test
+/// oracles. Written with AI assistance, whose training data may include libwebp.
 /// </summary>
 public static class WebpDecoder
 {
