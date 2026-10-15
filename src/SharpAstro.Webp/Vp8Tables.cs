@@ -523,9 +523,14 @@ internal static class Vp8Tables
     // RFC 6386 §13.2
     public static readonly sbyte[] CoefficientTree =
 [-1, 2, 0, 4, -2, 6, 8, 12, -3, 10, -4, -5, 14, 16, -6, -7, 18, 20, -8, -9, -10, -11];
-    public static byte[] FlattenDefaultCoefficientProbabilities()
+    public static void CopyDefaultCoefficientProbabilities(Span<byte> flattened)
     {
-        var flattened = new byte[4 * 8 * 3 * 11];
+        const int probabilityCount = 4 * 8 * 3 * 11;
+        if (flattened.Length < probabilityCount)
+        {
+            throw new ArgumentException("The coefficient probability destination is too small.", nameof(flattened));
+        }
+
         int offset = 0;
         foreach (byte[][][] type in DefaultCoefficientProbabilities)
         {
@@ -533,12 +538,10 @@ internal static class Vp8Tables
             {
                 foreach (byte[] context in band)
                 {
-                    context.CopyTo(flattened, offset);
+                    context.CopyTo(flattened.Slice(offset));
                     offset += context.Length;
                 }
             }
         }
-
-        return flattened;
     }
 }

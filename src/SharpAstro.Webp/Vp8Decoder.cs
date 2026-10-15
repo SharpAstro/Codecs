@@ -1,5 +1,7 @@
-using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 namespace SharpAstro.Webp;
 
@@ -53,17 +55,51 @@ internal static class Vp8Decoder
         _ = header.ReadBit(128);
 
         SegmentFeatures segments = ReadSegments(ref header);
-        FilterSettings filter = ReadFilter(ref header);
-        int partitionCount = 1 << header.ReadLiteral(2);
-        Quantizers quantizers = ReadQuantizers(ref header);
-        _ = header.ReadBit(128);
-        byte[] coefficientProbabilities = Vp8Tables.FlattenDefaultCoefficientProbabilities();
-        ReadCoefficientProbabilityUpdates(ref header, coefficientProbabilities);
-        bool skipFlagPresent = header.ReadBit(128) != 0;
-        byte skipProbability = skipFlagPresent ? (byte)header.ReadLiteral(8) : (byte)0;
+        FilterSettings filter;
+        try
+        {
+            filter = ReadFilter(ref header);
+        }
+        catch
+        {
+            ReturnSegmentBuffers(segments);
+            throw;
+        }
 
-        ReadOnlySpan<byte> tokenFrame = frame[(10 + partitionLength)..];
-        PartitionSlices partitions = ReadPartitions(tokenFrame, partitionCount);
+        byte[] coefficientProbabilities = Array.Empty<byte>();
+        bool coefficientProbabilitiesRented = false;
+        int partitionCount;
+        Quantizers quantizers;
+        bool skipFlagPresent;
+        byte skipProbability;
+        PartitionSlices partitions;
+        try
+        {
+            partitionCount = 1 << header.ReadLiteral(2);
+            quantizers = ReadQuantizers(ref header);
+            _ = header.ReadBit(128);
+            coefficientProbabilities = WebpBufferPool<byte>.Rent(4 * 8 * 3 * 11);
+            coefficientProbabilitiesRented = true;
+            Vp8Tables.CopyDefaultCoefficientProbabilities(coefficientProbabilities);
+            ReadCoefficientProbabilityUpdates(ref header, coefficientProbabilities);
+            skipFlagPresent = header.ReadBit(128) != 0;
+            skipProbability = skipFlagPresent ? (byte)header.ReadLiteral(8) : (byte)0;
+
+            ReadOnlySpan<byte> tokenFrame = frame[(10 + partitionLength)..];
+            partitions = ReadPartitions(tokenFrame, partitionCount);
+        }
+        catch
+        {
+            if (coefficientProbabilitiesRented)
+            {
+                WebpBufferPool<byte>.Return(coefficientProbabilities);
+            }
+
+            ReturnSegmentBuffers(segments);
+            ReturnFilterBuffers(filter);
+            throw;
+        }
+
         var tokens = new Vp8TokenPartitions(
             partitions.P0, partitions.P1, partitions.P2, partitions.P3,
             partitions.P4, partitions.P5, partitions.P6, partitions.P7);
@@ -76,18 +112,18 @@ internal static class Vp8Decoder
         int uvStride = (paddedWidth >> 1) + 2;
         int yLength = checked(yStride * (paddedHeight + 2));
         int uvLength = checked(uvStride * ((paddedHeight >> 1) + 2));
-        byte[] yBuffer = ArrayPool<byte>.Shared.Rent(yLength);
-        byte[] uBuffer = ArrayPool<byte>.Shared.Rent(uvLength);
-        byte[] vBuffer = ArrayPool<byte>.Shared.Rent(uvLength);
+        byte[] yBuffer = WebpBufferPool<byte>.Rent(yLength);
+        byte[] uBuffer = WebpBufferPool<byte>.Rent(uvLength);
+        byte[] vBuffer = WebpBufferPool<byte>.Rent(uvLength);
         int mbCount = checked(mbWidth * mbHeight);
-        byte[] modes = new byte[mbCount];
-        byte[] levels = new byte[mbCount];
-        byte[] nonzeroCoefficients = new byte[mbCount];
-        byte[] aboveB = new byte[mbWidth * 4];
-        byte[] aboveY = new byte[mbWidth * 4];
-        byte[] aboveU = new byte[mbWidth * 2];
-        byte[] aboveV = new byte[mbWidth * 2];
-        byte[] aboveY2 = new byte[mbWidth];
+        byte[] modes = WebpBufferPool<byte>.Rent(mbCount);
+        byte[] levels = WebpBufferPool<byte>.Rent(mbCount);
+        byte[] nonzeroCoefficients = WebpBufferPool<byte>.Rent(mbCount);
+        byte[] aboveB = WebpBufferPool<byte>.Rent(mbWidth * 4);
+        byte[] aboveY = WebpBufferPool<byte>.Rent(mbWidth * 4);
+        byte[] aboveU = WebpBufferPool<byte>.Rent(mbWidth * 2);
+        byte[] aboveV = WebpBufferPool<byte>.Rent(mbWidth * 2);
+        byte[] aboveY2 = WebpBufferPool<byte>.Rent(mbWidth);
         Span<byte> blockModes = stackalloc byte[16];
         Span<byte> leftB = stackalloc byte[4];
         Span<byte> leftY = stackalloc byte[4];
@@ -103,6 +139,11 @@ internal static class Vp8Decoder
             Array.Clear(yBuffer, 0, yLength);
             Array.Clear(uBuffer, 0, uvLength);
             Array.Clear(vBuffer, 0, uvLength);
+            Array.Clear(aboveB);
+            Array.Clear(aboveY);
+            Array.Clear(aboveU);
+            Array.Clear(aboveV);
+            Array.Clear(aboveY2);
             InitializeBorders(yBuffer, yStride, paddedWidth, paddedHeight, 127, 129);
             InitializeBorders(uBuffer, uvStride, paddedWidth >> 1, paddedHeight >> 1, 127, 129);
             InitializeBorders(vBuffer, uvStride, paddedWidth >> 1, paddedHeight >> 1, 127, 129);
@@ -293,33 +334,94 @@ internal static class Vp8Decoder
             int chromaWidth = (width + 1) >> 1;
             int chromaHeight = (height + 1) >> 1;
             int chromaPlaneLength = checked(chromaWidth * chromaHeight);
-            byte[] yPlane = pooledOutput
-                ? ArrayPool<byte>.Shared.Rent(yPlaneLength)
-                : new byte[yPlaneLength];
-            byte[] uPlane = pooledOutput
-                ? ArrayPool<byte>.Shared.Rent(chromaPlaneLength)
-                : new byte[chromaPlaneLength];
-            byte[] vPlane = pooledOutput
-                ? ArrayPool<byte>.Shared.Rent(chromaPlaneLength)
-                : new byte[chromaPlaneLength];
-            for (int row = 0; row < height; row++)
+            byte[]? yPlane = null;
+            byte[]? uPlane = null;
+            byte[]? vPlane = null;
+            try
             {
-                yBuffer.AsSpan((row + 1) * yStride + 1, width).CopyTo(yPlane.AsSpan(row * width));
-            }
+                yPlane = pooledOutput
+                    ? WebpBufferPool<byte>.Rent(yPlaneLength)
+                    : new byte[yPlaneLength];
+                uPlane = pooledOutput
+                    ? WebpBufferPool<byte>.Rent(chromaPlaneLength)
+                    : new byte[chromaPlaneLength];
+                vPlane = pooledOutput
+                    ? WebpBufferPool<byte>.Rent(chromaPlaneLength)
+                    : new byte[chromaPlaneLength];
+                for (int row = 0; row < height; row++)
+                {
+                    yBuffer.AsSpan((row + 1) * yStride + 1, width).CopyTo(yPlane.AsSpan(row * width));
+                }
 
-            for (int row = 0; row < chromaHeight; row++)
+                for (int row = 0; row < chromaHeight; row++)
+                {
+                    uBuffer.AsSpan((row + 1) * uvStride + 1, chromaWidth).CopyTo(uPlane.AsSpan(row * chromaWidth));
+                    vBuffer.AsSpan((row + 1) * uvStride + 1, chromaWidth).CopyTo(vPlane.AsSpan(row * chromaWidth));
+                }
+
+                var result = new Vp8Yuv(width, height, yPlane, uPlane, vPlane, pooledOutput);
+                yPlane = null;
+                uPlane = null;
+                vPlane = null;
+                return result;
+            }
+            finally
             {
-                uBuffer.AsSpan((row + 1) * uvStride + 1, chromaWidth).CopyTo(uPlane.AsSpan(row * chromaWidth));
-                vBuffer.AsSpan((row + 1) * uvStride + 1, chromaWidth).CopyTo(vPlane.AsSpan(row * chromaWidth));
+                if (pooledOutput)
+                {
+                    if (yPlane is not null) WebpBufferPool<byte>.Return(yPlane);
+                    if (uPlane is not null) WebpBufferPool<byte>.Return(uPlane);
+                    if (vPlane is not null) WebpBufferPool<byte>.Return(vPlane);
+                }
             }
-
-            return new Vp8Yuv(width, height, yPlane, uPlane, vPlane, pooledOutput);
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(yBuffer);
-            ArrayPool<byte>.Shared.Return(uBuffer);
-            ArrayPool<byte>.Shared.Return(vBuffer);
+            WebpBufferPool<byte>.Return(yBuffer);
+            WebpBufferPool<byte>.Return(uBuffer);
+            WebpBufferPool<byte>.Return(vBuffer);
+            WebpBufferPool<byte>.Return(modes);
+            WebpBufferPool<byte>.Return(levels);
+            WebpBufferPool<byte>.Return(nonzeroCoefficients);
+            WebpBufferPool<byte>.Return(aboveB);
+            WebpBufferPool<byte>.Return(aboveY);
+            WebpBufferPool<byte>.Return(aboveU);
+            WebpBufferPool<byte>.Return(aboveV);
+            WebpBufferPool<byte>.Return(aboveY2);
+            WebpBufferPool<byte>.Return(coefficientProbabilities);
+            ReturnSegmentBuffers(segments);
+            ReturnFilterBuffers(filter);
+        }
+    }
+
+    private static void ReturnSegmentBuffers(SegmentFeatures segments)
+    {
+        if (segments.Quant is not null)
+        {
+            WebpBufferPool<int>.Return(segments.Quant);
+        }
+
+        if (segments.Filter is not null)
+        {
+            WebpBufferPool<int>.Return(segments.Filter);
+        }
+
+        if (segments.MapProbabilities is not null)
+        {
+            WebpBufferPool<byte>.Return(segments.MapProbabilities);
+        }
+    }
+
+    private static void ReturnFilterBuffers(FilterSettings filter)
+    {
+        if (filter.RefDeltas is not null)
+        {
+            WebpBufferPool<sbyte>.Return(filter.RefDeltas);
+        }
+
+        if (filter.ModeDeltas is not null)
+        {
+            WebpBufferPool<sbyte>.Return(filter.ModeDeltas);
         }
     }
 
@@ -334,41 +436,57 @@ internal static class Vp8Decoder
         bool updateMap = decoder.ReadBit(128) != 0;
         bool updateData = decoder.ReadBit(128) != 0;
         bool absolute = false;
-        var quant = new int[4];
-        var filter = new int[4];
-        if (updateData)
+        int[]? quant = null;
+        int[]? filter = null;
+        byte[]? mapProbabilities = null;
+        try
         {
-            absolute = decoder.ReadBit(128) != 0;
-            for (int i = 0; i < 4; i++)
+            quant = WebpBufferPool<int>.Rent(4);
+            filter = WebpBufferPool<int>.Rent(4);
+            Array.Clear(quant, 0, 4);
+            Array.Clear(filter, 0, 4);
+            if (updateData)
             {
-                if (decoder.ReadBit(128) != 0)
+                absolute = decoder.ReadBit(128) != 0;
+                for (int i = 0; i < 4; i++)
                 {
-                    quant[i] = decoder.ReadSignedLiteral(7);
+                    if (decoder.ReadBit(128) != 0)
+                    {
+                        quant[i] = decoder.ReadSignedLiteral(7);
+                    }
+                }
+
+                for (int i = 0; i < 4; i++)
+                {
+                    if (decoder.ReadBit(128) != 0)
+                    {
+                        filter[i] = decoder.ReadSignedLiteral(6);
+                    }
                 }
             }
 
-            for (int i = 0; i < 4; i++)
+            mapProbabilities = WebpBufferPool<byte>.Rent(3);
+            mapProbabilities.AsSpan(0, 3).Fill(255);
+            if (updateMap)
             {
-                if (decoder.ReadBit(128) != 0)
+                for (int i = 0; i < 3; i++)
                 {
-                    filter[i] = decoder.ReadSignedLiteral(6);
+                    if (decoder.ReadBit(128) != 0)
+                    {
+                        mapProbabilities[i] = (byte)decoder.ReadLiteral(8);
+                    }
                 }
             }
+
+            return new SegmentFeatures(enabled, updateMap, absolute, quant, filter, mapProbabilities);
         }
-
-        var mapProbabilities = new byte[] { 255, 255, 255 };
-        if (updateMap)
+        catch
         {
-            for (int i = 0; i < 3; i++)
-            {
-                if (decoder.ReadBit(128) != 0)
-                {
-                    mapProbabilities[i] = (byte)decoder.ReadLiteral(8);
-                }
-            }
+            if (quant is not null) WebpBufferPool<int>.Return(quant);
+            if (filter is not null) WebpBufferPool<int>.Return(filter);
+            if (mapProbabilities is not null) WebpBufferPool<byte>.Return(mapProbabilities);
+            throw;
         }
-
-        return new SegmentFeatures(enabled, updateMap, absolute, quant, filter, mapProbabilities);
     }
 
     private static FilterSettings ReadFilter(ref Vp8BoolDecoder decoder)
@@ -376,29 +494,42 @@ internal static class Vp8Decoder
         bool simple = decoder.ReadBit(128) != 0;
         int level = decoder.ReadLiteral(6);
         int sharpness = decoder.ReadLiteral(3);
-        var refs = new sbyte[4];
-        var modes = new sbyte[4];
-        bool deltaEnabled = decoder.ReadBit(128) != 0;
-        if (deltaEnabled && decoder.ReadBit(128) != 0)
+        sbyte[]? refs = null;
+        sbyte[]? modes = null;
+        try
         {
-            for (int i = 0; i < 4; i++)
+            refs = WebpBufferPool<sbyte>.Rent(4);
+            modes = WebpBufferPool<sbyte>.Rent(4);
+            Array.Clear(refs, 0, 4);
+            Array.Clear(modes, 0, 4);
+            bool deltaEnabled = decoder.ReadBit(128) != 0;
+            if (deltaEnabled && decoder.ReadBit(128) != 0)
             {
-                if (decoder.ReadBit(128) != 0)
+                for (int i = 0; i < 4; i++)
                 {
-                    refs[i] = (sbyte)decoder.ReadSignedLiteral(6);
+                    if (decoder.ReadBit(128) != 0)
+                    {
+                        refs[i] = (sbyte)decoder.ReadSignedLiteral(6);
+                    }
+                }
+
+                for (int i = 0; i < 4; i++)
+                {
+                    if (decoder.ReadBit(128) != 0)
+                    {
+                        modes[i] = (sbyte)decoder.ReadSignedLiteral(6);
+                    }
                 }
             }
 
-            for (int i = 0; i < 4; i++)
-            {
-                if (decoder.ReadBit(128) != 0)
-                {
-                    modes[i] = (sbyte)decoder.ReadSignedLiteral(6);
-                }
-            }
+            return new FilterSettings(simple, level, sharpness, deltaEnabled, refs, modes);
         }
-
-        return new FilterSettings(simple, level, sharpness, deltaEnabled, refs, modes);
+        catch
+        {
+            if (refs is not null) WebpBufferPool<sbyte>.Return(refs);
+            if (modes is not null) WebpBufferPool<sbyte>.Return(modes);
+            throw;
+        }
     }
 
     private static Quantizers ReadQuantizers(ref Vp8BoolDecoder decoder)
@@ -975,31 +1106,184 @@ internal static class Vp8Decoder
     private static void FilterEdge(byte[] plane, int stride, int x, int y, int length,
         bool vertical, bool macroblockEdge, bool simple, int interior, int edge, int hev)
     {
+        ref byte center = ref Unsafe.Add(
+            ref MemoryMarshal.GetArrayDataReference(plane), y * stride + x);
+        if (vertical)
+        {
+            if (simple)
+            {
+                if (macroblockEdge) FilterVerticalSimpleMacroblock(ref center, stride, length, edge);
+                else FilterVerticalSimpleInner(ref center, stride, length, edge);
+            }
+            else if (macroblockEdge)
+            {
+                FilterVerticalNormalMacroblock(ref center, stride, length, interior, edge, hev);
+            }
+            else
+            {
+                FilterVerticalNormalInner(ref center, stride, length, interior, edge, hev);
+            }
+        }
+        else if (simple)
+        {
+            if (macroblockEdge) FilterHorizontalSimpleMacroblock(ref center, stride, length, edge);
+            else FilterHorizontalSimpleInner(ref center, stride, length, edge);
+        }
+        else if (macroblockEdge)
+        {
+            FilterHorizontalNormalMacroblock(ref center, stride, length, interior, edge, hev);
+        }
+        else
+        {
+            FilterHorizontalNormalInner(ref center, stride, length, interior, edge, hev);
+        }
+    }
+
+    private static void FilterHorizontalSimpleMacroblock(ref byte center, int stride, int length, int edge)
+    {
+        if (length == 16 && Vector128.IsHardwareAccelerated)
+        {
+            FilterHorizontalVector128(ref center, stride, simple: true, macroblockEdge: true,
+                interior: 0, edge, hev: 0);
+        }
+        else
+        {
+            FilterSimpleScalar(ref center, stride, 1, length, edge);
+        }
+    }
+
+    private static void FilterHorizontalSimpleInner(ref byte center, int stride, int length, int edge)
+    {
+        if (length == 16 && Vector128.IsHardwareAccelerated)
+        {
+            FilterHorizontalVector128(ref center, stride, simple: true, macroblockEdge: false,
+                interior: 0, edge, hev: 0);
+        }
+        else
+        {
+            FilterSimpleScalar(ref center, stride, 1, length, edge);
+        }
+    }
+
+    private static void FilterHorizontalNormalMacroblock(
+        ref byte center, int stride, int length, int interior, int edge, int hev)
+    {
+        if (length == 16 && Vector128.IsHardwareAccelerated)
+        {
+            FilterHorizontalVector128(ref center, stride, simple: false, macroblockEdge: true,
+                interior, edge, hev);
+        }
+        else
+        {
+            FilterNormalMacroblockScalar(ref center, stride, 1, length, interior, edge, hev);
+        }
+    }
+
+    private static void FilterHorizontalNormalInner(
+        ref byte center, int stride, int length, int interior, int edge, int hev)
+    {
+        if (length == 16 && Vector128.IsHardwareAccelerated)
+        {
+            FilterHorizontalVector128(ref center, stride, simple: false, macroblockEdge: false,
+                interior, edge, hev);
+        }
+        else
+        {
+            FilterNormalInnerScalar(ref center, stride, 1, length, interior, edge, hev);
+        }
+    }
+
+    private static void FilterVerticalSimpleMacroblock(ref byte center, int stride, int length, int edge) =>
+        FilterSimpleScalar(ref center, 1, stride, length, edge);
+
+    private static void FilterVerticalSimpleInner(ref byte center, int stride, int length, int edge) =>
+        FilterSimpleScalar(ref center, 1, stride, length, edge);
+
+    private static void FilterVerticalNormalMacroblock(
+        ref byte center, int stride, int length, int interior, int edge, int hev) =>
+        FilterNormalMacroblockScalar(ref center, 1, stride, length, interior, edge, hev);
+
+    private static void FilterVerticalNormalInner(
+        ref byte center, int stride, int length, int interior, int edge, int hev) =>
+        FilterNormalInnerScalar(ref center, 1, stride, length, interior, edge, hev);
+
+    internal static void FilterHorizontalScalar(
+        byte[] plane, int stride, int x, int y, int length, bool simple,
+        bool macroblockEdge, int interior, int edge, int hev)
+    {
+        ref byte center = ref Unsafe.Add(
+            ref MemoryMarshal.GetArrayDataReference(plane), y * stride + x);
+        if (simple)
+        {
+            FilterSimpleScalar(ref center, stride, 1, length, edge);
+        }
+        else if (macroblockEdge)
+        {
+            FilterNormalMacroblockScalar(ref center, stride, 1, length, interior, edge, hev);
+        }
+        else
+        {
+            FilterNormalInnerScalar(ref center, stride, 1, length, interior, edge, hev);
+        }
+    }
+
+    internal static void FilterHorizontalVector128(
+        byte[] plane, int stride, int x, int y, int length, bool simple,
+        bool macroblockEdge, int interior, int edge, int hev)
+    {
+        ref byte center = ref Unsafe.Add(
+            ref MemoryMarshal.GetArrayDataReference(plane), y * stride + x);
+        if (length == 16)
+        {
+            FilterHorizontalVector128(ref center, stride, simple, macroblockEdge, interior, edge, hev);
+        }
+        else
+        {
+            FilterHorizontalScalar(plane, stride, x, y, length, simple,
+                macroblockEdge, interior, edge, hev);
+        }
+    }
+
+    private static void FilterSimpleScalar(
+        ref byte center, int sampleStep, int pixelAdvance, int length, int edge)
+    {
         for (int i = 0; i < length; i++)
         {
-            int cx = x + (vertical ? 0 : i);
-            int cy = y + (vertical ? i : 0);
-            int step = vertical ? 1 : stride;
-            int p3 = plane[cy * stride + cx - 4 * step];
-            int p2 = plane[cy * stride + cx - 3 * step];
-            int p1 = plane[cy * stride + cx - 2 * step];
-            int p0 = plane[cy * stride + cx - step];
-            int q0 = plane[cy * stride + cx];
-            int q1 = plane[cy * stride + cx + step];
-            int q2 = plane[cy * stride + cx + 2 * step];
-            int q3 = plane[cy * stride + cx + 3 * step];
+            ref byte sample = ref Unsafe.Add(ref center, i * pixelAdvance);
+            int p1 = Unsafe.Add(ref sample, -2 * sampleStep);
+            int p0 = Unsafe.Add(ref sample, -sampleStep);
+            int q0 = sample;
+            int q1 = Unsafe.Add(ref sample, sampleStep);
             if (Math.Abs(p0 - q0) * 2 + Math.Abs(p1 - q1) / 2 > edge)
             {
                 continue;
             }
 
-            if (simple)
-            {
-                AdjustEdge(plane, stride, cx, cy, step, p1, p0, q0, q1, true);
-                continue;
-            }
+            int adjustment = ClampSigned(ClampSigned(p1 - q1) + 3 * (q0 - p0));
+            int qAdjustment = (adjustment + 4) >> 3;
+            int pAdjustment = (adjustment + 3) >> 3;
+            Unsafe.Add(ref sample, -sampleStep) = (byte)Math.Clamp(p0 + pAdjustment, 0, 255);
+            sample = (byte)Math.Clamp(q0 - qAdjustment, 0, 255);
+        }
+    }
 
-            if (Math.Abs(p3 - p2) > interior || Math.Abs(p2 - p1) > interior ||
+    private static void FilterNormalMacroblockScalar(
+        ref byte center, int sampleStep, int pixelAdvance, int length,
+        int interior, int edge, int hev)
+    {
+        for (int i = 0; i < length; i++)
+        {
+            ref byte sample = ref Unsafe.Add(ref center, i * pixelAdvance);
+            int p3 = Unsafe.Add(ref sample, -4 * sampleStep);
+            int p2 = Unsafe.Add(ref sample, -3 * sampleStep);
+            int p1 = Unsafe.Add(ref sample, -2 * sampleStep);
+            int p0 = Unsafe.Add(ref sample, -sampleStep);
+            int q0 = sample;
+            int q1 = Unsafe.Add(ref sample, sampleStep);
+            int q2 = Unsafe.Add(ref sample, 2 * sampleStep);
+            int q3 = Unsafe.Add(ref sample, 3 * sampleStep);
+            if (Math.Abs(p0 - q0) * 2 + Math.Abs(p1 - q1) / 2 > edge ||
+                Math.Abs(p3 - p2) > interior || Math.Abs(p2 - p1) > interior ||
                 Math.Abs(p1 - p0) > interior || Math.Abs(q1 - q0) > interior ||
                 Math.Abs(q2 - q1) > interior || Math.Abs(q3 - q2) > interior)
             {
@@ -1007,42 +1291,229 @@ internal static class Vp8Decoder
             }
 
             bool highVariance = Math.Abs(p1 - p0) > hev || Math.Abs(q1 - q0) > hev;
+            int adjustment = ClampSigned(ClampSigned(p1 - q1) + 3 * (q0 - p0));
             if (highVariance)
             {
-                AdjustEdge(plane, stride, cx, cy, step, p1, p0, q0, q1, true);
+                int qAdjustment = (adjustment + 4) >> 3;
+                int pAdjustment = (adjustment + 3) >> 3;
+                Unsafe.Add(ref sample, -sampleStep) = (byte)Math.Clamp(p0 + pAdjustment, 0, 255);
+                sample = (byte)Math.Clamp(q0 - qAdjustment, 0, 255);
+                continue;
             }
-            else if (macroblockEdge)
-            {
-                int adjustment = ClampSigned(ClampSigned(p1 - q1) + 3 * (q0 - p0));
-                int outer = (27 * adjustment + 63) >> 7;
-                int middle = (18 * adjustment + 63) >> 7;
-                int inner = (9 * adjustment + 63) >> 7;
-                plane[cy * stride + cx - step] = (byte)Math.Clamp(p0 + outer, 0, 255);
-                plane[cy * stride + cx] = (byte)Math.Clamp(q0 - outer, 0, 255);
-                plane[cy * stride + cx - 2 * step] = (byte)Math.Clamp(p1 + middle, 0, 255);
-                plane[cy * stride + cx + step] = (byte)Math.Clamp(q1 - middle, 0, 255);
-                plane[cy * stride + cx - 3 * step] = (byte)Math.Clamp(p2 + inner, 0, 255);
-                plane[cy * stride + cx + 2 * step] = (byte)Math.Clamp(q2 - inner, 0, 255);
-            }
-            else
-            {
-                AdjustEdge(plane, stride, cx, cy, step, p1, p0, q0, q1, false);
-                int adjustment = ClampSigned(3 * (q0 - p0));
-                int inner = ((adjustment + 4 >> 3) + 1) >> 1;
-                plane[cy * stride + cx - 2 * step] = (byte)Math.Clamp(p1 + inner, 0, 255);
-                plane[cy * stride + cx + step] = (byte)Math.Clamp(q1 - inner, 0, 255);
-            }
+
+            int outer = (27 * adjustment + 63) >> 7;
+            int middle = (18 * adjustment + 63) >> 7;
+            int inner = (9 * adjustment + 63) >> 7;
+            Unsafe.Add(ref sample, -sampleStep) = (byte)Math.Clamp(p0 + outer, 0, 255);
+            sample = (byte)Math.Clamp(q0 - outer, 0, 255);
+            Unsafe.Add(ref sample, -2 * sampleStep) = (byte)Math.Clamp(p1 + middle, 0, 255);
+            Unsafe.Add(ref sample, sampleStep) = (byte)Math.Clamp(q1 - middle, 0, 255);
+            Unsafe.Add(ref sample, -3 * sampleStep) = (byte)Math.Clamp(p2 + inner, 0, 255);
+            Unsafe.Add(ref sample, 2 * sampleStep) = (byte)Math.Clamp(q2 - inner, 0, 255);
         }
     }
 
-    private static void AdjustEdge(byte[] plane, int stride, int x, int y, int step,
-        int p1, int p0, int q0, int q1, bool useOuterTaps)
+    private static void FilterNormalInnerScalar(
+        ref byte center, int sampleStep, int pixelAdvance, int length,
+        int interior, int edge, int hev)
     {
-        int adjustment = ClampSigned((useOuterTaps ? ClampSigned(p1 - q1) : 0) + 3 * (q0 - p0));
-        int qAdjustment = (adjustment + 4) >> 3;
-        int pAdjustment = (adjustment + 3) >> 3;
-        plane[y * stride + x - step] = (byte)Math.Clamp(p0 + pAdjustment, 0, 255);
-        plane[y * stride + x] = (byte)Math.Clamp(q0 - qAdjustment, 0, 255);
+        for (int i = 0; i < length; i++)
+        {
+            ref byte sample = ref Unsafe.Add(ref center, i * pixelAdvance);
+            int p3 = Unsafe.Add(ref sample, -4 * sampleStep);
+            int p2 = Unsafe.Add(ref sample, -3 * sampleStep);
+            int p1 = Unsafe.Add(ref sample, -2 * sampleStep);
+            int p0 = Unsafe.Add(ref sample, -sampleStep);
+            int q0 = sample;
+            int q1 = Unsafe.Add(ref sample, sampleStep);
+            int q2 = Unsafe.Add(ref sample, 2 * sampleStep);
+            int q3 = Unsafe.Add(ref sample, 3 * sampleStep);
+            if (Math.Abs(p0 - q0) * 2 + Math.Abs(p1 - q1) / 2 > edge ||
+                Math.Abs(p3 - p2) > interior || Math.Abs(p2 - p1) > interior ||
+                Math.Abs(p1 - p0) > interior || Math.Abs(q1 - q0) > interior ||
+                Math.Abs(q2 - q1) > interior || Math.Abs(q3 - q2) > interior)
+            {
+                continue;
+            }
+
+            bool highVariance = Math.Abs(p1 - p0) > hev || Math.Abs(q1 - q0) > hev;
+            int adjustment = highVariance
+                ? ClampSigned(ClampSigned(p1 - q1) + 3 * (q0 - p0))
+                : ClampSigned(3 * (q0 - p0));
+            int qAdjustment = (adjustment + 4) >> 3;
+            int pAdjustment = (adjustment + 3) >> 3;
+            Unsafe.Add(ref sample, -sampleStep) = (byte)Math.Clamp(p0 + pAdjustment, 0, 255);
+            sample = (byte)Math.Clamp(q0 - qAdjustment, 0, 255);
+            if (highVariance)
+            {
+                continue;
+            }
+
+            int inner = ((adjustment + 4 >> 3) + 1) >> 1;
+            Unsafe.Add(ref sample, -2 * sampleStep) = (byte)Math.Clamp(p1 + inner, 0, 255);
+            Unsafe.Add(ref sample, sampleStep) = (byte)Math.Clamp(q1 - inner, 0, 255);
+        }
+    }
+
+    private static void FilterHorizontalVector128(
+        ref byte center, int stride, bool simple, bool macroblockEdge,
+        int interior, int edge, int hev)
+    {
+        Vector128<byte> p3Bytes = Vector128.LoadUnsafe(ref Unsafe.Add(ref center, -4 * stride));
+        Vector128<byte> p2Bytes = Vector128.LoadUnsafe(ref Unsafe.Add(ref center, -3 * stride));
+        Vector128<byte> p1Bytes = Vector128.LoadUnsafe(ref Unsafe.Add(ref center, -2 * stride));
+        Vector128<byte> p0Bytes = Vector128.LoadUnsafe(ref Unsafe.Add(ref center, -stride));
+        Vector128<byte> q0Bytes = Vector128.LoadUnsafe(ref center);
+        Vector128<byte> q1Bytes = Vector128.LoadUnsafe(ref Unsafe.Add(ref center, stride));
+        Vector128<byte> q2Bytes = Vector128.LoadUnsafe(ref Unsafe.Add(ref center, 2 * stride));
+        Vector128<byte> q3Bytes = Vector128.LoadUnsafe(ref Unsafe.Add(ref center, 3 * stride));
+
+        FilterHorizontalVector8(Vector128.WidenLower(p3Bytes).AsInt16(),
+            Vector128.WidenLower(p2Bytes).AsInt16(), Vector128.WidenLower(p1Bytes).AsInt16(),
+            Vector128.WidenLower(p0Bytes).AsInt16(), Vector128.WidenLower(q0Bytes).AsInt16(),
+            Vector128.WidenLower(q1Bytes).AsInt16(), Vector128.WidenLower(q2Bytes).AsInt16(),
+            Vector128.WidenLower(q3Bytes).AsInt16(), ref center, 0, stride,
+            simple, macroblockEdge, interior, edge, hev);
+        FilterHorizontalVector8(Vector128.WidenUpper(p3Bytes).AsInt16(),
+            Vector128.WidenUpper(p2Bytes).AsInt16(), Vector128.WidenUpper(p1Bytes).AsInt16(),
+            Vector128.WidenUpper(p0Bytes).AsInt16(), Vector128.WidenUpper(q0Bytes).AsInt16(),
+            Vector128.WidenUpper(q1Bytes).AsInt16(), Vector128.WidenUpper(q2Bytes).AsInt16(),
+            Vector128.WidenUpper(q3Bytes).AsInt16(), ref center, 8, stride,
+            simple, macroblockEdge, interior, edge, hev);
+    }
+
+    private static void FilterHorizontalVector8(
+        Vector128<short> p3, Vector128<short> p2, Vector128<short> p1, Vector128<short> p0,
+        Vector128<short> q0, Vector128<short> q1, Vector128<short> q2, Vector128<short> q3,
+        ref byte center, int offset, int stride,
+        bool simple, bool macroblockEdge, int interior, int edge, int hev)
+    {
+        Vector128<short> p0q0 = Vector128.Abs(Vector128.Subtract(p0, q0));
+        Vector128<short> p1q1 = Vector128.Abs(Vector128.Subtract(p1, q1));
+        Vector128<short> edgeMetric = Vector128.Add(
+            Vector128.Add(p0q0, p0q0),
+            Vector128.ShiftRightLogical(p1q1.AsUInt16(), 1).AsInt16());
+        Vector128<short> valid = Vector128.LessThanOrEqual(edgeMetric, Vector128.Create((short)edge));
+        Vector128<short> highVariance = Vector128.BitwiseOr(
+            Vector128.GreaterThan(Vector128.Abs(Vector128.Subtract(p1, p0)), Vector128.Create((short)hev)),
+            Vector128.GreaterThan(Vector128.Abs(Vector128.Subtract(q1, q0)), Vector128.Create((short)hev)));
+        Vector128<short> outerTap = ClampSignedVector(Vector128.Subtract(p1, q1));
+        Vector128<short> threeDelta = Vector128.Multiply(
+            Vector128.Subtract(q0, p0), Vector128.Create((short)3));
+        Vector128<short> adjustment = simple || macroblockEdge
+            ? ClampSignedVector(Vector128.Add(outerTap, threeDelta))
+            : ClampSignedVector(threeDelta);
+
+        if (simple)
+        {
+            Vector128<short> pAdjustment = Vector128.ShiftRightArithmetic(
+                Vector128.Add(adjustment, Vector128.Create((short)3)), 3);
+            Vector128<short> qAdjustment = Vector128.ShiftRightArithmetic(
+                Vector128.Add(adjustment, Vector128.Create((short)4)), 3);
+            Vector128<short> newP0 = ClampPixelVector(Vector128.Add(p0, pAdjustment));
+            Vector128<short> newQ0 = ClampPixelVector(Vector128.Subtract(q0, qAdjustment));
+            StoreFilterVector(ref Unsafe.Add(ref center, -stride), offset,
+                Vector128.ConditionalSelect(valid, newP0, p0));
+            StoreFilterVector(ref center, offset,
+                Vector128.ConditionalSelect(valid, newQ0, q0));
+            return;
+        }
+
+        Vector128<short> interiorValid = Vector128.LessThanOrEqual(
+            Vector128.Abs(Vector128.Subtract(p3, p2)), Vector128.Create((short)interior));
+        interiorValid = Vector128.BitwiseAnd(interiorValid, Vector128.LessThanOrEqual(
+            Vector128.Abs(Vector128.Subtract(p2, p1)), Vector128.Create((short)interior)));
+        interiorValid = Vector128.BitwiseAnd(interiorValid, Vector128.LessThanOrEqual(
+            Vector128.Abs(Vector128.Subtract(p1, p0)), Vector128.Create((short)interior)));
+        interiorValid = Vector128.BitwiseAnd(interiorValid, Vector128.LessThanOrEqual(
+            Vector128.Abs(Vector128.Subtract(q1, q0)), Vector128.Create((short)interior)));
+        interiorValid = Vector128.BitwiseAnd(interiorValid, Vector128.LessThanOrEqual(
+            Vector128.Abs(Vector128.Subtract(q2, q1)), Vector128.Create((short)interior)));
+        interiorValid = Vector128.BitwiseAnd(interiorValid, Vector128.LessThanOrEqual(
+            Vector128.Abs(Vector128.Subtract(q3, q2)), Vector128.Create((short)interior)));
+        valid = Vector128.BitwiseAnd(valid, interiorValid);
+
+        Vector128<short> highAdjustment = ClampSignedVector(Vector128.Add(
+            outerTap, threeDelta));
+        Vector128<short> highPAdjustment = Vector128.ShiftRightArithmetic(
+            Vector128.Add(highAdjustment, Vector128.Create((short)3)), 3);
+        Vector128<short> highQAdjustment = Vector128.ShiftRightArithmetic(
+            Vector128.Add(highAdjustment, Vector128.Create((short)4)), 3);
+        Vector128<short> p0High = ClampPixelVector(Vector128.Add(p0, highPAdjustment));
+        Vector128<short> q0High = ClampPixelVector(Vector128.Subtract(q0, highQAdjustment));
+        Vector128<short> p1Low;
+        Vector128<short> q1Low;
+        Vector128<short> p2Low = p2;
+        Vector128<short> q2Low = q2;
+        Vector128<short> p0Low;
+        Vector128<short> q0Low;
+        if (macroblockEdge)
+        {
+            Vector128<short> outer = Vector128.ShiftRightArithmetic(
+                Vector128.Add(Vector128.Multiply(highAdjustment, Vector128.Create((short)27)),
+                    Vector128.Create((short)63)), 7);
+            Vector128<short> middle = Vector128.ShiftRightArithmetic(
+                Vector128.Add(Vector128.Multiply(highAdjustment, Vector128.Create((short)18)),
+                    Vector128.Create((short)63)), 7);
+            Vector128<short> inner = Vector128.ShiftRightArithmetic(
+                Vector128.Add(Vector128.Multiply(highAdjustment, Vector128.Create((short)9)),
+                    Vector128.Create((short)63)), 7);
+            p0Low = ClampPixelVector(Vector128.Add(p0, outer));
+            q0Low = ClampPixelVector(Vector128.Subtract(q0, outer));
+            p1Low = ClampPixelVector(Vector128.Add(p1, middle));
+            q1Low = ClampPixelVector(Vector128.Subtract(q1, middle));
+            p2Low = ClampPixelVector(Vector128.Add(p2, inner));
+            q2Low = ClampPixelVector(Vector128.Subtract(q2, inner));
+        }
+        else
+        {
+            Vector128<short> pAdjustment = Vector128.ShiftRightArithmetic(
+                Vector128.Add(adjustment, Vector128.Create((short)3)), 3);
+            Vector128<short> qAdjustment = Vector128.ShiftRightArithmetic(
+                Vector128.Add(adjustment, Vector128.Create((short)4)), 3);
+            p0Low = ClampPixelVector(Vector128.Add(p0, pAdjustment));
+            q0Low = ClampPixelVector(Vector128.Subtract(q0, qAdjustment));
+            Vector128<short> inner = Vector128.ShiftRightArithmetic(
+                Vector128.Add(Vector128.ShiftRightArithmetic(
+                    Vector128.Add(adjustment, Vector128.Create((short)4)), 3),
+                    Vector128.Create((short)1)), 1);
+            p1Low = ClampPixelVector(Vector128.Add(p1, inner));
+            q1Low = ClampPixelVector(Vector128.Subtract(q1, inner));
+        }
+
+        Vector128<short> p0Filtered = Vector128.ConditionalSelect(highVariance, p0High, p0Low);
+        Vector128<short> q0Filtered = Vector128.ConditionalSelect(highVariance, q0High, q0Low);
+        Vector128<short> p1Filtered = Vector128.ConditionalSelect(highVariance, p1, p1Low);
+        Vector128<short> q1Filtered = Vector128.ConditionalSelect(highVariance, q1, q1Low);
+        StoreFilterVector(ref Unsafe.Add(ref center, -stride), offset,
+            Vector128.ConditionalSelect(valid, p0Filtered, p0));
+        StoreFilterVector(ref center, offset, Vector128.ConditionalSelect(valid, q0Filtered, q0));
+        StoreFilterVector(ref Unsafe.Add(ref center, -2 * stride), offset,
+            Vector128.ConditionalSelect(valid, p1Filtered, p1));
+        StoreFilterVector(ref Unsafe.Add(ref center, stride), offset,
+            Vector128.ConditionalSelect(valid, q1Filtered, q1));
+        if (macroblockEdge)
+        {
+            StoreFilterVector(ref Unsafe.Add(ref center, -3 * stride), offset,
+                Vector128.ConditionalSelect(valid, Vector128.ConditionalSelect(highVariance, p2, p2Low), p2));
+            StoreFilterVector(ref Unsafe.Add(ref center, 2 * stride), offset,
+                Vector128.ConditionalSelect(valid, Vector128.ConditionalSelect(highVariance, q2, q2Low), q2));
+        }
+    }
+
+    private static Vector128<short> ClampSignedVector(Vector128<short> value) =>
+        Vector128.Max(Vector128.Create((short)-128),
+            Vector128.Min(value, Vector128.Create((short)127)));
+
+    private static Vector128<short> ClampPixelVector(Vector128<short> value) =>
+        Vector128.Max(Vector128<short>.Zero,
+            Vector128.Min(value, Vector128.Create((short)255)));
+
+    private static void StoreFilterVector(ref byte destination, int offset, Vector128<short> value)
+    {
+        Vector128<byte> packed = Vector128.Narrow(value.AsUInt16(), Vector128<ushort>.Zero);
+        ulong bytes = packed.AsUInt64().GetElement(0);
+        Unsafe.WriteUnaligned(ref Unsafe.Add(ref destination, offset), bytes);
     }
 
     private static int ClampSigned(int value) => Math.Clamp(value, -128, 127);
