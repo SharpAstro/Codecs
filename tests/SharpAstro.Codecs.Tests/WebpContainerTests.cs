@@ -25,8 +25,7 @@ public sealed class WebpContainerTests
         byte[] data = BuildFile(
             ("VP8X", vp8x),
             ("ANIM", new byte[6]),
-            ("ANMF", new byte[16]),
-            ("VP8L", BuildVp8L(9, 7, hasAlpha: false)));
+            ("ANMF", BuildAnimationFrame(BuildVp8L(9, 7, hasAlpha: false), 9, 7)));
 
         WebpDecoder.ReadInfo(data).ShouldBe(new WebpInfo(17, 9, true, WebpFormat.Animated, 1));
     }
@@ -36,6 +35,32 @@ public sealed class WebpContainerTests
     {
         WebpDecoder.TryReadInfo("not a webp"u8, out _).ShouldBeFalse();
         WebpDecoder.TryReadInfo(BuildFile(("VP8L", [0x2f, 0, 0])), out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void ReadInfoRejectsAnimationFramesOutsideCanvas()
+    {
+        byte[] vp8x = new byte[10];
+        vp8x[0] = 0x12;
+        WriteUInt24(vp8x.AsSpan(4), 3);
+        WriteUInt24(vp8x.AsSpan(7), 3);
+        byte[] data = BuildFile(
+            ("VP8X", vp8x),
+            ("ANIM", new byte[6]),
+            ("ANMF", BuildAnimationFrame(BuildVp8L(1, 1, hasAlpha: false), 1, 1, x: 6)));
+
+        Should.Throw<InvalidDataException>(() => WebpDecoder.ReadInfo(data));
+    }
+
+    [Fact]
+    public void ReadInfoRejectsAnimationChunkWithoutAnimationFlag()
+    {
+        byte[] data = BuildFile(
+            ("VP8X", new byte[10]),
+            ("ANIM", new byte[6]),
+            ("VP8L", BuildVp8L(1, 1, hasAlpha: false)));
+
+        Should.Throw<InvalidDataException>(() => WebpDecoder.ReadInfo(data));
     }
 
     [Fact]
@@ -92,6 +117,24 @@ public sealed class WebpContainerTests
         byte[] file = output.ToArray();
         BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(4), (uint)(file.Length - 8));
         return file;
+    }
+
+    private static byte[] BuildAnimationFrame(byte[] image, int width, int height, int x = 0, int y = 0)
+    {
+        using var output = new MemoryStream();
+        byte[] header = new byte[16];
+        WriteUInt24(header, x / 2);
+        WriteUInt24(header.AsSpan(3), y / 2);
+        WriteUInt24(header.AsSpan(6), width - 1);
+        WriteUInt24(header.AsSpan(9), height - 1);
+        output.Write(header);
+        output.Write("VP8L"u8);
+        byte[] length = new byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(length, (uint)image.Length);
+        output.Write(length);
+        output.Write(image);
+        if ((image.Length & 1) != 0) output.WriteByte(0);
+        return output.ToArray();
     }
 
     private static void WriteUInt24(Span<byte> data, int value)

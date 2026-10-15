@@ -12,7 +12,10 @@ internal readonly ref struct WebpContainer
         ReadOnlySpan<byte> iccProfile,
         ReadOnlySpan<byte> alphaData,
         bool hasAlphaChunk,
-        WebpChunkLocation[] metadataChunks)
+        WebpChunkLocation[] metadataChunks,
+        WebpFrameData[] frames,
+        uint animationBackgroundColor,
+        int loopCount)
     {
         Info = info;
         Vp8Bitstream = vp8Bitstream;
@@ -20,6 +23,9 @@ internal readonly ref struct WebpContainer
         AlphaData = alphaData;
         HasAlphaChunk = hasAlphaChunk;
         MetadataChunks = metadataChunks;
+        Frames = frames;
+        AnimationBackgroundColor = animationBackgroundColor;
+        LoopCount = loopCount;
     }
 
     public WebpInfo Info { get; }
@@ -28,6 +34,9 @@ internal readonly ref struct WebpContainer
     public ReadOnlySpan<byte> AlphaData { get; }
     public bool HasAlphaChunk { get; }
     public WebpChunkLocation[] MetadataChunks { get; }
+    public WebpFrameData[] Frames { get; }
+    public uint AnimationBackgroundColor { get; }
+    public int LoopCount { get; }
 
     public static WebpContainer Read(ReadOnlySpan<byte> data)
     {
@@ -51,7 +60,6 @@ internal readonly ref struct WebpContainer
         bool alphaFlag = false;
         bool hasAlphaChunk = false;
         bool hasAnimChunk = false;
-        int frameCount = 0;
         int canvasWidth = 0;
         int canvasHeight = 0;
         int imageWidth = 0;
@@ -63,7 +71,11 @@ internal readonly ref struct WebpContainer
         int iccLength = 0;
         int alphaOffset = -1;
         int alphaLength = 0;
+        bool primaryHasAlpha = false;
+        uint animationBackgroundColor = 0;
+        int loopCount = 0;
         var metadataChunks = new List<WebpChunkLocation>();
+        var frames = new List<WebpFrameData>();
         int offset = 12;
 
         while (offset < riffEnd)
@@ -123,13 +135,14 @@ internal readonly ref struct WebpContainer
                     throw new InvalidDataException("The WebP contains more than one image bitstream.");
                 }
 
-                (imageWidth, imageHeight, bool hasAlpha) = ReadVp8LDimensions(payload);
+                (imageWidth, imageHeight, bool losslessHasAlpha) = ReadVp8LDimensions(payload);
+                primaryHasAlpha = losslessHasAlpha;
                 if (!extended)
                 {
                     canvasWidth = imageWidth;
                     canvasHeight = imageHeight;
                 }
-                alphaFlag |= hasAlpha;
+                alphaFlag |= losslessHasAlpha;
                 primaryOffset = payloadOffset;
                 primaryLength = payloadLength;
                 primaryLossless = true;
@@ -166,19 +179,31 @@ internal readonly ref struct WebpContainer
             }
             else if (type.SequenceEqual("ANIM"u8))
             {
+                if (hasAnimChunk || payloadLength != 6)
+                {
+                    throw new InvalidDataException("The WebP ANIM chunk is invalid.");
+                }
+
                 hasAnimChunk = true;
+                animationBackgroundColor = BinaryPrimitives.ReadUInt32LittleEndian(payload[..4]);
+                loopCount = BinaryPrimitives.ReadUInt16LittleEndian(payload[4..6]);
                 metadataChunks.Add(new WebpChunkLocation("ANIM", payloadOffset, payloadLength));
             }
             else if (type.SequenceEqual("ANMF"u8))
             {
-                frameCount++;
+                if (!extended)
+                {
+                    throw new InvalidDataException("The WebP ANMF chunk requires a VP8X chunk.");
+                }
+
+                frames.Add(ReadAnimationFrame(payload, payloadOffset, canvasWidth, canvasHeight));
                 metadataChunks.Add(new WebpChunkLocation("ANMF", payloadOffset, payloadLength));
             }
 
             offset = checked((int)nextChunkLong);
         }
 
-        if (offset != riffEnd || canvasWidth <= 0 || canvasHeight <= 0 || primaryOffset < 0)
+        if (offset != riffEnd || canvasWidth <= 0 || canvasHeight <= 0)
         {
             throw new InvalidDataException("The WebP container has no valid image bitstream.");
         }
@@ -188,30 +213,193 @@ internal readonly ref struct WebpContainer
             throw new InvalidDataException("The WebP dimensions exceed the supported pixel limit.");
         }
 
-        bool animated = animationFlag || hasAnimChunk || frameCount != 0;
-        if (animated && (!hasAnimChunk || frameCount == 0))
+        bool animated = animationFlag;
+        if (hasAnimChunk && !animated)
+        {
+            throw new InvalidDataException("The WebP ANIM chunk requires the VP8X animation flag.");
+        }
+
+        if (animated && (!hasAnimChunk || frames.Count == 0))
         {
             throw new InvalidDataException("The WebP animation chunks are incomplete.");
         }
 
-        if (frameCount == 0)
+        if (!animated && frames.Count != 0)
         {
-            frameCount = 1;
+            throw new InvalidDataException("The WebP contains animation frames without the animation flag.");
         }
 
+        if (!animated && primaryOffset < 0)
+        {
+            throw new InvalidDataException("The WebP container has no valid image bitstream.");
+        }
+
+        if (!animated)
+        {
+            frames.Add(new WebpFrameData(
+                0,
+                0,
+                canvasWidth,
+                canvasHeight,
+                0,
+                false,
+                false,
+                primaryLossless ? WebpFormat.Lossless : WebpFormat.Lossy,
+                primaryOffset,
+                primaryLength,
+                alphaOffset,
+                alphaLength,
+                primaryHasAlpha || hasAlphaChunk));
+        }
+
+        bool hasAlpha = alphaFlag || hasAlphaChunk ||
+            frames.Exists(static frame => frame.HasAlpha) ||
+            (animated && frames.Count > 0 &&
+                (frames[0].X != 0 || frames[0].Y != 0 ||
+                 frames[0].Width != canvasWidth || frames[0].Height != canvasHeight)) ||
+            (animated && frames.Take(frames.Count - 1).Any(static frame => frame.DisposeToBackground));
         var info = new WebpInfo(
             canvasWidth,
             canvasHeight,
-            alphaFlag || hasAlphaChunk,
+            hasAlpha,
             animated ? WebpFormat.Animated : primaryLossless ? WebpFormat.Lossless : WebpFormat.Lossy,
-            frameCount);
+            frames.Count);
         return new WebpContainer(
             info,
-            data.Slice(primaryOffset, primaryLength),
+            primaryOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(primaryOffset, primaryLength),
             iccOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(iccOffset, iccLength),
             alphaOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(alphaOffset, alphaLength),
             hasAlphaChunk,
-            metadataChunks.ToArray());
+            metadataChunks.ToArray(),
+            frames.ToArray(),
+            animationBackgroundColor,
+            animated ? loopCount : 0);
+    }
+
+    private static WebpFrameData ReadAnimationFrame(
+        ReadOnlySpan<byte> payload,
+        int payloadOffset,
+        int canvasWidth,
+        int canvasHeight)
+    {
+        if (payload.Length < 16)
+        {
+            throw new InvalidDataException("The WebP ANMF frame header is truncated.");
+        }
+
+        int x = checked(ReadUInt24(payload[..3]) * 2);
+        int y = checked(ReadUInt24(payload[3..6]) * 2);
+        int width = ReadUInt24(payload[6..9]) + 1;
+        int height = ReadUInt24(payload[9..12]) + 1;
+        int duration = ReadUInt24(payload[12..15]);
+        byte flags = payload[15];
+        if ((flags & 0xfc) != 0)
+        {
+            throw new InvalidDataException("The WebP ANMF reserved flags are nonzero.");
+        }
+
+        if ((long)x + width > canvasWidth || (long)y + height > canvasHeight)
+        {
+            throw new InvalidDataException("The WebP animation frame exceeds the canvas.");
+        }
+
+        int bitstreamOffset = -1;
+        int bitstreamLength = 0;
+        int alphaOffset = -1;
+        int alphaLength = 0;
+        WebpFormat format = WebpFormat.Lossy;
+        bool hasAlpha = false;
+        ReadOnlySpan<byte> chunks = payload[16..];
+        int offset = 0;
+        while (offset < chunks.Length)
+        {
+            if (chunks.Length - offset < 8)
+            {
+                throw new InvalidDataException("The WebP ANMF subchunk header is truncated.");
+            }
+
+            ReadOnlySpan<byte> type = chunks.Slice(offset, 4);
+            uint chunkLength = BinaryPrimitives.ReadUInt32LittleEndian(chunks.Slice(offset + 4, 4));
+            long payloadEndLong = (long)offset + 8 + chunkLength;
+            long nextChunkLong = payloadEndLong + (chunkLength & 1);
+            if (payloadEndLong > chunks.Length || nextChunkLong > chunks.Length)
+            {
+                throw new InvalidDataException("A WebP ANMF subchunk exceeds the frame data.");
+            }
+
+            int chunkPayloadOffset = checked(payloadOffset + 16 + offset + 8);
+            int chunkPayloadLength = checked((int)chunkLength);
+            ReadOnlySpan<byte> chunkPayload = chunks.Slice(offset + 8, chunkPayloadLength);
+            if (type.SequenceEqual("ALPH"u8))
+            {
+                if (alphaOffset >= 0 || bitstreamOffset >= 0)
+                {
+                    throw new InvalidDataException("The WebP ANMF alpha subchunk is misplaced or duplicated.");
+                }
+
+                alphaOffset = chunkPayloadOffset;
+                alphaLength = chunkPayloadLength;
+                hasAlpha = true;
+            }
+            else if (type.SequenceEqual("VP8 "u8) || type.SequenceEqual("VP8L"u8))
+            {
+                if (bitstreamOffset >= 0)
+                {
+                    throw new InvalidDataException("The WebP ANMF contains multiple image bitstreams.");
+                }
+
+                int imageWidth;
+                int imageHeight;
+                if (type.SequenceEqual("VP8 "u8))
+                {
+                    (imageWidth, imageHeight) = ReadVp8Dimensions(chunkPayload);
+                    format = WebpFormat.Lossy;
+                }
+                else
+                {
+                    (imageWidth, imageHeight, bool losslessHasAlpha) = ReadVp8LDimensions(chunkPayload);
+                    format = WebpFormat.Lossless;
+                    hasAlpha |= losslessHasAlpha;
+                }
+
+                if (imageWidth != width || imageHeight != height)
+                {
+                    throw new InvalidDataException("The WebP ANMF bitstream dimensions do not match its frame.");
+                }
+
+                bitstreamOffset = chunkPayloadOffset;
+                bitstreamLength = chunkPayloadLength;
+            }
+
+            offset = checked((int)nextChunkLong);
+        }
+
+        if (offset != chunks.Length || bitstreamOffset < 0)
+        {
+            throw new InvalidDataException("The WebP ANMF has no valid image bitstream.");
+        }
+
+        if (format == WebpFormat.Lossless && alphaOffset >= 0)
+        {
+            throw new InvalidDataException("A VP8L animation frame cannot have a separate ALPH chunk.");
+        }
+
+        bool blend = (flags & 0x02) == 0;
+        bool disposeToBackground = (flags & 0x01) != 0;
+        return new WebpFrameData(
+            x,
+            y,
+            width,
+            height,
+            duration,
+            blend,
+            disposeToBackground,
+            format,
+            bitstreamOffset,
+            bitstreamLength,
+            alphaOffset,
+            alphaLength,
+            hasAlpha);
     }
 
     private static (int Width, int Height) ReadVp8Dimensions(ReadOnlySpan<byte> payload)
@@ -262,3 +450,18 @@ internal readonly ref struct WebpContainer
 }
 
 internal readonly record struct WebpChunkLocation(string FourCc, int Offset, int Length);
+
+internal readonly record struct WebpFrameData(
+    int X,
+    int Y,
+    int Width,
+    int Height,
+    int DurationMs,
+    bool Blend,
+    bool DisposeToBackground,
+    WebpFormat Format,
+    int BitstreamOffset,
+    int BitstreamLength,
+    int AlphaOffset,
+    int AlphaLength,
+    bool HasAlpha);

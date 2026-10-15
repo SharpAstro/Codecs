@@ -340,6 +340,7 @@ public sealed class WebpOracleTests
     private static IEnumerable<string> FixtureNames(string directory) =>
         Directory.EnumerateFiles(directory, "*.webp")
             .Select(static path => Path.GetFileName(path)!)
+            .Where(static name => !name.StartsWith("anim-", StringComparison.Ordinal))
             .OrderBy(static name => name, StringComparer.Ordinal);
 
     private static string FixtureDirectory() =>

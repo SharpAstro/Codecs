@@ -7,6 +7,9 @@ trap 'rm -rf "$tmp"' EXIT
 cwebp="${CWEBP:-$(command -v cwebp)}"
 ffmpeg="${FFMPEG:-$(command -v ffmpeg)}"
 webpinfo="${WEBPINFO:-$(command -v webpinfo)}"
+img2webp="${IMG2WEBP:-$(command -v img2webp)}"
+gif2webp="${GIF2WEBP:-$(command -v gif2webp)}"
+webpmux="${WEBPMUX:-$(command -v webpmux)}"
 
 python3 - "$tmp" <<'PY'
 import struct
@@ -73,10 +76,28 @@ write_png_rgba("lossy-alpha", 33, 19,
                              (x * 5 + y * 19) & 255,
                              (x * 11 + y * 13) & 255,
                              0 if (x + y) % 7 == 0 else (x * 17 + y * 31) & 255))
+for frame in range(3):
+    write_png(f"anim-frame-{frame}", 12, 10,
+              lambda x, y, frame=frame: ((x * 31 + y * 7 + frame * 61) & 255,
+                                         (x * 9 + y * 23 + frame * 37) & 255,
+                                         (x * 13 + y * 17 + frame * 83) & 255))
+for frame, width, height in ((0, 7, 5), (1, 5, 7), (2, 4, 3), (3, 6, 4), (4, 3, 5)):
+    write_png(f"anim-mux-{frame}", width, height,
+              lambda x, y, frame=frame: ((x * 37 + y * 11 + frame * 47) & 255,
+                                         (x * 19 + y * 29 + frame * 31) & 255,
+                                         (x * 7 + y * 41 + frame * 73) & 255))
+for frame in range(4):
+    write_png_rgba(f"anim-gif-{frame:02}", 16, 12,
+                   lambda x, y, frame=frame: ((x * 23 + frame * 53) & 255,
+                                              (y * 31 + frame * 37) & 255,
+                                              ((x + y) * 17 + frame * 61) & 255,
+                                              0 if ((x - frame * 2) % 16 < 5) else 255))
 PY
 
 cwebp -version > "$root/cwebp-version.txt" 2>&1
 "$ffmpeg" -version > "$root/ffmpeg-version.txt" 2>&1
+"$img2webp" -version > "$root/img2webp-version.txt" 2>&1
+"$gif2webp" -version > "$root/gif2webp-version.txt" 2>&1
 libvpx_version=""
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists vpx; then
     libvpx_version="$(pkg-config --modversion vpx)"
@@ -163,3 +184,43 @@ for method in 0 1; do
 done
 cwebp -quiet -q 75 -alpha_method 1 -alpha_q 50 "$tmp/lossy-alpha.png" \
     -o "$root/lossy-alpha-q50.webp"
+
+"$img2webp" -loop 3 -lossy -q 75 -m 0 "$tmp/anim-frame-0.png" \
+    -d 75 -lossy -q 60 "$tmp/anim-frame-1.png" \
+    -d 125 -lossy -q 85 "$tmp/anim-frame-2.png" \
+    -o "$root/anim-img2webp-lossy.webp"
+"$img2webp" -loop 2 -lossless "$tmp/anim-frame-0.png" \
+    -d 80 -lossless "$tmp/anim-frame-1.png" \
+    -d 120 -lossless "$tmp/anim-frame-2.png" \
+    -o "$root/anim-img2webp-lossless.webp"
+"$img2webp" -mixed -loop 1 -q 75 -m 0 "$tmp/anim-frame-0.png" \
+    -d 60 "$tmp/anim-frame-1.png" -d 140 "$tmp/anim-frame-2.png" \
+    -o "$root/anim-img2webp-mixed.webp"
+cwebp -quiet -q 75 "$tmp/anim-frame-0.png" -o "$tmp/anim-mixed-lossy.webp"
+cwebp -quiet -lossless "$tmp/anim-frame-0.png" -o "$tmp/anim-mixed-lossless.webp"
+"$webpmux" \
+    -frame "$tmp/anim-mixed-lossy.webp" +80+0+0+0-b \
+    -frame "$tmp/anim-mixed-lossless.webp" +120+0+0+0-b \
+    -loop 1 -o "$root/anim-webpmux-mixed-format.webp"
+
+"$ffmpeg" -hide_banner -loglevel error -y -framerate 5 \
+    -i "$tmp/anim-gif-%02d.png" -vf "palettegen=reserve_transparent=1" \
+    "$tmp/anim-gif-palette.png"
+"$ffmpeg" -hide_banner -loglevel error -y -framerate 5 \
+    -i "$tmp/anim-gif-%02d.png" -i "$tmp/anim-gif-palette.png" \
+    -filter_complex "[0:v][1:v]paletteuse=alpha_threshold=128" \
+    -loop 0 "$tmp/anim-transparent.gif"
+"$gif2webp" -quiet -loop_compatibility -q 75 \
+    "$tmp/anim-transparent.gif" -o "$root/anim-gif-transparent.webp"
+
+for frame in 0 1 2 3 4; do
+    cwebp -quiet -lossless "$tmp/anim-mux-$frame.png" \
+        -o "$tmp/anim-mux-$frame.webp"
+done
+"$webpmux" \
+    -frame "$tmp/anim-mux-0.webp" +80+0+0+0+b \
+    -frame "$tmp/anim-mux-1.webp" +90+2+2+0-b \
+    -frame "$tmp/anim-mux-2.webp" +100+4+2+1+b \
+    -frame "$tmp/anim-mux-3.webp" +110+6+4+1-b \
+    -frame "$tmp/anim-mux-4.webp" +120+8+4+0+b \
+    -loop 3 -bgcolor 200,210,40,255 -o "$root/anim-webpmux-combinations.webp"

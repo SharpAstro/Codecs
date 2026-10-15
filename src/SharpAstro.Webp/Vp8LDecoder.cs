@@ -546,12 +546,7 @@ internal static class Vp8LDecoder
             {
                 int packedPixel = pixels[y * encodedWidth + x / packed];
                 int index = ((packedPixel >> 8) >> ((x % packed) * (8 / packed))) & mask;
-                if (index >= transform.Table!.Length)
-                {
-                    throw new InvalidDataException("The VP8L palette index is out of range.");
-                }
-
-                output[y * width + x] = transform.Table[index];
+                output[y * width + x] = index < transform.Table!.Length ? transform.Table[index] : 0;
             }
         }
 

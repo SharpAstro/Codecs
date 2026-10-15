@@ -1,7 +1,7 @@
 namespace SharpAstro.Webp;
 
 /// <summary>
-/// Decodes still lossy WebP images. The implementation is derived from RFC 6386
+/// Decodes still and animated WebP images. The implementation is derived from RFC 6386
 /// and RFC 9649 prose and mathematics, with standard specification tables copied
 /// as data. No libwebp or libvpx source was consulted or transcribed; their
 /// command-line binaries are used only as black-box test oracles.
@@ -24,17 +24,36 @@ public static class WebpDecoder
 
     public static WebpInfo ReadInfo(ReadOnlySpan<byte> data) => WebpContainer.Read(data).Info;
 
+    /// <summary>Decodes every frame, returning the full composited canvas for each one.</summary>
+    /// <param name="data">A still or animated WebP image.</param>
+    public static WebpAnimation DecodeAnimation(ReadOnlySpan<byte> data)
+    {
+        var decoder = new WebpAnimationDecoder(data.ToArray());
+        byte[] canvas = new byte[checked(decoder.CanvasWidth * decoder.CanvasHeight * 4)];
+        var frames = new List<WebpFrame>(decoder.FrameCount);
+        while (decoder.TryDecodeNextFrame(canvas, out WebpFrameInfo frame))
+        {
+            frames.Add(new WebpFrame(canvas.ToArray(), frame.TimestampMs, frame.DurationMs));
+        }
+
+        return new WebpAnimation(
+            decoder.CanvasWidth,
+            decoder.CanvasHeight,
+            decoder.LoopCount,
+            decoder.BackgroundColor,
+            frames.AsReadOnly());
+    }
+
     public static WebpImage Decode(ReadOnlySpan<byte> data)
     {
         WebpContainer container = WebpContainer.Read(data);
         WebpInfo info = container.Info;
+        byte[] rgba;
         if (info.Format == WebpFormat.Animated)
         {
-            throw new NotSupportedException("Animated WebP decoding lands in a later rung.");
+            rgba = DecodeFirstAnimationFrame(data, info.Width, info.Height);
         }
-
-        byte[] rgba;
-        if (info.Format == WebpFormat.Lossless)
+        else if (info.Format == WebpFormat.Lossless)
         {
             rgba = Vp8LDecoder.DecodeRgba(container.Vp8Bitstream);
         }
@@ -85,7 +104,14 @@ public static class WebpDecoder
         WebpContainer container = WebpContainer.Read(data);
         if (info.Format == WebpFormat.Animated)
         {
-            throw new NotSupportedException("Animated WebP decoding lands in a later rung.");
+            byte[] firstFrame = DecodeFirstAnimationFrame(data, info.Width, info.Height, fancy);
+            for (int row = 0; row < info.Height; row++)
+            {
+                firstFrame.AsSpan(row * minimumStride, minimumStride)
+                    .CopyTo(rgba.Slice(row * stride, minimumStride));
+            }
+
+            return;
         }
 
         if (info.Format == WebpFormat.Lossless)
@@ -135,6 +161,51 @@ public static class WebpDecoder
     internal static void DecodeToNoFancy(ReadOnlySpan<byte> data, Span<byte> rgba)
     {
         DecodeTo(data, rgba, 0, fancy: false);
+    }
+
+    internal static byte[] DecodeFrameRgba(
+        ReadOnlySpan<byte> bitstream,
+        WebpFormat format,
+        ReadOnlySpan<byte> alphaData,
+        int width,
+        int height,
+        bool fancy = true)
+    {
+        if (format == WebpFormat.Lossless)
+        {
+            if (!alphaData.IsEmpty)
+            {
+                throw new InvalidDataException("A VP8L animation frame cannot have a separate ALPH chunk.");
+            }
+
+            return Vp8LDecoder.DecodeRgba(bitstream);
+        }
+
+        Vp8Yuv yuv = Vp8Decoder.Decode(bitstream, width, height);
+        byte[] rgba = new byte[checked(width * height * 4)];
+        WriteRgba(yuv, rgba, checked(width * 4), fancy);
+        if (!alphaData.IsEmpty)
+        {
+            ApplyAlpha(alphaData, rgba, width, height);
+        }
+
+        return rgba;
+    }
+
+    private static byte[] DecodeFirstAnimationFrame(
+        ReadOnlySpan<byte> data,
+        int width,
+        int height,
+        bool fancy = true)
+    {
+        var decoder = new WebpAnimationDecoder(data.ToArray(), fancy);
+        byte[] rgba = new byte[checked(width * height * 4)];
+        if (!decoder.TryDecodeNextFrame(rgba, out _))
+        {
+            throw new InvalidDataException("The WebP animation has no frames.");
+        }
+
+        return rgba;
     }
 
     private static void WriteRgba(Vp8Yuv yuv, Span<byte> output, int stride, bool fancy)

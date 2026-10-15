@@ -14,10 +14,11 @@ namespace SharpAstro.Codecs.Tests;
 /// into a red build.
 /// </para>
 /// <para>
-/// All three external oracles are wired up this way — <see cref="Jbig2Oracle"/>,
+/// The required external oracles are wired up this way — <see cref="Jbig2Oracle"/>,
 /// <see cref="JxrOracle"/>, and jpegenc (via
 /// <c>JpegEncoderOracleTests.RequireOracle</c>) — and CI installs or builds each
-/// one, so none can go quietly missing.
+/// one, so none can go quietly missing. Optional animation checks use the same
+/// gate while relying on committed frame digests when <c>anim_dump</c> is absent.
 /// </para>
 /// <para>
 /// JXR was the urgent case that prompted this: its guards used to be
@@ -41,11 +42,18 @@ internal static class OracleGate
     /// <param name="available">Whether the oracle could be resolved.</param>
     /// <param name="oracle">The oracle's name, for the message.</param>
     /// <param name="reason">Why it is unavailable, including how to install it.</param>
-    public static void RequireOrSkip(bool available, string oracle, string reason)
+    /// <param name="requiredWhenConfigured">
+    /// Whether <see cref="OraclesRequired"/> turns an unavailable oracle into a failure.
+    /// </param>
+    public static void RequireOrSkip(
+        bool available,
+        string oracle,
+        string reason,
+        bool requiredWhenConfigured = true)
     {
         if (available) return;
 
-        if (OraclesRequired)
+        if (requiredWhenConfigured && OraclesRequired)
         {
             Assert.Fail(
                 $"{oracle} is unavailable but {RequireVariable} is set, so it was expected to run. {reason}");
