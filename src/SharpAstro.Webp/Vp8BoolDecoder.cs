@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Numerics;
 
 namespace SharpAstro.Webp;
 
@@ -8,7 +9,7 @@ internal ref struct Vp8BoolDecoder
     private int _nextByte;
     private int _bitsAvailable;
     private ulong _bitBuffer;
-    private uint _value;
+    private ulong _value;
     private int _range;
 
     public Vp8BoolDecoder(ReadOnlySpan<byte> data)
@@ -18,8 +19,8 @@ internal ref struct Vp8BoolDecoder
         _bitsAvailable = 0;
         _bitBuffer = 0;
         _range = 255;
-        _value = (uint)(data.Length > 0 ? data[0] : 0) << 8 |
-                 (uint)(data.Length > 1 ? data[1] : 0);
+        _value = (data.Length > 0 ? (ulong)data[0] : 0) << 8 |
+                 (data.Length > 1 ? (ulong)data[1] : 0);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -28,7 +29,7 @@ internal ref struct Vp8BoolDecoder
         int split = 1 + ((_range - 1) * probability >> 8);
         int boundary = split << 8;
         int bit;
-        if (_value >= boundary)
+        if (_value >= (ulong)boundary)
         {
             _value -= (uint)boundary;
             _range -= split;
@@ -40,10 +41,11 @@ internal ref struct Vp8BoolDecoder
             bit = 0;
         }
 
-        while (_range < 128)
+        int shift = BitOperations.LeadingZeroCount((uint)_range) - 24;
+        if (shift != 0)
         {
-            _range <<= 1;
-            _value = ((_value << 1) | (uint)ReadInputBit()) & 0xffff;
+            _range <<= shift;
+            _value = ((_value << shift) | (uint)ReadInputBits(shift)) & 0xffffUL;
         }
 
         return bit;
@@ -67,31 +69,38 @@ internal ref struct Vp8BoolDecoder
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int ReadInputBit()
+    private int ReadInputBits(int count)
     {
-        if (_bitsAvailable == 0)
+        int value = 0;
+        while (count != 0)
         {
-            int bytes = Math.Min(8, _data.Length - _nextByte);
-            if (bytes == 0)
+            if (_bitsAvailable == 0)
             {
-                return 0;
+                int bytes = Math.Min(8, _data.Length - _nextByte);
+                if (bytes == 0)
+                {
+                    return value << count;
+                }
+
+                ulong buffer = 0;
+                for (int i = 0; i < bytes; i++)
+                {
+                    buffer |= (ulong)_data[_nextByte + i] << ((7 - i) * 8);
+                }
+
+                _nextByte += bytes;
+                _bitBuffer = buffer;
+                _bitsAvailable = bytes * 8;
             }
 
-            ulong buffer = 0;
-            for (int i = 0; i < bytes; i++)
-            {
-                buffer |= (ulong)_data[_nextByte + i] << ((7 - i) * 8);
-            }
-
-            _nextByte += bytes;
-            _bitBuffer = buffer;
-            _bitsAvailable = bytes * 8;
+            int take = Math.Min(count, _bitsAvailable);
+            value = (value << take) | (int)(_bitBuffer >> (64 - take));
+            _bitBuffer <<= take;
+            _bitsAvailable -= take;
+            count -= take;
         }
 
-        int bit = (int)(_bitBuffer >> 63);
-        _bitBuffer <<= 1;
-        _bitsAvailable--;
-        return bit;
+        return value;
     }
 }
 
