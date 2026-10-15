@@ -11,6 +11,9 @@ namespace SharpAstro.Webp;
 /// </summary>
 public static class WebpDecoder
 {
+    private static readonly Vector128<byte> ChromaPairShuffleIndices = Vector128.Create(
+        (byte)0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15);
+
     public static bool TryReadInfo(ReadOnlySpan<byte> data, out WebpInfo info)
     {
         try
@@ -261,7 +264,7 @@ public static class WebpDecoder
         int height = yuv.Height;
         int chromaWidth = (width + 1) >> 1;
         int chromaHeight = (height + 1) >> 1;
-        int[] tRows = WebpBufferPool<int>.Rent(checked(chromaWidth * 2));
+        ushort[] tRows = WebpBufferPool<ushort>.Rent(checked(chromaWidth * 2));
         byte[] chromaRows = WebpBufferPool<byte>.Rent(checked(width * 2));
         try
         {
@@ -271,8 +274,6 @@ public static class WebpDecoder
             ref byte outputBase = ref MemoryMarshal.GetReference(output);
             ref byte alphaBase = ref MemoryMarshal.GetReference(alpha);
             bool hasAlpha = !alpha.IsEmpty;
-            ref int tUBase = ref MemoryMarshal.GetArrayDataReference(tRows);
-            ref int tVBase = ref Unsafe.Add(ref tUBase, chromaWidth);
             ref byte uScratchBase = ref MemoryMarshal.GetArrayDataReference(chromaRows);
             ref byte vScratchBase = ref Unsafe.Add(ref uScratchBase, width);
 
@@ -298,40 +299,23 @@ public static class WebpDecoder
                     int adjacentChromaIndex = adjacentRow * chromaWidth;
                     ref byte adjacentU = ref Unsafe.Add(ref uBase, adjacentChromaIndex);
                     ref byte adjacentV = ref Unsafe.Add(ref vBase, adjacentChromaIndex);
-                    for (int column = 0; column < chromaWidth; column++)
+                    Span<ushort> tU = tRows.AsSpan(0, chromaWidth);
+                    Span<ushort> tV = tRows.AsSpan(chromaWidth, chromaWidth);
+                    Span<byte> uUpsampled = chromaRows.AsSpan(0, width);
+                    Span<byte> vUpsampled = chromaRows.AsSpan(width, width);
+                    ReadOnlySpan<byte> currentU = MemoryMarshal.CreateReadOnlySpan(ref uRow, chromaWidth);
+                    ReadOnlySpan<byte> currentV = MemoryMarshal.CreateReadOnlySpan(ref vRow, chromaWidth);
+                    ReadOnlySpan<byte> adjacentUSpan = MemoryMarshal.CreateReadOnlySpan(ref adjacentU, chromaWidth);
+                    ReadOnlySpan<byte> adjacentVSpan = MemoryMarshal.CreateReadOnlySpan(ref adjacentV, chromaWidth);
+                    if (Vector128.IsHardwareAccelerated)
                     {
-                        int current = Unsafe.Add(ref uRow, column);
-                        int adjacent = Unsafe.Add(ref adjacentU, column);
-                        Unsafe.Add(ref tUBase, column) = 3 * current + adjacent;
-                        current = Unsafe.Add(ref vRow, column);
-                        adjacent = Unsafe.Add(ref adjacentV, column);
-                        Unsafe.Add(ref tVBase, column) = 3 * current + adjacent;
+                        UpsampleFancyVector128(currentU, adjacentUSpan, tU, uUpsampled);
+                        UpsampleFancyVector128(currentV, adjacentVSpan, tV, vUpsampled);
                     }
-
-                    Unsafe.Add(ref uScratchBase, 0) = (byte)((4 * tUBase + 8) >> 4);
-                    Unsafe.Add(ref vScratchBase, 0) = (byte)((4 * tVBase + 8) >> 4);
-                    int pairs = chromaWidth - 1;
-                    for (int column = 0; column < pairs; column++)
+                    else
                     {
-                        int currentU = Unsafe.Add(ref tUBase, column);
-                        int nextU = Unsafe.Add(ref tUBase, column + 1);
-                        int currentV = Unsafe.Add(ref tVBase, column);
-                        int nextV = Unsafe.Add(ref tVBase, column + 1);
-                        int oddColumn = column * 2 + 1;
-                        int evenColumn = oddColumn + 1;
-                        Unsafe.Add(ref uScratchBase, oddColumn) = (byte)((3 * currentU + nextU + 8) >> 4);
-                        Unsafe.Add(ref vScratchBase, oddColumn) = (byte)((3 * currentV + nextV + 8) >> 4);
-                        Unsafe.Add(ref uScratchBase, evenColumn) = (byte)((3 * nextU + currentU + 8) >> 4);
-                        Unsafe.Add(ref vScratchBase, evenColumn) = (byte)((3 * nextV + currentV + 8) >> 4);
-                    }
-
-                    if ((width & 1) == 0)
-                    {
-                        int lastColumn = width - 1;
-                        Unsafe.Add(ref uScratchBase, lastColumn) =
-                            (byte)((4 * Unsafe.Add(ref tUBase, chromaWidth - 1) + 8) >> 4);
-                        Unsafe.Add(ref vScratchBase, lastColumn) =
-                            (byte)((4 * Unsafe.Add(ref tVBase, chromaWidth - 1) + 8) >> 4);
+                        UpsampleFancyScalar(currentU, adjacentUSpan, tU, uUpsampled);
+                        UpsampleFancyScalar(currentV, adjacentVSpan, tV, vUpsampled);
                     }
                 }
                 else
@@ -366,8 +350,170 @@ public static class WebpDecoder
         }
         finally
         {
-            WebpBufferPool<int>.Return(tRows);
+            WebpBufferPool<ushort>.Return(tRows);
             WebpBufferPool<byte>.Return(chromaRows);
+        }
+    }
+
+    internal static void UpsampleFancyScalar(
+        ReadOnlySpan<byte> current,
+        ReadOnlySpan<byte> adjacent,
+        Span<ushort> tRow,
+        Span<byte> output)
+    {
+        ref byte currentBase = ref Unsafe.AsRef(in MemoryMarshal.GetReference(current));
+        ref byte adjacentBase = ref Unsafe.AsRef(in MemoryMarshal.GetReference(adjacent));
+        ref ushort tBase = ref MemoryMarshal.GetReference(tRow);
+        ref byte outputBase = ref MemoryMarshal.GetReference(output);
+        UpsampleFancyScalarCore(ref currentBase, ref adjacentBase, ref tBase,
+            ref outputBase, current.Length, output.Length);
+    }
+
+    internal static void UpsampleFancyVector128(
+        ReadOnlySpan<byte> current,
+        ReadOnlySpan<byte> adjacent,
+        Span<ushort> tRow,
+        Span<byte> output)
+    {
+        ref byte currentBase = ref Unsafe.AsRef(in MemoryMarshal.GetReference(current));
+        ref byte adjacentBase = ref Unsafe.AsRef(in MemoryMarshal.GetReference(adjacent));
+        ref ushort tBase = ref MemoryMarshal.GetReference(tRow);
+        ref byte outputBase = ref MemoryMarshal.GetReference(output);
+        if (Vector128.IsHardwareAccelerated)
+        {
+            UpsampleFancyVector128Core(ref currentBase, ref adjacentBase, ref tBase,
+                ref outputBase, current.Length, output.Length);
+        }
+        else
+        {
+            UpsampleFancyScalarCore(ref currentBase, ref adjacentBase, ref tBase,
+                ref outputBase, current.Length, output.Length);
+        }
+    }
+
+    private static void UpsampleFancyScalarCore(
+        ref byte current,
+        ref byte adjacent,
+        ref ushort tRow,
+        ref byte output,
+        int chromaWidth,
+        int width)
+    {
+        for (int column = 0; column < chromaWidth; column++)
+        {
+            Unsafe.Add(ref tRow, column) = (ushort)(
+                3 * Unsafe.Add(ref current, column) + Unsafe.Add(ref adjacent, column));
+        }
+
+        ushort first = tRow;
+        output = (byte)((4 * first + 8) >> 4);
+        if (width > 1)
+        {
+            ushort next = chromaWidth > 1 ? Unsafe.Add(ref tRow, 1) : first;
+            Unsafe.Add(ref output, 1) = (byte)((3 * first + next + 8) >> 4);
+        }
+
+        for (int column = 1; column < chromaWidth - 1; column++)
+        {
+            int currentT = Unsafe.Add(ref tRow, column);
+            int outputColumn = column * 2;
+            Unsafe.Add(ref output, outputColumn) = (byte)(
+                (3 * currentT + Unsafe.Add(ref tRow, column - 1) + 8) >> 4);
+            Unsafe.Add(ref output, outputColumn + 1) = (byte)(
+                (3 * currentT + Unsafe.Add(ref tRow, column + 1) + 8) >> 4);
+        }
+
+        if (chromaWidth > 1)
+        {
+            int lastColumn = chromaWidth - 1;
+            int last = Unsafe.Add(ref tRow, lastColumn);
+            int outputColumn = lastColumn * 2;
+            Unsafe.Add(ref output, outputColumn) = (byte)(
+                (3 * last + Unsafe.Add(ref tRow, lastColumn - 1) + 8) >> 4);
+            if (outputColumn + 1 < width)
+            {
+                Unsafe.Add(ref output, outputColumn + 1) = (byte)((4 * last + 8) >> 4);
+            }
+        }
+    }
+
+    private static void UpsampleFancyVector128Core(
+        ref byte current,
+        ref byte adjacent,
+        ref ushort tRow,
+        ref byte output,
+        int chromaWidth,
+        int width)
+    {
+        Vector128<ushort> three = Vector128.Create((ushort)3);
+        int column = 0;
+        for (; column <= chromaWidth - 16; column += 16)
+        {
+            Vector128<byte> currentBytes = Vector128.LoadUnsafe(ref current, (nuint)column);
+            Vector128<byte> adjacentBytes = Vector128.LoadUnsafe(ref adjacent, (nuint)column);
+            Vector128<ushort> currentLow = Vector128.WidenLower(currentBytes);
+            Vector128<ushort> currentHigh = Vector128.WidenUpper(currentBytes);
+            Vector128<ushort> adjacentLow = Vector128.WidenLower(adjacentBytes);
+            Vector128<ushort> adjacentHigh = Vector128.WidenUpper(adjacentBytes);
+            Vector128<ushort> tLow = Vector128.Add(Vector128.Multiply(currentLow, three), adjacentLow);
+            Vector128<ushort> tHigh = Vector128.Add(Vector128.Multiply(currentHigh, three), adjacentHigh);
+            ref ushort tChunk = ref Unsafe.Add(ref tRow, column);
+            Vector128.StoreUnsafe(tLow, ref tChunk);
+            Vector128.StoreUnsafe(tHigh, ref Unsafe.Add(ref tChunk, 8));
+        }
+
+        for (; column < chromaWidth; column++)
+        {
+            Unsafe.Add(ref tRow, column) = (ushort)(
+                3 * Unsafe.Add(ref current, column) + Unsafe.Add(ref adjacent, column));
+        }
+
+        ushort first = tRow;
+        output = (byte)((4 * first + 8) >> 4);
+        if (width > 1)
+        {
+            ushort next = chromaWidth > 1 ? Unsafe.Add(ref tRow, 1) : first;
+            Unsafe.Add(ref output, 1) = (byte)((3 * first + next + 8) >> 4);
+        }
+
+        int pair = 1;
+        for (; pair <= chromaWidth - 9; pair += 8)
+        {
+            Vector128<ushort> currentT = Vector128.LoadUnsafe(ref tRow, (nuint)pair);
+            Vector128<ushort> left = Vector128.LoadUnsafe(ref tRow, (nuint)(pair - 1));
+            Vector128<ushort> right = Vector128.LoadUnsafe(ref tRow, (nuint)(pair + 1));
+            Vector128<ushort> scaled = Vector128.Multiply(currentT, three);
+            Vector128<ushort> even = Vector128.ShiftRightLogical(
+                Vector128.Add(Vector128.Add(scaled, left), Vector128.Create((ushort)8)), 4);
+            Vector128<ushort> odd = Vector128.ShiftRightLogical(
+                Vector128.Add(Vector128.Add(scaled, right), Vector128.Create((ushort)8)), 4);
+            Vector128<byte> separated = Vector128.Narrow(even, odd);
+            Vector128<byte> interleaved = Vector128.Shuffle(separated, ChromaPairShuffleIndices);
+            ref byte outputChunk = ref Unsafe.Add(ref output, pair * 2);
+            Vector128.StoreUnsafe(interleaved, ref outputChunk);
+        }
+
+        for (; pair < chromaWidth - 1; pair++)
+        {
+            int currentT = Unsafe.Add(ref tRow, pair);
+            int outputColumn = pair * 2;
+            Unsafe.Add(ref output, outputColumn) = (byte)(
+                (3 * currentT + Unsafe.Add(ref tRow, pair - 1) + 8) >> 4);
+            Unsafe.Add(ref output, outputColumn + 1) = (byte)(
+                (3 * currentT + Unsafe.Add(ref tRow, pair + 1) + 8) >> 4);
+        }
+
+        if (chromaWidth > 1)
+        {
+            int lastColumn = chromaWidth - 1;
+            int last = Unsafe.Add(ref tRow, lastColumn);
+            int outputColumn = lastColumn * 2;
+            Unsafe.Add(ref output, outputColumn) = (byte)(
+                (3 * last + Unsafe.Add(ref tRow, lastColumn - 1) + 8) >> 4);
+            if (outputColumn + 1 < width)
+            {
+                Unsafe.Add(ref output, outputColumn + 1) = (byte)((4 * last + 8) >> 4);
+            }
         }
     }
 

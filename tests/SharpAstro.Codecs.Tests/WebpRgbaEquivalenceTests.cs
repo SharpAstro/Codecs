@@ -39,6 +39,35 @@ public sealed class WebpRgbaEquivalenceTests
     }
 
     [Fact]
+    public void FancyUpsamplingMatchesScalarForOffsetsAndOddWidths()
+    {
+        var random = new Random(0x9649);
+        for (int chromaWidth = 1; chromaWidth <= 35; chromaWidth++)
+        {
+            byte[] current = new byte[chromaWidth + 8];
+            byte[] adjacent = new byte[chromaWidth + 8];
+            const int inputOffset = 3;
+            for (int column = 0; column < chromaWidth; column++)
+            {
+                current[inputOffset + column] = (column & 1) == 0 ? byte.MinValue : byte.MaxValue;
+                adjacent[inputOffset + column] = (column & 1) == 0 ? byte.MaxValue : byte.MinValue;
+            }
+
+            AssertFancyEquivalent(current, adjacent, inputOffset, chromaWidth, chromaWidth * 2);
+            AssertFancyEquivalent(current, adjacent, inputOffset, chromaWidth, chromaWidth * 2 - 1);
+
+            for (int column = 0; column < chromaWidth; column++)
+            {
+                current[inputOffset + column] = (byte)random.Next(256);
+                adjacent[inputOffset + column] = (byte)random.Next(256);
+            }
+
+            AssertFancyEquivalent(current, adjacent, inputOffset, chromaWidth, chromaWidth * 2);
+            AssertFancyEquivalent(current, adjacent, inputOffset, chromaWidth, chromaWidth * 2 - 1);
+        }
+    }
+
+    [Fact]
     public void VectorAndScalarRowsMatchForOffsetsTailsAndExtremeSamples()
     {
         var random = new Random(0x6386);
@@ -104,5 +133,31 @@ public sealed class WebpRgbaEquivalenceTests
             vector.AsSpan(outputOffset, width * 4));
 
         Assert.Equal(scalar, vector);
+    }
+
+    private static void AssertFancyEquivalent(
+        byte[] current,
+        byte[] adjacent,
+        int inputOffset,
+        int chromaWidth,
+        int width)
+    {
+        const int outputOffset = 7;
+        var scalarT = new ushort[chromaWidth + 2];
+        var vectorT = (ushort[])scalarT.Clone();
+        var scalar = Enumerable.Repeat((byte)0xA5, outputOffset + width + 5).ToArray();
+        var vector = (byte[])scalar.Clone();
+        ReadOnlySpan<byte> currentRow = current.AsSpan(inputOffset, chromaWidth);
+        ReadOnlySpan<byte> adjacentRow = adjacent.AsSpan(inputOffset, chromaWidth);
+        Span<ushort> scalarScratch = scalarT.AsSpan(1, chromaWidth);
+        Span<ushort> vectorScratch = vectorT.AsSpan(1, chromaWidth);
+
+        WebpDecoder.UpsampleFancyScalar(currentRow, adjacentRow, scalarScratch,
+            scalar.AsSpan(outputOffset, width));
+        WebpDecoder.UpsampleFancyVector128(currentRow, adjacentRow, vectorScratch,
+            vector.AsSpan(outputOffset, width));
+
+        Assert.Equal(scalar, vector);
+        Assert.Equal(scalarT, vectorT);
     }
 }
