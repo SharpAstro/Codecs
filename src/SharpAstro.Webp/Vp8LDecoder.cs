@@ -34,21 +34,35 @@ internal static class Vp8LDecoder
     public static byte[] DecodeRgba(ReadOnlySpan<byte> stream)
     {
         (int width, int height, int[] argb) = DecodeArgb(stream);
-        byte[] result = new byte[checked(argb.Length * 4)];
-        ToRgba(argb, result, width, checked(width * 4));
-        return result;
+        try
+        {
+            byte[] result = new byte[checked(width * height * 4)];
+            ToRgba(argb, result, width, height, checked(width * 4));
+            return result;
+        }
+        finally
+        {
+            WebpBufferPool<int>.Return(argb);
+        }
     }
 
     public static void DecodeRgbaTo(ReadOnlySpan<byte> stream, Span<byte> output, int stride)
     {
         (int width, int height, int[] argb) = DecodeArgb(stream);
         int rowLength = checked(width * 4);
-        if (stride < rowLength || output.Length < checked((height - 1) * stride + rowLength))
+        try
         {
-            throw new ArgumentException("The destination is too small for the decoded VP8L image.", nameof(output));
-        }
+            if (stride < rowLength || output.Length < checked((height - 1) * stride + rowLength))
+            {
+                throw new ArgumentException("The destination is too small for the decoded VP8L image.", nameof(output));
+            }
 
-        ToRgba(argb, output, width, stride);
+            ToRgba(argb, output, width, height, stride);
+        }
+        finally
+        {
+            WebpBufferPool<int>.Return(argb);
+        }
     }
 
     public static byte[] DecodeAlpha(ReadOnlySpan<byte> stream, int width, int height)
@@ -59,53 +73,126 @@ internal static class Vp8LDecoder
         }
 
         int[] argb = DecodeImage(new BitReader(stream), width, height, allowTransforms: true);
-        byte[] alpha = new byte[argb.Length];
-        for (int i = 0; i < argb.Length; i++)
+        try
+        {
+            int pixelCount = checked(width * height);
+            byte[] alpha = new byte[pixelCount];
+            CopyAlpha(argb, alpha, pixelCount);
+            return alpha;
+        }
+        finally
+        {
+            WebpBufferPool<int>.Return(argb);
+        }
+    }
+
+    public static void DecodeAlphaTo(ReadOnlySpan<byte> stream, int width, int height, Span<byte> alpha)
+    {
+        if ((long)width * height > WebpLimits.MaximumPixels)
+        {
+            throw new InvalidDataException("The VP8L alpha dimensions exceed the pixel limit.");
+        }
+
+        int pixelCount = checked(width * height);
+        if (alpha.Length < pixelCount)
+        {
+            throw new ArgumentException("The alpha destination is too small.", nameof(alpha));
+        }
+
+        int[] argb = DecodeImage(new BitReader(stream), width, height, allowTransforms: true);
+        try
+        {
+            CopyAlpha(argb, alpha, pixelCount);
+        }
+        finally
+        {
+            WebpBufferPool<int>.Return(argb);
+        }
+    }
+
+    private static void CopyAlpha(ReadOnlySpan<int> argb, Span<byte> alpha, int pixelCount)
+    {
+        for (int i = 0; i < pixelCount; i++)
         {
             alpha[i] = (byte)((argb[i] >> 8) & 0xff);
         }
-
-        return alpha;
     }
 
     private static int[] DecodeImage(BitReader reader, int width, int height, bool allowTransforms)
     {
+        if (width <= 0 || height <= 0 || (long)width * height > WebpLimits.MaximumPixels)
+        {
+            throw new InvalidDataException("The VP8L image dimensions are invalid.");
+        }
+
         var transforms = new List<Transform>();
         int encodedWidth = width;
         int encodedHeight = height;
-        if (allowTransforms)
+        int[]? pixels = null;
+        try
         {
-            var seen = new bool[4];
-            while (reader.ReadBit() != 0)
+            if (allowTransforms)
             {
-                int type = reader.ReadBits(2);
-                if (type > 3 || seen[type])
+                Span<bool> seen = stackalloc bool[4];
+                seen.Clear();
+                while (reader.ReadBit() != 0)
                 {
-                    throw new InvalidDataException("The VP8L transform sequence is invalid.");
+                    int type = reader.ReadBits(2);
+                    if (type > 3 || seen[type])
+                    {
+                        throw new InvalidDataException("The VP8L transform sequence is invalid.");
+                    }
+
+                    seen[type] = true;
+                    Transform transform = ReadTransform(ref reader, type, encodedWidth, encodedHeight);
+                    transforms.Add(transform);
+                    if (type == 3)
+                    {
+                        encodedWidth = (encodedWidth + (1 << transform.Bits) - 1) >> transform.Bits;
+                    }
+                }
+            }
+
+            pixels = DecodeImageStream(ref reader, encodedWidth, encodedHeight, hasMetaPrefix: true);
+            for (int i = transforms.Count - 1; i >= 0; i--)
+            {
+                int[] previous = pixels;
+                pixels = ApplyTransform(previous, transforms[i]);
+                if (!ReferenceEquals(previous, pixels))
+                {
+                    WebpBufferPool<int>.Return(previous);
+                }
+            }
+
+            if (pixels.Length < checked(width * height))
+            {
+                throw new InvalidDataException("The VP8L decoded image dimensions are inconsistent.");
+            }
+
+            int[] result = pixels;
+            pixels = null;
+            return result;
+        }
+        finally
+        {
+            if (pixels is not null)
+            {
+                WebpBufferPool<int>.Return(pixels);
+            }
+
+            foreach (Transform transform in transforms)
+            {
+                if (transform.Data is not null)
+                {
+                    WebpBufferPool<int>.Return(transform.Data);
                 }
 
-                seen[type] = true;
-                transforms.Add(ReadTransform(ref reader, type, encodedWidth, encodedHeight));
-                if (type == 3)
+                if (transform.Table is not null)
                 {
-                    encodedWidth = (encodedWidth + (1 << transforms[^1].Bits) - 1) >>
-                        transforms[^1].Bits;
+                    WebpBufferPool<int>.Return(transform.Table);
                 }
             }
         }
-
-        int[] pixels = DecodeImageStream(ref reader, encodedWidth, encodedHeight, hasMetaPrefix: true);
-        for (int i = transforms.Count - 1; i >= 0; i--)
-        {
-            pixels = ApplyTransform(pixels, transforms[i]);
-        }
-
-        if (pixels.Length != width * height)
-        {
-            throw new InvalidDataException("The VP8L decoded image dimensions are inconsistent.");
-        }
-
-        return pixels;
     }
 
     private static Transform ReadTransform(ref BitReader reader, int type, int width, int height)
@@ -116,33 +203,45 @@ internal static class Vp8LDecoder
             int blockWidth = (width + (1 << bits) - 1) >> bits;
             int blockHeight = (height + (1 << bits) - 1) >> bits;
             int[] data = DecodeImageStream(ref reader, blockWidth, blockHeight, hasMetaPrefix: false);
-            return new Transform(type, width, height, bits, data, null);
+            return new Transform(type, width, height, bits, data, null, 0);
         }
 
         if (type == 2)
         {
-            return new Transform(type, width, height, 0, null, null);
+            return new Transform(type, width, height, 0, null, null, 0);
         }
 
         int tableSize = reader.ReadBits(8) + 1;
         int bitsPerPixel = tableSize <= 2 ? 3 : tableSize <= 4 ? 2 : tableSize <= 16 ? 1 : 0;
         int tableWidth = tableSize;
         int[] tableData = DecodeImageStream(ref reader, tableWidth, 1, hasMetaPrefix: false);
-        var table = new int[tableSize];
-        int previous = 0;
-        for (int i = 0; i < tableWidth; i++)
+        int[] table = WebpBufferPool<int>.Rent(tableSize);
+        try
         {
-            int packed = tableData[i];
-            int alpha = ((packed >> 24) & 0xff) + ((previous >> 24) & 0xff);
-            int red = ((packed >> 16) & 0xff) + ((previous >> 16) & 0xff);
-            int green = ((packed >> 8) & 0xff) + ((previous >> 8) & 0xff);
-            int blue = (packed & 0xff) + (previous & 0xff);
-            previous = ((alpha & 0xff) << 24) | ((red & 0xff) << 16) |
-                ((green & 0xff) << 8) | (blue & 0xff);
-            table[i] = previous;
-        }
+            int previous = 0;
+            for (int i = 0; i < tableWidth; i++)
+            {
+                int packed = tableData[i];
+                int alpha = ((packed >> 24) & 0xff) + ((previous >> 24) & 0xff);
+                int red = ((packed >> 16) & 0xff) + ((previous >> 16) & 0xff);
+                int green = ((packed >> 8) & 0xff) + ((previous >> 8) & 0xff);
+                int blue = (packed & 0xff) + (previous & 0xff);
+                previous = ((alpha & 0xff) << 24) | ((red & 0xff) << 16) |
+                    ((green & 0xff) << 8) | (blue & 0xff);
+                table[i] = previous;
+            }
 
-        return new Transform(type, width, height, bitsPerPixel, null, table);
+            return new Transform(type, width, height, bitsPerPixel, null, table, tableSize);
+        }
+        catch
+        {
+            WebpBufferPool<int>.Return(table);
+            throw;
+        }
+        finally
+        {
+            WebpBufferPool<int>.Return(tableData);
+        }
     }
 
     private static int[] DecodeImageStream(
@@ -156,263 +255,331 @@ internal static class Vp8LDecoder
             throw new InvalidDataException("The VP8L subimage dimensions are invalid.");
         }
 
-        int cacheBits = 0;
-        if (reader.ReadBit() != 0)
-        {
-            cacheBits = reader.ReadBits(4);
-            if (cacheBits is < 1 or > 11)
-            {
-                throw new InvalidDataException("The VP8L color cache size is invalid.");
-            }
-        }
-
         int[]? entropy = null;
+        PrefixGroup[]? groups = null;
+        int[]? cache = null;
+        int[]? result = null;
+        int entropyCount = 0;
+        int groupCount = 1;
         int entropyWidth = 0;
         int prefixBits = 0;
-        if (hasMetaPrefix && reader.ReadBit() != 0)
+        int cacheBits = 0;
+        int pixelCount = checked(width * height);
+        try
         {
-            prefixBits = reader.ReadBits(3) + 2;
-            entropyWidth = (width + (1 << prefixBits) - 1) >> prefixBits;
-            int entropyHeight = (height + (1 << prefixBits) - 1) >> prefixBits;
-            entropy = DecodeImageStream(ref reader, entropyWidth, entropyHeight, hasMetaPrefix: false);
-        }
-
-        int groupCount = 1;
-        if (entropy is not null)
-        {
-            int max = 0;
-            for (int i = 0; i < entropy.Length; i++)
+            if (reader.ReadBit() != 0)
             {
-                max = Math.Max(max, (entropy[i] >> 8) & 0xffff);
+                cacheBits = reader.ReadBits(4);
+                if (cacheBits is < 1 or > 11)
+                {
+                    throw new InvalidDataException("The VP8L color cache size is invalid.");
+                }
             }
 
-            groupCount = max + 1;
-        }
-
-        var groups = new PrefixGroup[groupCount];
-        int greenAlphabet = 256 + 24 + (cacheBits == 0 ? 0 : 1 << cacheBits);
-        for (int i = 0; i < groups.Length; i++)
-        {
-            groups[i] = new PrefixGroup(
-                ReadPrefixCode(ref reader, greenAlphabet),
-                ReadPrefixCode(ref reader, 256),
-                ReadPrefixCode(ref reader, 256),
-                ReadPrefixCode(ref reader, 256),
-                ReadPrefixCode(ref reader, 40));
-        }
-
-        int[] result = new int[checked(width * height)];
-        int[]? cache = cacheBits == 0 ? null : new int[1 << cacheBits];
-        int position = 0;
-        while (position < result.Length)
-        {
-            int x = position % width;
-            int y = position / width;
-            int group = entropy is null ? 0 :
-                ((entropy[(y >> prefixBits) * entropyWidth + (x >> prefixBits)] >> 8) & 0xffff);
-            if ((uint)group >= groups.Length)
+            if (hasMetaPrefix && reader.ReadBit() != 0)
             {
-                throw new InvalidDataException("The VP8L meta prefix code is out of range.");
+                prefixBits = reader.ReadBits(3) + 2;
+                entropyWidth = (width + (1 << prefixBits) - 1) >> prefixBits;
+                int entropyHeight = (height + (1 << prefixBits) - 1) >> prefixBits;
+                entropyCount = checked(entropyWidth * entropyHeight);
+                entropy = DecodeImageStream(ref reader, entropyWidth, entropyHeight, hasMetaPrefix: false);
+                int max = 0;
+                for (int i = 0; i < entropyCount; i++)
+                {
+                    max = Math.Max(max, (entropy[i] >> 8) & 0xffff);
+                }
+
+                groupCount = max + 1;
             }
 
-            PrefixGroup prefix = groups[group];
-            int symbol = prefix.Green.Decode(ref reader);
-            if (symbol < 256)
+            groups = WebpBufferPool<PrefixGroup>.Rent(groupCount);
+            int greenAlphabet = 256 + 24 + (cacheBits == 0 ? 0 : 1 << cacheBits);
+            for (int i = 0; i < groupCount; i++)
             {
-                int red = prefix.Red.Decode(ref reader);
-                int blue = prefix.Blue.Decode(ref reader);
-                int alpha = prefix.Alpha.Decode(ref reader);
-                if ((red | blue | alpha) >= 256)
-                {
-                    throw new InvalidDataException("A VP8L literal channel is out of range.");
-                }
-
-                int color = (alpha << 24) | (red << 16) | (symbol << 8) | blue;
-                result[position++] = color;
-                AddCache(cache, color, cacheBits);
-                continue;
+                groups[i] = ReadPrefixGroup(ref reader, greenAlphabet);
             }
 
-            if (symbol < 280)
+            result = WebpBufferPool<int>.Rent(pixelCount);
+            int cacheLength = cacheBits == 0 ? 0 : 1 << cacheBits;
+            if (cacheLength != 0)
             {
-                int length = PrefixValue(ref reader, symbol - 256);
-                int distanceCode = prefix.Distance.Decode(ref reader);
-                int distancePrefix = PrefixValue(ref reader, distanceCode);
-                if (distanceCode < 0 || distanceCode >= 40)
+                cache = WebpBufferPool<int>.Rent(cacheLength);
+                Array.Clear(cache, 0, cacheLength);
+            }
+
+            int position = 0;
+            while (position < pixelCount)
+            {
+                int x = position % width;
+                int y = position / width;
+                int group = entropy is null ? 0 :
+                    ((entropy[(y >> prefixBits) * entropyWidth + (x >> prefixBits)] >> 8) & 0xffff);
+                if ((uint)group >= groupCount)
                 {
-                    throw new InvalidDataException("The VP8L backward distance is invalid.");
+                    throw new InvalidDataException("The VP8L meta prefix code is out of range.");
                 }
 
-                int distance = Distance(distancePrefix, width);
-                if (distance > position)
+                PrefixGroup prefix = groups[group];
+                int symbol = prefix.Green.Decode(ref reader);
+                if (symbol < 256)
                 {
-                    throw new InvalidDataException("The VP8L backward distance is invalid.");
-                }
-
-                if (length > result.Length - position)
-                {
-                    throw new InvalidDataException("The VP8L backward copy exceeds the image.");
-                }
-
-                if (distance >= length)
-                {
-                    Array.Copy(result, position - distance, result, position, length);
-                    int end = position + length;
-                    for (int i = position; i < end; i++)
+                    int red = prefix.Red.Decode(ref reader);
+                    int blue = prefix.Blue.Decode(ref reader);
+                    int alpha = prefix.Alpha.Decode(ref reader);
+                    if ((red | blue | alpha) >= 256)
                     {
-                        AddCache(cache, result[i], cacheBits);
+                        throw new InvalidDataException("A VP8L literal channel is out of range.");
                     }
 
-                    position = end;
+                    int color = (alpha << 24) | (red << 16) | (symbol << 8) | blue;
+                    result[position++] = color;
+                    AddCache(cache, color, cacheBits);
+                    continue;
                 }
-                else
+
+                if (symbol < 280)
                 {
-                    for (int i = 0; i < length; i++)
+                    int length = PrefixValue(ref reader, symbol - 256);
+                    int distanceCode = prefix.Distance.Decode(ref reader);
+                    if (distanceCode < 0 || distanceCode >= 40)
                     {
-                        int color = result[position - distance];
-                        result[position++] = color;
-                        AddCache(cache, color, cacheBits);
+                        throw new InvalidDataException("The VP8L backward distance is invalid.");
                     }
+
+                    int distancePrefix = PrefixValue(ref reader, distanceCode);
+                    int distance = Distance(distancePrefix, width);
+                    if (distance > position)
+                    {
+                        throw new InvalidDataException("The VP8L backward distance is invalid.");
+                    }
+
+                    if (length > pixelCount - position)
+                    {
+                        throw new InvalidDataException("The VP8L backward copy exceeds the image.");
+                    }
+
+                    if (distance >= length)
+                    {
+                        Array.Copy(result, position - distance, result, position, length);
+                        int end = position + length;
+                        for (int i = position; i < end; i++)
+                        {
+                            AddCache(cache, result[i], cacheBits);
+                        }
+
+                        position = end;
+                    }
+                    else
+                    {
+                        for (int i = 0; i < length; i++)
+                        {
+                            int color = result[position - distance];
+                            result[position++] = color;
+                            AddCache(cache, color, cacheBits);
+                        }
+                    }
+
+                    continue;
                 }
 
-                continue;
+                if (cache is null || symbol - 280 >= cacheLength)
+                {
+                    throw new InvalidDataException("The VP8L color cache symbol is invalid.");
+                }
+
+                int cached = cache[symbol - 280];
+                result[position++] = cached;
+                AddCache(cache, cached, cacheBits);
             }
 
-            if (cache is null || symbol - 280 >= cache.Length)
-            {
-                throw new InvalidDataException("The VP8L color cache symbol is invalid.");
-            }
-
-            int cached = cache[symbol - 280];
-            result[position++] = cached;
-            AddCache(cache, cached, cacheBits);
+            int[] decoded = result;
+            result = null;
+            return decoded;
         }
+        finally
+        {
+            if (result is not null)
+            {
+                WebpBufferPool<int>.Return(result);
+            }
 
-        return result;
+            if (cache is not null)
+            {
+                WebpBufferPool<int>.Return(cache);
+            }
+
+            if (entropy is not null)
+            {
+                WebpBufferPool<int>.Return(entropy);
+            }
+
+            if (groups is not null)
+            {
+                for (int i = 0; i < groupCount; i++)
+                {
+                    groups[i].ReturnBuffers();
+                }
+
+                Array.Clear(groups, 0, groupCount);
+                WebpBufferPool<PrefixGroup>.Return(groups);
+            }
+        }
+    }
+
+    private static PrefixGroup ReadPrefixGroup(ref BitReader reader, int greenAlphabet)
+    {
+        PrefixCode green = default;
+        PrefixCode red = default;
+        PrefixCode blue = default;
+        PrefixCode alpha = default;
+        bool hasGreen = false;
+        bool hasRed = false;
+        bool hasBlue = false;
+        bool hasAlpha = false;
+        try
+        {
+            green = ReadPrefixCode(ref reader, greenAlphabet);
+            hasGreen = true;
+            red = ReadPrefixCode(ref reader, 256);
+            hasRed = true;
+            blue = ReadPrefixCode(ref reader, 256);
+            hasBlue = true;
+            alpha = ReadPrefixCode(ref reader, 256);
+            hasAlpha = true;
+            PrefixCode distance = ReadPrefixCode(ref reader, 40);
+            return new PrefixGroup(green, red, blue, alpha, distance);
+        }
+        catch
+        {
+            if (hasGreen) green.ReturnBuffers();
+            if (hasRed) red.ReturnBuffers();
+            if (hasBlue) blue.ReturnBuffers();
+            if (hasAlpha) alpha.ReturnBuffers();
+            throw;
+        }
     }
 
     private static PrefixCode ReadPrefixCode(ref BitReader reader, int alphabetSize)
     {
         int startBit = reader.BitPosition;
-        var lengths = new int[alphabetSize];
-        if (reader.ReadBit() != 0)
+        int[] lengths = WebpBufferPool<int>.Rent(alphabetSize);
+        try
         {
-            int count = reader.ReadBit() + 1;
-            int firstWide = reader.ReadBit();
-            int first = reader.ReadBits(1 + 7 * firstWide);
-            if (first >= alphabetSize)
+            Span<int> lengthsSpan = lengths.AsSpan(0, alphabetSize);
+            lengthsSpan.Clear();
+            if (reader.ReadBit() != 0)
             {
-                throw new InvalidDataException("The VP8L simple prefix symbol is out of range.");
-            }
-
-            lengths[first] = 1;
-            if (count == 2)
-            {
-                int second = reader.ReadBits(8);
-                if (second >= alphabetSize)
+                int count = reader.ReadBit() + 1;
+                int firstWide = reader.ReadBit();
+                int first = reader.ReadBits(1 + 7 * firstWide);
+                if (first >= alphabetSize)
                 {
                     throw new InvalidDataException("The VP8L simple prefix symbol is out of range.");
                 }
 
-                lengths[second] = 1;
-            }
-
-            return PrefixCode.Build(lengths);
-        }
-
-        int numberOfCodeLengths = 4 + reader.ReadBits(4);
-        var codeLengthLengths = new int[19];
-        for (int i = 0; i < numberOfCodeLengths; i++)
-        {
-            codeLengthLengths[CodeLengthCodeOrder[i]] = reader.ReadBits(3);
-        }
-
-        PrefixCode codeLengthCode;
-        try
-        {
-            codeLengthCode = PrefixCode.Build(codeLengthLengths);
-        }
-        catch (InvalidDataException exception)
-        {
-            throw new InvalidDataException(
-                $"The VP8L code-length tree for alphabet {alphabetSize}, starting at bit {startBit}, " +
-                $"is invalid at bit {reader.BitPosition} ({numberOfCodeLengths} lengths): " +
-                $"{string.Join(',', codeLengthLengths)}.",
-                exception);
-        }
-        int lengthNBits = reader.ReadBit() == 0 ? 0 : 2 + 2 * reader.ReadBits(3);
-        int maxSymbol = lengthNBits == 0 ? alphabetSize : 2 + reader.ReadBits(lengthNBits);
-        if (maxSymbol > alphabetSize)
-        {
-            throw new InvalidDataException("The VP8L prefix alphabet is too large.");
-        }
-
-        int index = 0;
-        int symbolsRead = 0;
-        int previous = 8;
-        while (symbolsRead < maxSymbol && index < alphabetSize)
-        {
-            int value = codeLengthCode.Decode(ref reader);
-            symbolsRead++;
-            if (value < 16)
-            {
-                if (index >= alphabetSize)
+                lengthsSpan[first] = 1;
+                if (count == 2)
                 {
-                    throw new InvalidDataException(
-                        $"The VP8L prefix alphabet {alphabetSize} starting at bit {startBit} " +
-                        $"exceeds its output size at symbol {symbolsRead} (index {index}, " +
-                        $"max_symbol {maxSymbol}).");
+                    int second = reader.ReadBits(8);
+                    if (second >= alphabetSize)
+                    {
+                        throw new InvalidDataException("The VP8L simple prefix symbol is out of range.");
+                    }
+
+                    lengthsSpan[second] = 1;
                 }
 
-                lengths[index++] = value;
-                if (value != 0) previous = value;
+                return PrefixCode.Build(lengthsSpan);
             }
-            else if (value == 16)
+
+            Span<int> codeLengthLengths = stackalloc int[19];
+            codeLengthLengths.Clear();
+            int numberOfCodeLengths = 4 + reader.ReadBits(4);
+            for (int i = 0; i < numberOfCodeLengths; i++)
             {
-                int repeat = 3 + reader.ReadBits(2);
-                if (repeat > alphabetSize - index)
+                codeLengthLengths[CodeLengthCodeOrder[i]] = reader.ReadBits(3);
+            }
+
+            PrefixCode codeLengthCode;
+            try
+            {
+                codeLengthCode = PrefixCode.Build(codeLengthLengths);
+            }
+            catch (InvalidDataException exception)
+            {
+                throw new InvalidDataException(
+                    $"The VP8L code-length tree for alphabet {alphabetSize}, starting at bit {startBit}, " +
+                    $"is invalid at bit {reader.BitPosition} ({numberOfCodeLengths} lengths): " +
+                    $"{string.Join(',', codeLengthLengths.ToArray())}.",
+                    exception);
+            }
+
+            try
+            {
+                int lengthNBits = reader.ReadBit() == 0 ? 0 : 2 + 2 * reader.ReadBits(3);
+                int maxSymbol = lengthNBits == 0 ? alphabetSize : 2 + reader.ReadBits(lengthNBits);
+                if (maxSymbol > alphabetSize)
                 {
-                    throw new InvalidDataException(
-                        $"The VP8L prefix alphabet {alphabetSize} starting at bit {startBit} " +
-                        $"exceeds its output size at symbol {symbolsRead} (index {index}, " +
-                        $"repeat {repeat}, max_symbol {maxSymbol}).");
+                    throw new InvalidDataException("The VP8L prefix alphabet is too large.");
                 }
 
-                for (int i = 0; i < repeat; i++) lengths[index++] = previous;
-            }
-            else if (value == 17)
-            {
-                int repeat = 3 + reader.ReadBits(3);
-                if (repeat > alphabetSize - index)
+                int index = 0;
+                int symbolsRead = 0;
+                int previous = 8;
+                while (symbolsRead < maxSymbol && index < alphabetSize)
                 {
-                    throw new InvalidDataException(
-                        $"The VP8L prefix alphabet {alphabetSize} starting at bit {startBit} " +
-                        $"exceeds its output size at symbol {symbolsRead} (index {index}, " +
-                        $"repeat {repeat}, max_symbol {maxSymbol}).");
+                    int value = codeLengthCode.Decode(ref reader);
+                    symbolsRead++;
+                    if (value < 16)
+                    {
+                        lengthsSpan[index++] = value;
+                        if (value != 0) previous = value;
+                    }
+                    else if (value == 16)
+                    {
+                        int repeat = 3 + reader.ReadBits(2);
+                        if (repeat > alphabetSize - index)
+                        {
+                            throw new InvalidDataException(
+                                $"The VP8L prefix alphabet {alphabetSize} starting at bit {startBit} " +
+                                $"exceeds its output size at symbol {symbolsRead} (index {index}, " +
+                                $"repeat {repeat}, max_symbol {maxSymbol}).");
+                        }
+
+                        lengthsSpan.Slice(index, repeat).Fill(previous);
+                        index += repeat;
+                    }
+                    else if (value is 17 or 18)
+                    {
+                        int repeat = value == 17 ? 3 + reader.ReadBits(3) : 11 + reader.ReadBits(7);
+                        if (repeat > alphabetSize - index)
+                        {
+                            throw new InvalidDataException(
+                                $"The VP8L prefix alphabet {alphabetSize} starting at bit {startBit} " +
+                                $"exceeds its output size at symbol {symbolsRead} (index {index}, " +
+                                $"repeat {repeat}, max_symbol {maxSymbol}).");
+                        }
+
+                        lengthsSpan.Slice(index, repeat).Clear();
+                        index += repeat;
+                    }
+                    else
+                    {
+                        throw new InvalidDataException("The VP8L code-length symbol is invalid.");
+                    }
                 }
 
-                for (int i = 0; i < repeat; i++) lengths[index++] = 0;
+                return PrefixCode.Build(lengthsSpan);
             }
-            else if (value == 18)
+            finally
             {
-                int repeat = 11 + reader.ReadBits(7);
-                if (repeat > alphabetSize - index)
-                {
-                    throw new InvalidDataException(
-                        $"The VP8L prefix alphabet {alphabetSize} starting at bit {startBit} " +
-                        $"exceeds its output size at symbol {symbolsRead} (index {index}, " +
-                        $"repeat {repeat}, max_symbol {maxSymbol}).");
-                }
-
-                for (int i = 0; i < repeat; i++) lengths[index++] = 0;
-            }
-            else
-            {
-                throw new InvalidDataException("The VP8L code-length symbol is invalid.");
+                codeLengthCode.ReturnBuffers();
             }
         }
-
-        return PrefixCode.Build(lengths);
+        finally
+        {
+            WebpBufferPool<int>.Return(lengths);
+        }
     }
 
     private static int PrefixValue(ref BitReader reader, int code)
@@ -453,36 +620,35 @@ internal static class Vp8LDecoder
         {
             0 => ApplyPredictor(pixels, transform),
             1 => ApplyColorTransform(pixels, transform),
-            2 => ApplySubtractGreen(pixels),
+            2 => ApplySubtractGreen(pixels, transform),
             3 => ApplyColorIndexing(pixels, transform),
             _ => throw new InvalidDataException("Unknown VP8L transform."),
         };
     }
 
-    private static int[] ApplyPredictor(int[] residual, Transform transform)
+    private static int[] ApplyPredictor(int[] pixels, Transform transform)
     {
         int width = transform.Width;
         int height = transform.Height;
-        int[] output = (int[])residual.Clone();
         int blockWidth = (width + (1 << transform.Bits) - 1) >> transform.Bits;
         for (int y = 0; y < height; y++)
         {
             for (int x = 0; x < width; x++)
             {
                 int index = y * width + x;
-                int left = x == 0 ? 0 : output[index - 1];
-                int top = y == 0 ? 0 : output[index - width];
-                int topLeft = x == 0 || y == 0 ? 0 : output[index - width - 1];
+                int left = x == 0 ? 0 : pixels[index - 1];
+                int top = y == 0 ? 0 : pixels[index - width];
+                int topLeft = x == 0 || y == 0 ? 0 : pixels[index - width - 1];
                 int topRight = y == 0 ? 0 : x == width - 1
-                    ? output[index - x]
-                    : output[index - width + 1];
+                    ? pixels[index - x]
+                    : pixels[index - width + 1];
                 int mode = (transform.Data![(y >> transform.Bits) * blockWidth + (x >> transform.Bits)] >> 8) & 0xff;
                 int prediction = Predict(mode, x, y, width, left, top, topLeft, topRight);
-                output[index] = AddArgb(residual[index], prediction);
+                pixels[index] = AddArgb(pixels[index], prediction);
             }
         }
 
-        return output;
+        return pixels;
     }
 
     private static int Predict(int mode, int x, int y, int width, int left, int top, int topLeft, int topRight)
@@ -512,7 +678,6 @@ internal static class Vp8LDecoder
 
     private static int[] ApplyColorTransform(int[] pixels, Transform transform)
     {
-        int[] output = (int[])pixels.Clone();
         int blockWidth = (transform.Width + (1 << transform.Bits) - 1) >> transform.Bits;
         for (int y = 0; y < transform.Height; y++)
         {
@@ -520,33 +685,33 @@ internal static class Vp8LDecoder
             {
                 int index = y * transform.Width + x;
                 int cte = transform.Data![(y >> transform.Bits) * blockWidth + (x >> transform.Bits)];
-                int green = (output[index] >> 8) & 0xff;
-                int red = (output[index] >> 16) & 0xff;
-                int blue = output[index] & 0xff;
+                int green = (pixels[index] >> 8) & 0xff;
+                int red = (pixels[index] >> 16) & 0xff;
+                int blue = pixels[index] & 0xff;
                 int redDelta = ColorDelta((cte >> 0) & 0xff, green);
                 int blueDelta = ColorDelta((cte >> 8) & 0xff, green);
                 int redForBlue = (red + redDelta) & 0xff;
                 blue = (blue + blueDelta + ColorDelta((cte >> 16) & 0xff, redForBlue)) & 0xff;
                 red = redForBlue;
-                output[index] = (output[index] & unchecked((int)0xff00ff00)) | (red << 16) | blue;
+                pixels[index] = (pixels[index] & unchecked((int)0xff00ff00)) | (red << 16) | blue;
             }
         }
 
-        return output;
+        return pixels;
     }
 
-    private static int[] ApplySubtractGreen(int[] pixels)
+    private static int[] ApplySubtractGreen(int[] pixels, Transform transform)
     {
-        int[] output = (int[])pixels.Clone();
-        for (int i = 0; i < output.Length; i++)
+        int pixelCount = checked(transform.Width * transform.Height);
+        for (int i = 0; i < pixelCount; i++)
         {
-            int green = (output[i] >> 8) & 0xff;
-            int red = (((output[i] >> 16) & 0xff) + green) & 0xff;
-            int blue = ((output[i] & 0xff) + green) & 0xff;
-            output[i] = (output[i] & unchecked((int)0xff00ff00)) | (red << 16) | blue;
+            int green = (pixels[i] >> 8) & 0xff;
+            int red = (((pixels[i] >> 16) & 0xff) + green) & 0xff;
+            int blue = ((pixels[i] & 0xff) + green) & 0xff;
+            pixels[i] = (pixels[i] & unchecked((int)0xff00ff00)) | (red << 16) | blue;
         }
 
-        return output;
+        return pixels;
     }
 
     private static int[] ApplyColorIndexing(int[] pixels, Transform transform)
@@ -555,18 +720,28 @@ internal static class Vp8LDecoder
         int mask = (1 << (8 / packed)) - 1;
         int width = transform.Width;
         int encodedWidth = (width + packed - 1) / packed;
-        var output = new int[checked(width * transform.Height)];
-        for (int y = 0; y < transform.Height; y++)
+        int outputCount = checked(width * transform.Height);
+        int[] output = WebpBufferPool<int>.Rent(outputCount);
+        try
         {
-            for (int x = 0; x < width; x++)
+            for (int y = 0; y < transform.Height; y++)
             {
-                int packedPixel = pixels[y * encodedWidth + x / packed];
-                int index = ((packedPixel >> 8) >> ((x % packed) * (8 / packed))) & mask;
-                output[y * width + x] = index < transform.Table!.Length ? transform.Table[index] : 0;
+                for (int x = 0; x < width; x++)
+                {
+                    int packedPixel = pixels[y * encodedWidth + x / packed];
+                    int index = ((packedPixel >> 8) >> ((x % packed) * (8 / packed))) & mask;
+                    output[y * width + x] =
+                        index < transform.TableLength ? transform.Table![index] : 0;
+                }
             }
-        }
 
-        return output;
+            return output;
+        }
+        catch
+        {
+            WebpBufferPool<int>.Return(output);
+            throw;
+        }
     }
 
     private static int AddArgb(int a, int b)
@@ -648,9 +823,8 @@ internal static class Vp8LDecoder
         return (width, height, pixels);
     }
 
-    private static void ToRgba(int[] argb, Span<byte> output, int width, int stride)
+    private static void ToRgba(int[] argb, Span<byte> output, int width, int height, int stride)
     {
-        int height = argb.Length / width;
         for (int row = 0; row < height; row++)
         {
             int sourceIndex = row * width;
@@ -671,29 +845,41 @@ internal static class Vp8LDecoder
         int Height,
         int Bits,
         int[]? Data,
-        int[]? Table);
+        int[]? Table,
+        int TableLength);
 
     private readonly record struct PrefixGroup(
         PrefixCode Green,
         PrefixCode Red,
         PrefixCode Blue,
         PrefixCode Alpha,
-        PrefixCode Distance);
-
-    private sealed class PrefixCode
+        PrefixCode Distance)
     {
-        private readonly Node[] _nodes;
+        public void ReturnBuffers()
+        {
+            Green.ReturnBuffers();
+            Red.ReturnBuffers();
+            Blue.ReturnBuffers();
+            Alpha.ReturnBuffers();
+            Distance.ReturnBuffers();
+        }
+    }
+
+    private struct PrefixCode
+    {
+        private readonly Node[]? _nodes;
         private readonly LookupEntry[]? _lookup;
 
-        private PrefixCode(Node[] nodes)
+        private PrefixCode(Node[] nodes, LookupEntry[]? lookup)
         {
             _nodes = nodes;
-            _lookup = nodes[0].Symbol >= 0 ? null : BuildLookup(nodes);
+            _lookup = lookup;
         }
 
-        public static PrefixCode Build(int[] lengths)
+        public static PrefixCode Build(Span<int> lengths)
         {
-            var counts = new int[16];
+            Span<int> counts = stackalloc int[16];
+            counts.Clear();
             int maxLength = 0;
             int symbolCount = 0;
             int onlySymbol = -1;
@@ -724,14 +910,15 @@ internal static class Vp8LDecoder
 
             if (symbolCount == 1)
             {
+                Node[] singleNode = WebpBufferPool<Node>.Rent(1);
                 Node root = new();
-                root.Zero = -1;
-                root.One = -1;
                 root.Symbol = onlySymbol;
-                return new PrefixCode(new[] { root });
+                singleNode[0] = root;
+                return new PrefixCode(singleNode, null);
             }
 
-            var next = new int[16];
+            Span<int> next = stackalloc int[16];
+            next.Clear();
             int code = 0;
             for (int bits = 1; bits <= maxLength; bits++)
             {
@@ -744,53 +931,84 @@ internal static class Vp8LDecoder
                 throw new InvalidDataException("The VP8L prefix code is incomplete.");
             }
 
-            var nodes = new List<Node> { new() };
-            for (int symbol = 0; symbol < lengths.Length; symbol++)
+            int nodeCapacity = 1;
+            for (int i = 0; i < lengths.Length; i++)
             {
-                int length = lengths[symbol];
-                if (length == 0) continue;
-                int canonical = next[length]++;
-                int node = 0;
-                for (int bit = 0; bit < length; bit++)
+                nodeCapacity = checked(nodeCapacity + lengths[i]);
+            }
+
+            Node[] nodes = WebpBufferPool<Node>.Rent(nodeCapacity);
+            LookupEntry[]? lookup = null;
+            bool keepNodes = false;
+            bool keepLookup = false;
+            int nodeCount = 1;
+            nodes[0] = new Node();
+            try
+            {
+                for (int symbol = 0; symbol < lengths.Length; symbol++)
                 {
-                    if (nodes[node].Symbol >= 0)
+                    int length = lengths[symbol];
+                    if (length == 0) continue;
+                    int canonical = next[length]++;
+                    int node = 0;
+                    for (int bit = 0; bit < length; bit++)
+                    {
+                        if (nodes[node].Symbol >= 0)
+                        {
+                            throw new InvalidDataException("The VP8L prefix code is not canonical.");
+                        }
+
+                        int direction = canonical >> (length - 1 - bit) & 1;
+                        int child = direction == 0 ? nodes[node].Zero : nodes[node].One;
+                        if (child < 0)
+                        {
+                            child = nodeCount++;
+                            nodes[child] = new Node();
+                            Node current = nodes[node];
+                            if (direction == 0) current.Zero = child;
+                            else current.One = child;
+                            nodes[node] = current;
+                        }
+
+                        node = child;
+                    }
+
+                    if (nodes[node].Symbol >= 0 || nodes[node].Zero >= 0 || nodes[node].One >= 0)
                     {
                         throw new InvalidDataException("The VP8L prefix code is not canonical.");
                     }
 
-                    int direction = canonical >> (length - 1 - bit) & 1;
-                    int child = direction == 0 ? nodes[node].Zero : nodes[node].One;
-                    if (child < 0)
-                    {
-                        child = nodes.Count;
-                        nodes.Add(new Node());
-                        Node current = nodes[node];
-                        if (direction == 0) current.Zero = child;
-                        else current.One = child;
-                        nodes[node] = current;
-                    }
-
-                    node = child;
+                    Node leaf = nodes[node];
+                    leaf.Symbol = symbol;
+                    nodes[node] = leaf;
                 }
 
-                if (nodes[node].Symbol >= 0 || nodes[node].Zero >= 0 || nodes[node].One >= 0)
-                {
-                    throw new InvalidDataException("The VP8L prefix code is not canonical.");
-                }
-
-                Node leaf = nodes[node];
-                leaf.Symbol = symbol;
-                nodes[node] = leaf;
+                lookup = BuildLookup(nodes, nodeCount);
+                PrefixCode result = new(nodes, lookup);
+                keepNodes = true;
+                keepLookup = true;
+                return result;
             }
+            finally
+            {
+                if (!keepNodes)
+                {
+                    WebpBufferPool<Node>.Return(nodes);
+                }
 
-            return new PrefixCode(nodes.ToArray());
+                if (lookup is not null && !keepLookup)
+                {
+                    WebpBufferPool<LookupEntry>.Return(lookup);
+                }
+            }
         }
 
         public int Decode(ref BitReader reader)
         {
-            if (_nodes[0].Symbol >= 0)
+            Node[] nodes = _nodes!;
+            if (nodes[0].Symbol >= 0)
             {
-                return _nodes[0].Symbol;
+                return nodes[0].Symbol;
             }
 
             int node = 0;
@@ -812,13 +1030,13 @@ internal static class Vp8LDecoder
                 for (int i = 8; i < 15; i++)
                 {
                     int bit = reader.ReadBit();
-                    node = bit == 0 ? _nodes[node].Zero : _nodes[node].One;
+                    node = bit == 0 ? nodes[node].Zero : nodes[node].One;
                     if (node < 0)
                     {
                         throw new InvalidDataException("The VP8L prefix code did not contain the input.");
                     }
 
-                    if (_nodes[node].Symbol >= 0) return _nodes[node].Symbol;
+                    if (nodes[node].Symbol >= 0) return nodes[node].Symbol;
                 }
 
                 throw new InvalidDataException("The VP8L prefix code is too deep.");
@@ -827,29 +1045,42 @@ internal static class Vp8LDecoder
             for (int i = 0; i < 15; i++)
             {
                 int bit = reader.ReadBit();
-                node = bit == 0 ? _nodes[node].Zero : _nodes[node].One;
+                node = bit == 0 ? nodes[node].Zero : nodes[node].One;
                 if (node < 0)
                 {
                     throw new InvalidDataException("The VP8L prefix code did not contain the input.");
                 }
 
-                if (_nodes[node].Symbol >= 0) return _nodes[node].Symbol;
+                if (nodes[node].Symbol >= 0) return nodes[node].Symbol;
             }
 
             throw new InvalidDataException("The VP8L prefix code is too deep.");
         }
 
-        private static LookupEntry[] BuildLookup(Node[] nodes)
+        public void ReturnBuffers()
         {
-            var lookup = new LookupEntry[256];
-            for (int prefix = 0; prefix < lookup.Length; prefix++)
+            if (_nodes is not null)
+            {
+                WebpBufferPool<Node>.Return(_nodes);
+            }
+
+            if (_lookup is not null)
+            {
+                WebpBufferPool<LookupEntry>.Return(_lookup);
+            }
+        }
+
+        private static LookupEntry[] BuildLookup(Node[] nodes, int nodeCount)
+        {
+            LookupEntry[] lookup = WebpBufferPool<LookupEntry>.Rent(256);
+            for (int prefix = 0; prefix < 256; prefix++)
             {
                 int node = 0;
                 for (int bitIndex = 0; bitIndex < 8; bitIndex++)
                 {
                     int bit = prefix >> bitIndex & 1;
                     node = bit == 0 ? nodes[node].Zero : nodes[node].One;
-                    if (node < 0)
+                    if (node < 0 || node >= nodeCount)
                     {
                         lookup[prefix] = default;
                         break;
