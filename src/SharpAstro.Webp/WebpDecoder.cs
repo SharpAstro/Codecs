@@ -472,64 +472,65 @@ public static class WebpDecoder
         Vector128<ushort> alphaLow = Vector128.WidenLower(alphaBytes);
         Vector128<ushort> alphaHigh = Vector128.WidenUpper(alphaBytes);
 
-        ConvertVector4(Vector128.WidenLower(yLow), Vector128.WidenLower(uLow),
-            Vector128.WidenLower(vLow), Vector128.WidenLower(alphaLow), ref output, outputOffset);
-        ConvertVector4(Vector128.WidenUpper(yLow), Vector128.WidenUpper(uLow),
-            Vector128.WidenUpper(vLow), Vector128.WidenUpper(alphaLow), ref output, outputOffset + 16);
-        ConvertVector4(Vector128.WidenLower(yHigh), Vector128.WidenLower(uHigh),
-            Vector128.WidenLower(vHigh), Vector128.WidenLower(alphaHigh), ref output, outputOffset + 32);
-        ConvertVector4(Vector128.WidenUpper(yHigh), Vector128.WidenUpper(uHigh),
-            Vector128.WidenUpper(vHigh), Vector128.WidenUpper(alphaHigh), ref output, outputOffset + 48);
+        ConvertVector8(yLow, uLow, vLow, alphaLow, ref output, outputOffset);
+        ConvertVector8(yHigh, uHigh, vHigh, alphaHigh, ref output, outputOffset + 32);
     }
 
-    private static void ConvertVector4(
-        Vector128<uint> y,
-        Vector128<uint> u,
-        Vector128<uint> v,
-        Vector128<uint> alpha,
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector128<ushort> MultiplyConstant(
+        Vector128<ushort> value,
+        ushort high,
+        ushort low) =>
+        Vector128.Add(
+            Vector128.Multiply(value, Vector128.Create(high)),
+            Vector128.ShiftRightLogical(
+                Vector128.Multiply(value, Vector128.Create(low)), 8));
+
+    private static void ConvertVector8(
+        Vector128<ushort> y,
+        Vector128<ushort> u,
+        Vector128<ushort> v,
+        Vector128<ushort> alpha,
         ref byte output,
         int outputOffset)
     {
-        Vector128<uint> yTerm = Vector128.ShiftRightLogical(
-            Vector128.Multiply(y, Vector128.Create(19077u)), 8);
-        Vector128<uint> vRed = Vector128.ShiftRightLogical(
-            Vector128.Multiply(v, Vector128.Create(26149u)), 8);
-        Vector128<uint> uGreen = Vector128.ShiftRightLogical(
-            Vector128.Multiply(u, Vector128.Create(6419u)), 8);
-        Vector128<uint> vGreen = Vector128.ShiftRightLogical(
-            Vector128.Multiply(v, Vector128.Create(13320u)), 8);
-        Vector128<uint> uBlue = Vector128.ShiftRightLogical(
-            Vector128.Multiply(u, Vector128.Create(33050u)), 8);
+        Vector128<ushort> yTerm = MultiplyConstant(y, 74, 133);
+        Vector128<ushort> vRed = MultiplyConstant(v, 102, 37);
+        Vector128<ushort> uGreen = MultiplyConstant(u, 25, 19);
+        Vector128<ushort> vGreen = MultiplyConstant(v, 52, 8);
+        Vector128<ushort> uBlue = MultiplyConstant(u, 129, 26);
 
-        Vector128<int> red = Vector128.ShiftRightArithmetic(
-            Vector128.Subtract(Vector128.Add(yTerm, vRed).AsInt32(),
-                Vector128.Create(14234)), 6);
-        Vector128<int> green = Vector128.ShiftRightArithmetic(
-            Vector128.Add(Vector128.Subtract(Vector128.Subtract(yTerm.AsInt32(), uGreen.AsInt32()),
-                vGreen.AsInt32()), Vector128.Create(8708)), 6);
-        Vector128<int> blue = Vector128.ShiftRightArithmetic(
-            Vector128.Subtract(Vector128.Add(yTerm, uBlue).AsInt32(),
-                Vector128.Create(17685)), 6);
+        Vector128<ushort> redSum = Vector128.Add(yTerm, vRed);
+        Vector128<ushort> red = Vector128.Min(
+            Vector128.ShiftRightLogical(
+                Vector128.Subtract(Vector128.Max(redSum, Vector128.Create((ushort)14234)),
+                    Vector128.Create((ushort)14234)), 6),
+            Vector128.Create((ushort)255));
+        Vector128<ushort> greenNegative = Vector128.Add(uGreen, vGreen);
+        Vector128<ushort> greenPositive = Vector128.Add(yTerm, Vector128.Create((ushort)8708));
+        Vector128<ushort> green = Vector128.Min(
+            Vector128.ShiftRightLogical(
+                Vector128.Subtract(Vector128.Max(greenPositive, greenNegative), greenNegative), 6),
+            Vector128.Create((ushort)255));
+        Vector128<ushort> blueSum = Vector128.Add(yTerm, uBlue);
+        Vector128<ushort> blue = Vector128.Min(
+            Vector128.ShiftRightLogical(
+                Vector128.Subtract(Vector128.Max(blueSum, Vector128.Create((ushort)17685)),
+                    Vector128.Create((ushort)17685)), 6),
+            Vector128.Create((ushort)255));
 
-        Vector128<uint> redClamped = Vector128.Max(Vector128<int>.Zero,
-            Vector128.Min(red, Vector128.Create(255))).AsUInt32();
-        Vector128<uint> greenClamped = Vector128.Max(Vector128<int>.Zero,
-            Vector128.Min(green, Vector128.Create(255))).AsUInt32();
-        Vector128<uint> blueClamped = Vector128.Max(Vector128<int>.Zero,
-            Vector128.Min(blue, Vector128.Create(255))).AsUInt32();
-        Vector128<uint> alphaClamped = Vector128.Min(alpha, Vector128.Create(255u));
+        Vector128<ushort> redGreen = Vector128.BitwiseOr(red, Vector128.ShiftLeft(green, 8));
+        Vector128<ushort> blueAlpha = Vector128.BitwiseOr(blue, Vector128.ShiftLeft(alpha, 8));
+        Vector128<uint> rgbaLow = Vector128.BitwiseOr(
+            Vector128.WidenLower(redGreen),
+            Vector128.ShiftLeft(Vector128.WidenLower(blueAlpha), 16));
+        Vector128<uint> rgbaHigh = Vector128.BitwiseOr(
+            Vector128.WidenUpper(redGreen),
+            Vector128.ShiftLeft(Vector128.WidenUpper(blueAlpha), 16));
 
-        Vector128<ushort> red16 = Vector128.Narrow(redClamped, Vector128<uint>.Zero);
-        Vector128<ushort> green16 = Vector128.Narrow(greenClamped, Vector128<uint>.Zero);
-        Vector128<ushort> blue16 = Vector128.Narrow(blueClamped, Vector128<uint>.Zero);
-        Vector128<ushort> alpha16 = Vector128.Narrow(alphaClamped, Vector128<uint>.Zero);
-        Vector128<ushort> rg16 = Vector128.BitwiseOr(red16, Vector128.ShiftLeft(green16, 8));
-        Vector128<ushort> ba16 = Vector128.BitwiseOr(blue16, Vector128.ShiftLeft(alpha16, 8));
-        Vector128<uint> rg32 = Vector128.WidenLower(rg16);
-        Vector128<uint> ba32 = Vector128.WidenLower(ba16);
-        Vector128<uint> rgba = Vector128.BitwiseOr(rg32, Vector128.ShiftLeft(ba32, 16));
         ref uint output32 = ref Unsafe.As<byte, uint>(ref Unsafe.Add(ref output, outputOffset));
-        Vector128.StoreUnsafe(rgba, ref output32);
+        Vector128.StoreUnsafe(rgbaLow, ref output32);
+        Vector128.StoreUnsafe(rgbaHigh, ref Unsafe.Add(ref output32, 4));
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

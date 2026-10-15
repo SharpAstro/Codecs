@@ -5,6 +5,40 @@ namespace SharpAstro.Codecs.Tests;
 public sealed class WebpRgbaEquivalenceTests
 {
     [Fact]
+    public void VectorKernelMatchesScalarForEveryYuvCombination()
+    {
+        Span<byte> y = stackalloc byte[16];
+        Span<byte> u = stackalloc byte[16];
+        Span<byte> v = stackalloc byte[16];
+        Span<byte> scalar = stackalloc byte[16 * 4];
+        Span<byte> vector = stackalloc byte[16 * 4];
+
+        for (int yValue = 0; yValue < 256; yValue++)
+        {
+            y.Fill((byte)yValue);
+            for (int uValue = 0; uValue < 256; uValue++)
+            {
+                u.Fill((byte)uValue);
+                for (int firstV = 0; firstV < 256; firstV += 16)
+                {
+                    for (int column = 0; column < 16; column++)
+                    {
+                        v[column] = (byte)(firstV + column);
+                    }
+
+                    WebpDecoder.ConvertRowScalar(y, u, v, [], scalar);
+                    WebpDecoder.ConvertRowVector128(y, u, v, [], vector);
+                    if (!vector.SequenceEqual(scalar))
+                    {
+                        Assert.Fail(
+                            $"YUV conversion differs at Y={yValue}, U={uValue}, V={firstV}..{firstV + 15}.");
+                    }
+                }
+            }
+        }
+    }
+
+    [Fact]
     public void VectorAndScalarRowsMatchForOffsetsTailsAndExtremeSamples()
     {
         var random = new Random(0x6386);
