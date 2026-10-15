@@ -10,12 +10,14 @@ internal readonly ref struct WebpContainer
         WebpInfo info,
         ReadOnlySpan<byte> vp8Bitstream,
         ReadOnlySpan<byte> iccProfile,
+        ReadOnlySpan<byte> alphaData,
         bool hasAlphaChunk,
         WebpChunkLocation[] metadataChunks)
     {
         Info = info;
         Vp8Bitstream = vp8Bitstream;
         IccProfile = iccProfile;
+        AlphaData = alphaData;
         HasAlphaChunk = hasAlphaChunk;
         MetadataChunks = metadataChunks;
     }
@@ -23,6 +25,7 @@ internal readonly ref struct WebpContainer
     public WebpInfo Info { get; }
     public ReadOnlySpan<byte> Vp8Bitstream { get; }
     public ReadOnlySpan<byte> IccProfile { get; }
+    public ReadOnlySpan<byte> AlphaData { get; }
     public bool HasAlphaChunk { get; }
     public WebpChunkLocation[] MetadataChunks { get; }
 
@@ -58,6 +61,8 @@ internal readonly ref struct WebpContainer
         bool primaryLossless = false;
         int iccOffset = -1;
         int iccLength = 0;
+        int alphaOffset = -1;
+        int alphaLength = 0;
         var metadataChunks = new List<WebpChunkLocation>();
         int offset = 12;
 
@@ -131,7 +136,14 @@ internal readonly ref struct WebpContainer
             }
             else if (type.SequenceEqual("ALPH"u8))
             {
+                if (hasAlphaChunk)
+                {
+                    throw new InvalidDataException("The WebP contains more than one ALPH chunk.");
+                }
+
                 hasAlphaChunk = true;
+                alphaOffset = payloadOffset;
+                alphaLength = payloadLength;
                 metadataChunks.Add(new WebpChunkLocation("ALPH", payloadOffset, payloadLength));
             }
             else if (type.SequenceEqual("ICCP"u8))
@@ -197,6 +209,7 @@ internal readonly ref struct WebpContainer
             info,
             data.Slice(primaryOffset, primaryLength),
             iccOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(iccOffset, iccLength),
+            alphaOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(alphaOffset, alphaLength),
             hasAlphaChunk,
             metadataChunks.ToArray());
     }

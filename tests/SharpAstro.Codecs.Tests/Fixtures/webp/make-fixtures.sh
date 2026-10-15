@@ -29,6 +29,16 @@ def write_png(name, width, height, pixel):
     data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
     (directory / f"{name}.png").write_bytes(data)
 
+def write_png_rgba(name, width, height, pixel):
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)
+        for x in range(width):
+            rows.extend(pixel(x, y))
+    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    data = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+    (directory / f"{name}.png").write_bytes(data)
+
 write_png("flat-gray-16x16", 16, 16, lambda _x, _y: (128, 128, 128))
 write_png("gradient-16x16", 16, 16, lambda x, y: (x * 17, y * 17, (x + y) * 8))
 
@@ -45,6 +55,24 @@ write_png("odd-33x19", 33, 19, lambda x, y: (
     (x * 5 + y * 19) & 255,
     (x * 11 + y * 13) & 255,
 ))
+write_png("lossless-1x1", 1, 1, lambda _x, _y: (17, 83, 211))
+write_png("lossless-3x7", 3, 7, lambda x, y: ((x * 71 + y * 13) & 255,
+                                                (x * 17 + y * 53) & 255,
+                                                (x * 31 + y * 7) & 255))
+for colors in (2, 4, 16, 200):
+    palette = [(i * 47 & 255, i * 83 & 255, i * 131 & 255) for i in range(colors)]
+    write_png(f"palette-{colors}", 40, 17,
+              lambda x, y, palette=palette: palette[(x * 3 + y * 7) % len(palette)])
+write_png_rgba("lossless-exact-alpha", 33, 19,
+               lambda x, y: ((x * 23 + y * 7) & 255,
+                             (x * 5 + y * 19) & 255,
+                             (x * 11 + y * 13) & 255,
+                             0 if (x + y) % 5 == 0 else (x * 17 + y * 31) & 255))
+write_png_rgba("lossy-alpha", 33, 19,
+               lambda x, y: ((x * 23 + y * 7) & 255,
+                             (x * 5 + y * 19) & 255,
+                             (x * 11 + y * 13) & 255,
+                             0 if (x + y) % 7 == 0 else (x * 17 + y * 31) & 255))
 PY
 
 cwebp -version > "$root/cwebp-version.txt" 2>&1
@@ -109,3 +137,29 @@ for quality in 0 5 50 95 100; do
     cwebp -quiet -q "$quality" -m 0 -f 0 -segments 1 \
         "$tmp/noise-32x32.png" -o "$root/noise-32x32-q$quality.webp"
 done
+
+for z in 0 6 9; do
+    cwebp -quiet -lossless -z "$z" "$tmp/noise-17x17.png" \
+        -o "$root/lossless-z$z.webp"
+done
+for dimensions in 1x1 3x7; do
+    cwebp -quiet -lossless -z 6 "$tmp/lossless-$dimensions.png" \
+        -o "$root/lossless-$dimensions.webp"
+done
+cwebp -quiet -lossless -exact "$tmp/lossless-exact-alpha.png" \
+    -o "$root/lossless-exact-alpha.webp"
+cwebp -quiet -lossless -near_lossless 60 "$tmp/noise-17x17.png" \
+    -o "$root/lossless-near60.webp"
+for colors in 2 4 16 200; do
+    cwebp -quiet -lossless "$tmp/palette-$colors.png" \
+        -o "$root/lossless-palette-$colors.webp"
+done
+
+for method in 0 1; do
+    for filter in none fast best; do
+        cwebp -quiet -q 75 -alpha_method "$method" -alpha_filter "$filter" \
+            "$tmp/lossy-alpha.png" -o "$root/lossy-alpha-m${method}-${filter}.webp"
+    done
+done
+cwebp -quiet -q 75 -alpha_method 1 -alpha_q 50 "$tmp/lossy-alpha.png" \
+    -o "$root/lossy-alpha-q50.webp"

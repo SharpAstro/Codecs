@@ -30,7 +30,8 @@ public sealed class WebpOracleTests
         foreach (string fixtureName in FixtureNames())
         {
             string input = Path.Combine(FixtureDirectory(), fixtureName);
-            if (WebpDecoder.ReadInfo(File.ReadAllBytes(input)).Format == WebpFormat.Lossy)
+            WebpInfo info = WebpDecoder.ReadInfo(File.ReadAllBytes(input));
+            if (info.Format == WebpFormat.Lossy && !info.HasAlpha)
             {
                 yield return new object[] { fixtureName };
             }
