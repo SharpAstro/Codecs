@@ -847,6 +847,154 @@ internal static class Vp8Decoder
 
     private static void PredictLargeBlock(byte[] plane, int stride, int x, int y, int size, int mode)
     {
+        if (Vector128.IsHardwareAccelerated)
+        {
+            switch (mode)
+            {
+                case 0:
+                    PredictDcVector(plane, stride, x, y, size);
+                    return;
+                case 1:
+                    PredictVerticalVector(plane, stride, x, y, size);
+                    return;
+                case 3:
+                    PredictTrueMotionVector(plane, stride, x, y, size);
+                    return;
+            }
+        }
+
+        PredictLargeBlockScalar(plane, stride, x, y, size, mode);
+    }
+
+    // Whole-row vertical copy: the predicted block is just the row above,
+    // stored size times.
+    internal static void PredictVerticalVector(byte[] plane, int stride, int x, int y, int size)
+    {
+        int top = y * stride + x;
+        if (size == 16)
+        {
+            Vector128<byte> above = Vector128.LoadUnsafe(ref plane[top - stride]);
+            ref byte row = ref plane[top];
+            for (int i = 0; i < 16; i++)
+            {
+                above.StoreUnsafe(ref row);
+                row = ref Unsafe.Add(ref row, stride);
+            }
+        }
+        else
+        {
+            ulong above = Unsafe.ReadUnaligned<ulong>(ref plane[top - stride]);
+            ref byte row = ref plane[top];
+            for (int i = 0; i < 8; i++)
+            {
+                Unsafe.WriteUnaligned(ref row, above);
+                row = ref Unsafe.Add(ref row, stride);
+            }
+        }
+    }
+
+    // TrueMotion: dst[col] = clamp(left[row] + above[col] - topLeft). Widening to
+    // short lanes keeps the sum exact and Narrow's unsigned saturation is the
+    // clamp for free.
+    internal static void PredictTrueMotionVector(byte[] plane, int stride, int x, int y, int size)
+    {
+        int top = y * stride + x;
+        int left = y * stride + x - 1;
+        int topLeft = (y - 1) * stride + x - 1;
+        Vector128<short> zero = Vector128<short>.Zero;
+        Vector128<short> max = Vector128.Create((short)255);
+        if (size == 16)
+        {
+            Vector128<byte> above = Vector128.LoadUnsafe(ref plane[top - stride]);
+            Vector128<short> aboveLo = Vector128.WidenLower(above).AsInt16();
+            Vector128<short> aboveHi = Vector128.WidenUpper(above).AsInt16();
+            for (int row = 0; row < 16; row++)
+            {
+                Vector128<short> delta = Vector128.Create(
+                    (short)(plane[left + row * stride] - plane[topLeft]));
+                Vector128<short> lo = Vector128.Min(
+                    Vector128.Max(Vector128.Add(aboveLo, delta), zero), max);
+                Vector128<short> hi = Vector128.Min(
+                    Vector128.Max(Vector128.Add(aboveHi, delta), zero), max);
+                Vector128.Narrow(lo.AsUInt16(), hi.AsUInt16())
+                    .StoreUnsafe(ref plane[top + row * stride]);
+            }
+        }
+        else
+        {
+            Vector128<short> aboveLo = Vector128.WidenLower(
+                Vector128.CreateScalar(Unsafe.ReadUnaligned<ulong>(ref plane[top - stride])).AsByte()).AsInt16();
+            for (int row = 0; row < 8; row++)
+            {
+                Vector128<short> delta = Vector128.Create(
+                    (short)(plane[left + row * stride] - plane[topLeft]));
+                Vector128<short> lo = Vector128.Min(
+                    Vector128.Max(Vector128.Add(aboveLo, delta), zero), max);
+                Unsafe.WriteUnaligned(ref plane[top + row * stride],
+                    Vector128.Narrow(lo.AsUInt16(), lo.AsUInt16()).AsUInt64().ToScalar());
+            }
+        }
+    }
+
+    // DC: single averaged value broadcast to every row. The above-row sum runs
+    // in widened ushort lanes (16*255 cannot overflow); the strided left column
+    // stays scalar.
+    internal static void PredictDcVector(byte[] plane, int stride, int x, int y, int size)
+    {
+        int top = y * stride + x;
+        int left = y * stride + x - 1;
+        bool hasTop = y > 1;
+        bool hasLeft = x > 1;
+        int sum = 0;
+        if (hasTop)
+        {
+            if (size == 16)
+            {
+                Vector128<byte> above = Vector128.LoadUnsafe(ref plane[top - stride]);
+                sum += (int)Vector128.Sum(Vector128.WidenLower(above))
+                     + (int)Vector128.Sum(Vector128.WidenUpper(above));
+            }
+            else
+            {
+                Vector128<byte> above = Vector128.CreateScalar(
+                    Unsafe.ReadUnaligned<ulong>(ref plane[top - stride])).AsByte();
+                sum += (int)Vector128.Sum(Vector128.WidenLower(above));
+            }
+        }
+
+        if (hasLeft)
+        {
+            for (int i = 0; i < size; i++)
+            {
+                sum += plane[left + i * stride];
+            }
+        }
+
+        int value = hasTop && hasLeft ? (sum + size) / (size * 2) :
+            hasTop || hasLeft ? (sum + size / 2) / size : 128;
+        Vector128<byte> fill = Vector128.Create((byte)value);
+        ref byte row = ref plane[top];
+        if (size == 16)
+        {
+            for (int i = 0; i < 16; i++)
+            {
+                fill.StoreUnsafe(ref row);
+                row = ref Unsafe.Add(ref row, stride);
+            }
+        }
+        else
+        {
+            ulong fill64 = fill.AsUInt64().ToScalar();
+            for (int i = 0; i < 8; i++)
+            {
+                Unsafe.WriteUnaligned(ref row, fill64);
+                row = ref Unsafe.Add(ref row, stride);
+            }
+        }
+    }
+
+    internal static void PredictLargeBlockScalar(byte[] plane, int stride, int x, int y, int size, int mode)
+    {
         int top = y * stride + x;
         int left = y * stride + x - 1;
         int topLeft = (y - 1) * stride + x - 1;
