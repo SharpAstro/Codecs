@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace SharpAstro.Webp;
 
@@ -837,6 +838,7 @@ internal static class Vp8LDecoder
                 output[outputIndex + 3] = (byte)(argb[sourceIndex] >> 24);
             }
         }
+
     }
 
     private readonly record struct Transform(
@@ -1121,14 +1123,18 @@ internal static class Vp8LDecoder
 
     private ref struct BitReader
     {
-        private readonly ReadOnlySpan<byte> _data;
+        // Cursor + remaining count instead of a Span (same shape as
+        // Vp8BoolDecoder): bounds checks were showing up in the refill loop.
+        private ref byte _next;
+        private int _remaining;
         private int _position;
         private ulong _buffer;
         private int _bits;
 
         public BitReader(ReadOnlySpan<byte> data)
         {
-            _data = data;
+            _next = ref Unsafe.AsRef(in MemoryMarshal.GetReference(data));
+            _remaining = data.Length;
             _position = 0;
             _buffer = 0;
             _bits = 0;
@@ -1178,16 +1184,30 @@ internal static class Vp8LDecoder
 
         private void EnsureBits(int count)
         {
-            while (_bits < count && _position < _data.Length)
+            while (_bits < count && _remaining > 0)
             {
-                int bytes = Math.Min((_data.Length - _position), (64 - _bits) >> 3);
-                for (int i = 0; i < bytes; i++)
+                int take = Math.Min((64 - _bits) >> 3, _remaining);
+                if (take >= 4 && _remaining >= 8)
                 {
-                    _buffer |= (ulong)_data[_position + i] << (_bits + i * 8);
+                    // One unaligned grab covers the common refill; mask off the
+                    // bytes the 64-bit buffer cannot hold yet.
+                    ulong chunk = Unsafe.ReadUnaligned<ulong>(ref _next);
+                    _buffer |= take == 8
+                        ? chunk << _bits
+                        : (chunk & ((1UL << (take * 8)) - 1)) << _bits;
+                }
+                else
+                {
+                    for (int i = 0; i < take; i++)
+                    {
+                        _buffer |= (ulong)Unsafe.Add(ref _next, i) << (_bits + i * 8);
+                    }
                 }
 
-                _position += bytes;
-                _bits += bytes * 8;
+                _next = ref Unsafe.Add(ref _next, take);
+                _remaining -= take;
+                _position += take;
+                _bits += take * 8;
             }
         }
     }
