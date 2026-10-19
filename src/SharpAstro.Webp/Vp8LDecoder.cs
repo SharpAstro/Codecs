@@ -1,6 +1,7 @@
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 namespace SharpAstro.Webp;
 
@@ -920,10 +921,42 @@ internal static class Vp8LDecoder
         return pixels;
     }
 
+    // Byte positions 1 of each little-endian int, spread into positions 0 and 2:
+    // the shuffle produces the addend {green, 0, green, 0} per pixel so one
+    // vector add implements (blue += green; red += green) per byte lane.
+    private static readonly Vector128<byte> SubtractGreenSpread = Vector128.Create(
+        (byte)1, 0x80, 1, 0x80, 5, 0x80, 5, 0x80, 9, 0x80, 9, 0x80, 13, 0x80, 13, 0x80);
+    // Vector256.Shuffle takes indices absolute to the whole vector, not per lane.
+    private static readonly Vector256<byte> SubtractGreenSpread256 = Vector256.Create(
+        (byte)1, 0x80, 1, 0x80, 5, 0x80, 5, 0x80, 9, 0x80, 9, 0x80, 13, 0x80, 13, 0x80,
+        17, 0x80, 17, 0x80, 21, 0x80, 21, 0x80, 25, 0x80, 25, 0x80, 29, 0x80, 29, 0x80);
+
     private static int[] ApplySubtractGreen(int[] pixels, Transform transform)
     {
         int pixelCount = checked(transform.Width * transform.Height);
-        for (int i = 0; i < pixelCount; i++)
+        ref int baseRef = ref MemoryMarshal.GetArrayDataReference(pixels);
+        ref byte bytes = ref Unsafe.As<int, byte>(ref baseRef);
+        int i = 0;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            for (; i + 8 <= pixelCount; i += 8)
+            {
+                Vector256<byte> v = Vector256.LoadUnsafe(ref bytes, (nuint)(i * 4));
+                v += Vector256.Shuffle(v, SubtractGreenSpread256);
+                v.StoreUnsafe(ref bytes, (nuint)(i * 4));
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            for (; i + 4 <= pixelCount; i += 4)
+            {
+                Vector128<byte> v = Vector128.LoadUnsafe(ref bytes, (nuint)(i * 4));
+                v += Vector128.Shuffle(v, SubtractGreenSpread);
+                v.StoreUnsafe(ref bytes, (nuint)(i * 4));
+            }
+        }
+
+        for (; i < pixelCount; i++)
         {
             int green = (pixels[i] >> 8) & 0xff;
             int red = (((pixels[i] >> 16) & 0xff) + green) & 0xff;
