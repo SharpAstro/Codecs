@@ -115,6 +115,7 @@ public sealed class WebpRgbaEquivalenceTests
         const int outputOffset = 7;
         var scalar = Enumerable.Repeat((byte)0xA5, outputOffset + width * 4 + 11).ToArray();
         var vector = (byte[])scalar.Clone();
+        var vector256 = (byte[])scalar.Clone();
         ReadOnlySpan<byte> alphaRow = alpha.Length == 0
             ? ReadOnlySpan<byte>.Empty
             : alpha.AsSpan(inputOffset, width);
@@ -131,8 +132,15 @@ public sealed class WebpRgbaEquivalenceTests
             v.AsSpan(inputOffset, width),
             alphaRow,
             vector.AsSpan(outputOffset, width * 4));
+        WebpDecoder.ConvertRowVector256(
+            y.AsSpan(inputOffset, width),
+            u.AsSpan(inputOffset, width),
+            v.AsSpan(inputOffset, width),
+            alphaRow,
+            vector256.AsSpan(outputOffset, width * 4));
 
         Assert.Equal(scalar, vector);
+        Assert.Equal(scalar, vector256);
     }
 
     private static void AssertFancyEquivalent(

@@ -336,7 +336,12 @@ public static class WebpDecoder
                     }
                 }
 
-                if (Vector128.IsHardwareAccelerated)
+                if (Vector256.IsHardwareAccelerated)
+                {
+                    ConvertRowVector256Core(ref yRow, ref uScratchBase, ref vScratchBase,
+                        ref alphaRow, hasAlpha, ref destinationRow, width);
+                }
+                else if (Vector128.IsHardwareAccelerated)
                 {
                     ConvertRowVector128Core(ref yRow, ref uScratchBase, ref vScratchBase,
                         ref alphaRow, hasAlpha, ref destinationRow, width);
@@ -549,6 +554,141 @@ public static class WebpDecoder
         ref byte outputBase = ref MemoryMarshal.GetReference(output);
         ConvertRowVector128Core(ref yBase, ref uBase, ref vBase, ref alphaBase,
             !alpha.IsEmpty, ref outputBase, width);
+    }
+
+    internal static void ConvertRowVector256(
+        ReadOnlySpan<byte> y,
+        ReadOnlySpan<byte> u,
+        ReadOnlySpan<byte> v,
+        ReadOnlySpan<byte> alpha,
+        Span<byte> output)
+    {
+        int width = y.Length;
+        ref byte yBase = ref Unsafe.AsRef(in MemoryMarshal.GetReference(y));
+        ref byte uBase = ref Unsafe.AsRef(in MemoryMarshal.GetReference(u));
+        ref byte vBase = ref Unsafe.AsRef(in MemoryMarshal.GetReference(v));
+        ref byte alphaBase = ref Unsafe.AsRef(in MemoryMarshal.GetReference(alpha));
+        ref byte outputBase = ref MemoryMarshal.GetReference(output);
+        ConvertRowVector256Core(ref yBase, ref uBase, ref vBase, ref alphaBase,
+            !alpha.IsEmpty, ref outputBase, width);
+    }
+
+    private static void ConvertRowVector256Core(
+        ref byte y,
+        ref byte u,
+        ref byte v,
+        ref byte alpha,
+        bool hasAlpha,
+        ref byte output,
+        int width)
+    {
+        int column = 0;
+        for (; column <= width - 32; column += 32)
+        {
+            Vector256<byte> yBytes = Vector256.LoadUnsafe(ref y, (nuint)column);
+            Vector256<byte> uBytes = Vector256.LoadUnsafe(ref u, (nuint)column);
+            Vector256<byte> vBytes = Vector256.LoadUnsafe(ref v, (nuint)column);
+            Vector256<byte> alphaBytes = hasAlpha
+                ? Vector256.LoadUnsafe(ref alpha, (nuint)column)
+                : Vector256.Create(byte.MaxValue);
+            ConvertVector32(yBytes, uBytes, vBytes, alphaBytes, ref output, column * 4);
+        }
+
+        for (; column <= width - 16; column += 16)
+        {
+            Vector128<byte> yBytes = Vector128.LoadUnsafe(ref y, (nuint)column);
+            Vector128<byte> uBytes = Vector128.LoadUnsafe(ref u, (nuint)column);
+            Vector128<byte> vBytes = Vector128.LoadUnsafe(ref v, (nuint)column);
+            Vector128<byte> alphaBytes = hasAlpha
+                ? Vector128.LoadUnsafe(ref alpha, (nuint)column)
+                : Vector128.Create(byte.MaxValue);
+            ConvertVector16(yBytes, uBytes, vBytes, alphaBytes, ref output, column * 4);
+        }
+
+        for (; column < width; column++)
+        {
+            WritePixel(ref Unsafe.Add(ref output, column * 4),
+                Unsafe.Add(ref y, column), Unsafe.Add(ref u, column), Unsafe.Add(ref v, column),
+                hasAlpha ? Unsafe.Add(ref alpha, column) : (byte)255);
+        }
+    }
+
+    private static void ConvertVector32(
+        Vector256<byte> yBytes,
+        Vector256<byte> uBytes,
+        Vector256<byte> vBytes,
+        Vector256<byte> alphaBytes,
+        ref byte output,
+        int outputOffset)
+    {
+        Vector256<ushort> yLow = Vector256.WidenLower(yBytes);
+        Vector256<ushort> yHigh = Vector256.WidenUpper(yBytes);
+        Vector256<ushort> uLow = Vector256.WidenLower(uBytes);
+        Vector256<ushort> uHigh = Vector256.WidenUpper(uBytes);
+        Vector256<ushort> vLow = Vector256.WidenLower(vBytes);
+        Vector256<ushort> vHigh = Vector256.WidenUpper(vBytes);
+        Vector256<ushort> alphaLow = Vector256.WidenLower(alphaBytes);
+        Vector256<ushort> alphaHigh = Vector256.WidenUpper(alphaBytes);
+
+        ConvertVector16Avx2(yLow, uLow, vLow, alphaLow, ref output, outputOffset);
+        ConvertVector16Avx2(yHigh, uHigh, vHigh, alphaHigh, ref output, outputOffset + 64);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<ushort> MultiplyConstant(
+        Vector256<ushort> value,
+        ushort high,
+        ushort low) =>
+        Vector256.Add(
+            Vector256.Multiply(value, Vector256.Create(high)),
+            Vector256.ShiftRightLogical(
+                Vector256.Multiply(value, Vector256.Create(low)), 8));
+
+    private static void ConvertVector16Avx2(
+        Vector256<ushort> y,
+        Vector256<ushort> u,
+        Vector256<ushort> v,
+        Vector256<ushort> alpha,
+        ref byte output,
+        int outputOffset)
+    {
+        Vector256<ushort> yTerm = MultiplyConstant(y, 74, 133);
+        Vector256<ushort> vRed = MultiplyConstant(v, 102, 37);
+        Vector256<ushort> uGreen = MultiplyConstant(u, 25, 19);
+        Vector256<ushort> vGreen = MultiplyConstant(v, 52, 8);
+        Vector256<ushort> uBlue = MultiplyConstant(u, 129, 26);
+
+        Vector256<ushort> redSum = Vector256.Add(yTerm, vRed);
+        Vector256<ushort> red = Vector256.Min(
+            Vector256.ShiftRightLogical(
+                Vector256.Subtract(Vector256.Max(redSum, Vector256.Create((ushort)14234)),
+                    Vector256.Create((ushort)14234)), 6),
+            Vector256.Create((ushort)255));
+        Vector256<ushort> greenNegative = Vector256.Add(uGreen, vGreen);
+        Vector256<ushort> greenPositive = Vector256.Add(yTerm, Vector256.Create((ushort)8708));
+        Vector256<ushort> green = Vector256.Min(
+            Vector256.ShiftRightLogical(
+                Vector256.Subtract(Vector256.Max(greenPositive, greenNegative), greenNegative), 6),
+            Vector256.Create((ushort)255));
+        Vector256<ushort> blueSum = Vector256.Add(yTerm, uBlue);
+        Vector256<ushort> blue = Vector256.Min(
+            Vector256.ShiftRightLogical(
+                Vector256.Subtract(Vector256.Max(blueSum, Vector256.Create((ushort)17685)),
+                    Vector256.Create((ushort)17685)), 6),
+            Vector256.Create((ushort)255));
+
+        Vector256<ushort> redGreen = Vector256.BitwiseOr(red, Vector256.ShiftLeft(green, 8));
+        Vector256<ushort> blueAlpha = Vector256.BitwiseOr(blue, Vector256.ShiftLeft(alpha, 8));
+        Vector256<uint> rgbaLow = Vector256.BitwiseOr(
+            Vector256.WidenLower(redGreen),
+            Vector256.ShiftLeft(Vector256.WidenLower(blueAlpha), 16));
+        Vector256<uint> rgbaHigh = Vector256.BitwiseOr(
+            Vector256.WidenUpper(redGreen),
+            Vector256.ShiftLeft(Vector256.WidenUpper(blueAlpha), 16));
+
+        ref uint output32 = ref Unsafe.As<byte, uint>(ref Unsafe.Add(ref output, outputOffset));
+        Vector256.StoreUnsafe(rgbaLow, ref output32);
+        Vector256.StoreUnsafe(rgbaHigh, ref Unsafe.Add(ref output32, 8));
     }
 
     private static void ConvertRowScalarCore(
