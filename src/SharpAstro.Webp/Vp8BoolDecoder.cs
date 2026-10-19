@@ -1,12 +1,15 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Numerics;
 
 namespace SharpAstro.Webp;
 
 internal ref struct Vp8BoolDecoder
 {
-    private readonly ReadOnlySpan<byte> _data;
-    private int _nextByte;
+    // Cursor + remaining count instead of a Span: the refill loop runs once per
+    // decoded byte and bounds checks were showing up in the profile.
+    private ref byte _next;
+    private int _remaining;
     private int _bitsAvailable;
     private ulong _bitBuffer;
     private ulong _value;
@@ -14,13 +17,16 @@ internal ref struct Vp8BoolDecoder
 
     public Vp8BoolDecoder(ReadOnlySpan<byte> data)
     {
-        _data = data;
-        _nextByte = Math.Min(data.Length, 2);
+        _next = ref Unsafe.AsRef(in MemoryMarshal.GetReference(data));
+        _remaining = data.Length;
         _bitsAvailable = 0;
         _bitBuffer = 0;
         _range = 255;
         _value = (data.Length > 0 ? (ulong)data[0] : 0) << 8 |
                  (data.Length > 1 ? (ulong)data[1] : 0);
+        int skip = Math.Min(data.Length, 2);
+        _next = ref Unsafe.Add(ref _next, skip);
+        _remaining -= skip;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -71,36 +77,19 @@ internal ref struct Vp8BoolDecoder
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int ReadInputBits(int count)
     {
-        int value = 0;
-        while (count != 0)
+        while (_bitsAvailable < count && _bitsAvailable <= 56 && _remaining > 0)
         {
-            if (_bitsAvailable == 0)
-            {
-                int bytes = Math.Min(8, _data.Length - _nextByte);
-                if (bytes == 0)
-                {
-                    return value << count;
-                }
-
-                ulong buffer = 0;
-                for (int i = 0; i < bytes; i++)
-                {
-                    buffer |= (ulong)_data[_nextByte + i] << ((7 - i) * 8);
-                }
-
-                _nextByte += bytes;
-                _bitBuffer = buffer;
-                _bitsAvailable = bytes * 8;
-            }
-
-            int take = Math.Min(count, _bitsAvailable);
-            value = (value << take) | (int)(_bitBuffer >> (64 - take));
-            _bitBuffer <<= take;
-            _bitsAvailable -= take;
-            count -= take;
+            _bitBuffer |= (ulong)_next << (56 - _bitsAvailable);
+            _next = ref Unsafe.Add(ref _next, 1);
+            _remaining--;
+            _bitsAvailable += 8;
         }
 
-        return value;
+        int take = Math.Min(count, _bitsAvailable);
+        int value = (int)(_bitBuffer >> (64 - take));
+        _bitBuffer <<= take;
+        _bitsAvailable -= take;
+        return take == count ? value : value << (count - take);
     }
 }
 
@@ -129,31 +118,22 @@ internal ref struct Vp8TokenPartitions
         _p7 = new Vp8BoolDecoder(p7);
     }
 
-    public Vp8BoolDecoder GetPartition(int partition) => partition switch
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ref Vp8BoolDecoder PartitionRef(int partition)
     {
-        0 => _p0,
-        1 => _p1,
-        2 => _p2,
-        3 => _p3,
-        4 => _p4,
-        5 => _p5,
-        6 => _p6,
-        7 => _p7,
-        _ => throw new ArgumentOutOfRangeException(nameof(partition)),
-    };
-
-    public void SetPartition(int partition, Vp8BoolDecoder decoder)
-    {
+        // Unsafe.AsRef bypasses CS8170 (structs may not return instance fields by
+        // ref); safe here because callers can only use the ref while this ref
+        // struct is alive.
         switch (partition)
         {
-            case 0: _p0 = decoder; break;
-            case 1: _p1 = decoder; break;
-            case 2: _p2 = decoder; break;
-            case 3: _p3 = decoder; break;
-            case 4: _p4 = decoder; break;
-            case 5: _p5 = decoder; break;
-            case 6: _p6 = decoder; break;
-            case 7: _p7 = decoder; break;
+            case 0: return ref Unsafe.AsRef(in _p0);
+            case 1: return ref Unsafe.AsRef(in _p1);
+            case 2: return ref Unsafe.AsRef(in _p2);
+            case 3: return ref Unsafe.AsRef(in _p3);
+            case 4: return ref Unsafe.AsRef(in _p4);
+            case 5: return ref Unsafe.AsRef(in _p5);
+            case 6: return ref Unsafe.AsRef(in _p6);
+            case 7: return ref Unsafe.AsRef(in _p7);
             default: throw new ArgumentOutOfRangeException(nameof(partition));
         }
     }

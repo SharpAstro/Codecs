@@ -136,9 +136,9 @@ internal static class Vp8Decoder
 
         try
         {
-            Array.Clear(yBuffer, 0, yLength);
-            Array.Clear(uBuffer, 0, uvLength);
-            Array.Clear(vBuffer, 0, uvLength);
+            // The padded planes do not need clearing: prediction writes every pixel of
+            // every macroblock (padding included) before any reader sees them. Only the
+            // border ring and the context rows above are initialised explicitly.
             Array.Clear(aboveB);
             Array.Clear(aboveY);
             Array.Clear(aboveU);
@@ -159,6 +159,7 @@ internal static class Vp8Decoder
                 {
                     int mbIndex = mbY * mbWidth + mbX;
                     int tokenPartition = mbY & (partitionCount - 1);
+                    ref Vp8BoolDecoder tokenDecoder = ref tokens.PartitionRef(tokenPartition);
                     int segment = segments.Enabled && segments.UpdateMap ? ReadSegmentId(ref header, segments.MapProbabilities) : 0;
                     bool skip = skipFlagPresent && header.ReadBit(skipProbability) != 0;
                     byte yMode = (byte)ReadYMode(ref header);
@@ -233,7 +234,7 @@ internal static class Vp8Decoder
                         {
                             coefficients.Clear();
                             int y2Context = aboveY2[mbX] + leftY2;
-                            bool y2Nonzero = DecodeCoefficients(ref tokens, tokenPartition,
+                            bool y2Nonzero = DecodeCoefficients(ref tokenDecoder,
                                 coefficientProbabilities, 1, 0, y2Context, coefficients);
                             hasNonzeroCoefficients |= y2Nonzero;
                             aboveY2[mbX] = (byte)(y2Nonzero ? 1 : 0);
@@ -273,8 +274,7 @@ internal static class Vp8Decoder
                             int context = aboveY[mbX * 4 + blockX] + leftY[blockY];
                             coefficients.Clear();
                             bool hasCoefficients = !skip && DecodeCoefficients(
-                                ref tokens,
-                                tokenPartition,
+                                ref tokenDecoder,
                                 coefficientProbabilities,
                                 yMode == 4 ? 3 : 0,
                                 yMode == 4 ? 0 : 1,
@@ -308,7 +308,7 @@ internal static class Vp8Decoder
                                 int context = above[mbX * 2 + blockX] + left[blockY];
                                 coefficients.Clear();
                                 bool hasCoefficients = !skip && DecodeCoefficients(
-                                    ref tokens, tokenPartition, coefficientProbabilities,
+                                    ref tokenDecoder, coefficientProbabilities,
                                     2, 0, context, coefficients);
                                 hasNonzeroCoefficients |= hasCoefficients;
                                 above[mbX * 2 + blockX] = left[blockY] = hasCoefficients ? (byte)1 : (byte)0;
@@ -598,6 +598,22 @@ internal static class Vp8Decoder
         }
     }
 
+    private static int ReadToken(ref Vp8BoolDecoder decoder, ref byte probabilities, int firstNode)
+    {
+        // Same walk as ReadTree on Vp8Tables.CoefficientTree, but the node
+        // probabilities are reached through a ref into the per-(type, band,
+        // context) table instead of a fresh span on every token.
+        int child = Vp8Tables.CoefficientTree[firstNode +
+            decoder.ReadBit(Unsafe.Add(ref probabilities, firstNode >> 1))];
+        while (child > 0)
+        {
+            child = Vp8Tables.CoefficientTree[child +
+                decoder.ReadBit(Unsafe.Add(ref probabilities, child >> 1))];
+        }
+
+        return -child;
+    }
+
     private static PartitionSlices ReadPartitions(ReadOnlySpan<byte> data, int count)
     {
         ReadOnlySpan<byte> p0 = default, p1 = default, p2 = default, p3 = default;
@@ -644,20 +660,20 @@ internal static class Vp8Decoder
         return new PartitionSlices(p0, p1, p2, p3, p4, p5, p6, p7);
     }
 
-    private static bool DecodeCoefficients(ref Vp8TokenPartitions tokens, int partition,
+    private static bool DecodeCoefficients(ref Vp8BoolDecoder decoder,
         byte[] probabilities, int type, int start, int context, scoped Span<int> coefficients)
     {
         int position = start;
         int nodeContext = Math.Clamp(context, 0, 2);
         bool any = false;
         bool previousWasZero = false;
-        Vp8BoolDecoder decoder = tokens.GetPartition(partition);
         while (position < 16)
         {
             int band = Vp8Tables.CoefficientBands[position];
             int offset = (((type * 8 + band) * 3 + nodeContext) * 11);
-            ReadOnlySpan<byte> nodeProbabilities = probabilities.AsSpan(offset, 11);
-            int tokenType = ReadTree(ref decoder, Vp8Tables.CoefficientTree, nodeProbabilities, previousWasZero ? 2 : 0);
+            ref byte nodeProbabilities = ref Unsafe.Add(
+                ref MemoryMarshal.GetArrayDataReference(probabilities), offset);
+            int tokenType = ReadToken(ref decoder, ref nodeProbabilities, previousWasZero ? 2 : 0);
             if (tokenType == 1)
             {
                 break;
@@ -693,7 +709,6 @@ internal static class Vp8Decoder
             position++;
         }
 
-        tokens.SetPartition(partition, decoder);
         return any;
     }
 
@@ -936,24 +951,141 @@ internal static class Vp8Decoder
             edge[5 + i] = above[i];
         }
 
-        for (int row = 0; row < 4; row++)
+        // The mode is constant per 4x4 block: dispatch once instead of inside the
+        // per-pixel loop.
+        switch (mode)
         {
-            for (int column = 0; column < 4; column++)
+            case 0:
             {
-                int value = mode switch
+                byte value = (byte)SubblockDc(above, left);
+                for (int row = 0; row < 4; row++)
                 {
-                    0 => SubblockDc(above, left),
-                    1 => Clamp(left[row] + above[column] - p),
-                    2 => Avg3(column == 0 ? p : above[column - 1], above[column], above[column + 1]),
-                    3 => Avg3(row == 0 ? p : left[row - 1], left[row], left[Math.Min(row + 1, 3)]),
-                    4 => LeftDown(above, row + column + 1),
-                    5 => Avg3(edge[4 + column - row - 1], edge[4 + column - row], edge[4 + column - row + 1]),
-                    6 => VerticalRight(edge, row, column),
-                    7 => VerticalLeft(above, row, column),
-                    8 => HorizontalDown(edge, row, column),
-                    _ => HorizontalUp(left, row, column),
-                };
-                plane[top + row * stride + column] = (byte)value;
+                    plane.AsSpan(top + row * stride, 4).Fill(value);
+                }
+
+                break;
+            }
+            case 1:
+            {
+                for (int row = 0; row < 4; row++)
+                {
+                    int leftValue = left[row];
+                    for (int column = 0; column < 4; column++)
+                    {
+                        plane[top + row * stride + column] =
+                            (byte)Clamp(leftValue + above[column] - p);
+                    }
+                }
+
+                break;
+            }
+            case 2:
+            {
+                for (int row = 0; row < 4; row++)
+                {
+                    for (int column = 0; column < 4; column++)
+                    {
+                        plane[top + row * stride + column] = (byte)Avg3(
+                            column == 0 ? p : above[column - 1], above[column], above[column + 1]);
+                    }
+                }
+
+                break;
+            }
+            case 3:
+            {
+                for (int row = 0; row < 4; row++)
+                {
+                    int previous = row == 0 ? p : left[row - 1];
+                    int next = left[Math.Min(row + 1, 3)];
+                    int current = left[row];
+                    for (int column = 0; column < 4; column++)
+                    {
+                        plane[top + row * stride + column] =
+                            (byte)Avg3(previous, current, next);
+                    }
+                }
+
+                break;
+            }
+            case 4:
+            {
+                for (int row = 0; row < 4; row++)
+                {
+                    for (int column = 0; column < 4; column++)
+                    {
+                        plane[top + row * stride + column] =
+                            (byte)LeftDown(above, row + column + 1);
+                    }
+                }
+
+                break;
+            }
+            case 5:
+            {
+                for (int row = 0; row < 4; row++)
+                {
+                    for (int column = 0; column < 4; column++)
+                    {
+                        plane[top + row * stride + column] = (byte)Avg3(
+                            edge[4 + column - row - 1], edge[4 + column - row],
+                            edge[4 + column - row + 1]);
+                    }
+                }
+
+                break;
+            }
+            case 6:
+            {
+                for (int row = 0; row < 4; row++)
+                {
+                    for (int column = 0; column < 4; column++)
+                    {
+                        plane[top + row * stride + column] =
+                            (byte)VerticalRight(edge, row, column);
+                    }
+                }
+
+                break;
+            }
+            case 7:
+            {
+                for (int row = 0; row < 4; row++)
+                {
+                    for (int column = 0; column < 4; column++)
+                    {
+                        plane[top + row * stride + column] =
+                            (byte)VerticalLeft(above, row, column);
+                    }
+                }
+
+                break;
+            }
+            case 8:
+            {
+                for (int row = 0; row < 4; row++)
+                {
+                    for (int column = 0; column < 4; column++)
+                    {
+                        plane[top + row * stride + column] =
+                            (byte)HorizontalDown(edge, row, column);
+                    }
+                }
+
+                break;
+            }
+            default:
+            {
+                for (int row = 0; row < 4; row++)
+                {
+                    for (int column = 0; column < 4; column++)
+                    {
+                        plane[top + row * stride + column] =
+                            (byte)HorizontalUp(left, row, column);
+                    }
+                }
+
+                break;
             }
         }
     }
@@ -1110,19 +1242,7 @@ internal static class Vp8Decoder
             ref MemoryMarshal.GetArrayDataReference(plane), y * stride + x);
         if (vertical)
         {
-            if (simple)
-            {
-                if (macroblockEdge) FilterVerticalSimpleMacroblock(ref center, stride, length, edge);
-                else FilterVerticalSimpleInner(ref center, stride, length, edge);
-            }
-            else if (macroblockEdge)
-            {
-                FilterVerticalNormalMacroblock(ref center, stride, length, interior, edge, hev);
-            }
-            else
-            {
-                FilterVerticalNormalInner(ref center, stride, length, interior, edge, hev);
-            }
+            FilterVerticalEdge(ref center, stride, length, simple, macroblockEdge, interior, edge, hev);
         }
         else if (simple)
         {
@@ -1193,19 +1313,32 @@ internal static class Vp8Decoder
         }
     }
 
-    private static void FilterVerticalSimpleMacroblock(ref byte center, int stride, int length, int edge) =>
-        FilterSimpleScalar(ref center, 1, stride, length, edge);
+    private static void FilterVerticalEdge(
+        ref byte center, int stride, int length, bool simple,
+        bool macroblockEdge, int interior, int edge, int hev)
+    {
+        // Vertical strips are strided: a Vector128 path needs an 8x8 transpose each way,
+        // and the measured cost of that exceeds what vectorizing the filter core saves.
+        FilterVerticalScalar(ref center, stride, length, simple, macroblockEdge, interior, edge, hev);
+    }
 
-    private static void FilterVerticalSimpleInner(ref byte center, int stride, int length, int edge) =>
-        FilterSimpleScalar(ref center, 1, stride, length, edge);
-
-    private static void FilterVerticalNormalMacroblock(
-        ref byte center, int stride, int length, int interior, int edge, int hev) =>
-        FilterNormalMacroblockScalar(ref center, 1, stride, length, interior, edge, hev);
-
-    private static void FilterVerticalNormalInner(
-        ref byte center, int stride, int length, int interior, int edge, int hev) =>
-        FilterNormalInnerScalar(ref center, 1, stride, length, interior, edge, hev);
+    private static void FilterVerticalScalar(
+        ref byte center, int stride, int length, bool simple,
+        bool macroblockEdge, int interior, int edge, int hev)
+    {
+        if (simple)
+        {
+            FilterSimpleScalar(ref center, 1, stride, length, edge);
+        }
+        else if (macroblockEdge)
+        {
+            FilterNormalMacroblockScalar(ref center, 1, stride, length, interior, edge, hev);
+        }
+        else
+        {
+            FilterNormalInnerScalar(ref center, 1, stride, length, interior, edge, hev);
+        }
+    }
 
     internal static void FilterHorizontalScalar(
         byte[] plane, int stride, int x, int y, int length, bool simple,
@@ -1388,6 +1521,41 @@ internal static class Vp8Decoder
         ref byte center, int offset, int stride,
         bool simple, bool macroblockEdge, int interior, int edge, int hev)
     {
+        FilterVector8Core(p3, p2, p1, p0, q0, q1, q2, q3,
+            simple, macroblockEdge, interior, edge, hev,
+            out Vector128<short> p2Filtered, out Vector128<short> p1Filtered,
+            out Vector128<short> p0Filtered, out Vector128<short> q0Filtered,
+            out Vector128<short> q1Filtered, out Vector128<short> q2Filtered);
+        if (simple)
+        {
+            StoreFilterVector(ref Unsafe.Add(ref center, -stride), offset, p0Filtered);
+            StoreFilterVector(ref center, offset, q0Filtered);
+            return;
+        }
+
+        StoreFilterVector(ref Unsafe.Add(ref center, -stride), offset, p0Filtered);
+        StoreFilterVector(ref center, offset, q0Filtered);
+        StoreFilterVector(ref Unsafe.Add(ref center, -2 * stride), offset, p1Filtered);
+        StoreFilterVector(ref Unsafe.Add(ref center, stride), offset, q1Filtered);
+        if (macroblockEdge)
+        {
+            StoreFilterVector(ref Unsafe.Add(ref center, -3 * stride), offset, p2Filtered);
+            StoreFilterVector(ref Unsafe.Add(ref center, 2 * stride), offset, q2Filtered);
+        }
+    }
+
+    private static void FilterVector8Core(
+        Vector128<short> p3, Vector128<short> p2, Vector128<short> p1, Vector128<short> p0,
+        Vector128<short> q0, Vector128<short> q1, Vector128<short> q2, Vector128<short> q3,
+        bool simple, bool macroblockEdge, int interior, int edge, int hev,
+        out Vector128<short> p2Filtered, out Vector128<short> p1Filtered,
+        out Vector128<short> p0Filtered, out Vector128<short> q0Filtered,
+        out Vector128<short> q1Filtered, out Vector128<short> q2Filtered)
+    {
+        p2Filtered = p2;
+        p1Filtered = p1;
+        q1Filtered = q1;
+        q2Filtered = q2;
         Vector128<short> p0q0 = Vector128.Abs(Vector128.Subtract(p0, q0));
         Vector128<short> p1q1 = Vector128.Abs(Vector128.Subtract(p1, q1));
         Vector128<short> edgeMetric = Vector128.Add(
@@ -1412,10 +1580,8 @@ internal static class Vp8Decoder
                 Vector128.Add(adjustment, Vector128.Create((short)4)), 3);
             Vector128<short> newP0 = ClampPixelVector(Vector128.Add(p0, pAdjustment));
             Vector128<short> newQ0 = ClampPixelVector(Vector128.Subtract(q0, qAdjustment));
-            StoreFilterVector(ref Unsafe.Add(ref center, -stride), offset,
-                Vector128.ConditionalSelect(valid, newP0, p0));
-            StoreFilterVector(ref center, offset,
-                Vector128.ConditionalSelect(valid, newQ0, q0));
+            p0Filtered = Vector128.ConditionalSelect(valid, newP0, p0);
+            q0Filtered = Vector128.ConditionalSelect(valid, newQ0, q0);
             return;
         }
 
@@ -1481,24 +1647,20 @@ internal static class Vp8Decoder
             q1Low = ClampPixelVector(Vector128.Subtract(q1, inner));
         }
 
-        Vector128<short> p0Filtered = Vector128.ConditionalSelect(highVariance, p0High, p0Low);
-        Vector128<short> q0Filtered = Vector128.ConditionalSelect(highVariance, q0High, q0Low);
-        Vector128<short> p1Filtered = Vector128.ConditionalSelect(highVariance, p1, p1Low);
-        Vector128<short> q1Filtered = Vector128.ConditionalSelect(highVariance, q1, q1Low);
-        StoreFilterVector(ref Unsafe.Add(ref center, -stride), offset,
-            Vector128.ConditionalSelect(valid, p0Filtered, p0));
-        StoreFilterVector(ref center, offset, Vector128.ConditionalSelect(valid, q0Filtered, q0));
-        StoreFilterVector(ref Unsafe.Add(ref center, -2 * stride), offset,
-            Vector128.ConditionalSelect(valid, p1Filtered, p1));
-        StoreFilterVector(ref Unsafe.Add(ref center, stride), offset,
-            Vector128.ConditionalSelect(valid, q1Filtered, q1));
-        if (macroblockEdge)
-        {
-            StoreFilterVector(ref Unsafe.Add(ref center, -3 * stride), offset,
-                Vector128.ConditionalSelect(valid, Vector128.ConditionalSelect(highVariance, p2, p2Low), p2));
-            StoreFilterVector(ref Unsafe.Add(ref center, 2 * stride), offset,
-                Vector128.ConditionalSelect(valid, Vector128.ConditionalSelect(highVariance, q2, q2Low), q2));
-        }
+        p0Filtered = Vector128.ConditionalSelect(valid,
+            Vector128.ConditionalSelect(highVariance, p0High, p0Low), p0);
+        q0Filtered = Vector128.ConditionalSelect(valid,
+            Vector128.ConditionalSelect(highVariance, q0High, q0Low), q0);
+        p1Filtered = Vector128.ConditionalSelect(valid,
+            Vector128.ConditionalSelect(highVariance, p1, p1Low), p1);
+        q1Filtered = Vector128.ConditionalSelect(valid,
+            Vector128.ConditionalSelect(highVariance, q1, q1Low), q1);
+        p2Filtered = macroblockEdge
+            ? Vector128.ConditionalSelect(valid, Vector128.ConditionalSelect(highVariance, p2, p2Low), p2)
+            : p2;
+        q2Filtered = macroblockEdge
+            ? Vector128.ConditionalSelect(valid, Vector128.ConditionalSelect(highVariance, q2, q2Low), q2)
+            : q2;
     }
 
     private static Vector128<short> ClampSignedVector(Vector128<short> value) =>
