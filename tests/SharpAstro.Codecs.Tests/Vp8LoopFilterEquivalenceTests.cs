@@ -56,6 +56,77 @@ public sealed class Vp8LoopFilterEquivalenceTests
         }
     }
 
+    [Fact]
+    public void VerticalVectorFilterMatchesScalarForAllVariantsAndThresholds()
+    {
+        const int stride = 40;
+        const int x = 8;
+        const int y = 4;
+        var random = new Random(0x6386);
+        int[] levels = [0, 1, 14, 15, 39, 40, 63];
+        int[] sharpnessValues = [0, 1, 4, 7];
+
+        foreach (bool simple in new[] { false, true })
+        {
+            foreach (bool macroblockEdge in new[] { false, true })
+            {
+                foreach (int level in levels)
+                {
+                    foreach (int sharpness in sharpnessValues)
+                    {
+                        foreach (int length in new[] { 8, 16 })
+                        {
+                            int interior = level;
+                            if (sharpness != 0)
+                            {
+                                interior >>= sharpness > 4 ? 2 : 1;
+                                interior = Math.Min(interior, 9 - sharpness);
+                            }
+
+                            interior = Math.Max(interior, 1);
+                            int edge = 2 * (level + 2) + interior;
+                            int hev = level >= 40 ? 2 : level >= 15 ? 1 : 0;
+
+                            for (int pattern = 0; pattern < 4; pattern++)
+                            {
+                                byte[] plane = new byte[stride * 32];
+                                FillVerticalPlane(plane, stride, x, pattern, random);
+                                byte[] scalar = (byte[])plane.Clone();
+                                byte[] vector = (byte[])plane.Clone();
+
+                                Vp8Decoder.FilterVerticalScalar(
+                                    scalar, stride, x, y, length, simple, macroblockEdge,
+                                    interior, edge, hev);
+                                Vp8Decoder.FilterVerticalVector256(
+                                    vector, stride, x, y, length, simple, macroblockEdge,
+                                    interior, edge, hev);
+
+                                Assert.Equal(scalar, vector);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void FillVerticalPlane(byte[] plane, int stride, int edgeColumn, int pattern, Random random)
+    {
+        for (int row = 0; row < plane.Length / stride; row++)
+        {
+            for (int column = 0; column < stride; column++)
+            {
+                plane[row * stride + column] = pattern switch
+                {
+                    0 => (byte)random.Next(256),
+                    1 => column < edgeColumn ? (byte)(72 + random.Next(9)) : (byte)(80 + random.Next(9)),
+                    2 => column < edgeColumn ? (byte)0 : (byte)255,
+                    _ => (byte)Math.Clamp(16 + column * 4 + random.Next(5), 0, 255)
+                };
+            }
+        }
+    }
+
     private static void FillPlane(byte[] plane, int stride, int edgeRow, int pattern, Random random)
     {
         for (int row = 0; row < plane.Length / stride; row++)

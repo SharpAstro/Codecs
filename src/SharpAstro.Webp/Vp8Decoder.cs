@@ -1317,10 +1317,197 @@ internal static class Vp8Decoder
         ref byte center, int stride, int length, bool simple,
         bool macroblockEdge, int interior, int edge, int hev)
     {
-        // Vertical strips are strided: a Vector128 path needs an 8x8 transpose each way,
-        // and the measured cost of that exceeds what vectorizing the filter core saves.
+        if (Vector256.IsHardwareAccelerated && length % 8 == 0)
+        {
+            ref byte row = ref center;
+            for (int i = 0; i < length; i += 8, row = ref Unsafe.Add(ref row, 8 * stride))
+            {
+                FilterVerticalVector8(ref row, stride, simple, macroblockEdge, interior, edge, hev);
+            }
+
+            return;
+        }
+
         FilterVerticalScalar(ref center, stride, length, simple, macroblockEdge, interior, edge, hev);
     }
+
+    internal static void FilterVerticalScalar(
+        byte[] plane, int stride, int x, int y, int length, bool simple,
+        bool macroblockEdge, int interior, int edge, int hev)
+    {
+        ref byte center = ref Unsafe.Add(
+            ref MemoryMarshal.GetArrayDataReference(plane), y * stride + x);
+        FilterVerticalScalar(ref center, stride, length, simple, macroblockEdge, interior, edge, hev);
+    }
+
+    internal static void FilterVerticalVector256(
+        byte[] plane, int stride, int x, int y, int length, bool simple,
+        bool macroblockEdge, int interior, int edge, int hev)
+    {
+        ref byte center = ref Unsafe.Add(
+            ref MemoryMarshal.GetArrayDataReference(plane), y * stride + x);
+        for (int i = 0; i < length; i += 8, center = ref Unsafe.Add(ref center, 8 * stride))
+        {
+            FilterVerticalVector8(ref center, stride, simple, macroblockEdge, interior, edge, hev);
+        }
+    }
+
+    // Vertical edges need no transpose: the 8 samples of one row are contiguous
+    // dwords, so each variable is a byte position inside a per-row int lane.
+    // Eight rows fit in the eight i32 lanes of a Vector256; unpacking and
+    // repacking is just shifts and masks. The filter math below is a 1:1 port
+    // of the Vector128<short> horizontal kernel and the scalar loop, in
+    // lane-exact int arithmetic.
+    private static void FilterVerticalVector8(
+        ref byte center, int stride, bool simple,
+        bool macroblockEdge, int interior, int edge, int hev)
+    {
+        ref byte pBase = ref Unsafe.Add(ref center, -4);
+        Vector256<int> pv = Vector256.Create(
+            Unsafe.ReadUnaligned<int>(ref pBase),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref pBase, stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref pBase, 2 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref pBase, 3 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref pBase, 4 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref pBase, 5 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref pBase, 6 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref pBase, 7 * stride)));
+        Vector256<int> qv = Vector256.Create(
+            Unsafe.ReadUnaligned<int>(ref center),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref center, stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref center, 2 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref center, 3 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref center, 4 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref center, 5 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref center, 6 * stride)),
+            Unsafe.ReadUnaligned<int>(ref Unsafe.Add(ref center, 7 * stride)));
+
+        Vector256<int> ff = Vector256.Create(0xff);
+        Vector256<int> p3 = pv & ff;
+        Vector256<int> p2 = (pv >> 8) & ff;
+        Vector256<int> p1 = (pv >> 16) & ff;
+        Vector256<int> p0 = (pv >> 24) & ff;
+        Vector256<int> q0 = qv & ff;
+        Vector256<int> q1 = (qv >> 8) & ff;
+        Vector256<int> q2 = (qv >> 16) & ff;
+        Vector256<int> q3 = (qv >> 24) & ff;
+
+        FilterVector8Core256(p3, p2, p1, p0, q0, q1, q2, q3,
+            simple, macroblockEdge, interior, edge, hev,
+            out Vector256<int> p2Filtered, out Vector256<int> p1Filtered,
+            out Vector256<int> p0Filtered, out Vector256<int> q0Filtered,
+            out Vector256<int> q1Filtered, out Vector256<int> q2Filtered);
+
+        // Filtered positions already carry the original bytes in masked-out
+        // lanes, so whole dwords store back unconditionally.
+        Vector256<int> newPv = p3 | (p2Filtered << 8) | (p1Filtered << 16) | (p0Filtered << 24);
+        Vector256<int> newQv = q0Filtered | (q1Filtered << 8) | (q2Filtered << 16) | (q3 << 24);
+        for (int i = 0; i < 8; i++)
+        {
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref pBase, i * stride), newPv[i]);
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref center, i * stride), newQv[i]);
+        }
+    }
+
+    private static void FilterVector8Core256(
+        Vector256<int> p3, Vector256<int> p2, Vector256<int> p1, Vector256<int> p0,
+        Vector256<int> q0, Vector256<int> q1, Vector256<int> q2, Vector256<int> q3,
+        bool simple, bool macroblockEdge, int interior, int edge, int hev,
+        out Vector256<int> p2Filtered, out Vector256<int> p1Filtered,
+        out Vector256<int> p0Filtered, out Vector256<int> q0Filtered,
+        out Vector256<int> q1Filtered, out Vector256<int> q2Filtered)
+    {
+        p2Filtered = p2;
+        p1Filtered = p1;
+        q1Filtered = q1;
+        q2Filtered = q2;
+        Vector256<int> p0q0 = Vector256.Abs(p0 - q0);
+        Vector256<int> p1q1 = Vector256.Abs(p1 - q1);
+        Vector256<int> edgeMetric = p0q0 + p0q0 + (p1q1 >>> 1);
+        Vector256<int> valid = Vector256.LessThanOrEqual(edgeMetric, Vector256.Create(edge));
+        Vector256<int> highVariance = Vector256.GreaterThan(Vector256.Abs(p1 - p0), Vector256.Create(hev)) |
+            Vector256.GreaterThan(Vector256.Abs(q1 - q0), Vector256.Create(hev));
+        Vector256<int> outerTap = ClampSignedVector256(p1 - q1);
+        Vector256<int> threeDelta = (q0 - p0) * 3;
+        Vector256<int> adjustment = simple || macroblockEdge
+            ? ClampSignedVector256(outerTap + threeDelta)
+            : ClampSignedVector256(threeDelta);
+
+        if (simple)
+        {
+            Vector256<int> pAdjustment = (adjustment + Vector256.Create(3)) >> 3;
+            Vector256<int> qAdjustment = (adjustment + Vector256.Create(4)) >> 3;
+            Vector256<int> newP0 = ClampPixelVector256(p0 + pAdjustment);
+            Vector256<int> newQ0 = ClampPixelVector256(q0 - qAdjustment);
+            p0Filtered = Vector256.ConditionalSelect(valid, newP0, p0);
+            q0Filtered = Vector256.ConditionalSelect(valid, newQ0, q0);
+            return;
+        }
+
+        Vector256<int> interiorV = Vector256.Create(interior);
+        valid &= Vector256.LessThanOrEqual(Vector256.Abs(p3 - p2), interiorV)
+            & Vector256.LessThanOrEqual(Vector256.Abs(p2 - p1), interiorV)
+            & Vector256.LessThanOrEqual(Vector256.Abs(p1 - p0), interiorV)
+            & Vector256.LessThanOrEqual(Vector256.Abs(q1 - q0), interiorV)
+            & Vector256.LessThanOrEqual(Vector256.Abs(q2 - q1), interiorV)
+            & Vector256.LessThanOrEqual(Vector256.Abs(q3 - q2), interiorV);
+
+        Vector256<int> highAdjustment = ClampSignedVector256(outerTap + threeDelta);
+        Vector256<int> highPAdjustment = (highAdjustment + Vector256.Create(3)) >> 3;
+        Vector256<int> highQAdjustment = (highAdjustment + Vector256.Create(4)) >> 3;
+        Vector256<int> p0High = ClampPixelVector256(p0 + highPAdjustment);
+        Vector256<int> q0High = ClampPixelVector256(q0 - highQAdjustment);
+        Vector256<int> p0Low;
+        Vector256<int> q0Low;
+        Vector256<int> p1Low;
+        Vector256<int> q1Low;
+        Vector256<int> p2Low = p2;
+        Vector256<int> q2Low = q2;
+        if (macroblockEdge)
+        {
+            Vector256<int> outer = (highAdjustment * 27 + Vector256.Create(63)) >> 7;
+            Vector256<int> middle = (highAdjustment * 18 + Vector256.Create(63)) >> 7;
+            Vector256<int> inner = (highAdjustment * 9 + Vector256.Create(63)) >> 7;
+            p0Low = ClampPixelVector256(p0 + outer);
+            q0Low = ClampPixelVector256(q0 - outer);
+            p1Low = ClampPixelVector256(p1 + middle);
+            q1Low = ClampPixelVector256(q1 - middle);
+            p2Low = ClampPixelVector256(p2 + inner);
+            q2Low = ClampPixelVector256(q2 - inner);
+        }
+        else
+        {
+            Vector256<int> pAdjustment = (adjustment + Vector256.Create(3)) >> 3;
+            Vector256<int> qAdjustment = (adjustment + Vector256.Create(4)) >> 3;
+            p0Low = ClampPixelVector256(p0 + pAdjustment);
+            q0Low = ClampPixelVector256(q0 - qAdjustment);
+            Vector256<int> inner = (((adjustment + Vector256.Create(4)) >> 3) + Vector256.Create(1)) >> 1;
+            p1Low = ClampPixelVector256(p1 + inner);
+            q1Low = ClampPixelVector256(q1 - inner);
+        }
+
+        p0Filtered = Vector256.ConditionalSelect(valid,
+            Vector256.ConditionalSelect(highVariance, p0High, p0Low), p0);
+        q0Filtered = Vector256.ConditionalSelect(valid,
+            Vector256.ConditionalSelect(highVariance, q0High, q0Low), q0);
+        p1Filtered = Vector256.ConditionalSelect(valid,
+            Vector256.ConditionalSelect(highVariance, p1, p1Low), p1);
+        q1Filtered = Vector256.ConditionalSelect(valid,
+            Vector256.ConditionalSelect(highVariance, q1, q1Low), q1);
+        if (macroblockEdge)
+        {
+            p2Filtered = Vector256.ConditionalSelect(valid,
+                Vector256.ConditionalSelect(highVariance, p2, p2Low), p2);
+            q2Filtered = Vector256.ConditionalSelect(valid,
+                Vector256.ConditionalSelect(highVariance, q2, q2Low), q2);
+        }
+    }
+
+    private static Vector256<int> ClampSignedVector256(Vector256<int> value) =>
+        Vector256.Max(Vector256.Create(-128), Vector256.Min(value, Vector256.Create(127)));
+
+    private static Vector256<int> ClampPixelVector256(Vector256<int> value) =>
+        Vector256.Max(Vector256<int>.Zero, Vector256.Min(value, Vector256.Create(255)));
 
     private static void FilterVerticalScalar(
         ref byte center, int stride, int length, bool simple,
