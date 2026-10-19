@@ -15,7 +15,6 @@ internal readonly ref struct WebpContainer
         bool hasXmp,
         ReadOnlySpan<byte> alphaData,
         bool hasAlphaChunk,
-        WebpChunkLocation[] metadataChunks,
         WebpFrameData[] frames,
         uint animationBackgroundColor,
         int loopCount)
@@ -30,7 +29,6 @@ internal readonly ref struct WebpContainer
         HasXmp = hasXmp;
         AlphaData = alphaData;
         HasAlphaChunk = hasAlphaChunk;
-        MetadataChunks = metadataChunks;
         Frames = frames;
         AnimationBackgroundColor = animationBackgroundColor;
         LoopCount = loopCount;
@@ -46,7 +44,6 @@ internal readonly ref struct WebpContainer
     public bool HasXmp { get; }
     public ReadOnlySpan<byte> AlphaData { get; }
     public bool HasAlphaChunk { get; }
-    public WebpChunkLocation[] MetadataChunks { get; }
     public WebpFrameData[] Frames { get; }
     public uint AnimationBackgroundColor { get; }
     public int LoopCount { get; }
@@ -91,7 +88,6 @@ internal readonly ref struct WebpContainer
         bool primaryHasAlpha = false;
         uint animationBackgroundColor = 0;
         int loopCount = 0;
-        var metadataChunks = new List<WebpChunkLocation>();
         var frames = new List<WebpFrameData>();
         int offset = 12;
 
@@ -174,7 +170,6 @@ internal readonly ref struct WebpContainer
                 hasAlphaChunk = true;
                 alphaOffset = payloadOffset;
                 alphaLength = payloadLength;
-                metadataChunks.Add(new WebpChunkLocation("ALPH", payloadOffset, payloadLength));
             }
             else if (type.SequenceEqual("ICCP"u8))
             {
@@ -185,7 +180,6 @@ internal readonly ref struct WebpContainer
 
                 iccOffset = payloadOffset;
                 iccLength = payloadLength;
-                metadataChunks.Add(new WebpChunkLocation("ICCP", payloadOffset, payloadLength));
             }
             else if (type.SequenceEqual("EXIF"u8))
             {
@@ -196,7 +190,6 @@ internal readonly ref struct WebpContainer
 
                 exifOffset = payloadOffset;
                 exifLength = payloadLength;
-                metadataChunks.Add(new WebpChunkLocation("EXIF", payloadOffset, payloadLength));
             }
             else if (type.SequenceEqual("XMP "u8))
             {
@@ -207,7 +200,6 @@ internal readonly ref struct WebpContainer
 
                 xmpOffset = payloadOffset;
                 xmpLength = payloadLength;
-                metadataChunks.Add(new WebpChunkLocation("XMP ", payloadOffset, payloadLength));
             }
             else if (type.SequenceEqual("ANIM"u8))
             {
@@ -219,7 +211,6 @@ internal readonly ref struct WebpContainer
                 hasAnimChunk = true;
                 animationBackgroundColor = BinaryPrimitives.ReadUInt32LittleEndian(payload[..4]);
                 loopCount = BinaryPrimitives.ReadUInt16LittleEndian(payload[4..6]);
-                metadataChunks.Add(new WebpChunkLocation("ANIM", payloadOffset, payloadLength));
             }
             else if (type.SequenceEqual("ANMF"u8))
             {
@@ -229,7 +220,6 @@ internal readonly ref struct WebpContainer
                 }
 
                 frames.Add(ReadAnimationFrame(payload, payloadOffset, canvasWidth, canvasHeight));
-                metadataChunks.Add(new WebpChunkLocation("ANMF", payloadOffset, payloadLength));
             }
 
             offset = checked((int)nextChunkLong);
@@ -307,7 +297,6 @@ internal readonly ref struct WebpContainer
             xmpOffset >= 0,
             alphaOffset < 0 ? ReadOnlySpan<byte>.Empty : data.Slice(alphaOffset, alphaLength),
             hasAlphaChunk,
-            metadataChunks.ToArray(),
             frames.ToArray(),
             animationBackgroundColor,
             animated ? loopCount : 0);
@@ -485,8 +474,6 @@ internal readonly ref struct WebpContainer
     private static int ReadUInt24(ReadOnlySpan<byte> data) =>
         data[0] | (data[1] << 8) | (data[2] << 16);
 }
-
-internal readonly record struct WebpChunkLocation(string FourCc, int Offset, int Length);
 
 internal readonly record struct WebpFrameData(
     int X,

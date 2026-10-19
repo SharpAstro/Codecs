@@ -137,17 +137,4 @@ internal ref struct Vp8TokenPartitions
             default: throw new ArgumentOutOfRangeException(nameof(partition));
         }
     }
-
-    public int ReadBit(int partition, byte probability) => partition switch
-    {
-        0 => _p0.ReadBit(probability),
-        1 => _p1.ReadBit(probability),
-        2 => _p2.ReadBit(probability),
-        3 => _p3.ReadBit(probability),
-        4 => _p4.ReadBit(probability),
-        5 => _p5.ReadBit(probability),
-        6 => _p6.ReadBit(probability),
-        7 => _p7.ReadBit(probability),
-        _ => throw new ArgumentOutOfRangeException(nameof(partition)),
-    };
 }

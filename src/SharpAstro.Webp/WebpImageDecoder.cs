@@ -43,7 +43,7 @@ public sealed class WebpImageDecoder : IImageDecoder
                 ColorEncoding.AssumedSrgb);
             return true;
         }
-        catch (Exception)
+        catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
         {
             image = null;
             return false;
@@ -68,7 +68,7 @@ public sealed class WebpImageDecoder : IImageDecoder
             WebpDecoder.DecodeTo(data, destination[..requiredLength]);
             return true;
         }
-        catch (Exception)
+        catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
         {
             return false;
         }

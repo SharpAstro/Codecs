@@ -21,7 +21,7 @@ public static class WebpDecoder
             info = WebpContainer.Read(data).Info;
             return true;
         }
-        catch (Exception)
+        catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
         {
             info = default;
             return false;
@@ -109,7 +109,8 @@ public static class WebpDecoder
         int stride,
         bool fancy)
     {
-        WebpInfo info = ReadInfo(data);
+        WebpContainer container = WebpContainer.Read(data);
+        WebpInfo info = container.Info;
         int minimumStride = checked(info.Width * 4);
         if (stride == 0)
         {
@@ -127,7 +128,6 @@ public static class WebpDecoder
             throw new ArgumentException("The destination is too small for the decoded image.", nameof(rgba));
         }
 
-        WebpContainer container = WebpContainer.Read(data);
         if (info.Format == WebpFormat.Animated)
         {
             byte[] firstFrame = DecodeFirstAnimationFrame(data, info.Width, info.Height, fancy);
@@ -174,7 +174,7 @@ public static class WebpDecoder
             DecodeTo(data, rgba, stride);
             return true;
         }
-        catch (Exception)
+        catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
         {
             return false;
         }
