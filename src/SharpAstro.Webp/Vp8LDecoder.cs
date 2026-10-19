@@ -937,21 +937,33 @@ internal static class Vp8LDecoder
     private static int[] ApplyColorIndexing(int[] pixels, Transform transform)
     {
         int packed = 1 << transform.Bits;
-        int mask = (1 << (8 / packed)) - 1;
+        int bitsPerIndex = 8 / packed;
+        int mask = (1 << bitsPerIndex) - 1;
         int width = transform.Width;
         int encodedWidth = (width + packed - 1) / packed;
         int outputCount = checked(width * transform.Height);
         int[] output = WebpBufferPool<int>.Rent(outputCount);
+        int[] table = transform.Table!;
+        int tableLength = transform.TableLength;
         try
         {
             for (int y = 0; y < transform.Height; y++)
             {
-                for (int x = 0; x < width; x++)
+                int inIndex = y * encodedWidth;
+                int outIndex = y * width;
+                int x = 0;
+                while (x < width)
                 {
-                    int packedPixel = pixels[y * encodedWidth + x / packed];
-                    int index = ((packedPixel >> 8) >> ((x % packed) * (8 / packed))) & mask;
-                    output[y * width + x] =
-                        index < transform.TableLength ? transform.Table![index] : 0;
+                    // One packed pixel carries `packed` indices; walk the group
+                    // so the per-pixel cost is a shift + table load instead of a
+                    // divide/mod pair.
+                    int indices = (pixels[inIndex++] >> 8) & 0xff;
+                    int groupEnd = Math.Min(x + packed, width);
+                    for (int shift = 0; x < groupEnd; x++, shift += bitsPerIndex)
+                    {
+                        int index = (indices >> shift) & mask;
+                        output[outIndex++] = index < tableLength ? table[index] : 0;
+                    }
                 }
             }
 
