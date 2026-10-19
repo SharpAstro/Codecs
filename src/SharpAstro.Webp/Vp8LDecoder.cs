@@ -897,7 +897,12 @@ internal static class Vp8LDecoder
         };
     }
 
-    private static int[] ApplyColorTransform(int[] pixels, Transform transform)
+    private static int[] ApplyColorTransform(int[] pixels, Transform transform) =>
+        Vector.IsHardwareAccelerated
+            ? ApplyColorTransformVector(pixels, transform)
+            : ApplyColorTransformScalar(pixels, transform);
+
+    internal static int[] ApplyColorTransformScalar(int[] pixels, Transform transform)
     {
         int blockWidth = (transform.Width + (1 << transform.Bits) - 1) >> transform.Bits;
         for (int y = 0; y < transform.Height; y++)
@@ -921,6 +926,84 @@ internal static class Vp8LDecoder
         return pixels;
     }
 
+    // Per-block-segment dispatch again: the three multiplier bytes are constant
+    // across a (1 << bits)-wide run, so they broadcast into int lanes. All the
+    // arithmetic is exact int math (products fit, shifts match the scalar >>
+    // semantics), so vector lanes are bit-identical to the scalar path.
+    internal static int[] ApplyColorTransformVector(int[] pixels, Transform transform)
+    {
+        int width = transform.Width;
+        int height = transform.Height;
+        int bits = transform.Bits;
+        int blockWidth = (width + (1 << bits) - 1) >> bits;
+        int[] data = transform.Data!;
+        int index = 0;
+        for (int y = 0; y < height; y++)
+        {
+            int blockRow = (y >> bits) * blockWidth;
+            for (int bx = 0; bx < blockWidth; bx++)
+            {
+                int x = bx << bits;
+                if (x >= width)
+                {
+                    break;
+                }
+
+                int cte = data[blockRow + bx];
+                int count = Math.Min((bx + 1) << bits, width) - x;
+                ColorTransformSegment(pixels, index, count, cte);
+                index += count;
+            }
+        }
+
+        return pixels;
+    }
+
+    private static void ColorTransformSegment(int[] pixels, int index, int count, int cte)
+    {
+        int c0 = (sbyte)cte;
+        int c1 = (sbyte)(cte >> 8);
+        int c2 = (sbyte)(cte >> 16);
+        int i = 0;
+        if (Vector.IsHardwareAccelerated && count >= Vector<int>.Count)
+        {
+            Vector<int> c0v = new(c0);
+            Vector<int> c1v = new(c1);
+            Vector<int> c2v = new(c2);
+            Vector<int> ff = new(0xff);
+            Vector<int> keep = new(unchecked((int)0xff00ff00));
+            ref int baseRef = ref MemoryMarshal.GetArrayDataReference(pixels);
+            ref int at = ref Unsafe.Add(ref baseRef, index);
+            for (; i + Vector<int>.Count <= count; i += Vector<int>.Count)
+            {
+                Vector<int> v = Vector.LoadUnsafe(ref at, (nuint)i);
+                Vector<int> green = (v >> 8) & ff;
+                Vector<int> red = (v >> 16) & ff;
+                Vector<int> blue = v & ff;
+                Vector<int> signedGreen = (green << 24) >> 24;
+                Vector<int> newRed = red + ((signedGreen * c0v) >> 5);
+                Vector<int> red8 = newRed & ff;
+                Vector<int> signedRed = (red8 << 24) >> 24;
+                Vector<int> newBlue = (blue + ((signedGreen * c1v) >> 5) +
+                    ((signedRed * c2v) >> 5)) & ff;
+                ((v & keep) | (red8 << 16) | newBlue).StoreUnsafe(ref at, (nuint)i);
+            }
+        }
+
+        for (; i < count; i++)
+        {
+            int p = pixels[index + i];
+            int green = (p >> 8) & 0xff;
+            int red = (p >> 16) & 0xff;
+            int blue = p & 0xff;
+            int redDelta = c0 * (sbyte)green >> 5;
+            int blueDelta = c1 * (sbyte)green >> 5;
+            int redForBlue = (red + redDelta) & 0xff;
+            blue = (blue + blueDelta + (c2 * (sbyte)redForBlue >> 5)) & 0xff;
+            pixels[index + i] = (p & unchecked((int)0xff00ff00)) | (redForBlue << 16) | blue;
+        }
+    }
+
     // Byte positions 1 of each little-endian int, spread into positions 0 and 2:
     // the shuffle produces the addend {green, 0, green, 0} per pixel so one
     // vector add implements (blue += green; red += green) per byte lane.
@@ -931,7 +1014,12 @@ internal static class Vp8LDecoder
         (byte)1, 0x80, 1, 0x80, 5, 0x80, 5, 0x80, 9, 0x80, 9, 0x80, 13, 0x80, 13, 0x80,
         17, 0x80, 17, 0x80, 21, 0x80, 21, 0x80, 25, 0x80, 25, 0x80, 29, 0x80, 29, 0x80);
 
-    private static int[] ApplySubtractGreen(int[] pixels, Transform transform)
+    private static int[] ApplySubtractGreen(int[] pixels, Transform transform) =>
+        Vector128.IsHardwareAccelerated
+            ? ApplySubtractGreenVector(pixels, transform)
+            : ApplySubtractGreenScalar(pixels, transform);
+
+    internal static int[] ApplySubtractGreenVector(int[] pixels, Transform transform)
     {
         int pixelCount = checked(transform.Width * transform.Height);
         ref int baseRef = ref MemoryMarshal.GetArrayDataReference(pixels);
@@ -946,7 +1034,7 @@ internal static class Vp8LDecoder
                 v.StoreUnsafe(ref bytes, (nuint)(i * 4));
             }
         }
-        else if (Vector128.IsHardwareAccelerated)
+        else
         {
             for (; i + 4 <= pixelCount; i += 4)
             {
@@ -956,6 +1044,15 @@ internal static class Vp8LDecoder
             }
         }
 
+        return ApplySubtractGreenTail(pixels, transform, i);
+    }
+
+    internal static int[] ApplySubtractGreenScalar(int[] pixels, Transform transform) =>
+        ApplySubtractGreenTail(pixels, transform, 0);
+
+    private static int[] ApplySubtractGreenTail(int[] pixels, Transform transform, int i)
+    {
+        int pixelCount = checked(transform.Width * transform.Height);
         for (; i < pixelCount; i++)
         {
             int green = (pixels[i] >> 8) & 0xff;
