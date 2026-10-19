@@ -102,4 +102,29 @@ public sealed class Vp8LPredictorEquivalenceTests
             Assert.Equal(scalar, vector);
         }
     }
+
+    [Fact]
+    public void VectorToRgbaMatchesScalarForAllWidthsAndStrides()
+    {
+        var random = new Random(0x9649);
+        foreach (int width in new[] { 1, 3, 4, 7, 8, 9, 15, 31, 33 })
+        {
+            foreach (int extraStride in new[] { 0, 3 })
+            {
+                int height = 4;
+                int stride = width * 4 + extraStride;
+                int[] argb = new int[width * height];
+                for (int i = 0; i < argb.Length; i++)
+                {
+                    argb[i] = random.Next();
+                }
+
+                var scalar = new byte[height * stride];
+                var vector = new byte[height * stride];
+                Vp8LDecoder.ToRgbaScalar(argb, scalar, width, height, stride);
+                Vp8LDecoder.ToRgbaVector(argb, vector, width, height, stride);
+                Assert.Equal(scalar, vector);
+            }
+        }
+    }
 }

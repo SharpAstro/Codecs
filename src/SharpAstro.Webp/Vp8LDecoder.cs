@@ -1185,7 +1185,27 @@ internal static class Vp8LDecoder
         return (width, height, pixels);
     }
 
+    // Little-endian ARGB ints are [B,G,R,A] in memory; RGBA wants bytes 0 and 2
+    // swapped, which is a single byte shuffle per vector.
+    private static readonly Vector128<byte> ToRgbaSwap = Vector128.Create(
+        (byte)2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
+
+    private static readonly Vector256<byte> ToRgbaSwap256 = Vector256.Create(
+        (byte)2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15,
+        18, 17, 16, 19, 22, 21, 20, 23, 26, 25, 24, 27, 30, 29, 28, 31);
+
     private static void ToRgba(int[] argb, Span<byte> output, int width, int height, int stride)
+    {
+        if (Vector128.IsHardwareAccelerated)
+        {
+            ToRgbaVector(argb, output, width, height, stride);
+            return;
+        }
+
+        ToRgbaScalar(argb, output, width, height, stride);
+    }
+
+    internal static void ToRgbaScalar(int[] argb, Span<byte> output, int width, int height, int stride)
     {
         for (int row = 0; row < height; row++)
         {
@@ -1200,6 +1220,45 @@ internal static class Vp8LDecoder
             }
         }
 
+    }
+
+    internal static void ToRgbaVector(int[] argb, Span<byte> output, int width, int height, int stride)
+    {
+        ref int sourceBase = ref MemoryMarshal.GetArrayDataReference(argb);
+        ref byte sourceBytes = ref Unsafe.As<int, byte>(ref sourceBase);
+        ref byte outputBase = ref MemoryMarshal.GetReference(output);
+        for (int row = 0; row < height; row++)
+        {
+            ref byte source = ref Unsafe.Add(ref sourceBytes, row * width * 4);
+            ref byte target = ref Unsafe.Add(ref outputBase, row * stride);
+            int x = 0;
+            if (Vector256.IsHardwareAccelerated)
+            {
+                for (; x + 8 <= width; x += 8)
+                {
+                    Vector256<byte> v = Vector256.LoadUnsafe(ref source, (nuint)(x * 4));
+                    Vector256.Shuffle(v, ToRgbaSwap256).StoreUnsafe(ref target, (nuint)(x * 4));
+                }
+            }
+            else
+            {
+                for (; x + 4 <= width; x += 4)
+                {
+                    Vector128<byte> v = Vector128.LoadUnsafe(ref source, (nuint)(x * 4));
+                    Vector128.Shuffle(v, ToRgbaSwap).StoreUnsafe(ref target, (nuint)(x * 4));
+                }
+            }
+
+            for (; x < width; x++)
+            {
+                int p = argb[row * width + x];
+                int outputIndex = row * stride + x * 4;
+                output[outputIndex] = (byte)(p >> 16);
+                output[outputIndex + 1] = (byte)(p >> 8);
+                output[outputIndex + 2] = (byte)p;
+                output[outputIndex + 3] = (byte)(p >> 24);
+            }
+        }
     }
 
     internal readonly record struct Transform(
