@@ -311,18 +311,25 @@ internal static class Vp8LDecoder
             }
 
             int position = 0;
+            // (x, y) is only needed to look up the meta-entropy group, so it is
+            // tracked incrementally: a pixel advance is x++, and only a backward
+            // copy (which can cross rows) pays a divide. The group struct is
+            // referenced, not copied, per pixel.
+            int x = 0;
+            int y = 0;
             while (position < pixelCount)
             {
-                int x = position % width;
-                int y = position / width;
-                int group = entropy is null ? 0 :
-                    ((entropy[(y >> prefixBits) * entropyWidth + (x >> prefixBits)] >> 8) & 0xffff);
-                if ((uint)group >= groupCount)
+                int group = 0;
+                if (entropy is not null)
                 {
-                    throw new InvalidDataException("The VP8L meta prefix code is out of range.");
+                    group = (entropy[(y >> prefixBits) * entropyWidth + (x >> prefixBits)] >> 8) & 0xffff;
+                    if ((uint)group >= groupCount)
+                    {
+                        throw new InvalidDataException("The VP8L meta prefix code is out of range.");
+                    }
                 }
 
-                PrefixGroup prefix = groups[group];
+                ref PrefixGroup prefix = ref groups[group];
                 int symbol = prefix.Green.Decode(ref reader);
                 if (symbol < 256)
                 {
@@ -337,6 +344,12 @@ internal static class Vp8LDecoder
                     int color = (alpha << 24) | (red << 16) | (symbol << 8) | blue;
                     result[position++] = color;
                     AddCache(cache, color, cacheBits);
+                    if (++x == width)
+                    {
+                        x = 0;
+                        y++;
+                    }
+
                     continue;
                 }
 
@@ -382,6 +395,12 @@ internal static class Vp8LDecoder
                         }
                     }
 
+                    if (entropy is not null)
+                    {
+                        x = position % width;
+                        y = position / width;
+                    }
+
                     continue;
                 }
 
@@ -393,6 +412,11 @@ internal static class Vp8LDecoder
                 int cached = cache[symbol - 280];
                 result[position++] = cached;
                 AddCache(cache, cached, cacheBits);
+                if (++x == width)
+                {
+                    x = 0;
+                    y++;
+                }
             }
 
             int[] decoded = result;
