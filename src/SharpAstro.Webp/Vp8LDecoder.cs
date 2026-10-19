@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
 
 namespace SharpAstro.Webp;
 
@@ -727,11 +728,7 @@ internal static class Vp8LDecoder
                         AddConstant(pixels, index, remaining, unchecked((int)0xff000000));
                         break;
                     case 1:
-                        for (int i = 0; i < remaining; i++)
-                        {
-                            pixels[index + i] = AddArgb(pixels[index + i], pixels[index + i - 1]);
-                        }
-
+                        LeftSegment(pixels, index, remaining);
                         break;
                     case 2:
                         AddAbove(pixels, index, remaining, -width);
@@ -784,13 +781,7 @@ internal static class Vp8LDecoder
 
                         break;
                     case 11:
-                        for (int i = 0; i < remaining; i++)
-                        {
-                            int j = index + i;
-                            pixels[j] = AddArgb(pixels[j],
-                                Select(pixels[j - 1], pixels[j - width], pixels[j - width - 1]));
-                        }
-
+                        SelectSegment(pixels, index, remaining, width);
                         break;
                     case 12:
                         for (int i = 0; i < remaining; i++)
@@ -894,6 +885,129 @@ internal static class Vp8LDecoder
         {
             pixels[index + pixel] = AddArgb(pixels[index + pixel], value);
         }
+    }
+
+    // Byte-position shuffles for the left-predictor prefix sum. Shift masks
+    // move each int's bytes one/two/four pixels forward (zero-fill at the
+    // start); indices are absolute across the whole 256-bit vector, which is
+    // what lets the 16-byte step carry into the upper lane.
+    private static readonly Vector256<byte> PrefixShift4 = Vector256.Create(
+        0x80, 0x80, 0x80, 0x80, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+        12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27);
+    private static readonly Vector256<byte> PrefixShift8 = Vector256.Create(
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20, 21, 22, 23);
+    private static readonly Vector256<byte> PrefixShift16 = Vector256.Create(
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    private static readonly Vector256<byte> Broadcast4x8 = Vector256.Create(
+        (byte)0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3,
+        0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3);
+    private static readonly Vector256<byte> BroadcastLast4x8 = Vector256.Create(
+        (byte)28, 29, 30, 31, 28, 29, 30, 31, 28, 29, 30, 31, 28, 29, 30, 31,
+        28, 29, 30, 31, 28, 29, 30, 31, 28, 29, 30, 31, 28, 29, 30, 31);
+    private static readonly Vector128<byte> PrefixShift4x4 = Vector128.Create(
+        0x80, 0x80, 0x80, 0x80, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11);
+    private static readonly Vector128<byte> PrefixShift8x4 = Vector128.Create(
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
+        0, 1, 2, 3, 4, 5, 6, 7);
+    private static readonly Vector128<byte> Broadcast4x4 = Vector128.Create(
+        (byte)0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3);
+    private static readonly Vector128<byte> BroadcastLast4x4 = Vector128.Create(
+        (byte)12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15);
+
+    // Mode 1 (left): out[i] = out[i-1] + res[i] per byte lane — a prefix sum
+    // with stride 4. Byte adds wrap mod 256 exactly like AddArgb, so the
+    // log-step shuffle+adds compute all four channels' sums at once; the
+    // previous pixel broadcasts in as the base.
+    private static void LeftSegment(int[] pixels, int index, int count)
+    {
+        ref int baseRef = ref MemoryMarshal.GetArrayDataReference(pixels);
+        ref byte bytes = ref Unsafe.As<int, byte>(ref baseRef);
+        int i = 0;
+        if (Vector256.IsHardwareAccelerated)
+        {
+            Vector256<byte> carry = Vector256.Shuffle(
+                Vector256.CreateScalar(pixels[index - 1]).AsByte(), Broadcast4x8);
+            for (; i + 8 <= count; i += 8)
+            {
+                Vector256<byte> v = Vector256.LoadUnsafe(ref bytes, (nuint)((index + i) * 4));
+                v += Vector256.Shuffle(v, PrefixShift4);
+                v += Vector256.Shuffle(v, PrefixShift8);
+                v += Vector256.Shuffle(v, PrefixShift16);
+                v += carry;
+                v.StoreUnsafe(ref bytes, (nuint)((index + i) * 4));
+                carry = Vector256.Shuffle(v, BroadcastLast4x8);
+            }
+        }
+        else if (Vector128.IsHardwareAccelerated)
+        {
+            Vector128<byte> carry = Vector128.Shuffle(
+                Vector128.CreateScalar(pixels[index - 1]).AsByte(), Broadcast4x4);
+            for (; i + 4 <= count; i += 4)
+            {
+                Vector128<byte> v = Vector128.LoadUnsafe(ref bytes, (nuint)((index + i) * 4));
+                v += Vector128.Shuffle(v, PrefixShift4x4);
+                v += Vector128.Shuffle(v, PrefixShift8x4);
+                v += carry;
+                v.StoreUnsafe(ref bytes, (nuint)((index + i) * 4));
+                carry = Vector128.Shuffle(v, BroadcastLast4x4);
+            }
+        }
+
+        int left = pixels[index + i - 1];
+        for (; i < count; i++)
+        {
+            left = AddArgb(pixels[index + i], left);
+            pixels[index + i] = left;
+        }
+    }
+
+    // Mode 11 (select): same recurrence as the scalar loop, but kept in vector
+    // registers — each 4-channel L1 distance is one SAD op and the residual
+    // add is a wrapping byte add. The left value stays in a register.
+    private static void SelectSegment(int[] pixels, int index, int count, int width)
+    {
+        if (Vector128.IsHardwareAccelerated)
+        {
+            Vector128<byte> left = Vector128.CreateScalar(pixels[index - 1]).AsByte();
+            for (int i = 0; i < count; i++)
+            {
+                int j = index + i;
+                Vector128<byte> top = Vector128.CreateScalar(pixels[j - width]).AsByte();
+                Vector128<byte> topLeft = Vector128.CreateScalar(pixels[j - width - 1]).AsByte();
+                int dl = Sad4(top, topLeft);
+                int dt = Sad4(left, topLeft);
+                Vector128<byte> pred = dl < dt ? left : top;
+                Vector128<byte> o = Vector128.CreateScalar(pixels[j]).AsByte() + pred;
+                pixels[j] = o.AsInt32().ToScalar();
+                left = o;
+            }
+
+            return;
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            int j = index + i;
+            pixels[j] = AddArgb(pixels[j], Select(pixels[j - 1], pixels[j - width], pixels[j - width - 1]));
+        }
+    }
+
+    // a and b have only bytes 0-3 set (CreateScalar zero-pads), so summing the
+    // low absolute byte differences gives the four-channel L1 distance.
+    private static int Sad4(Vector128<byte> a, Vector128<byte> b)
+    {
+        if (Sse2.IsSupported)
+        {
+            return Sse2.SumAbsoluteDifferences(a, b).ToScalar();
+        }
+
+        Vector128<byte> diff = Vector128.Max(a, b) - Vector128.Min(a, b);
+        Vector128<ushort> wide = Vector128.WidenLower(diff);
+        return wide[0] + wide[1] + wide[2] + wide[3];
     }
 
     private static int Predict(int mode, int x, int y, int width, int left, int top, int topLeft, int topRight)
