@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -627,7 +628,12 @@ internal static class Vp8LDecoder
         };
     }
 
-    private static int[] ApplyPredictor(int[] pixels, Transform transform)
+    private static int[] ApplyPredictor(int[] pixels, Transform transform) =>
+        Vector.IsHardwareAccelerated
+            ? ApplyPredictorVector(pixels, transform)
+            : ApplyPredictorScalar(pixels, transform);
+
+    internal static int[] ApplyPredictorScalar(int[] pixels, Transform transform)
     {
         int width = transform.Width;
         int height = transform.Height;
@@ -650,6 +656,219 @@ internal static class Vp8LDecoder
         }
 
         return pixels;
+    }
+
+    // Per-block-segment dispatch: the mode is constant across a (1 << bits)-wide
+    // run of pixels, so the per-pixel mode fetch + switch of the scalar path is
+    // paid once per segment instead. Modes that only read the row above are
+    // bytewise-vectorizable (AddArgb/Average are per-byte-lane operations);
+    // modes that read the just-written left pixel stay scalar per segment.
+    internal static int[] ApplyPredictorVector(int[] pixels, Transform transform)
+    {
+        int width = transform.Width;
+        int height = transform.Height;
+        int bits = transform.Bits;
+        int blockWidth = (width + (1 << bits) - 1) >> bits;
+        int[] data = transform.Data!;
+        int index = 0;
+        for (int y = 0; y < height; y++)
+        {
+            int blockRow = (y >> bits) * blockWidth;
+            if (y == 0)
+            {
+                // First pixel uses the black predictor; the rest of the top row
+                // is left-predicted no matter what the block modes say.
+                pixels[index] = AddArgb(pixels[index], unchecked((int)0xff000000));
+                index++;
+                for (int column = 1; column < width; column++, index++)
+                {
+                    pixels[index] = AddArgb(pixels[index], pixels[index - 1]);
+                }
+
+                continue;
+            }
+
+            // x == 0 always predicts top, whatever the segment mode is.
+            pixels[index] = AddArgb(pixels[index], pixels[index - width]);
+            index++;
+            int x = 1;
+            while (x < width)
+            {
+                int mode = (data[blockRow + (x >> bits)] >> 8) & 0xff;
+                int remaining = Math.Min(((x >> bits) + 1) << bits, width) - x;
+                switch (mode)
+                {
+                    case 0:
+                        AddConstant(pixels, index, remaining, unchecked((int)0xff000000));
+                        break;
+                    case 1:
+                        for (int i = 0; i < remaining; i++)
+                        {
+                            pixels[index + i] = AddArgb(pixels[index + i], pixels[index + i - 1]);
+                        }
+
+                        break;
+                    case 2:
+                        AddAbove(pixels, index, remaining, -width);
+                        break;
+                    case 3:
+                        AddAbove(pixels, index, remaining, 1 - width);
+                        break;
+                    case 4:
+                        AddAbove(pixels, index, remaining, -width - 1);
+                        break;
+                    case 5:
+                        for (int i = 0; i < remaining; i++)
+                        {
+                            int j = index + i;
+                            pixels[j] = AddArgb(pixels[j],
+                                Average(Average(pixels[j - 1], pixels[j - width + 1]), pixels[j - width]));
+                        }
+
+                        break;
+                    case 6:
+                        for (int i = 0; i < remaining; i++)
+                        {
+                            int j = index + i;
+                            pixels[j] = AddArgb(pixels[j], Average(pixels[j - 1], pixels[j - width - 1]));
+                        }
+
+                        break;
+                    case 7:
+                        for (int i = 0; i < remaining; i++)
+                        {
+                            int j = index + i;
+                            pixels[j] = AddArgb(pixels[j], Average(pixels[j - 1], pixels[j - width]));
+                        }
+
+                        break;
+                    case 8:
+                        AddAverageAbove(pixels, index, remaining, -width - 1, -width);
+                        break;
+                    case 9:
+                        AddAverageAbove(pixels, index, remaining, -width, 1 - width);
+                        break;
+                    case 10:
+                        for (int i = 0; i < remaining; i++)
+                        {
+                            int j = index + i;
+                            pixels[j] = AddArgb(pixels[j],
+                                Average(Average(pixels[j - 1], pixels[j - width - 1]),
+                                    Average(pixels[j - width], pixels[j - width + 1])));
+                        }
+
+                        break;
+                    case 11:
+                        for (int i = 0; i < remaining; i++)
+                        {
+                            int j = index + i;
+                            pixels[j] = AddArgb(pixels[j],
+                                Select(pixels[j - 1], pixels[j - width], pixels[j - width - 1]));
+                        }
+
+                        break;
+                    case 12:
+                        for (int i = 0; i < remaining; i++)
+                        {
+                            int j = index + i;
+                            pixels[j] = AddArgb(pixels[j],
+                                ClampAdd(pixels[j - 1], pixels[j - width], pixels[j - width - 1]));
+                        }
+
+                        break;
+                    case 13:
+                        for (int i = 0; i < remaining; i++)
+                        {
+                            int j = index + i;
+                            pixels[j] = AddArgb(pixels[j],
+                                ClampHalf(Average(pixels[j - 1], pixels[j - width]), pixels[j - width - 1]));
+                        }
+
+                        break;
+                    default:
+                        throw new InvalidDataException("The VP8L predictor mode is invalid.");
+                }
+
+                x += remaining;
+                index += remaining;
+            }
+        }
+
+        return pixels;
+    }
+
+    private static void AddAbove(int[] pixels, int index, int count, int offset)
+    {
+        int i = 0;
+        int byteCount = count * 4;
+        if (Vector.IsHardwareAccelerated && byteCount >= Vector<byte>.Count)
+        {
+            ref byte baseRef = ref MemoryMarshal.GetReference(MemoryMarshal.Cast<int, byte>(pixels.AsSpan()));
+            ref byte destination = ref Unsafe.Add(ref baseRef, index * 4);
+            ref byte source = ref Unsafe.Add(ref baseRef, (index + offset) * 4);
+            for (; i + Vector<byte>.Count <= byteCount; i += Vector<byte>.Count)
+            {
+                Vector<byte> current = Vector.LoadUnsafe(ref destination, (nuint)i);
+                Vector<byte> above = Vector.LoadUnsafe(ref source, (nuint)i);
+                (current + above).StoreUnsafe(ref destination, (nuint)i);
+            }
+        }
+
+        for (int pixel = i / 4; pixel < count; pixel++)
+        {
+            pixels[index + pixel] = AddArgb(pixels[index + pixel], pixels[index + pixel + offset]);
+        }
+    }
+
+    private static void AddAverageAbove(int[] pixels, int index, int count, int offsetA, int offsetB)
+    {
+        int i = 0;
+        int byteCount = count * 4;
+        if (Vector.IsHardwareAccelerated && byteCount >= Vector<byte>.Count)
+        {
+            ref byte baseRef = ref MemoryMarshal.GetReference(MemoryMarshal.Cast<int, byte>(pixels.AsSpan()));
+            ref byte destination = ref Unsafe.Add(ref baseRef, index * 4);
+            ref byte sourceA = ref Unsafe.Add(ref baseRef, (index + offsetA) * 4);
+            ref byte sourceB = ref Unsafe.Add(ref baseRef, (index + offsetB) * 4);
+            for (; i + Vector<byte>.Count <= byteCount; i += Vector<byte>.Count)
+            {
+                Vector<byte> a = Vector.LoadUnsafe(ref sourceA, (nuint)i);
+                Vector<byte> b = Vector.LoadUnsafe(ref sourceB, (nuint)i);
+                // (a + b) >> 1 per byte lane, no carry between lanes.
+                Vector<byte> average = (a & b) + Vector.ShiftRightLogical(a ^ b, 1);
+                Vector<byte> current = Vector.LoadUnsafe(ref destination, (nuint)i);
+                (current + average).StoreUnsafe(ref destination, (nuint)i);
+            }
+        }
+
+        for (int pixel = i / 4; pixel < count; pixel++)
+        {
+            pixels[index + pixel] = AddArgb(pixels[index + pixel],
+                Average(pixels[index + pixel + offsetA], pixels[index + pixel + offsetB]));
+        }
+    }
+
+    private static void AddConstant(int[] pixels, int index, int count, int value)
+    {
+        int i = 0;
+        int byteCount = count * 4;
+        if (Vector.IsHardwareAccelerated && byteCount >= Vector<byte>.Count)
+        {
+            Vector<int> pattern = new(value);
+            Vector<byte> constant = Unsafe.As<Vector<int>, Vector<byte>>(ref pattern);
+            ref byte baseRef = ref MemoryMarshal.GetReference(MemoryMarshal.Cast<int, byte>(pixels.AsSpan()));
+            ref byte destination = ref Unsafe.Add(ref baseRef, index * 4);
+            for (; i + Vector<byte>.Count <= byteCount; i += Vector<byte>.Count)
+            {
+                Vector<byte> current = Vector.LoadUnsafe(ref destination, (nuint)i);
+                (current + constant).StoreUnsafe(ref destination, (nuint)i);
+            }
+        }
+
+        for (int pixel = i / 4; pixel < count; pixel++)
+        {
+            pixels[index + pixel] = AddArgb(pixels[index + pixel], value);
+        }
     }
 
     private static int Predict(int mode, int x, int y, int width, int left, int top, int topLeft, int topRight)
@@ -841,7 +1060,7 @@ internal static class Vp8LDecoder
 
     }
 
-    private readonly record struct Transform(
+    internal readonly record struct Transform(
         int Type,
         int Width,
         int Height,
