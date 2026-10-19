@@ -725,6 +725,36 @@ internal static class Vp8Decoder
 
     private static bool Dequantize(Span<int> coefficients, int dc, int ac)
     {
+        if (Vector128.IsHardwareAccelerated)
+        {
+            return DequantizeVector(coefficients, dc, ac);
+        }
+
+        return DequantizeScalar(coefficients, dc, ac);
+    }
+
+    // The unchecked (short) truncation is a sign-extend of the low 16 bits:
+    // (x << 16) >> 16 arithmetically in int lanes.
+    internal static bool DequantizeVector(Span<int> coefficients, int dc, int ac)
+    {
+        Vector128<int> q0 = Vector128.Create(dc, ac, ac, ac);
+        Vector128<int> q = Vector128.Create(ac);
+        Vector128<int> low = Vector128.Create(0, -1, -1, -1);
+        ref int c = ref MemoryMarshal.GetReference(coefficients);
+        Vector128<int> v0 = Wrap16(Vector128.Multiply(Vector128.LoadUnsafe(ref c), q0));
+        Vector128<int> v1 = Wrap16(Vector128.Multiply(Vector128.LoadUnsafe(ref c, 4), q));
+        Vector128<int> v2 = Wrap16(Vector128.Multiply(Vector128.LoadUnsafe(ref c, 8), q));
+        Vector128<int> v3 = Wrap16(Vector128.Multiply(Vector128.LoadUnsafe(ref c, 12), q));
+        v0.StoreUnsafe(ref c);
+        v1.StoreUnsafe(ref c, 4);
+        v2.StoreUnsafe(ref c, 8);
+        v3.StoreUnsafe(ref c, 12);
+        Vector128<int> acc = (v0 & low) | v1 | v2 | v3;
+        return !Vector128.EqualsAll(acc, Vector128<int>.Zero);
+    }
+
+    internal static bool DequantizeScalar(Span<int> coefficients, int dc, int ac)
+    {
         coefficients[0] = unchecked((short)(coefficients[0] * dc));
         bool hasAc = false;
         for (int i = 1; i < 16; i++)
@@ -736,6 +766,9 @@ internal static class Vp8Decoder
 
         return hasAc;
     }
+
+    private static Vector128<int> Wrap16(Vector128<int> v) =>
+        Vector128.ShiftRightArithmetic(Vector128.ShiftLeft(v, 16), 16);
 
     private static void InverseWalsh(Span<int> input, Span<short> output)
     {
@@ -816,6 +849,37 @@ internal static class Vp8Decoder
     }
 
     private static void AddResidual(byte[] plane, int stride, int x, int y, ReadOnlySpan<short> residual)
+    {
+        if (Vector128.IsHardwareAccelerated)
+        {
+            AddResidualVector(plane, stride, x, y, residual);
+            return;
+        }
+
+        AddResidualScalar(plane, stride, x, y, residual);
+    }
+
+    internal static void AddResidualVector(byte[] plane, int stride, int x, int y, ReadOnlySpan<short> residual)
+    {
+        Vector128<short> zero = Vector128<short>.Zero;
+        Vector128<short> max = Vector128.Create((short)255);
+        ref byte dst = ref plane[y * stride + x];
+        ref short res = ref MemoryMarshal.GetReference(residual);
+        for (int row = 0; row < 4; row++)
+        {
+            Vector128<short> p = Vector128.WidenLower(
+                Vector128.CreateScalar(Unsafe.ReadUnaligned<uint>(ref dst)).AsByte()).AsInt16();
+            Vector128<short> r = Vector128.CreateScalar(
+                Unsafe.ReadUnaligned<ulong>(ref Unsafe.As<short, byte>(ref res))).AsInt16();
+            Vector128<short> s = Vector128.Min(Vector128.Max(Vector128.Add(p, r), zero), max);
+            Unsafe.WriteUnaligned(ref dst,
+                Vector128.Narrow(s.AsUInt16(), s.AsUInt16()).AsUInt32().ToScalar());
+            dst = ref Unsafe.Add(ref dst, stride);
+            res = ref Unsafe.Add(ref res, 4);
+        }
+    }
+
+    internal static void AddResidualScalar(byte[] plane, int stride, int x, int y, ReadOnlySpan<short> residual)
     {
         for (int row = 0; row < 4; row++)
         {
