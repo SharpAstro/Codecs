@@ -60,6 +60,32 @@ public static class PngPredictor
         return output;
     }
 
+    /// <summary>
+    /// Unfilters one row in place: <paramref name="row"/> holds the filtered bytes (without the filter
+    /// byte) and is left holding the samples. Every filter reads only bytes left of the one it writes, and
+    /// the previous row, so the row can be its own input. <paramref name="prevRow"/> is the previous row's
+    /// samples, all zero for the first row.
+    /// </summary>
+    internal static void UnfilterRow(byte filterType, Span<byte> row, ReadOnlySpan<byte> prevRow, int bytesPerComponent)
+    {
+        switch (filterType)
+        {
+            case 1: // Sub
+                UnfilterSub(row, row, bytesPerComponent);
+                break;
+            case 2: // Up
+                UnfilterUp(row, row, prevRow);
+                break;
+            case 3: // Average
+                UnfilterAverage(row, row, prevRow, bytesPerComponent);
+                break;
+            case 4: // Paeth
+                UnfilterPaeth(row, row, prevRow, bytesPerComponent);
+                break;
+            // None, and an unknown type, leave the bytes as they are, as Unfilter copies them.
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static int PaethPredictor(int a, int b, int c)
     {

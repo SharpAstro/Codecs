@@ -14,6 +14,20 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.18
+
+`SharpAstro.Png` decodes into the samples and nothing else.
+
+- **`PngReader.Decode` allocates the image once.** It copied every IDAT payload out of the input,
+  concatenated the copies, copied that again to wrap it in a stream, inflated into a growing
+  `MemoryStream`, copied that out, and unfiltered the copy into a new array. Now the IDAT payloads are
+  read where they lie in the input, each row is inflated straight into its place in the result, and
+  unfiltered there against the row above (`PngPredictor.UnfilterRow`, internal). A 5100x6600 RGB page
+  allocated 514.8 MB to decode and allocates 101.0 MB, its samples; the time is unchanged
+  (1.04-1.36 s before, 1.04-1.24 s after, alternated).
+- A stream a row short, or running past the last row, is refused as before, with the same
+  `InvalidDataException`.
+
 ## 3.17
 
 `SharpAstro.Png` reads a PNG into an RGBA8 array in one call (#32).
