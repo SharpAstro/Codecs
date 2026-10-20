@@ -92,6 +92,38 @@ public sealed class PngImageDecoder : IImageDecoder
         }
     }
 
+    /// <summary>
+    /// Decode a PNG to tightly-packed 8-bit RGBA in an array the caller owns, without knowing its
+    /// size first: the one-call form of <see cref="TryReadInfo"/> + allocate + <see cref="TryDecodeIntoRgba8"/>.
+    /// An 8-bit RGBA file's decoded samples already are that layout, so they are handed back as they
+    /// are; every other colour type is expanded once, the same mapping <see cref="TryDecodeIntoRgba8"/>
+    /// uses. Either way the result is a fresh array of exactly <c>width * height * 4</c> bytes that
+    /// nothing else references, so a caller can adopt it (DIR.Lib's <c>RgbaImage(width, height, pixels)</c>)
+    /// rather than copy it.
+    /// </summary>
+    /// <remarks>False for a stream this reader rejects (Adam7 interlace, sub-byte depths, a corrupt
+    /// file) and, like <see cref="TryDecodeIntoRgba8"/>, for cICP PQ/HLG-tagged files.</remarks>
+    public static bool TryDecodeRgba8(ReadOnlySpan<byte> data, [NotNullWhen(true)] out byte[]? rgba, out int width, out int height)
+    {
+        rgba = null;
+        width = height = 0;
+        try
+        {
+            var png = PngReader.Decode(data);
+            if (png.Cicp is { } cicp &&
+                cicp.TransferFunction is TransferFunction.Pq or TransferFunction.Hlg)
+                return false;
+            rgba = png.ColorType == 6 && png.BitDepth == 8 ? png.Pixels : png.ToRgba8();
+            width = png.Width;
+            height = png.Height;
+            return true;
+        }
+        catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
     // The layout TryDecode produces. Indexed always expands to RGBA8; the rest keep
     // their native channel count and bit depth. Mirrors the ToDecoded mapping below.
     private static bool TryMapLayout(int colorType, int bitDepth, out int channels, out SampleFormat format)

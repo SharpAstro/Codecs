@@ -14,6 +14,21 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.17
+
+`SharpAstro.Png` reads a PNG into an RGBA8 array in one call (#32).
+
+- **`PngImageDecoder.TryDecodeRgba8(data, out rgba, out width, out height)`** is the reading half
+  `PngWriter.Encode(rgba, w, h)` lacked. Callers no longer chain `TryReadInfo`, an allocation and
+  `TryDecodeIntoRgba8`, and need not know the size up front. The array is fresh, exactly
+  `width * height * 4` bytes and referenced by nothing else, so it can be adopted rather than copied
+  (DIR.Lib 11.27's `RgbaImage(width, height, pixels)`). An 8-bit RGBA file's decoded samples are
+  returned as they are, with no expansion pass; other colour types, indexed included, expand once.
+  It refuses what `TryDecodeIntoRgba8` refuses (cICP PQ/HLG), and returns false rather than throwing
+  on a stream the reader cannot decode (Adam7 interlace, sub-byte depths, corrupt data).
+- It returns an array, not DIR.Lib's `RgbaImage`, as #32 first asked: DIR.Lib depends on
+  `SharpAstro.Fonts`, which depends on `SharpAstro.Png`, so a reference back would be a package cycle.
+
 ## 3.16
 
 `SharpAstro.Jpeg2000` gets **faster, decodes at reduced resolution, and joins the facade.**
