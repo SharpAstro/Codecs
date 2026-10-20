@@ -54,9 +54,10 @@ public sealed class PngImageDecoder : IImageDecoder
     public static bool TryDecode(ReadOnlySpan<byte> data, [NotNullWhen(true)] out IDecodedImage? image)
     {
         image = null;
+        if (!PngReader.TryDecode(data, out var png)) return false;
         try
         {
-            image = ToDecoded(PngReader.Decode(data));
+            image = ToDecoded(png);
             return true;
         }
         catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
