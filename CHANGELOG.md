@@ -26,6 +26,11 @@ those notes, verbatim in substance. 3.4 has no recorded note; it was never writt
   returned as they are, with no expansion pass; other colour types, indexed included, expand once.
   It refuses what `TryDecodeIntoRgba8` refuses (cICP PQ/HLG), and returns false rather than throwing
   on a stream the reader cannot decode (Adam7 interlace, sub-byte depths, corrupt data).
+- **`PngReader.TryDecode(data, out PngImage? image)`** is `Decode` without the exceptions, and the shared
+  first step of every `PngImageDecoder` entry point. It passes cICP PQ/HLG files through untouched: the
+  refusal belongs to the RGBA8 projections, so a later float projection starts from it.
+- **Fix:** `TryDecodeIntoRgba8` threw `NotSupportedException` on an Adam7 or sub-byte-depth PNG instead of
+  returning false. It now goes through `PngReader.TryDecode` like the rest.
 - It returns an array, not DIR.Lib's `RgbaImage`, as #32 first asked: DIR.Lib depends on
   `SharpAstro.Fonts`, which depends on `SharpAstro.Png`, so a reference back would be a package cycle.
 
