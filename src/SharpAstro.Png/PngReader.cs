@@ -7,8 +7,8 @@ namespace SharpAstro.Png;
 /// <summary>
 /// Pure-managed PNG decoder — the dual of <see cref="PngWriter"/>. Parses
 /// the PNG chunked container, validates CRC32 on every chunk, decompresses
-/// the concatenated IDAT stream via <see cref="ZLibStream"/>, then defers
-/// row-defilter to the existing <see cref="PngPredictor"/>. Preserves
+/// the IDAT stream via <see cref="ZLibStream"/> a row at a time straight into
+/// the samples, and defilters each row there with <see cref="PngPredictor"/>. Preserves
 /// metadata that <c>SharpAstro.StbImage</c> discards: ICC profile, sRGB
 /// declaration, gAMA / cHRM color hints, and EXIF.
 /// </summary>
@@ -64,7 +64,8 @@ public static class PngReader
         int pos = Signature.Length;
         int? width = null, height = null, bitDepth = null, colorType = null,
              compressionMethod = null, filterMethod = null, interlaceMethod = null;
-        var idatChunks = new List<byte[]>();
+        // Where each IDAT's payload lies in the input: read in place, never copied out.
+        var idatChunks = new List<(int Offset, int Length)>();
         byte[]? palette = null;             // PLTE: 3 bytes (RGB) per entry
         byte[]? paletteAlpha = null;        // tRNS (indexed meaning): 1 alpha byte per entry
         byte[]? iccProfileRaw = null;       // zlib-deflated, as on disk
@@ -133,7 +134,7 @@ public static class PngReader
             {
                 if (width is null)
                     throw new InvalidDataException("IDAT before IHDR");
-                idatChunks.Add(chunkData.ToArray());
+                idatChunks.Add((pos + 8, len));
             }
             else if (typeBytes.SequenceEqual("IEND"u8))
             {
@@ -221,12 +222,9 @@ public static class PngReader
         if (colorType == 3 && palette is null)
             throw new InvalidDataException("Indexed-color PNG missing required PLTE chunk");
 
-        // Concatenate IDAT chunks then inflate as a single zlib stream — the
-        // spec lets a producer split IDATs anywhere, even mid-deflate-token.
-        var compressed = Concat(idatChunks);
-        var raw = DeflateInflate(compressed);
-
-        var pixels = UnfilterAndPack(raw, width.Value, height!.Value, bitDepth!.Value, colorType!.Value);
+        // The IDAT chunks are one zlib stream — the spec lets a producer split IDATs anywhere, even
+        // mid-deflate-token — inflated straight into the samples a row at a time.
+        var pixels = InflateAndUnfilter(data, idatChunks, width.Value, height!.Value, bitDepth!.Value, colorType!.Value);
 
         return new PngImage
         {
@@ -290,27 +288,115 @@ public static class PngReader
     };
 
     /// <summary>
-    /// Run row-defilter, returning the raw sample bytes in row-major order.
-    /// 16-bit samples stay in PNG's network (big-endian) byte order so the
-    /// returned buffer is byte-identical to what the encoder fed in.
+    /// Inflates the IDAT stream and runs the row-defilter, returning the raw sample bytes in row-major
+    /// order. 16-bit samples stay in PNG's network (big-endian) byte order so the returned buffer is
+    /// byte-identical to what the encoder fed in.
+    /// <para>The samples are the only buffer the size of the image: the compressed bytes are read where
+    /// they lie in <paramref name="data"/>, and each row is inflated straight into its place in the result
+    /// and unfiltered there against the row above. It used to copy every IDAT out, concatenate the copies,
+    /// copy that again into a stream, inflate into a growing stream, copy that out, and unfilter the copy
+    /// into a new array: the image's bytes three or four times over before the samples existed.</para>
     /// </summary>
-    private static byte[] UnfilterAndPack(byte[] inflated, int width, int height, int bitDepth, int colorType)
+    private static unsafe byte[] InflateAndUnfilter(ReadOnlySpan<byte> data, List<(int Offset, int Length)> idat,
+        int width, int height, int bitDepth, int colorType)
     {
         var samplesPerPixel = SamplesPerPixel(colorType);
         var bytesPerSample = bitDepth / 8;
         var bytesPerPixel = samplesPerPixel * bytesPerSample;
-        var rowBytes = width * bytesPerPixel;
-        var expected = (rowBytes + 1) * height;
-        if (inflated.Length != expected)
-            throw new InvalidDataException(
-                $"Inflated stream length {inflated.Length} doesn't match expected {expected} " +
-                $"({width}×{height} × {bytesPerPixel} bytes-per-pixel + 1 filter byte per row)");
+        var rowBytes = checked(width * bytesPerPixel);
+        var expected = ((long)rowBytes + 1) * height;
+        var pixels = new byte[checked((long)rowBytes * height)];
+        var firstRowAbove = new byte[rowBytes];
 
-        // PngPredictor's bpp argument is the "bytes per pixel" rounded up to at
-        // least 1 — for 8-bit single-channel images that's 1; for 16-bit RGBA
-        // it's 8. The filter formulas only need the "left neighbour" offset, so
-        // bytesPerPixel here matches PNG spec §9.2.
-        return PngPredictor.Unfilter(inflated, rowBytes, bytesPerPixel);
+        fixed (byte* pinned = data)
+        {
+            // ZLibStream is the .NET 6+ wrapper that handles the 2-byte zlib header
+            // + Adler32 trailer around the raw deflate bitstream.
+            using var z = new ZLibStream(new IdatStream(pinned, idat), CompressionMode.Decompress);
+            Span<byte> filterType = stackalloc byte[1];
+            long inflated = 0;
+            for (var y = 0; y < height; y++)
+            {
+                var row = pixels.AsSpan(y * rowBytes, rowBytes);
+                inflated += ReadFully(z, filterType);
+                inflated += ReadFully(z, row);
+                if (inflated != (long)(y + 1) * (rowBytes + 1))
+                    throw LengthMismatch(inflated, expected, width, height, bytesPerPixel);
+
+                // PngPredictor's bpp argument is the "bytes per pixel" rounded up to at
+                // least 1 — for 8-bit single-channel images that's 1; for 16-bit RGBA
+                // it's 8. The filter formulas only need the "left neighbour" offset, so
+                // bytesPerPixel here matches PNG spec §9.2.
+                var above = y == 0 ? firstRowAbove : pixels.AsSpan((y - 1) * rowBytes, rowBytes);
+                PngPredictor.UnfilterRow(filterType[0], row, above, bytesPerPixel);
+            }
+
+            // A byte past the last row is as much a mismatch as a row short.
+            if (z.Read(filterType) != 0)
+                throw LengthMismatch(expected + 1, expected, width, height, bytesPerPixel);
+        }
+
+        return pixels;
+    }
+
+    private static InvalidDataException LengthMismatch(long inflated, long expected, int width, int height, int bytesPerPixel) =>
+        new((inflated > expected ? $"Inflated stream runs past the expected {expected} bytes " : $"Inflated stream length {inflated} doesn't match expected {expected} ") +
+            $"({width}×{height} × {bytesPerPixel} bytes-per-pixel + 1 filter byte per row)");
+
+    /// <summary>Reads until <paramref name="buffer"/> is full or the stream ends; the count read.</summary>
+    private static int ReadFully(Stream stream, Span<byte> buffer)
+    {
+        var total = 0;
+        while (total < buffer.Length)
+        {
+            var n = stream.Read(buffer[total..]);
+            if (n == 0) break;
+            total += n;
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// The IDAT payloads, in order, as one read-only stream over the pinned input, so the zlib stream they
+    /// make up together is inflated without first being copied into one array. Only valid inside the
+    /// <c>fixed</c> scope that pinned the input.
+    /// </summary>
+    private sealed unsafe class IdatStream(byte* data, List<(int Offset, int Length)> chunks) : Stream
+    {
+        private int _chunk;
+        private int _offsetInChunk;
+
+        public override int Read(Span<byte> buffer)
+        {
+            while (_chunk < chunks.Count)
+            {
+                var (offset, length) = chunks[_chunk];
+                var left = length - _offsetInChunk;
+                if (left == 0)
+                {
+                    _chunk++;
+                    _offsetInChunk = 0;
+                    continue;
+                }
+
+                var n = Math.Min(left, buffer.Length);
+                new ReadOnlySpan<byte>(data + offset + _offsetInChunk, n).CopyTo(buffer);
+                _offsetInChunk += n;
+                return n;
+            }
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     /// <summary>
@@ -329,20 +415,6 @@ public static class PngReader
         using var output = new MemoryStream();
         z.CopyTo(output);
         return output.ToArray();
-    }
-
-    private static byte[] Concat(List<byte[]> chunks)
-    {
-        var total = 0;
-        foreach (var c in chunks) total += c.Length;
-        var result = new byte[total];
-        var offset = 0;
-        foreach (var c in chunks)
-        {
-            Array.Copy(c, 0, result, offset, c.Length);
-            offset += c.Length;
-        }
-        return result;
     }
 
     private static string TypeAscii(ReadOnlySpan<byte> typeBytes) =>
