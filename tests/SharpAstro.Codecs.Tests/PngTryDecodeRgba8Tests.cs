@@ -1,3 +1,5 @@
+using ImageMagick;
+using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Png;
 using Shouldly;
 
@@ -68,11 +70,34 @@ public sealed class PngTryDecodeRgba8Tests
     }
 
     [Fact]
-    public void PqTagged_IsRefused()
+    public void Adam7_IsFalseRatherThanThrowing()
+    {
+        // PngReader.Decode throws NotSupportedException for Adam7. TryDecodeIntoRgba8 used to let
+        // that escape; every Try entry point now goes through PngReader.TryDecode.
+        var rgb = new byte[16 * 16 * 3];
+        new Random(7).NextBytes(rgb);
+        using var img = new MagickImage();
+        img.ReadPixels(rgb, new PixelReadSettings(16, 16, StorageType.Char, "RGB"));
+        img.Settings.Interlace = Interlace.Png;
+        var png = img.ToByteArray(MagickFormat.Png);
+
+        Should.Throw<NotSupportedException>(() => PngReader.Decode(png));
+        PngReader.TryDecode(png, out var decoded).ShouldBeFalse();
+        decoded.ShouldBeNull();
+        PngImageDecoder.TryDecodeRgba8(png, out _, out _, out _).ShouldBeFalse();
+        PngImageDecoder.TryDecodeIntoRgba8(png, new byte[16 * 16 * 4]).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void PqTagged_IsRefused_ButPngReaderTryDecodeKeepsIt()
     {
         var png = PngWriter.Encode(new byte[2 * 2 * 4], 2, 2, new PngWriteOptions { Cicp = CicpChunk.Hdr10Pq });
 
         PngImageDecoder.TryDecodeRgba8(png, out var rgba, out _, out _).ShouldBeFalse();
         rgba.ShouldBeNull();
+
+        // The refusal belongs to the RGBA8 projection, not the reader: a float projection starts here.
+        PngReader.TryDecode(png, out var decoded).ShouldBeTrue();
+        decoded.Cicp.ShouldNotBeNull().TransferFunction.ShouldBe(TransferFunction.Pq);
     }
 }

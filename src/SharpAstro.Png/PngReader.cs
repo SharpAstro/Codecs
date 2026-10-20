@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 
 namespace SharpAstro.Png;
@@ -26,6 +27,27 @@ namespace SharpAstro.Png;
 public static class PngReader
 {
     private static readonly byte[] Signature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+
+    /// <summary>
+    /// <see cref="Decode"/> without the exceptions: false for a stream that is not a PNG, is corrupt,
+    /// or uses a feature this reader does not cover yet (Adam7 interlace, sub-byte depths). It makes no
+    /// judgement about the colour signalling, so it is the shared first step of every projection — the
+    /// RGBA8 display ones in <see cref="PngImageDecoder"/>, which refuse cICP PQ/HLG, and a float one
+    /// that would decode those.
+    /// </summary>
+    public static bool TryDecode(ReadOnlySpan<byte> data, [NotNullWhen(true)] out PngImage? image)
+    {
+        try
+        {
+            image = Decode(data);
+            return true;
+        }
+        catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
+        {
+            image = null;
+            return false;
+        }
+    }
 
     /// <summary>
     /// Parse a PNG byte stream into a <see cref="PngImage"/>. The returned
