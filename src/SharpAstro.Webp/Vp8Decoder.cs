@@ -1647,8 +1647,8 @@ internal static class Vp8Decoder
 
         if (simple)
         {
-            Vector256<int> pAdjustment = (adjustment + Vector256.Create(3)) >> 3;
-            Vector256<int> qAdjustment = (adjustment + Vector256.Create(4)) >> 3;
+            Vector256<int> pAdjustment = FilterTapVector256(adjustment, 3);
+            Vector256<int> qAdjustment = FilterTapVector256(adjustment, 4);
             Vector256<int> newP0 = ClampPixelVector256(p0 + pAdjustment);
             Vector256<int> newQ0 = ClampPixelVector256(q0 - qAdjustment);
             p0Filtered = Vector256.ConditionalSelect(valid, newP0, p0);
@@ -1665,8 +1665,8 @@ internal static class Vp8Decoder
             & Vector256.LessThanOrEqual(Vector256.Abs(q3 - q2), interiorV);
 
         Vector256<int> highAdjustment = ClampSignedVector256(outerTap + threeDelta);
-        Vector256<int> highPAdjustment = (highAdjustment + Vector256.Create(3)) >> 3;
-        Vector256<int> highQAdjustment = (highAdjustment + Vector256.Create(4)) >> 3;
+        Vector256<int> highPAdjustment = FilterTapVector256(highAdjustment, 3);
+        Vector256<int> highQAdjustment = FilterTapVector256(highAdjustment, 4);
         Vector256<int> p0High = ClampPixelVector256(p0 + highPAdjustment);
         Vector256<int> q0High = ClampPixelVector256(q0 - highQAdjustment);
         Vector256<int> p0Low;
@@ -1689,11 +1689,11 @@ internal static class Vp8Decoder
         }
         else
         {
-            Vector256<int> pAdjustment = (adjustment + Vector256.Create(3)) >> 3;
-            Vector256<int> qAdjustment = (adjustment + Vector256.Create(4)) >> 3;
+            Vector256<int> pAdjustment = FilterTapVector256(adjustment, 3);
+            Vector256<int> qAdjustment = FilterTapVector256(adjustment, 4);
             p0Low = ClampPixelVector256(p0 + pAdjustment);
             q0Low = ClampPixelVector256(q0 - qAdjustment);
-            Vector256<int> inner = (((adjustment + Vector256.Create(4)) >> 3) + Vector256.Create(1)) >> 1;
+            Vector256<int> inner = (qAdjustment + Vector256.Create(1)) >> 1;
             p1Low = ClampPixelVector256(p1 + inner);
             q1Low = ClampPixelVector256(q1 - inner);
         }
@@ -1792,8 +1792,8 @@ internal static class Vp8Decoder
             }
 
             int adjustment = ClampSigned(ClampSigned(p1 - q1) + 3 * (q0 - p0));
-            int qAdjustment = (adjustment + 4) >> 3;
-            int pAdjustment = (adjustment + 3) >> 3;
+            int qAdjustment = FilterTap(adjustment, 4);
+            int pAdjustment = FilterTap(adjustment, 3);
             Unsafe.Add(ref sample, -sampleStep) = (byte)Math.Clamp(p0 + pAdjustment, 0, 255);
             sample = (byte)Math.Clamp(q0 - qAdjustment, 0, 255);
         }
@@ -1826,8 +1826,8 @@ internal static class Vp8Decoder
             int adjustment = ClampSigned(ClampSigned(p1 - q1) + 3 * (q0 - p0));
             if (highVariance)
             {
-                int qAdjustment = (adjustment + 4) >> 3;
-                int pAdjustment = (adjustment + 3) >> 3;
+                int qAdjustment = FilterTap(adjustment, 4);
+                int pAdjustment = FilterTap(adjustment, 3);
                 Unsafe.Add(ref sample, -sampleStep) = (byte)Math.Clamp(p0 + pAdjustment, 0, 255);
                 sample = (byte)Math.Clamp(q0 - qAdjustment, 0, 255);
                 continue;
@@ -1872,8 +1872,8 @@ internal static class Vp8Decoder
             int adjustment = highVariance
                 ? ClampSigned(ClampSigned(p1 - q1) + 3 * (q0 - p0))
                 : ClampSigned(3 * (q0 - p0));
-            int qAdjustment = (adjustment + 4) >> 3;
-            int pAdjustment = (adjustment + 3) >> 3;
+            int qAdjustment = FilterTap(adjustment, 4);
+            int pAdjustment = FilterTap(adjustment, 3);
             Unsafe.Add(ref sample, -sampleStep) = (byte)Math.Clamp(p0 + pAdjustment, 0, 255);
             sample = (byte)Math.Clamp(q0 - qAdjustment, 0, 255);
             if (highVariance)
@@ -1881,7 +1881,7 @@ internal static class Vp8Decoder
                 continue;
             }
 
-            int inner = ((adjustment + 4 >> 3) + 1) >> 1;
+            int inner = (qAdjustment + 1) >> 1;
             Unsafe.Add(ref sample, -2 * sampleStep) = (byte)Math.Clamp(p1 + inner, 0, 255);
             Unsafe.Add(ref sample, sampleStep) = (byte)Math.Clamp(q1 - inner, 0, 255);
         }
@@ -1973,10 +1973,8 @@ internal static class Vp8Decoder
 
         if (simple)
         {
-            Vector128<short> pAdjustment = Vector128.ShiftRightArithmetic(
-                Vector128.Add(adjustment, Vector128.Create((short)3)), 3);
-            Vector128<short> qAdjustment = Vector128.ShiftRightArithmetic(
-                Vector128.Add(adjustment, Vector128.Create((short)4)), 3);
+            Vector128<short> pAdjustment = FilterTapVector(adjustment, 3);
+            Vector128<short> qAdjustment = FilterTapVector(adjustment, 4);
             Vector128<short> newP0 = ClampPixelVector(Vector128.Add(p0, pAdjustment));
             Vector128<short> newQ0 = ClampPixelVector(Vector128.Subtract(q0, qAdjustment));
             p0Filtered = Vector128.ConditionalSelect(valid, newP0, p0);
@@ -2000,10 +1998,8 @@ internal static class Vp8Decoder
 
         Vector128<short> highAdjustment = ClampSignedVector(Vector128.Add(
             outerTap, threeDelta));
-        Vector128<short> highPAdjustment = Vector128.ShiftRightArithmetic(
-            Vector128.Add(highAdjustment, Vector128.Create((short)3)), 3);
-        Vector128<short> highQAdjustment = Vector128.ShiftRightArithmetic(
-            Vector128.Add(highAdjustment, Vector128.Create((short)4)), 3);
+        Vector128<short> highPAdjustment = FilterTapVector(highAdjustment, 3);
+        Vector128<short> highQAdjustment = FilterTapVector(highAdjustment, 4);
         Vector128<short> p0High = ClampPixelVector(Vector128.Add(p0, highPAdjustment));
         Vector128<short> q0High = ClampPixelVector(Vector128.Subtract(q0, highQAdjustment));
         Vector128<short> p1Low;
@@ -2032,16 +2028,12 @@ internal static class Vp8Decoder
         }
         else
         {
-            Vector128<short> pAdjustment = Vector128.ShiftRightArithmetic(
-                Vector128.Add(adjustment, Vector128.Create((short)3)), 3);
-            Vector128<short> qAdjustment = Vector128.ShiftRightArithmetic(
-                Vector128.Add(adjustment, Vector128.Create((short)4)), 3);
+            Vector128<short> pAdjustment = FilterTapVector(adjustment, 3);
+            Vector128<short> qAdjustment = FilterTapVector(adjustment, 4);
             p0Low = ClampPixelVector(Vector128.Add(p0, pAdjustment));
             q0Low = ClampPixelVector(Vector128.Subtract(q0, qAdjustment));
             Vector128<short> inner = Vector128.ShiftRightArithmetic(
-                Vector128.Add(Vector128.ShiftRightArithmetic(
-                    Vector128.Add(adjustment, Vector128.Create((short)4)), 3),
-                    Vector128.Create((short)1)), 1);
+                Vector128.Add(qAdjustment, Vector128.Create((short)1)), 1);
             p1Low = ClampPixelVector(Vector128.Add(p1, inner));
             q1Low = ClampPixelVector(Vector128.Subtract(q1, inner));
         }
@@ -2078,6 +2070,18 @@ internal static class Vp8Decoder
     }
 
     private static int ClampSigned(int value) => Math.Clamp(value, -128, 127);
+
+    // RFC 6386 15.2: the biased adjustment is clamped to int8 BEFORE the shift. Without the clamp,
+    // adjustment >= 124 (+4) or >= 125 (+3) shifts to 16 instead of 15.
+    private static int FilterTap(int adjustment, int bias) => ClampSigned(adjustment + bias) >> 3;
+
+    // adjustment is already in [-128, 127], so adding a positive bias can only overflow upwards.
+    private static Vector128<short> FilterTapVector(Vector128<short> adjustment, short bias) =>
+        Vector128.ShiftRightArithmetic(
+            Vector128.Min(Vector128.Add(adjustment, Vector128.Create(bias)), Vector128.Create((short)127)), 3);
+
+    private static Vector256<int> FilterTapVector256(Vector256<int> adjustment, int bias) =>
+        Vector256.Min(adjustment + Vector256.Create(bias), Vector256.Create(127)) >> 3;
 
     private readonly record struct SegmentFeatures(bool Enabled, bool UpdateMap, bool Absolute,
         int[] Quant, int[] Filter, byte[] MapProbabilities);

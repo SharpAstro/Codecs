@@ -168,6 +168,20 @@ cwebp -quiet -q 75 -m 0 -f 100 -sharpness 3 -segments 1 \
 cwebp -quiet -q 60 -segments 4 -sns 100 -f 60 \
     "$tmp/testsrc2-320x240.png" -o "$root/testsrc2-320x240-q60-segments4-sns100-f60.webp"
 
+# Low-quality lossy on photographic content: high filter levels with strong real edges are the only
+# place RFC 6386 15.2's c(a + 4) >> 3 clamp bites, and neither noise nor testsrc2 at q75 gets there.
+# The source is scikit-image's `astronaut` (NASA, public domain), area-downscaled to keep it small.
+python3 -c "import sys, skimage.data, skimage.io; skimage.io.imsave(sys.argv[1], skimage.data.astronaut(), check_contrast=False)" \
+    "$tmp/astronaut-512.png"
+"$ffmpeg" -hide_banner -loglevel error -y -i "$tmp/astronaut-512.png" \
+    -vf scale=192:192:flags=area "$tmp/astronaut-192.png"
+for quality in 0 5 10 15 20; do
+    cwebp -quiet -q "$quality" -strong "$tmp/astronaut-192.png" \
+        -o "$root/astronaut-192-q$quality-normal.webp"
+    cwebp -quiet -q "$quality" -nostrong "$tmp/astronaut-192.png" \
+        -o "$root/astronaut-192-q$quality-simple.webp"
+done
+
 for quality in 0 5 50 95 100; do
     cwebp -quiet -q "$quality" -m 0 -f 0 -segments 1 \
         "$tmp/noise-32x32.png" -o "$root/noise-32x32-q$quality.webp"
