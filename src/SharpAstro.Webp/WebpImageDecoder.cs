@@ -3,15 +3,28 @@ using SharpAstro.Codecs.Abstractions;
 
 namespace SharpAstro.Webp;
 
+/// <summary>
+/// <see cref="IImageDecoder"/> adapter for WebP, bridging <see cref="WebpDecoder"/> into the
+/// <c>SharpAstro.Codecs</c> facade.
+/// <para>
+/// Lossy (VP8), lossless (VP8L) and animated input are all accepted; an animation is presented as
+/// its first composited frame. Images with alpha decode as 8-bit RGBA, opaque ones as 8-bit RGB, an
+/// ICCP profile is passed through, and the colour encoding is reported as assumed sRGB. Malformed or
+/// unsupported data makes the <c>Try</c> methods return false rather than throw.
+/// </para>
+/// </summary>
 public sealed class WebpImageDecoder : IImageDecoder
 {
+    /// <inheritdoc />
     public static int SignatureLength => 12;
 
+    /// <inheritdoc />
     public static bool CanDecode(ReadOnlySpan<byte> data) =>
         data.Length >= SignatureLength &&
         data[..4].SequenceEqual("RIFF"u8) &&
         data[8..12].SequenceEqual("WEBP"u8);
 
+    /// <inheritdoc />
     public static bool TryReadInfo(ReadOnlySpan<byte> data, out ImageInfo info)
     {
         if (!WebpDecoder.TryReadInfo(data, out WebpInfo webpInfo))
@@ -24,6 +37,7 @@ public sealed class WebpImageDecoder : IImageDecoder
         return true;
     }
 
+    /// <inheritdoc />
     public static bool TryDecode(ReadOnlySpan<byte> data, [NotNullWhen(true)] out IDecodedImage? image)
     {
         try
@@ -50,6 +64,13 @@ public sealed class WebpImageDecoder : IImageDecoder
         }
     }
 
+    /// <summary>
+    /// Decodes into a caller-owned, tightly packed RGBA8 buffer (an animation's first frame for
+    /// animated input). Returns false, without throwing, for malformed or unsupported data or a
+    /// destination shorter than width × height × 4 bytes.
+    /// </summary>
+    /// <param name="data">The complete WebP file.</param>
+    /// <param name="destination">At least width × height × 4 bytes.</param>
     public static bool TryDecodeIntoRgba8(ReadOnlySpan<byte> data, Span<byte> destination)
     {
         if (!WebpDecoder.TryReadInfo(data, out WebpInfo info))

@@ -96,6 +96,42 @@ public sealed class WebpContainerTests
         }
     }
 
+    // Pins what DecodeTo's documentation promises about stride: rows land at stride offsets, the
+    // pixels match a tightly packed decode, and the padding after each row is never written.
+    [Theory]
+    [InlineData("testsrc2-320x240-q75.webp")]
+    [InlineData("lossy-alpha-q50.webp")]
+    [InlineData("lossless-z6.webp")]
+    [InlineData("anim-img2webp-mixed.webp")]
+    public void DecodeTo_WithStride_WritesRowsAndLeavesPaddingUntouched(string fixture)
+    {
+        byte[] file = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "webp", fixture));
+        WebpInfo info = WebpDecoder.ReadInfo(file);
+        int rowBytes = info.Width * 4;
+        int stride = rowBytes + 12;
+        byte[] packed = new byte[rowBytes * info.Height];
+        WebpDecoder.DecodeTo(file, packed);
+
+        byte[] strided = new byte[(info.Height - 1) * stride + rowBytes];
+        Array.Fill(strided, (byte)0xA5);
+        WebpDecoder.DecodeTo(file, strided, stride);
+
+        for (int row = 0; row < info.Height; row++)
+        {
+            strided.AsSpan(row * stride, rowBytes).ToArray()
+                .ShouldBe(packed.AsSpan(row * rowBytes, rowBytes).ToArray(), $"row {row}");
+            if (row < info.Height - 1)
+            {
+                strided.AsSpan(row * stride + rowBytes, stride - rowBytes).ToArray()
+                    .ShouldAllBe(b => b == 0xA5, $"padding after row {row}");
+            }
+        }
+
+        Should.Throw<ArgumentException>(() => WebpDecoder.DecodeTo(file, strided, rowBytes - 1));
+        Should.Throw<ArgumentException>(() => WebpDecoder.DecodeTo(file, strided.AsSpan(1).ToArray(), stride));
+        WebpDecoder.TryDecodeTo(file, strided.AsSpan(1).ToArray(), stride).ShouldBeFalse();
+    }
+
     private static byte[] BuildVp8L(int width, int height, bool hasAlpha)
     {
         var data = new byte[5];

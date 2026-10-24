@@ -5,15 +5,27 @@ using System.Runtime.Intrinsics;
 namespace SharpAstro.Webp;
 
 /// <summary>
-/// Decodes still and animated WebP images. Spec-derived from RFC 6386 / RFC 9649;
-/// libwebp/libvpx source was not consulted — their binaries are used only as test
-/// oracles. Written with AI assistance, whose training data may include libwebp.
+/// Decodes still and animated WebP images. Spec-derived from the prose and tables of RFC 6386 /
+/// RFC 9649; neither the reference decoder source in RFC 6386 section 20 nor libwebp/libvpx source
+/// was consulted — their binaries are used only as test oracles. Written with AI assistance, whose
+/// training data may include libwebp.
+/// <para>
+/// Output is non-premultiplied RGBA8. Malformed input throws <see cref="InvalidDataException"/>,
+/// input using features this decoder refuses throws <see cref="NotSupportedException"/>, and
+/// canvases above 67,108,864 pixels are rejected as malformed before any raster is allocated.
+/// </para>
 /// </summary>
 public static class WebpDecoder
 {
     private static readonly Vector128<byte> ChromaPairShuffleIndices = Vector128.Create(
         (byte)0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15);
 
+    /// <summary>
+    /// Reads dimensions, alpha, format and frame count from the container headers without decoding
+    /// pixels. Returns false instead of throwing for malformed or unsupported data.
+    /// </summary>
+    /// <param name="data">The complete WebP file.</param>
+    /// <param name="info">The header information, or default when false is returned.</param>
     public static bool TryReadInfo(ReadOnlySpan<byte> data, out WebpInfo info)
     {
         try
@@ -28,13 +40,63 @@ public static class WebpDecoder
         }
     }
 
+    /// <summary>Reads dimensions, alpha, format and frame count from the container headers.</summary>
+    /// <param name="data">The complete WebP file.</param>
+    /// <exception cref="InvalidDataException">The container is malformed or above the pixel limit.</exception>
+    /// <exception cref="NotSupportedException">The container uses a feature this decoder does not support.</exception>
     public static WebpInfo ReadInfo(ReadOnlySpan<byte> data) => WebpContainer.Read(data).Info;
 
-    /// <summary>Decodes every frame, returning the full composited canvas for each one.</summary>
+    /// <summary>
+    /// The default ceiling on the total pixels <see cref="DecodeAnimation(ReadOnlySpan{byte})"/> may
+    /// materialize: canvas width × height × frame count, 2^28 (1 GiB of RGBA). That admits, say,
+    /// 128 frames of 1080p.
+    /// </summary>
+    public const long DefaultMaximumAnimationPixels = 1L << 28;
+
+    /// <summary>
+    /// Decodes every frame, returning the full composited canvas for each one. At most
+    /// <see cref="DefaultMaximumAnimationPixels"/> pixels are materialized across all frames;
+    /// use <see cref="WebpAnimationDecoder"/> to stream larger animations through one canvas.
+    /// </summary>
     /// <param name="data">A still or animated WebP image.</param>
-    public static WebpAnimation DecodeAnimation(ReadOnlySpan<byte> data)
+    /// <exception cref="InvalidDataException">
+    /// The data is malformed, or canvas × frame count exceeds <see cref="DefaultMaximumAnimationPixels"/>.
+    /// </exception>
+    /// <exception cref="NotSupportedException">The data uses a feature this decoder does not support.</exception>
+    public static WebpAnimation DecodeAnimation(ReadOnlySpan<byte> data) =>
+        DecodeAnimation(data, DefaultMaximumAnimationPixels);
+
+    /// <summary>
+    /// Decodes every frame, returning the full composited canvas for each one, refusing up front
+    /// (before any frame is decoded or canvas allocated) when canvas × frame count exceeds
+    /// <paramref name="maximumTotalPixels"/>.
+    /// </summary>
+    /// <param name="data">A still or animated WebP image.</param>
+    /// <param name="maximumTotalPixels">The most pixels all returned frames may hold together.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maximumTotalPixels"/> is not positive.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The data is malformed, or canvas × frame count exceeds <paramref name="maximumTotalPixels"/>.
+    /// </exception>
+    /// <exception cref="NotSupportedException">The data uses a feature this decoder does not support.</exception>
+    public static WebpAnimation DecodeAnimation(ReadOnlySpan<byte> data, long maximumTotalPixels)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumTotalPixels);
         WebpContainer container = WebpContainer.Read(data);
+
+        // Every returned frame is a full-canvas copy, so memory is canvas x frames, and a one-pixel
+        // ANMF costs ~50 input bytes: 3 KB can declare 64 frames of a 4096x4096 canvas, 4 GiB.
+        // The per-canvas limit cannot see that, so the product is charged here, before anything is
+        // allocated. Both factors are bounded (2^26 pixels; frames by input length), so no overflow.
+        long canvasPixels = (long)container.Info.Width * container.Info.Height;
+        long totalPixels = canvasPixels * Math.Max(container.Frames.Length, 1);
+        if (totalPixels > maximumTotalPixels)
+        {
+            throw new InvalidDataException(
+                $"WebP: the animation would materialize {totalPixels:N0} pixels " +
+                $"({container.Frames.Length:N0} frames of {container.Info.Width}x{container.Info.Height}), " +
+                $"above the limit of {maximumTotalPixels:N0}. Use WebpAnimationDecoder to stream it.");
+        }
+
         var decoder = new WebpAnimationDecoder(data.ToArray());
         byte[] canvas = new byte[checked(decoder.CanvasWidth * decoder.CanvasHeight * 4)];
         var frames = new List<WebpFrame>(decoder.FrameCount);
@@ -56,6 +118,13 @@ public static class WebpDecoder
         };
     }
 
+    /// <summary>
+    /// Decodes to a new tightly packed RGBA8 image with its ICC / EXIF / XMP payloads. Animated input
+    /// yields the first frame composited onto the transparent canvas, at canvas size.
+    /// </summary>
+    /// <param name="data">The complete WebP file.</param>
+    /// <exception cref="InvalidDataException">The data is malformed.</exception>
+    /// <exception cref="NotSupportedException">The data uses a feature this decoder does not support.</exception>
     public static WebpImage Decode(ReadOnlySpan<byte> data)
     {
         WebpContainer container = WebpContainer.Read(data);
@@ -98,6 +167,22 @@ public static class WebpDecoder
         return new WebpImage(info.Width, info.Height, info.HasAlpha, rgba, icc, exif, xmp);
     }
 
+    /// <summary>
+    /// Decodes into a caller-owned RGBA8 buffer. Animated input yields the first composited frame.
+    /// </summary>
+    /// <param name="data">The complete WebP file.</param>
+    /// <param name="rgba">
+    /// The destination; at least (height - 1) × stride + width × 4 bytes. Bytes between the end of one
+    /// row's pixels and the start of the next are not written.
+    /// </param>
+    /// <param name="stride">
+    /// Bytes from the start of one row to the start of the next; 0 means tightly packed (width × 4).
+    /// </param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="stride"/> is smaller than width × 4, or <paramref name="rgba"/> is too small.
+    /// </exception>
+    /// <exception cref="InvalidDataException">The data is malformed.</exception>
+    /// <exception cref="NotSupportedException">The data uses a feature this decoder does not support.</exception>
     public static void DecodeTo(ReadOnlySpan<byte> data, Span<byte> rgba, int stride = 0)
     {
         DecodeTo(data, rgba, stride, fancy: true);
@@ -167,6 +252,14 @@ public static class WebpDecoder
         }
     }
 
+    /// <summary>
+    /// <see cref="DecodeTo(ReadOnlySpan{byte}, Span{byte}, int)"/> that returns false instead of throwing for malformed or unsupported
+    /// data, a stride below width × 4, or a destination that is too small. The destination may be
+    /// partly written when false is returned.
+    /// </summary>
+    /// <param name="data">The complete WebP file.</param>
+    /// <param name="rgba">The destination, as for <see cref="DecodeTo(ReadOnlySpan{byte}, Span{byte}, int)"/>.</param>
+    /// <param name="stride">Row pitch in bytes; 0 means tightly packed.</param>
     public static bool TryDecodeTo(ReadOnlySpan<byte> data, Span<byte> rgba, int stride = 0)
     {
         try
