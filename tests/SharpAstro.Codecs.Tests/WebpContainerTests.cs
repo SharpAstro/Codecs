@@ -96,6 +96,50 @@ public sealed class WebpContainerTests
         }
     }
 
+    // libwebp refuses a still VP8X whose canvas differs from its bitstream (BITSTREAM_ERROR). Accepting
+    // it padded a 3x7 image out to the declared canvas, or a 1x1 one to 8192x8192 (256 MiB from ~56
+    // bytes) through the facade.
+    [Theory]
+    [InlineData("lossless-3x7.webp", 64, 64)]
+    [InlineData("lossless-3x7.webp", 3, 8)]
+    [InlineData("lossless-1x1.webp", 8192, 8192)]
+    [InlineData("tiny.webp", 4, 2)]
+    public void StillVp8xCanvasThatDisagreesWithTheBitstream_IsRefused(string fixture, int width, int height)
+    {
+        byte[] data = WrapStillInVp8x(fixture, width, height);
+
+        Should.Throw<InvalidDataException>(() => WebpDecoder.ReadInfo(data));
+        Should.Throw<InvalidDataException>(() => WebpDecoder.Decode(data));
+        WebpDecoder.TryReadInfo(data, out _).ShouldBeFalse();
+        ImageCodecs.TryDecode(data, out _).ShouldBeFalse();
+    }
+
+    [Theory]
+    [InlineData("lossless-3x7.webp")]
+    [InlineData("tiny.webp")]
+    public void StillVp8xCanvasThatMatchesTheBitstream_StillDecodes(string fixture)
+    {
+        byte[] plain = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "webp", fixture));
+        WebpInfo info = WebpDecoder.ReadInfo(plain);
+
+        WebpImage image = WebpDecoder.Decode(WrapStillInVp8x(fixture, info.Width, info.Height));
+
+        image.Rgba.ShouldBe(WebpDecoder.Decode(plain).Rgba);
+    }
+
+    private static byte[] WrapStillInVp8x(string fixture, int width, int height)
+    {
+        byte[] plain = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "webp", fixture));
+        string type = System.Text.Encoding.ASCII.GetString(plain, 12, 4);
+        type.ShouldBeOneOf("VP8 ", "VP8L");
+        byte[] bitstream = plain.AsSpan(20, BinaryPrimitives.ReadInt32LittleEndian(plain.AsSpan(16))).ToArray();
+
+        byte[] vp8x = new byte[10];
+        WriteUInt24(vp8x.AsSpan(4), width - 1);
+        WriteUInt24(vp8x.AsSpan(7), height - 1);
+        return BuildFile(("VP8X", vp8x), (type, bitstream));
+    }
+
     // Pins what DecodeTo's documentation promises about stride: rows land at stride offsets, the
     // pixels match a tightly packed decode, and the padding after each row is never written.
     [Theory]

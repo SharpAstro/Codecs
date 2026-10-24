@@ -256,6 +256,16 @@ internal readonly ref struct WebpContainer
             throw new InvalidDataException("The WebP container has no valid image bitstream.");
         }
 
+        // A still VP8X canvas must be the bitstream's own size; libwebp refuses a mismatch as a
+        // bitstream error. Accepting it would pad a 1x1 bitstream out to whatever canvas the header
+        // claims -- plausible-looking wrong output, and up to 256 MiB from a ~56-byte file.
+        if (!animated && extended && (imageWidth != canvasWidth || imageHeight != canvasHeight))
+        {
+            throw new InvalidDataException(
+                $"The WebP VP8X canvas ({canvasWidth}x{canvasHeight}) does not match its image bitstream " +
+                $"({imageWidth}x{imageHeight}).");
+        }
+
         if (!animated)
         {
             frames.Add(new WebpFrameData(
