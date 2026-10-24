@@ -14,6 +14,23 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.19
+
+New package: **`SharpAstro.Webp`**, a pure-managed WebP decoder, spec-derived from the prose and tables
+of RFC 6386 (VP8) and RFC 9649 (WebP). The RFC 6386 section 20 reference decoder source was not used.
+libwebp is used as a binary oracle only.
+
+- **Formats.** VP8 lossy, VP8L lossless, ALPH transparency and animation. ICC / EXIF / XMP payloads are
+  preserved. Output is non-premultiplied RGBA8, byte-exact against `dwebp` / `anim_dump`. Encoding is
+  not supported.
+- **Animation.** `WebpAnimationDecoder` streams full-canvas frames through one canvas and supports random
+  seeking. `WebpDecoder.DecodeAnimation` materializes every frame, up to
+  `DefaultMaximumAnimationPixels` (canvas × frames, 2^28) unless the caller passes a limit. Each returned
+  frame is a full-canvas copy, so without that limit a 3 KB file of one-pixel frames could ask for 4 GiB.
+- **Facade.** `WebpImageDecoder` registers `RIFF....WEBP` with `ImageCodecs`. Lossy, lossless and the
+  first frame of an animation decode through it.
+- **Limits.** Canvases above 67,108,864 pixels are rejected before any raster is allocated.
+
 ## 3.18
 
 `SharpAstro.Png` decodes into the samples and nothing else.
@@ -49,13 +66,6 @@ those notes, verbatim in substance. 3.4 has no recorded note; it was never writt
   `SharpAstro.Fonts`, which depends on `SharpAstro.Png`, so a reference back would be a package cycle.
 
 ## 3.16
-
-`SharpAstro.Webp` decodes VP8 lossy, VP8L lossless, alpha, and animation. It
-preserves ICC / EXIF / XMP metadata, offers full-canvas frame decoding and
-random seeking, and routes animated files through the facade as frame 0.
-Encoding is not supported. Inputs above 67,108,864 pixels are rejected to
-bound allocations. The package is in the existing 3.16 lockstep release; no
-version bump is required.
 
 `SharpAstro.Jpeg2000` gets **faster, decodes at reduced resolution, and joins the facade.**
 

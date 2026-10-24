@@ -4,8 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-`src/SharpAstro.*/` — hand-written image codec packages, including faithful ports where applicable,
-each an independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch):
+`src/SharpAstro.*/` — hand-written, clean-room / faithfully-ported image codec packages, each an
+independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch):
 
 - **`SharpAstro.Codecs`** — the facade: magic-byte sniff + dispatch over `IImageDecoder`.
   Consumers reference this one package instead of cherry-picking individual codecs.
@@ -151,8 +151,10 @@ lossless images. Its four generated WebP inputs are checked in under
 Regenerate them with
 `bash benchmarks/SharpAstro.Codecs.Benchmarks/generate-webp-inputs.sh`, then
 run `dotnet run -c Release --project benchmarks/SharpAstro.Codecs.Benchmarks
--- --filter '*Webp*'`. Set `LIBWEBP_PATH` to override the default
-`/opt/homebrew/lib/libwebp.dylib`. The animation case measures full
+-- --filter '*Webp*'`. libwebp is found through `LIBWEBP_PATH`, or else the
+platform's usual shared-library names (`libwebp.so.7`, Homebrew's
+`libwebp.dylib`, `libwebp.dll`). On Windows, set `LIBWEBP_PATH` to a webp DLL
+(e.g. vcpkg's); the official release archive ships only a static library. The animation case measures full
 `DecodeAnimation` only. `--profile-webp-lossy` runs a single-thread decode loop
 for CPU sampling.
 
@@ -621,12 +623,32 @@ decoding and seeking are supported. ICC, EXIF, and XMP payloads are preserved.
 There is no encoder, and the facade returns frame 0 for animated input.
 Declared canvases above 67,108,864 pixels are rejected before raster allocation.
 
-This decoder is spec-derived from RFC 6386 / RFC 9649; libwebp/libvpx source
-was not consulted — their binaries are used only as test oracles. Written with
-AI assistance, whose training data may include libwebp. Do not read or
-transcribe libwebp, libvpx, or ffmpeg source. The command-line tools
-(`cwebp`, `dwebp`, `webpinfo`, `webpmux`, `img2webp`, `gif2webp`, and ffmpeg
+This decoder is spec-derived from the **prose and tables** of RFC 6386 / RFC 9649.
+**The reference decoder source in RFC 6386 section 20 was not used**: it carries its own
+BSD-style licence, which makes it notice-retaining like libwebp. libwebp/libvpx source
+was not consulted either; their binaries are used only as test oracles. The author confirmed
+this for the contribution (PR #31). Written with AI assistance, whose training data may include
+libwebp. Do not read or transcribe RFC 6386 section 20, libwebp, libvpx, or ffmpeg source. The
+command-line tools (`cwebp`, `dwebp`, `webpinfo`, `webpmux`, `img2webp`, `gif2webp`, and ffmpeg
 with libvpx) generate fixtures or serve as black-box oracles.
+
+**Loop filter: clamp before the shift.** RFC 6386 15.2 computes `c(a + 4) >> 3` and
+`c(a + 3) >> 3`, where `c()` clamps to int8. `a` is already in [-128, 127], so leaving out the
+clamp only matters for `a >= 124`, where the unclamped result is 16 instead of 15. That takes a
+strong edge under a large edge limit, which means a high filter level, which means low quality.
+The first review caught this as up to 818 bytes off libwebp on `cwebp -q 10` photos. No q75
+fixture reached it. The SIMD-versus-scalar tests could not see it either, because both kernels
+had the same bug. Two guards now exist. `AllKernelsMatchRfc6386ArithmeticOnStrongEdges` checks
+every kernel against a direct transcription of 15.2-15.3, on edges where it asserts the clamp
+actually fires. The `astronaut-192-q{0..20}-{normal,simple}.webp` fixtures (public-domain NASA
+photo, via scikit-image) also hit it: 9 of the 10 decode wrong without the clamp.
+
+**Animation memory is charged up front.** Every frame `DecodeAnimation` returns is a full-canvas
+copy, so it costs canvas × frames, and a one-pixel `ANMF` frame is about 50 input bytes. Without a
+limit, 3 KB declared 64 frames of 4096x4096, which is 4 GiB. The per-canvas `MaximumPixels`
+cannot see that. `DecodeAnimation` refuses canvas × frames above `DefaultMaximumAnimationPixels`
+(2^28), or above a caller-given limit, before it allocates anything.
+`WebpAnimationDecoder` streams through one canvas and is the way to handle larger animations.
 
 The VP8 YUV-to-RGB conversion was fitted black-box against `dwebp`; the
 reproducible fit helper is
@@ -640,14 +662,18 @@ G = clamp((mh(Y,19077) - mh(U,6419) - mh(V,13320) + 8708) >> 6, 0, 255)
 B = clamp((mh(Y,19077) + mh(U,33050) - 17685) >> 6, 0, 255)
 ```
 
-`tests/SharpAstro.Codecs.Tests/Oracle/webp/build.sh` builds `anim_dump` from
-the official libwebp 1.6.0 release archive to run as an oracle. Its source
-files are not read or used by the decoder. Still-image and animation frame
-digests are committed in `Fixtures/webp/webp-oracle-golden.tsv` and
-`Fixtures/webp/webp-animation-oracle-golden.tsv`; they run without external
-tools. Regenerate with `REGEN_WEBP_ORACLE=1` and
-`REGEN_ANIMATION_WEBP_ORACLE=1`. Live animation comparison finds `anim_dump`
-through `ANIM_DUMP` or PATH.
+Still-image and animation frame digests are committed in
+`Fixtures/webp/webp-oracle-golden.tsv` and `Fixtures/webp/webp-animation-oracle-golden.tsv`. They
+come from libwebp 1.6.0 and run without external tools. Regenerate them with `REGEN_WEBP_ORACLE=1`
+and `REGEN_ANIMATION_WEBP_ORACLE=1`.
+
+The live comparisons against `dwebp` and `anim_dump` are separate tests (`*MatchesLiveDwebp`,
+`AnimationFramesMatchAnimDump`), gated through `OracleGate`. They skip locally when the tool is
+missing and fail under `REQUIRE_ORACLES`. `WebpOracle` resolves each tool from `DWEBP` /
+`ANIM_DUMP`, then `Oracle/webp/bin/`, then `PATH`. CI installs the apt `webp` package, which ships
+both tools. Ubuntu noble's build is 1.3.2, and it agrees with the 1.6.0 digests on every fixture.
+`Oracle/webp/build.sh` builds a 1.6.0 `anim_dump` from the official release archive for anyone
+who wants the exact version. Its source files are not read or used by the decoder.
 
 Known oracle divergence: `anim-vp8l-alpha-hint.webp` contains a VP8L animation
 frame whose `alpha_is_used` hint is cleared despite transparent decoded pixels.
@@ -677,6 +703,7 @@ refuses to accept that silence.
 | JPEG 2000 **decode** | committed OpenJPEG fixtures | No external dependency, nothing to skip. A lossless 5/3 codestream reproduces its source raster **exactly**, so `Fixtures/jpeg2000/<name>.pgm` (or `.ppm`) is the expected output for `<name>.j2k` (or `.jp2`) — byte equality, no tolerance, no subprocess. Regenerate with `Oracle/jpeg2000/make-fixtures.sh`, which verifies each pair lossless before it will commit it. The lossy fixtures in `Fixtures/jpeg2000-lossy/` have no committed expected output and are compared against `opj_decompress` at run time: exactly for `lossy53-*`, within the measured tolerance for `lossy97-*`. |
 | JPEG 2000 **conformance** | `opj_decompress` / `opj_compress` (OpenJPEG, BSD-2 — **binary only**) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpeg2000/fetch.sh` — **downloads** the pinned v2.5.4 release build (verified by SHA-256) into `dist/`, git-ignored. The only oracle here that is not compiled from source: OpenJPEG wants CMake, and upstream ships official builds for both platforms that matter, so this dev box and CI run the *same bytes* rather than merely the same source. **CI fetches it.** |
 | JBIG2 **conformance** | `jbig2dec` (Artifex, AGPL — **binary only**) | `apt-get install jbig2dec`, or on Windows `wsl -- sudo apt-get install -y jbig2dec` — `Jbig2Oracle` finds it on PATH or through WSL. CI installs it with a one-line apt step. |
+| WebP **decode** | `dwebp` / `anim_dump` (libwebp, BSD-3 — **binary only**) + committed digests | The digests in `Fixtures/webp/*-golden.tsv` run everywhere. The live comparisons need `apt-get install webp`, the libwebp release binaries on `PATH`, or `DWEBP` / `ANIM_DUMP`. **CI installs the apt package.** |
 
 Byte-exactness claims that depend on a *pinned* reference break if the pin moves; treat the
 SHA-256 in `jpegenc/build.sh`, the `JXRLIB_COMMIT` in `Oracle/build.sh`, and the `OPJ_VERSION` +
@@ -691,7 +718,7 @@ installing its oracle looks exactly like a job that runs it. `REQUIRE_ORACLES=1`
 unavailable" from a skip into a **failure**, and CI's test step sets it.
 
 `OracleGate.RequireOrSkip(available, name, reason)` is the shared entry point. **Every external
-oracle is now on it, and CI installs, builds or fetches all four** — so a CI run has no
+oracle is now on it, and CI installs, builds or fetches all five** — so a CI run has no
 silently-absent oracle left.
 
 | Harness | Gated? | Installed/built in CI | Missing ⇒ |
@@ -700,6 +727,7 @@ silently-absent oracle left.
 | JXR (jxrlib) | yes | `Oracle/build.sh`, ~20s | skip locally, **fail** in CI |
 | jpegenc (stbiw) | yes | `Oracle/jpegenc/build.sh`, ~5s | skip locally, **fail** in CI |
 | OpenJPEG | yes | `Oracle/jpeg2000/fetch.sh`, ~5s | skip locally, **fail** in CI |
+| libwebp (dwebp, anim_dump) | yes | `apt-get install webp` | skip locally, **fail** in CI |
 
 **Why JXR mattered most.** Its guards used to be `if (encApp is null) { _out.WriteLine(...);
 return; }` — which makes the test **pass**. On a dev box with `Oracle/bin/` populated that is
@@ -716,12 +744,14 @@ reproduces the source pixels exactly), and jpegenc emits byte-identical JPEG at 
 The jpegenc agreement is not luck — `-ffp-contract=off` in its build script is load-bearing, since
 otherwise clang fuses the DCT multiply-adds into FMAs that round differently per target.
 
-Local and CI skip counts should now match at **4** (the `RegenerateGolden` opt-ins and two JXR
-header tests). They previously differed — local 4, CI 56 — purely because a dev box has
+Local and CI skip counts should now match at **6** (the four `RegenerateGolden` opt-ins -- JPEG
+decode/encode and WebP still/animation -- and two JXR header tests), given a dev box with every
+oracle present. They previously differed — local 4, CI 56 — purely because a dev box has
 `Oracle/bin/` populated and CI built nothing.
 
 Related knobs: `OPJ_HOME=<prefix>` points the JPEG 2000 oracle at a prefix containing
 `bin/opj_decompress` — a local build, or a bogus path to exercise the failure branch.
+`DWEBP=<path>` / `ANIM_DUMP=<path>` do the same for the WebP oracles.
 `JBIG2DEC=<path>` overrides jbig2dec resolution — point it at a custom build, or at
 a bogus path to exercise the failure branch. For the built oracles, temporarily renaming the
 binary does the same job — but note `jpegenc.exe` resolves from **two** places (`Oracle/bin/` and

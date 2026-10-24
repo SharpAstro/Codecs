@@ -158,12 +158,30 @@ internal static class LibWebp
         }
     }
 
+    // LIBWEBP_PATH wins; otherwise each platform's usual shared-library names are tried. The official
+    // Windows release archive ships only a static library, so on Windows LIBWEBP_PATH normally has to
+    // point at a webp DLL (vcpkg's `libwebp.dll`, for example).
     private static IntPtr LoadLibrary()
     {
-        string path = Environment.GetEnvironmentVariable("LIBWEBP_PATH") is { Length: > 0 } configured
-            ? configured
-            : "/opt/homebrew/lib/libwebp.dylib";
-        return NativeLibrary.Load(path);
+        if (Environment.GetEnvironmentVariable("LIBWEBP_PATH") is { Length: > 0 } configured)
+        {
+            return NativeLibrary.Load(configured);
+        }
+
+        string[] candidates = OperatingSystem.IsWindows() ? ["libwebp.dll", "webp.dll"]
+            : OperatingSystem.IsMacOS() ? ["/opt/homebrew/lib/libwebp.dylib", "/usr/local/lib/libwebp.dylib", "libwebp.dylib"]
+            : ["libwebp.so.7", "libwebp.so"];
+        foreach (string candidate in candidates)
+        {
+            if (NativeLibrary.TryLoad(candidate, out IntPtr handle))
+            {
+                return handle;
+            }
+        }
+
+        throw new DllNotFoundException(
+            $"libwebp was not found (tried {string.Join(", ", candidates)}). " +
+            "Set LIBWEBP_PATH to the full path of a libwebp shared library to run the WebP A/B benchmarks.");
     }
 
     private static IntPtr ResolveLibrary(

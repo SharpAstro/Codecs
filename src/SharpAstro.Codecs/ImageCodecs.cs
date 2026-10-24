@@ -6,10 +6,10 @@ using SharpAstro.Jbig2;
 using SharpAstro.Jpeg;
 using SharpAstro.Jpeg2000;
 using SharpAstro.Jxl;
-using SharpAstro.Webp;
 using SharpAstro.Jxr;
 using SharpAstro.Png;
 using SharpAstro.Tiff;
+using SharpAstro.Webp;
 
 namespace SharpAstro.Codecs;
 
@@ -48,8 +48,9 @@ namespace SharpAstro.Codecs;
 /// consumer tone/stretch decision, not a codec one.
 /// </para>
 /// <para>
-/// Still lossy WebP images are decoded by <see cref="WebpImageDecoder"/> and
-/// return RGB8 or RGBA8 according to the container's alpha declaration.
+/// WebP is decoded by <see cref="WebpImageDecoder"/>: lossy (VP8), lossless (VP8L)
+/// and, for an animation, its first composited frame. It returns RGB8 or RGBA8
+/// according to the container's alpha declaration.
 /// </para>
 /// <para>
 /// A gain-map ("Ultra HDR") JPEG is recognised too: <see cref="TryDecode"/> +

@@ -29,13 +29,6 @@ The facade decodes WebP still images and frame 0 of animated WebP. Use
 `SharpAstro.Webp.WebpDecoder.DecodeAnimation` or `WebpAnimationDecoder` to access animation frames
 and seek through the timeline.
 
-Known oracle divergence: the `anim-vp8l-alpha-hint.webp` regression fixture has
-a VP8L frame with transparent pixels even though its `alpha_is_used` hint is
-cleared. Its RFC 9649 blend flag requires alpha blending, which this decoder
-performs; `anim_dump` 1.6.0 emits that frame uncomposited. The fixture is
-therefore excluded from the `anim_dump` comparison but remains covered by
-compositing and seek-versus-sequential tests.
-
 All packages target `net10.0`, are `IsAotCompatible`, ship SourceLink debugging, and publish in
 lockstep (shared Major.Minor + CI run-number patch).
 
