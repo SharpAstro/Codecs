@@ -94,16 +94,7 @@ public sealed class WebpAnimationOracleTests
     [MemberData(nameof(AnimationFixtureCases))]
     public void AnimationFramesMatchAnimDump(string fixture)
     {
-        string? animDump = FindAnimDump();
-        if (animDump is null)
-        {
-            OracleGate.RequireOrSkip(
-                available: false,
-                "anim_dump",
-                "set ANIM_DUMP or build it with tests/SharpAstro.Codecs.Tests/Oracle/webp/build.sh",
-                requiredWhenConfigured: false);
-            return;
-        }
+        string animDump = WebpOracle.RequireAnimDump();
 
         string input = Path.Combine(FixtureDirectory(), fixture);
         byte[] source = File.ReadAllBytes(input);
@@ -156,15 +147,7 @@ public sealed class WebpAnimationOracleTests
             return;
         }
 
-        string? animDump = FindAnimDump();
-        OracleGate.RequireOrSkip(
-            animDump is not null,
-            "anim_dump",
-            "set ANIM_DUMP or build it with tests/SharpAstro.Codecs.Tests/Oracle/webp/build.sh");
-        if (animDump is null)
-        {
-            return;
-        }
+        string animDump = WebpOracle.RequireAnimDump();
 
         string fixtureDirectory = RepoFixtureDirectory();
         var lines = new List<string>
@@ -478,29 +461,6 @@ public sealed class WebpAnimationOracleTests
             $"max |diff| {maximumDifference}; first pixel ({pixel % width},{pixel / width}) " +
             $"channel {Math.Max(first, 0) % 4}, expected {(first >= 0 ? expected[first] : -1)}, " +
             $"actual {(first >= 0 ? actual[first] : -1)}.";
-    }
-
-    private static string? FindAnimDump()
-    {
-        string? configured = Environment.GetEnvironmentVariable("ANIM_DUMP");
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            string path = Path.GetFullPath(configured);
-            return File.Exists(path) ? path : null;
-        }
-
-        string executable = OperatingSystem.IsWindows() ? "anim_dump.exe" : "anim_dump";
-        foreach (string directory in (Environment.GetEnvironmentVariable("PATH") ?? "")
-                     .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            string candidate = Path.Combine(directory, executable);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
     }
 
     private static IEnumerable<string> FixtureNames() => FixtureNames(FixtureDirectory());

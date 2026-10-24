@@ -48,55 +48,63 @@ public sealed class WebpOracleTests
 
     [Theory]
     [MemberData(nameof(RgbaFixtureCases))]
-    public void RgbaMatchesDwebp(string fixtureName, bool noFancy)
+    public void RgbaMatchesGolden(string fixtureName, bool noFancy)
     {
-        string input = Path.Combine(FixtureDirectory(), fixtureName);
-        byte[] source = File.ReadAllBytes(input);
+        byte[] source = File.ReadAllBytes(Path.Combine(FixtureDirectory(), fixtureName));
         WebpInfo info = WebpDecoder.ReadInfo(source);
         GoldenEntry expectedGolden = Golden.Value[fixtureName];
         Assert.Equal((expectedGolden.Width, expectedGolden.Height), (info.Width, info.Height));
 
-        byte[] actual = DecodeRgba(source, info, noFancy);
-        string actualSha256 = Sha256(actual);
+        string actualSha256 = Sha256(DecodeRgba(source, info, noFancy));
         string expectedSha256 = noFancy
             ? expectedGolden.NoFancyRgbaSha256
             : expectedGolden.FancyRgbaSha256;
+        Assert.True(
+            actualSha256 == expectedSha256,
+            $"{fixtureName} {(noFancy ? "nofancy" : "fancy")}: " +
+            $"golden SHA-256 expected {expectedSha256}, actual {actualSha256}.");
+    }
 
-        string? dwebp = FindDwebp();
-        byte[]? oracle = dwebp is null ? null : RunDwebp(dwebp, input, yuv: false, noFancy);
-        string? liveMismatch = oracle is not null && !oracle.AsSpan().SequenceEqual(actual)
-            ? DescribeRgbaMismatch(fixtureName, noFancy, oracle, actual, info.Width)
-            : null;
-        if (actualSha256 != expectedSha256 || liveMismatch is not null)
+    [Theory]
+    [MemberData(nameof(RgbaFixtureCases))]
+    public void RgbaMatchesLiveDwebp(string fixtureName, bool noFancy)
+    {
+        string dwebp = WebpOracle.RequireDwebp();
+        string input = Path.Combine(FixtureDirectory(), fixtureName);
+        byte[] source = File.ReadAllBytes(input);
+        WebpInfo info = WebpDecoder.ReadInfo(source);
+        byte[] actual = DecodeRgba(source, info, noFancy);
+        byte[] oracle = RunDwebp(dwebp, input, yuv: false, noFancy);
+        if (!oracle.AsSpan().SequenceEqual(actual))
         {
-            Assert.Fail(
-                $"{fixtureName} {(noFancy ? "nofancy" : "fancy")}: " +
-                $"golden SHA-256 expected {expectedSha256}, actual {actualSha256}. " +
-                (liveMismatch ?? ""));
+            Assert.Fail(DescribeRgbaMismatch(fixtureName, noFancy, oracle, actual, info.Width));
         }
     }
 
     [Theory]
     [MemberData(nameof(YuvFixtureCases))]
-    public void YuvMatchesDwebp(string fixtureName)
+    public void YuvMatchesGolden(string fixtureName)
     {
-        string input = Path.Combine(FixtureDirectory(), fixtureName);
-        byte[] source = File.ReadAllBytes(input);
-        Vp8Yuv yuv = WebpDecoder.DecodeYuv(source);
-        byte[] actual = FlattenYuv(yuv);
+        byte[] source = File.ReadAllBytes(Path.Combine(FixtureDirectory(), fixtureName));
+        string actualSha256 = Sha256(FlattenYuv(WebpDecoder.DecodeYuv(source)));
         GoldenEntry expectedGolden = Golden.Value[fixtureName];
-        string actualSha256 = Sha256(actual);
+        Assert.True(
+            actualSha256 == expectedGolden.YuvSha256,
+            $"{fixtureName}: YUV golden SHA-256 expected {expectedGolden.YuvSha256}, actual {actualSha256}.");
+    }
 
-        string? dwebp = FindDwebp();
-        byte[]? oracle = dwebp is null ? null : RunDwebp(dwebp, input, yuv: true, noFancy: false);
-        string? liveMismatch = oracle is not null && !oracle.AsSpan().SequenceEqual(actual)
-            ? DescribeYuvMismatch(fixtureName, yuv, oracle, actual)
-            : null;
-        if (actualSha256 != expectedGolden.YuvSha256 || liveMismatch is not null)
+    [Theory]
+    [MemberData(nameof(YuvFixtureCases))]
+    public void YuvMatchesLiveDwebp(string fixtureName)
+    {
+        string dwebp = WebpOracle.RequireDwebp();
+        string input = Path.Combine(FixtureDirectory(), fixtureName);
+        Vp8Yuv yuv = WebpDecoder.DecodeYuv(File.ReadAllBytes(input));
+        byte[] actual = FlattenYuv(yuv);
+        byte[] oracle = RunDwebp(dwebp, input, yuv: true, noFancy: false);
+        if (!oracle.AsSpan().SequenceEqual(actual))
         {
-            Assert.Fail(
-                $"{fixtureName}: YUV golden SHA-256 expected {expectedGolden.YuvSha256}, " +
-                $"actual {actualSha256}. " + (liveMismatch ?? ""));
+            Assert.Fail(DescribeYuvMismatch(fixtureName, yuv, oracle, actual));
         }
     }
 
@@ -109,7 +117,7 @@ public sealed class WebpOracleTests
             return;
         }
 
-        string? dwebp = FindDwebp();
+        string? dwebp = WebpOracle.Dwebp;
         Assert.True(dwebp is not null, "dwebp is required to regenerate the WebP oracle manifest.");
         string fixtureDirectory = RepoFixtureDirectory();
         var lines = new List<string>
@@ -312,27 +320,6 @@ public sealed class WebpOracleTests
         {
             File.Delete(output);
         }
-    }
-
-    private static string? FindDwebp()
-    {
-        string? configured = Environment.GetEnvironmentVariable("DWEBP");
-        if (configured is not null && File.Exists(configured))
-        {
-            return configured;
-        }
-
-        foreach (string directory in (Environment.GetEnvironmentVariable("PATH") ?? "")
-                     .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            string candidate = Path.Combine(directory, OperatingSystem.IsWindows() ? "dwebp.exe" : "dwebp");
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
     }
 
     private static IEnumerable<string> FixtureNames() => FixtureNames(FixtureDirectory());
