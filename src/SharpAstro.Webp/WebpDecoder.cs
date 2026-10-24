@@ -48,8 +48,14 @@ public static class WebpDecoder
 
     /// <summary>
     /// The default ceiling on the total pixels <see cref="DecodeAnimation(ReadOnlySpan{byte})"/> may
-    /// materialize: canvas width × height × frame count, 2^28 (1 GiB of RGBA). That admits, say,
-    /// 128 frames of 1080p.
+    /// materialize: canvas width × height × frame count, 2^28. That admits, say, 128 frames of 1080p.
+    /// <para>
+    /// The returned frames hold up to 1 GiB of RGBA at this limit, and the decoder's working canvas
+    /// (up to 256 MiB) comes on top of them. Measured: an 8192×8192 × 4-frame file of 244 bytes, which
+    /// is exactly at the limit, allocates 1.25 GiB. A caller with a tighter memory budget should pass
+    /// a smaller limit to <see cref="DecodeAnimation(ReadOnlySpan{byte}, long)"/>, or stream with
+    /// <see cref="WebpAnimationDecoder"/>.
+    /// </para>
     /// </summary>
     public const long DefaultMaximumAnimationPixels = 1L << 28;
 
@@ -97,12 +103,20 @@ public static class WebpDecoder
                 $"above the limit of {maximumTotalPixels:N0}. Use WebpAnimationDecoder to stream it.");
         }
 
+        // Each frame is copied straight from the decoder's working canvas into the array that is
+        // returned, so the peak is the frames plus that one working canvas.
         var decoder = new WebpAnimationDecoder(data.ToArray());
-        byte[] canvas = new byte[checked(decoder.CanvasWidth * decoder.CanvasHeight * 4)];
+        int canvasBytes = checked(decoder.CanvasWidth * decoder.CanvasHeight * 4);
         var frames = new List<WebpFrame>(decoder.FrameCount);
-        while (decoder.TryDecodeNextFrame(canvas, out WebpFrameInfo frame))
+        for (int index = 0; index < decoder.FrameCount; index++)
         {
-            frames.Add(new WebpFrame(canvas.ToArray(), frame.TimestampMs, frame.DurationMs));
+            byte[] rgba = new byte[canvasBytes];
+            if (!decoder.TryDecodeNextFrame(rgba, out WebpFrameInfo frame))
+            {
+                throw new InvalidDataException("The WebP animation ended before its declared frame count.");
+            }
+
+            frames.Add(new WebpFrame(rgba, frame.TimestampMs, frame.DurationMs));
         }
 
         return new WebpAnimation(
@@ -120,7 +134,9 @@ public static class WebpDecoder
 
     /// <summary>
     /// Decodes to a new tightly packed RGBA8 image with its ICC / EXIF / XMP payloads. Animated input
-    /// yields the first frame composited onto the transparent canvas, at canvas size.
+    /// yields the first frame composited onto the transparent canvas, at canvas size. That costs two
+    /// canvases, the decoder's working canvas plus the result. Measured: a 94-byte animation with an
+    /// 8192×8192 canvas allocates 512 MiB here, and through the facade.
     /// </summary>
     /// <param name="data">The complete WebP file.</param>
     /// <exception cref="InvalidDataException">The data is malformed.</exception>
@@ -215,6 +231,14 @@ public static class WebpDecoder
 
         if (info.Format == WebpFormat.Animated)
         {
+            if (stride == minimumStride)
+            {
+                // Tightly packed: the frame goes straight from the working canvas into the caller's
+                // buffer, with no intermediate copy.
+                DecodeFirstAnimationFrame(data, rgba[..requiredLength], fancy);
+                return;
+            }
+
             byte[] firstFrame = DecodeFirstAnimationFrame(data, info.Width, info.Height, fancy);
             for (int row = 0; row < info.Height; row++)
             {
@@ -336,14 +360,18 @@ public static class WebpDecoder
         int height,
         bool fancy = true)
     {
-        var decoder = new WebpAnimationDecoder(data.ToArray(), fancy);
         byte[] rgba = new byte[checked(width * height * 4)];
-        if (!decoder.TryDecodeNextFrame(rgba, out _))
+        DecodeFirstAnimationFrame(data, rgba, fancy);
+        return rgba;
+    }
+
+    private static void DecodeFirstAnimationFrame(ReadOnlySpan<byte> data, Span<byte> canvasRgba, bool fancy)
+    {
+        var decoder = new WebpAnimationDecoder(data.ToArray(), fancy);
+        if (!decoder.TryDecodeNextFrame(canvasRgba, out _))
         {
             throw new InvalidDataException("The WebP animation has no frames.");
         }
-
-        return rgba;
     }
 
     private static void WriteRgba(

@@ -8,6 +8,7 @@ public sealed class WebpRobustnessTests
     private const int ExhaustiveTruncationLimit = 4096;
     private const int MutationsPerFixture = 192;
     private const int MaximumMutationDecodePixels = 1_000_000;
+    private const long MaximumMutationAnimationPixels = 1L << 22;
 
     [Fact]
     public void TruncationsAndBitFlipsAcrossFixturesStayWithinDecodeContracts()
@@ -179,12 +180,19 @@ public sealed class WebpRobustnessTests
             Assert.False(WebpImageDecoder.TryReadInfo(data, out _), context);
         }
 
-        bool decoded = AssertAllowedOutcome(context, () => WebpDecoder.Decode(data));
-        _ = AssertAllowedOutcome(context, () => WebpDecoder.DecodeAnimation(data));
+        // A flipped dimension bit can legitimately declare a canvas near the 2^26 limit, and decoding
+        // that for real is up to 256 MiB per call -- several GB once xUnit runs tests in parallel. So
+        // the allocating entry points only run on small declared canvases, and DecodeAnimation gets a
+        // small explicit budget; refusal paths are still exercised above those sizes.
+        _ = AssertAllowedOutcome(context, () => WebpDecoder.DecodeAnimation(data, MaximumMutationAnimationPixels));
 
         bool hasInfo = WebpDecoder.TryReadInfo(data, out WebpInfo info);
         if (hasInfo && (long)info.Width * info.Height <= MaximumMutationDecodePixels)
         {
+            bool decoded = AssertAllowedOutcome(context, () => WebpDecoder.Decode(data));
+            bool adapterDecoded = WebpImageDecoder.TryDecode(data, out _);
+            Assert.True(decoded == adapterDecoded, context);
+
             byte[] destination = new byte[checked(info.Width * info.Height * 4)];
             bool decodeToSucceeded = AssertAllowedOutcome(context, () => WebpDecoder.DecodeTo(data, destination));
             Assert.True(decodeToSucceeded == WebpDecoder.TryDecodeTo(data, destination), context);
@@ -198,10 +206,9 @@ public sealed class WebpRobustnessTests
             Assert.False(WebpImageDecoder.TryDecodeIntoRgba8(data, Span<byte>.Empty), context);
         }
 
-        bool adapterDecoded = WebpImageDecoder.TryDecode(data, out _);
-        if (!decoded)
+        if (!hasInfo)
         {
-            Assert.False(adapterDecoded, context);
+            Assert.False(WebpImageDecoder.TryDecode(data, out _), context);
         }
     }
 

@@ -29,7 +29,10 @@ libwebp is used as a binary oracle only.
   frame is a full-canvas copy, so without that limit a 3 KB file of one-pixel frames could ask for 4 GiB.
 - **Facade.** `WebpImageDecoder` registers `RIFF....WEBP` with `ImageCodecs`. Lossy, lossless and the
   first frame of an animation decode through it.
-- **Limits.** Canvases above 67,108,864 pixels are rejected before any raster is allocated.
+- **Limits.** Canvases above 67,108,864 pixels are rejected before any raster is allocated. A still
+  `VP8X` canvas that disagrees with its bitstream is refused, as libwebp refuses it. The residual cost
+  at the limits is measured in `CLAUDE.md`: 1.25 GiB for `DecodeAnimation` at its default limit, and
+  512 MiB for `Decode` of an 8192x8192 animation.
 
 ## 3.18
 

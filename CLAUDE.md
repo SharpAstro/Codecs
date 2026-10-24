@@ -650,6 +650,35 @@ cannot see that. `DecodeAnimation` refuses canvas × frames above `DefaultMaximu
 (2^28), or above a caller-given limit, before it allocates anything.
 `WebpAnimationDecoder` streams through one canvas and is the way to handle larger animations.
 
+**What is left, measured rather than implied.** These numbers are within the limits by design, but
+they are larger than "1 GiB of RGBA" suggests. Allocations were counted with
+`GC.GetTotalAllocatedBytes` on x64 and agree with the reviewer's arm64 measurement:
+
+| Input | Path | Allocated | Time |
+|---|---|---|---|
+| 244 bytes: 8192x8192 canvas, 4 one-pixel frames (exactly at the default limit) | `DecodeAnimation` | **1.25 GiB** | 0.13-0.34 s x64 |
+| 94 bytes: 8192x8192 canvas, 1 one-pixel frame | `Decode`, and so the facade's `TryDecode` | **512 MiB** | ~55 ms x64 |
+| same | `DecodeTo`, tightly packed | **256 MiB** on top of the caller's buffer | ~45 ms x64 |
+
+- **`DecodeAnimation`:** the 1.25 GiB is 1 GiB of returned frames plus the decoder's one working
+  canvas. Before round two it was 1.5 GiB, because a second working copy was made and then copied
+  from; frames now go straight from the decoder's canvas into the arrays that are returned. The
+  reviewer measured 1.4 s for the old 1.5 GiB on an arm64 VM, mostly page-faulting fresh memory.
+- **Animated `Decode`:** it needs the working canvas plus the result, two canvases.
+- **Animated `DecodeTo`:** it copies the working canvas straight into a tightly packed caller
+  buffer. With a padded stride it needs one more canvas to restride from.
+
+A canvas costs about 50 bytes of input however large it is, so this is the floor for anyone who
+accepts 2^26-pixel canvases at all. That is the same position the JBIG2 section describes for a
+standalone `.jb2`. A caller with a tighter memory budget should pass a smaller
+`maximumTotalPixels`, check `ReadInfo` before decoding, or stream.
+
+**A still VP8X canvas must equal its bitstream.** libwebp refuses a mismatch with
+`BITSTREAM_ERROR`, and so does this decoder (`InvalidDataException`). Accepting it padded the
+bitstream into the top-left corner of whatever canvas the header claimed. That gave plausible-looking
+wrong output, and a 56-byte file could turn a 1x1 bitstream into a 256 MiB image through the
+facade. Animation frames already had the equivalent check against their `ANMF` rectangle.
+
 The VP8 YUV-to-RGB conversion was fitted black-box against `dwebp`; the
 reproducible fit helper is
 [`tests/SharpAstro.Codecs.Tests/Fixtures/webp/fit-yuv-to-rgb.py`](tests/SharpAstro.Codecs.Tests/Fixtures/webp/fit-yuv-to-rgb.py).
