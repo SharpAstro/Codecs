@@ -51,8 +51,15 @@ jobs:
     # codestreams against. Used strictly as a BINARY -- it is AGPL and can never
     # be a port source for this Unlicense repo (see
     # tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
+    #
+    # webp brings dwebp and anim_dump, the libwebp reference tools that the live
+    # WebP comparisons (WebpOracleTests / WebpAnimationOracleTests) run against.
+    # Binary only, like the rest: SharpAstro.Webp is spec-derived from RFC 6386 /
+    # RFC 9649. Ubuntu's build is older than the libwebp 1.6.0 the committed digests
+    # were made with; the two agree on every fixture, and a disagreement between
+    # them would be worth knowing about rather than pinning away.
     - name: Install codec oracles
-      run: sudo apt-get update && sudo apt-get install -y jbig2dec
+      run: sudo apt-get update && sudo apt-get install -y jbig2dec webp
     # JxrEncApp / JxrDecApp from jxrlib (BSD-2), clang-built from a pinned
     # commit in ~10s. This is the strongest guarantee the repo makes about the
     # JXR port -- our codestream is byte-for-byte what the reference emits --
@@ -86,9 +93,9 @@ jobs:
       # oracle harness degrades to a skip so a clean clone stays green, which is
       # right locally and misleading here -- without this, a CI job that stopped
       # installing jbig2dec or building an oracle would look exactly like one
-      # that did. All four external oracles (jbig2dec, jxrlib, jpegenc and
-      # OpenJPEG) are gated and fetched or built above, so this run has no
-      # silently-absent oracle left.
+      # that did. All five external oracles (jbig2dec, jxrlib, jpegenc, OpenJPEG
+      # and libwebp's dwebp / anim_dump) are gated and fetched or built above, so
+      # this run has no silently-absent oracle left.
       env:
         REQUIRE_ORACLES: 1
       run: dotnet test Codecs.JustTests.sln -c $BUILD_CONF --no-build

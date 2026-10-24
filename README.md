@@ -18,11 +18,16 @@ package instead of cherry-picking codecs.
 | **OpenEXR** | ✅ | ✅ | scanline, HALF/FLOAT/UINT, NONE/RLE/ZIP/ZIPS/PIZ |
 | **JPEG XL** | ✅ | ✅ | clean-room; lossless Modular + lossy VarDCT |
 | **JBIG2** | ✅ | — | bilevel, for PDF's `/JBIG2Decode`. Every region type T.88 defines, on the arithmetic path |
+| **WebP** | ✅ | — | VP8 lossy, VP8L lossless, ALPH, animation + seek, ICC/EXIF/XMP metadata |
 | **EXIF** | ✅ | — | metadata only, from JPEG / TIFF / PNG |
 
 See **[CODECS.md](CODECS.md)** for the full per-package matrix, what each codec does and does not
 support, and how to pick the right one. A bundled **sRGB ICC** profile ships in
 `SharpAstro.Color.Icc` for embedding.
+
+The facade decodes WebP still images and frame 0 of animated WebP. Use
+`SharpAstro.Webp.WebpDecoder.DecodeAnimation` or `WebpAnimationDecoder` to access animation frames
+and seek through the timeline.
 
 All packages target `net10.0`, are `IsAotCompatible`, ship SourceLink debugging, and publish in
 lockstep (shared Major.Minor + CI run-number patch).
@@ -30,12 +35,13 @@ lockstep (shared Major.Minor + CI run-number patch).
 ## NuGet
 
 ```
-# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, .jb2):
+# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, .jb2):
 dotnet add package SharpAstro.Codecs
 
 # ...or reference just the format(s) you need:
 dotnet add package SharpAstro.Png
 dotnet add package SharpAstro.Jxr
+dotnet add package SharpAstro.Webp
 ```
 
 ## Usage

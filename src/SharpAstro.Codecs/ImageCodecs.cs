@@ -9,6 +9,7 @@ using SharpAstro.Jxl;
 using SharpAstro.Jxr;
 using SharpAstro.Png;
 using SharpAstro.Tiff;
+using SharpAstro.Webp;
 
 namespace SharpAstro.Codecs;
 
@@ -45,6 +46,11 @@ namespace SharpAstro.Codecs;
 /// declaring its meaning; <see cref="TryDecodeIntoRgba8"/> serves the
 /// integer-sample display path only - projecting HDR float to 8 bits is a
 /// consumer tone/stretch decision, not a codec one.
+/// </para>
+/// <para>
+/// WebP is decoded by <see cref="WebpImageDecoder"/>: lossy (VP8), lossless (VP8L)
+/// and, for an animation, its first composited frame. It returns RGB8 or RGBA8
+/// according to the container's alpha declaration.
 /// </para>
 /// <para>
 /// A gain-map ("Ultra HDR") JPEG is recognised too: <see cref="TryDecode"/> +
@@ -90,6 +96,7 @@ public static class ImageCodecs
         Register<JxlImageDecoder>(),
         Register<Jbig2ImageDecoder>(),
         Register<Jpeg2000ImageDecoder>(),
+        Register<WebpImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>

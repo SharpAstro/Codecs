@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -13,6 +13,26 @@ This file was created at 3.10 by migrating the note trail out of the two comment
 it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose above a variable that no
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
+
+## 3.19
+
+New package: **`SharpAstro.Webp`**, a pure-managed WebP decoder, spec-derived from the prose and tables
+of RFC 6386 (VP8) and RFC 9649 (WebP). The RFC 6386 section 20 reference decoder source was not used.
+libwebp is used as a binary oracle only.
+
+- **Formats.** VP8 lossy, VP8L lossless, ALPH transparency and animation. ICC / EXIF / XMP payloads are
+  preserved. Output is non-premultiplied RGBA8, byte-exact against `dwebp` / `anim_dump`. Encoding is
+  not supported.
+- **Animation.** `WebpAnimationDecoder` streams full-canvas frames through one canvas and supports random
+  seeking. `WebpDecoder.DecodeAnimation` materializes every frame, up to
+  `DefaultMaximumAnimationPixels` (canvas × frames, 2^28) unless the caller passes a limit. Each returned
+  frame is a full-canvas copy, so without that limit a 3 KB file of one-pixel frames could ask for 4 GiB.
+- **Facade.** `WebpImageDecoder` registers `RIFF....WEBP` with `ImageCodecs`. Lossy, lossless and the
+  first frame of an animation decode through it.
+- **Limits.** Canvases above 67,108,864 pixels are rejected before any raster is allocated. A still
+  `VP8X` canvas that disagrees with its bitstream is refused, as libwebp refuses it. The residual cost
+  at the limits is measured in `CLAUDE.md`: 1.25 GiB for `DecodeAnimation` at its default limit, and
+  512 MiB for `Decode` of an 8192x8192 animation.
 
 ## 3.18
 
