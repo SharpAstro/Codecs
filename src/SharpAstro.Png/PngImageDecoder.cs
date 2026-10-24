@@ -54,9 +54,10 @@ public sealed class PngImageDecoder : IImageDecoder
     public static bool TryDecode(ReadOnlySpan<byte> data, [NotNullWhen(true)] out IDecodedImage? image)
     {
         image = null;
+        if (!PngReader.TryDecode(data, out var png)) return false;
         try
         {
-            image = ToDecoded(PngReader.Decode(data));
+            image = ToDecoded(png);
             return true;
         }
         catch (Exception e) when (e is InvalidDataException or ArgumentException or NotSupportedException)
@@ -76,20 +77,63 @@ public sealed class PngImageDecoder : IImageDecoder
     /// display context, so HLG refuses alongside PQ).</remarks>
     public static bool TryDecodeIntoRgba8(ReadOnlySpan<byte> data, Span<byte> rgbaDestination)
     {
+        if (!TryReadDisplayReferred(data, out var png)) return false;
+        if (rgbaDestination.Length < (long)png.Width * png.Height * 4) return false;
         try
         {
-            var png = PngReader.Decode(data);
-            if (png.Cicp is { } cicp &&
-                cicp.TransferFunction is TransferFunction.Pq or TransferFunction.Hlg)
-                return false;
-            if (rgbaDestination.Length < (long)png.Width * png.Height * 4) return false;
             png.ExpandToRgba8(rgbaDestination);
             return true;
         }
-        catch (Exception e) when (e is InvalidDataException or ArgumentException)
+        catch (InvalidDataException)
         {
+            // An indexed pixel past the palette's end.
             return false;
         }
+    }
+
+    /// <summary>
+    /// Decode a PNG to tightly-packed 8-bit RGBA in an array the caller owns, without knowing its
+    /// size first: the one-call form of <see cref="TryReadInfo"/> + allocate + <see cref="TryDecodeIntoRgba8"/>.
+    /// An 8-bit RGBA file's decoded samples already are that layout, so they are handed back as they
+    /// are; every other colour type is expanded once, the same mapping <see cref="TryDecodeIntoRgba8"/>
+    /// uses. Either way the result is a fresh array of exactly <c>width * height * 4</c> bytes that
+    /// nothing else references, so a caller can adopt it (DIR.Lib's <c>RgbaImage(width, height, pixels)</c>)
+    /// rather than copy it.
+    /// </summary>
+    /// <remarks>False for a stream this reader rejects (Adam7 interlace, sub-byte depths, a corrupt
+    /// file) and, like <see cref="TryDecodeIntoRgba8"/>, for cICP PQ/HLG-tagged files.</remarks>
+    public static bool TryDecodeRgba8(ReadOnlySpan<byte> data, [NotNullWhen(true)] out byte[]? rgba, out int width, out int height)
+    {
+        rgba = null;
+        width = height = 0;
+        if (!TryReadDisplayReferred(data, out var png)) return false;
+        try
+        {
+            rgba = png.ColorType == 6 && png.BitDepth == 8 ? png.Pixels : png.ToRgba8();
+        }
+        catch (InvalidDataException)
+        {
+            // An indexed pixel past the palette's end.
+            return false;
+        }
+        width = png.Width;
+        height = png.Height;
+        return true;
+    }
+
+    // The shared first step of the RGBA8 projections: PngReader.TryDecode, then the refusal of cICP
+    // PQ/HLG, whose code values are encoded for an HDR EOTF (see TryDecodeIntoRgba8). A float
+    // projection that decodes those starts from PngReader.TryDecode instead and skips the refusal.
+    private static bool TryReadDisplayReferred(ReadOnlySpan<byte> data, [NotNullWhen(true)] out PngImage? png)
+    {
+        if (!PngReader.TryDecode(data, out png)) return false;
+        if (png.Cicp is { } cicp &&
+            cicp.TransferFunction is TransferFunction.Pq or TransferFunction.Hlg)
+        {
+            png = null;
+            return false;
+        }
+        return true;
     }
 
     // The layout TryDecode produces. Indexed always expands to RGBA8; the rest keep

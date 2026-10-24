@@ -14,6 +14,40 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.18
+
+`SharpAstro.Png` decodes into the samples and nothing else.
+
+- **`PngReader.Decode` allocates the image once.** It copied every IDAT payload out of the input,
+  concatenated the copies, copied that again to wrap it in a stream, inflated into a growing
+  `MemoryStream`, copied that out, and unfiltered the copy into a new array. Now the IDAT payloads are
+  read where they lie in the input, each row is inflated straight into its place in the result, and
+  unfiltered there against the row above (`PngPredictor.UnfilterRow`, internal). A 5100x6600 RGB page
+  allocated 514.8 MB to decode and allocates 101.0 MB, its samples; the time is unchanged
+  (1.04-1.36 s before, 1.04-1.24 s after, alternated).
+- A stream a row short, or running past the last row, is refused as before, with the same
+  `InvalidDataException`.
+
+## 3.17
+
+`SharpAstro.Png` reads a PNG into an RGBA8 array in one call (#32).
+
+- **`PngImageDecoder.TryDecodeRgba8(data, out rgba, out width, out height)`** is the reading half
+  `PngWriter.Encode(rgba, w, h)` lacked. Callers no longer chain `TryReadInfo`, an allocation and
+  `TryDecodeIntoRgba8`, and need not know the size up front. The array is fresh, exactly
+  `width * height * 4` bytes and referenced by nothing else, so it can be adopted rather than copied
+  (DIR.Lib 11.27's `RgbaImage(width, height, pixels)`). An 8-bit RGBA file's decoded samples are
+  returned as they are, with no expansion pass; other colour types, indexed included, expand once.
+  It refuses what `TryDecodeIntoRgba8` refuses (cICP PQ/HLG), and returns false rather than throwing
+  on a stream the reader cannot decode (Adam7 interlace, sub-byte depths, corrupt data).
+- **`PngReader.TryDecode(data, out PngImage? image)`** is `Decode` without the exceptions, and the shared
+  first step of every `PngImageDecoder` entry point. It passes cICP PQ/HLG files through untouched: the
+  refusal belongs to the RGBA8 projections, so a later float projection starts from it.
+- **Fix:** `TryDecodeIntoRgba8` threw `NotSupportedException` on an Adam7 or sub-byte-depth PNG instead of
+  returning false. It now goes through `PngReader.TryDecode` like the rest.
+- It returns an array, not DIR.Lib's `RgbaImage`, as #32 first asked: DIR.Lib depends on
+  `SharpAstro.Fonts`, which depends on `SharpAstro.Png`, so a reference back would be a package cycle.
+
 ## 3.16
 
 `SharpAstro.Webp` decodes VP8 lossy, VP8L lossless, alpha, and animation. It
