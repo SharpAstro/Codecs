@@ -14,6 +14,33 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.20
+
+`SharpAstro.Jxl`'s lossy VarDCT path **works one 256-px group at a time** and no longer builds
+whole-image planes (#39). Its output is **unchanged**: encoded bytes and decoded pixels are
+identical to 3.19 across a sweep of sizes from 8x8 to 8192x8192, partial and multi-LF-group grids,
+noise and photographic content, and every quantizer setting tried.
+
+- **Why it could.** Every step after entropy coding is local to one 8x8 block: the DCT,
+  quantization, chroma-from-luma, and XYB <-> sRGB. The encoder writes neither Gabor nor EPF, and a
+  varblock never crosses a 256-px group. So only the LF DC (1/64 of the pixels), the HF symbol
+  streams and the caller's output need to span the image. Before this change each stage
+  materialized its own whole-image plane, about 58 bytes per pixel in each direction.
+- **Measured at 8192x8192**, 3.19 against 3.20, alternating runs:
+
+  | | 3.19 | 3.20 |
+  |---|---|---|
+  | Encode, allocated | 3,919 MB | **593 MB** |
+  | Decode, allocated | 3,931 MB | **862 MB** (768 MB of it is the returned image) |
+  | Encode + decode, peak working set | 4.08 GB | **2.08 GB** (1.5 GB of it is the caller's input and output) |
+  | Encode / decode time | 7.3-8.0 s / 5.1-5.2 s | **5.6-5.7 s / 3.6-3.7 s** |
+
+- **Visible effect.** The test suite's peak memory came from `JxlVarDctEncoderTests` alone (3.9 GB,
+  enough to bring down a 4 GB WSL VM); `BigImage_SelfRoundTrip_8192Square` now peaks at 2.1 GB and
+  `BigImage_DecodesInLibjxl_LowRmse` at 0.95 GB, from 4.0 and 2.2.
+- `JxlImageCodec.EncodeRgb24Lossy` reads the caller's spans in place instead of copying all three
+  planes first (another 768 MB at 8192x8192).
+
 ## 3.19
 
 New package: **`SharpAstro.Webp`**, a pure-managed WebP decoder, spec-derived from the prose and tables

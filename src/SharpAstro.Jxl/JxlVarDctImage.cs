@@ -22,6 +22,12 @@ namespace SharpAstro.Jxl;
 /// multiples of 8 (the frame layer pads to that before calling). <c>qm_scale</c> is held at 1 per
 /// channel for now (the minimal default); chroma subsampling and larger transforms are out of scope.
 /// </para>
+/// <para>
+/// <see cref="Encode"/> / <see cref="Decode"/> run that pipeline over the whole image at once. The
+/// frame layer instead calls <see cref="QuantizeRegion"/> / <see cref="ReconstructRegion"/> once per
+/// 256-px group through one reused <see cref="Workspace"/>, so its memory does not scale with
+/// whole-image float planes; both forms run identical arithmetic per block.
+/// </para>
 /// </summary>
 internal static class JxlVarDctImage
 {
@@ -55,18 +61,12 @@ internal static class JxlVarDctImage
         if (width % 8 != 0 || height % 8 != 0)
             throw new ArgumentException("JPEG XL VarDCT (DCT8): width and height must be multiples of 8.");
         int bw = width / 8, bh = height / 8;
-        var quant = new JxlQuantizer(globalScale, quantLf);
-        JxlDequantMatrices dq = JxlDequantMatrices.BuildDefault();
+        var settings = new Settings(globalScale, quantLf, hfMul, extraPrecision);
 
-        float[][] coeff = ToXybPlanes(srgb, width, height);
-        for (int c = 0; c < 3; c++)
-            ForwardDctBlocks(coeff[c], width, height);
-
-        (float kxLf, float kbLf) = JxlChromaFromLuma.LfFactors(
-            JxlChromaFromLuma.DefaultFactorLf, JxlChromaFromLuma.DefaultFactorLf,
-            JxlChromaFromLuma.DefaultColourFactor, JxlChromaFromLuma.DefaultBaseCorrelationX, JxlChromaFromLuma.DefaultBaseCorrelationB);
-        (float kxHf, float kbHf) = JxlChromaFromLuma.HfFactors(
-            0, 0, JxlChromaFromLuma.DefaultColourFactor, JxlChromaFromLuma.DefaultBaseCorrelationX, JxlChromaFromLuma.DefaultBaseCorrelationB);
+        // The whole image is one region: the same transform the frame encoder runs per 256-px group.
+        var ws = new Workspace(width * height);
+        for (int i = 0; i < width * height; i++)
+            StoreXyb(ws.Coeff, i, srgb[0][i], srgb[1][i], srgb[2][i]);
 
         var lfQuant = new int[3][];
         var hfQuant = new int[3][];
@@ -76,16 +76,7 @@ internal static class JxlVarDctImage
             hfQuant[c] = new int[width * height];
         }
 
-        // Quantize luma (Y) first, keeping the reconstructed coefficients to decorrelate chroma against.
-        var yHat = new float[width * height];
-        QuantizeChannel(channel: 1, coeff[1], yRecon: yHat, kLf: 0f, kHf: 0f,
-            width, height, bw, bh, quant, dq, extraPrecision, hfMul, lfQuant[1], hfQuant[1]);
-
-        // X and B are decorrelated against reconstructed Y, then quantized.
-        QuantizeChannel(channel: 0, coeff[0], yRecon: yHat, kLf: kxLf, kHf: kxHf,
-            width, height, bw, bh, quant, dq, extraPrecision, hfMul, lfQuant[0], hfQuant[0]);
-        QuantizeChannel(channel: 2, coeff[2], yRecon: yHat, kLf: kbLf, kHf: kbHf,
-            width, height, bw, bh, quant, dq, extraPrecision, hfMul, lfQuant[2], hfQuant[2]);
+        QuantizeRegion(ws, bw, bh, settings, WholePlanes(lfQuant, bw), WholePlanes(hfQuant, width));
 
         return new Encoded
         {
@@ -97,22 +88,128 @@ internal static class JxlVarDctImage
 
     public static float[][] Decode(Encoded e)
     {
-        var quant = new JxlQuantizer(e.GlobalScale, e.QuantLf);
-        JxlDequantMatrices dq = JxlDequantMatrices.BuildDefault();
-        int w = e.Width, h = e.Height, bw = e.Bw, bh = e.Bh;
+        var settings = new Settings(e.GlobalScale, e.QuantLf, e.HfMul, e.ExtraPrecision);
+        int w = e.Width, h = e.Height;
 
-        (float kxLf, float kbLf) = JxlChromaFromLuma.LfFactors(
-            JxlChromaFromLuma.DefaultFactorLf, JxlChromaFromLuma.DefaultFactorLf,
-            JxlChromaFromLuma.DefaultColourFactor, JxlChromaFromLuma.DefaultBaseCorrelationX, JxlChromaFromLuma.DefaultBaseCorrelationB);
-        (float kxHf, float kbHf) = JxlChromaFromLuma.HfFactors(
-            0, 0, JxlChromaFromLuma.DefaultColourFactor, JxlChromaFromLuma.DefaultBaseCorrelationX, JxlChromaFromLuma.DefaultBaseCorrelationB);
+        var ws = new Workspace(w * h);
+        ReconstructRegion(ws, e.Bw, e.Bh, settings, WholePlanes(e.LfQuant, e.Bw), WholePlanes(e.HfQuant, w));
+        return ws.Coeff;
+    }
 
-        var coeff = new float[3][];
-        for (int c = 0; c < 3; c++)
+    // ---- region pipeline ----
+    //
+    // Every step below is local to one 8×8 block: the DCT, quantization, chroma-from-luma (against the
+    // same block's reconstructed Y), and the per-pixel XYB <-> sRGB conversion. With Gabor and EPF off
+    // nothing reads across a block border, so a frame can run this one 256-px group at a time through a
+    // reused Workspace instead of materializing whole-image planes, and produce identical bits.
+
+    /// <summary>
+    /// The per-frame constants of the transform: the quantizer, the default dequant matrices and the
+    /// chroma-from-luma factors. Built once per frame rather than once per region.
+    /// </summary>
+    public sealed class Settings
+    {
+        public Settings(int globalScale, int quantLf, int hfMul, int extraPrecision)
         {
-            coeff[c] = new float[w * h];
-            DequantChannel(c, e.LfQuant[c], e.HfQuant[c], coeff[c], w, h, bw, bh, quant, dq, e.ExtraPrecision, e.HfMul);
+            Quant = new JxlQuantizer(globalScale, quantLf);
+            Dq = JxlDequantMatrices.BuildDefault();
+            HfMul = hfMul;
+            ExtraPrecision = extraPrecision;
+            (KxLf, KbLf) = JxlChromaFromLuma.LfFactors(
+                JxlChromaFromLuma.DefaultFactorLf, JxlChromaFromLuma.DefaultFactorLf,
+                JxlChromaFromLuma.DefaultColourFactor, JxlChromaFromLuma.DefaultBaseCorrelationX, JxlChromaFromLuma.DefaultBaseCorrelationB);
+            (KxHf, KbHf) = JxlChromaFromLuma.HfFactors(
+                0, 0, JxlChromaFromLuma.DefaultColourFactor, JxlChromaFromLuma.DefaultBaseCorrelationX, JxlChromaFromLuma.DefaultBaseCorrelationB);
         }
+
+        public JxlQuantizer Quant { get; }
+        public JxlDequantMatrices Dq { get; }
+        public int HfMul { get; }
+        public int ExtraPrecision { get; }
+        public float KxLf { get; }
+        public float KbLf { get; }
+        public float KxHf { get; }
+        public float KbHf { get; }
+    }
+
+    /// <summary>
+    /// A window onto a plane of quantized samples: LF (one per block) or HF (one per pixel). Lets a region
+    /// read and write either a whole-image plane or a region-sized one with the same code.
+    /// </summary>
+    public readonly record struct PlaneView(int[] Data, int Stride, int X0, int Y0)
+    {
+        public int Index(int x, int y) => (Y0 + y) * Stride + X0 + x;
+    }
+
+    /// <summary>
+    /// Float scratch for one region: three coefficient planes and the reconstructed-luma plane, each laid
+    /// out with the region's own width as the row stride. Reused across the groups of a frame.
+    /// </summary>
+    public sealed class Workspace
+    {
+        public Workspace(int maxPixels)
+        {
+            Coeff = [new float[maxPixels], new float[maxPixels], new float[maxPixels]];
+            YRecon = new float[maxPixels];
+        }
+
+        /// <summary>Per channel [X, Y, B]: XYB samples in, coefficients during, sRGB out on decode.</summary>
+        public float[][] Coeff { get; }
+
+        public float[] YRecon { get; }
+    }
+
+    /// <summary>Views covering three whole-image planes of the given row stride.</summary>
+    public static PlaneView[] WholePlanes(int[][] planes, int stride) =>
+        [new(planes[0], stride, 0, 0), new(planes[1], stride, 0, 0), new(planes[2], stride, 0, 0)];
+
+    /// <summary>Converts one sRGB sample triple (0..1) to XYB and stores it at <paramref name="i"/>.</summary>
+    public static void StoreXyb(float[][] xyb, int i, float r, float g, float b)
+    {
+        float lr = JxlXyb.SrgbToLinear(r);
+        float lg = JxlXyb.SrgbToLinear(g);
+        float lb = JxlXyb.SrgbToLinear(b);
+        (float x, float y, float bb) = JxlXyb.LinearToXyb(lr, lg, lb);
+        xyb[0][i] = x; xyb[1][i] = y; xyb[2][i] = bb;
+    }
+
+    /// <summary>
+    /// Forward-transforms and quantizes a region of <paramref name="bw"/>×<paramref name="bh"/> blocks
+    /// whose XYB samples are already in <paramref name="ws"/>. The LF DC of each block goes through
+    /// <paramref name="lf"/>, the HF AC through <paramref name="hf"/> (with 0 at the DC positions).
+    /// </summary>
+    public static void QuantizeRegion(Workspace ws, int bw, int bh, Settings s, PlaneView[] lf, PlaneView[] hf)
+    {
+        int width = bw * 8, height = bh * 8;
+        for (int c = 0; c < 3; c++)
+            ForwardDctBlocks(ws.Coeff[c], width, height);
+
+        // The luma pass reads yRecon (times k = 0) before it writes it, so a reused buffer must start from
+        // the zeros a fresh one would have: 0 * stale could otherwise turn a +0 into a -0.
+        Array.Clear(ws.YRecon, 0, width * height);
+
+        // Quantize luma (Y) first, keeping the reconstructed coefficients to decorrelate chroma against.
+        QuantizeChannel(channel: 1, ws.Coeff[1], yRecon: ws.YRecon, kLf: 0f, kHf: 0f,
+            width, bw, bh, s, lf[1], hf[1]);
+
+        // X and B are decorrelated against reconstructed Y, then quantized.
+        QuantizeChannel(channel: 0, ws.Coeff[0], yRecon: ws.YRecon, kLf: s.KxLf, kHf: s.KxHf,
+            width, bw, bh, s, lf[0], hf[0]);
+        QuantizeChannel(channel: 2, ws.Coeff[2], yRecon: ws.YRecon, kLf: s.KbLf, kHf: s.KbHf,
+            width, bw, bh, s, lf[2], hf[2]);
+    }
+
+    /// <summary>
+    /// Dequantizes, restores chroma, inverse-transforms and converts to sRGB a region of
+    /// <paramref name="bw"/>×<paramref name="bh"/> blocks, leaving clamped sRGB (0..1) in
+    /// <paramref name="ws"/>.<see cref="Workspace.Coeff"/> with row stride <c>bw·8</c>.
+    /// </summary>
+    public static void ReconstructRegion(Workspace ws, int bw, int bh, Settings s, PlaneView[] lf, PlaneView[] hf)
+    {
+        int w = bw * 8, h = bh * 8;
+        float[][] coeff = ws.Coeff;
+        for (int c = 0; c < 3; c++)
+            DequantChannel(c, lf[c], hf[c], coeff[c], w, bw, bh, s);
 
         // Chroma-from-luma restore: DC (LF factors) and AC (HF factors) use reconstructed Y.
         for (int by = 0; by < bh; by++)
@@ -125,28 +222,27 @@ internal static class JxlVarDctImage
                         int gi = (baseY + py) * w + baseX + px;
                         float y = coeff[1][gi];
                         bool isDc = px == 0 && py == 0;
-                        coeff[0][gi] += (isDc ? kxLf : kxHf) * y;
-                        coeff[2][gi] += (isDc ? kbLf : kbHf) * y;
+                        coeff[0][gi] += (isDc ? s.KxLf : s.KxHf) * y;
+                        coeff[2][gi] += (isDc ? s.KbLf : s.KbHf) * y;
                     }
             }
 
         for (int c = 0; c < 3; c++)
             InverseDctBlocks(coeff[c], w, h);
 
-        return FromXybPlanes(coeff, w, h);
+        XybToSrgbInPlace(coeff, w * h);
     }
 
     // ---- per-channel quantization (forward) ----
 
     private static void QuantizeChannel(
         int channel, float[] coeff, float[] yRecon, float kLf, float kHf,
-        int width, int height, int bw, int bh, JxlQuantizer quant, JxlDequantMatrices dq,
-        int extraPrecision, int hfMul, int[] lfQuant, int[] hfQuant)
+        int width, int bw, int bh, Settings s, PlaneView lfQuant, PlaneView hfQuant)
     {
         bool isLuma = channel == 1;
-        float lfScale = quant.LfScale(MLf[channel], extraPrecision);
-        float hfScale = quant.HfScale(hfMul, QmScale[channel]);
-        float[] weights = dq.Get(channel, JxlVarDctTransform.Dct8);
+        float lfScale = s.Quant.LfScale(MLf[channel], s.ExtraPrecision);
+        float hfScale = s.Quant.HfScale(s.HfMul, QmScale[channel]);
+        float[] weights = s.Dq.Get(channel, JxlVarDctTransform.Dct8);
 
         for (int by = 0; by < bh; by++)
             for (int bx = 0; bx < bw; bx++)
@@ -163,7 +259,10 @@ internal static class JxlVarDctImage
                         if (isDc)
                         {
                             int q = (int)MathF.Round(value / lfScale);
-                            lfQuant[by * bw + bx] = q;
+                            lfQuant.Data[lfQuant.Index(bx, by)] = q;
+                            // The DC position of the HF plane carries nothing; keep it 0 even when the
+                            // plane is a reused region buffer.
+                            hfQuant.Data[hfQuant.Index(baseX, baseY)] = 0;
                             if (isLuma)
                                 yRecon[gi] = q * lfScale;
                         }
@@ -171,7 +270,7 @@ internal static class JxlVarDctImage
                         {
                             int wi = py * 8 + px;
                             int q = JxlQuantizer.QuantizeHf(value, weights[wi], hfScale);
-                            hfQuant[gi] = q;
+                            hfQuant.Data[hfQuant.Index(baseX + px, baseY + py)] = q;
                             if (isLuma)
                                 yRecon[gi] = JxlQuantizer.DequantizeHf(q, weights[wi], hfScale, channel);
                         }
@@ -182,19 +281,18 @@ internal static class JxlVarDctImage
     // ---- per-channel dequantization (inverse) ----
 
     private static void DequantChannel(
-        int channel, int[] lfQuant, int[] hfQuant, float[] coeff,
-        int width, int height, int bw, int bh, JxlQuantizer quant, JxlDequantMatrices dq,
-        int extraPrecision, int hfMul)
+        int channel, PlaneView lfQuant, PlaneView hfQuant, float[] coeff,
+        int width, int bw, int bh, Settings s)
     {
-        float lfScale = quant.LfScale(MLf[channel], extraPrecision);
-        float hfScale = quant.HfScale(hfMul, QmScale[channel]);
-        float[] weights = dq.Get(channel, JxlVarDctTransform.Dct8);
+        float lfScale = s.Quant.LfScale(MLf[channel], s.ExtraPrecision);
+        float hfScale = s.Quant.HfScale(s.HfMul, QmScale[channel]);
+        float[] weights = s.Dq.Get(channel, JxlVarDctTransform.Dct8);
 
         for (int by = 0; by < bh; by++)
             for (int bx = 0; bx < bw; bx++)
             {
                 int baseX = bx * 8, baseY = by * 8;
-                coeff[baseY * width + baseX] = lfQuant[by * bw + bx] * lfScale; // DC
+                coeff[baseY * width + baseX] = lfQuant.Data[lfQuant.Index(bx, by)] * lfScale; // DC
                 for (int py = 0; py < 8; py++)
                     for (int px = 0; px < 8; px++)
                     {
@@ -202,42 +300,23 @@ internal static class JxlVarDctImage
                             continue;
                         int gi = (baseY + py) * width + baseX + px;
                         int wi = py * 8 + px;
-                        coeff[gi] = JxlQuantizer.DequantizeHf(hfQuant[gi], weights[wi], hfScale, channel);
+                        coeff[gi] = JxlQuantizer.DequantizeHf(hfQuant.Data[hfQuant.Index(baseX + px, baseY + py)], weights[wi], hfScale, channel);
                     }
             }
     }
 
     // ---- colour + block transform helpers ----
 
-    private static float[][] ToXybPlanes(float[][] srgb, int width, int height)
+    /// <summary>XYB → sRGB (clamped to 0..1) over the first <paramref name="count"/> samples, in place.</summary>
+    private static void XybToSrgbInPlace(float[][] planes, int count)
     {
-        var xyb = new float[3][];
-        for (int c = 0; c < 3; c++)
-            xyb[c] = new float[width * height];
-        for (int i = 0; i < width * height; i++)
+        for (int i = 0; i < count; i++)
         {
-            float lr = JxlXyb.SrgbToLinear(srgb[0][i]);
-            float lg = JxlXyb.SrgbToLinear(srgb[1][i]);
-            float lb = JxlXyb.SrgbToLinear(srgb[2][i]);
-            (float x, float y, float b) = JxlXyb.LinearToXyb(lr, lg, lb);
-            xyb[0][i] = x; xyb[1][i] = y; xyb[2][i] = b;
+            (float r, float g, float b) = JxlXyb.XybToLinear(planes[0][i], planes[1][i], planes[2][i]);
+            planes[0][i] = Math.Clamp(JxlXyb.LinearToSrgb(r), 0f, 1f);
+            planes[1][i] = Math.Clamp(JxlXyb.LinearToSrgb(g), 0f, 1f);
+            planes[2][i] = Math.Clamp(JxlXyb.LinearToSrgb(b), 0f, 1f);
         }
-        return xyb;
-    }
-
-    private static float[][] FromXybPlanes(float[][] xyb, int width, int height)
-    {
-        var srgb = new float[3][];
-        for (int c = 0; c < 3; c++)
-            srgb[c] = new float[width * height];
-        for (int i = 0; i < width * height; i++)
-        {
-            (float r, float g, float b) = JxlXyb.XybToLinear(xyb[0][i], xyb[1][i], xyb[2][i]);
-            srgb[0][i] = Math.Clamp(JxlXyb.LinearToSrgb(r), 0f, 1f);
-            srgb[1][i] = Math.Clamp(JxlXyb.LinearToSrgb(g), 0f, 1f);
-            srgb[2][i] = Math.Clamp(JxlXyb.LinearToSrgb(b), 0f, 1f);
-        }
-        return srgb;
     }
 
     private static void ForwardDctBlocks(float[] plane, int width, int height) => DctBlocks(plane, width, height, JxlDctDirection.Forward);

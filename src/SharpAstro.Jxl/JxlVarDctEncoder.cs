@@ -73,35 +73,40 @@ internal static class JxlVarDctEncoder
     }
 
     /// <summary>
-    /// Encode 8-bit RGB (<paramref name="rgb"/> = three row-major <c>w·h</c> planes, values 0..255) as a
-    /// lossy VarDCT .jxl. The quantizer knobs default to a high-quality setting.
+    /// Encode 8-bit RGB (three row-major <c>w·h</c> planes, values 0..255) as a lossy VarDCT .jxl. The
+    /// planes are read in place a group at a time, never copied. The quantizer knobs default to a
+    /// high-quality setting.
     /// </summary>
     public static byte[] EncodeRgb24(
-        int[][] rgb, int width, int height,
+        ReadOnlySpan<int> red, ReadOnlySpan<int> green, ReadOnlySpan<int> blue, int width, int height,
         int globalScale = 4096, int quantLf = 32, int hfMul = 32, int extraPrecision = 0)
     {
-        if (rgb.Length != 3)
-            throw new ArgumentException("Expected 3 RGB channels.", nameof(rgb));
         if (width % 8 != 0 || height % 8 != 0)
             throw new NotSupportedException("JPEG XL VarDCT encoder: width/height must be multiples of 8.");
         if (width > 16384 || height > 16384)
             throw new NotSupportedException("JPEG XL VarDCT encoder: dimensions are capped at 16384 (a memory/int-index sanity guard, not a format limit).");
 
-        var srgb = new float[3][];
-        for (int c = 0; c < 3; c++)
-        {
-            srgb[c] = new float[width * height];
-            for (int i = 0; i < width * height; i++)
-                srgb[c][i] = rgb[c][i] / 255f;
-        }
-
-        JxlVarDctImage.Encoded enc = JxlVarDctImage.Encode(srgb, width, height, globalScale, quantLf, hfMul, extraPrecision);
-        int bw = enc.Bw, bh = enc.Bh;
+        int bw = width / 8, bh = height / 8;
 
         // Block grid: every cell is a Dct8 data block with the shared hf_mul.
         var blockGrid = new JxlBlockInfo[bw * bh];
         for (int i = 0; i < blockGrid.Length; i++)
             blockGrid[i] = JxlBlockInfo.Data(JxlVarDctTransform.Dct8, hfMul);
+
+        // HF coefficients, split into one symbol stream per 32×32-block PassGroup region. A varblock never
+        // crosses a 256-px border, so each group is self-contained: it is transformed and quantized on its
+        // own through one reused workspace, and only its symbol stream outlives it. The LF DC (one sample
+        // per block) is the only whole-image plane, physical channel order [X, Y, B].
+        var settings = new JxlVarDctImage.Settings(globalScale, quantLf, hfMul, extraPrecision);
+        int[][] lfQuant = [new int[bw * bh], new int[bw * bh], new int[bw * bh]];
+        int gpr = CeilDiv(bw, GroupBlocks), gpc = CeilDiv(bh, GroupBlocks);
+        int numGroups = gpr * gpc;
+        var hfStreams = new List<(int Ctx, uint Value)>[numGroups];
+        int groupPixels = Math.Min(GroupBlocks, bw) * 8 * (Math.Min(GroupBlocks, bh) * 8);
+        var ws = new JxlVarDctImage.Workspace(groupPixels);
+        int[][] groupHf = [new int[groupPixels], new int[groupPixels], new int[groupPixels]];
+        for (int g = 0; g < numGroups; g++)
+            hfStreams[g] = EncodeGroup(red, green, blue, width, bw, bh, gpr, g, settings, ws, groupHf, lfQuant, blockGrid);
 
         // LF groups: one per 2048×2048 (256×256-block) region. Each carries the LF-DC + block grid for
         // its region; the Modular sample distribution is shared across all of them.
@@ -113,21 +118,13 @@ internal static class JxlVarDctEncoder
         var modularStreams = new List<List<(int Ctx, uint Value)>>(numLfGroups * 2);
         for (int l = 0; l < numLfGroups; l++)
         {
-            lfGroups[l] = BuildLfGroupRegion(enc, blockGrid, bw, bh, lfgpr, extraPrecision, l);
+            lfGroups[l] = BuildLfGroupRegion(lfQuant, blockGrid, bw, bh, lfgpr, extraPrecision, l);
             (lfStreams[l], hfMetaStreams[l]) = lfGroups[l].BuildStreams();
             modularStreams.Add(lfStreams[l]);
             modularStreams.Add(hfMetaStreams[l]);
         }
         JxlEntropyEncoder sampleEnc = JxlModularSubimage.NewSampleEncoder();
         JxlEntropyEncoder.Plan samplePlan = sampleEnc.Prepare(modularStreams.ToArray());
-
-        // HF coefficients, split into one symbol stream per 32×32-block PassGroup region (full-grid
-        // coordinates). A varblock never crosses a 256-px border, so each group is self-contained.
-        int gpr = CeilDiv(bw, GroupBlocks), gpc = CeilDiv(bh, GroupBlocks);
-        int numGroups = gpr * gpc;
-        var hfStreams = new List<(int Ctx, uint Value)>[numGroups];
-        for (int g = 0; g < numGroups; g++)
-            hfStreams[g] = BuildGroupHfStream(enc, blockGrid, bw, gpr, hfMul, g);
 
         const int ctxSize = 495 * 15;
         var hfDistEnc = new JxlEntropyEncoder(new byte[ctxSize], [JxlIntegerConfig.Create(4, 0, 0)]);
@@ -189,19 +186,19 @@ internal static class JxlVarDctEncoder
 
     /// <summary>Build the LfGroup (LF-DC + block grid) for one 2048×2048 (≤256×256-block) LF-group region.</summary>
     private static JxlLfGroup BuildLfGroupRegion(
-        JxlVarDctImage.Encoded enc, JxlBlockInfo[] blockGrid, int bw, int bh, int lfgpr, int extraPrecision, int l)
+        int[][] lfQuantPhys, JxlBlockInfo[] blockGrid, int bw, int bh, int lfgpr, int extraPrecision, int l)
     {
         int lcol = l % lfgpr, lrow = l / lfgpr;
         int lx0 = lcol * LfGroupBlocks, ly0 = lrow * LfGroupBlocks;
         int bwL = Math.Min(LfGroupBlocks, bw - lx0);
         int bhL = Math.Min(LfGroupBlocks, bh - ly0);
 
-        // LF-DC sub-region in modular channel order [Y, X, B] (enc.LfQuant is physical [X, Y, B]).
+        // LF-DC sub-region in modular channel order [Y, X, B] (lfQuantPhys is physical [X, Y, B]).
         int[] modToPhys = [1, 0, 2];
         var lfQuant = new int[3][];
         for (int mc = 0; mc < 3; mc++)
         {
-            int[] phys = enc.LfQuant[modToPhys[mc]];
+            int[] phys = lfQuantPhys[modToPhys[mc]];
             lfQuant[mc] = new int[bwL * bhL];
             for (int y = 0; y < bhL; y++)
                 for (int x = 0; x < bwL; x++)
@@ -223,36 +220,51 @@ internal static class JxlVarDctEncoder
         };
     }
 
-    /// <summary>Build the HF symbol stream for PassGroup <paramref name="g"/> (a ≤32×32-block region).</summary>
-    private static List<(int Ctx, uint Value)> BuildGroupHfStream(
-        JxlVarDctImage.Encoded enc, JxlBlockInfo[] blockGrid, int bw, int gpr, int hfMul, int g)
+    /// <summary>
+    /// Transform and quantize PassGroup <paramref name="g"/> (a ≤32×32-block region) and build its HF
+    /// symbol stream. Its LF DC lands in the whole-image <paramref name="lfQuant"/>; its HF AC only ever
+    /// exists in the reused <paramref name="groupHf"/>.
+    /// </summary>
+    private static List<(int Ctx, uint Value)> EncodeGroup(
+        ReadOnlySpan<int> red, ReadOnlySpan<int> green, ReadOnlySpan<int> blue, int width, int bw, int bh, int gpr, int g,
+        JxlVarDctImage.Settings settings, JxlVarDctImage.Workspace ws, int[][] groupHf, int[][] lfQuant,
+        JxlBlockInfo[] blockGrid)
     {
         int gcol = g % gpr, grow = g / gpr;
         int bx0 = gcol * GroupBlocks, by0 = grow * GroupBlocks;
         int bwG = Math.Min(GroupBlocks, bw - bx0);
-        int bhG = Math.Min(GroupBlocks, enc.Bh - by0);
+        int bhG = Math.Min(GroupBlocks, bh - by0);
+        int subW = bwG * 8, subH = bhG * 8;
+
+        // sRGB (0..1) -> XYB for the group's pixels, in the workspace's region-local layout.
+        for (int py = 0; py < subH; py++)
+        {
+            int src = (by0 * 8 + py) * width + bx0 * 8;
+            for (int px = 0; px < subW; px++, src++)
+                JxlVarDctImage.StoreXyb(ws.Coeff, py * subW + px,
+                    red[src] / 255f, green[src] / 255f, blue[src] / 255f);
+        }
+
+        var lf = new JxlVarDctImage.PlaneView[3];
+        var hf = new JxlVarDctImage.PlaneView[3];
+        for (int c = 0; c < 3; c++)
+        {
+            lf[c] = new(lfQuant[c], bw, bx0, by0);
+            hf[c] = new(groupHf[c], subW, 0, 0);
+        }
+        JxlVarDctImage.QuantizeRegion(ws, bwG, bhG, settings, lf, hf);
 
         var subGrid = new JxlBlockInfo[bwG * bhG];
         for (int y = 0; y < bhG; y++)
             for (int x = 0; x < bwG; x++)
                 subGrid[y * bwG + x] = blockGrid[(by0 + y) * bw + (bx0 + x)];
 
-        int gridW = bw * 8, subW = bwG * 8;
-        var subCoeff = new int[3][];
-        for (int c = 0; c < 3; c++)
-        {
-            subCoeff[c] = new int[subW * (bhG * 8)];
-            for (int py = 0; py < bhG * 8; py++)
-                for (int px = 0; px < bwG * 8; px++)
-                    subCoeff[c][py * subW + px] = enc.HfQuant[c][(by0 * 8 + py) * gridW + bx0 * 8 + px];
-        }
-
         var p = new JxlHfCoeff.Params
         {
             Bw = bwG, Bh = bhG, BlockGrid = subGrid,
             NumBlockClusters = 15, BlockCtxMap = JxlLfGlobalVarDct.DefaultBlockCtxMap,
         };
-        return JxlHfCoeff.Encode(p, subCoeff);
+        return JxlHfCoeff.Encode(p, groupHf);
     }
 
     private static void WriteLfGlobalPart(
