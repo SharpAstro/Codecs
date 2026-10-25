@@ -44,6 +44,7 @@ public static class JpegEncoder
         if (options.Quality is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(options), options.Quality, "Quality must be 1..100.");
 
         var exif = ValidateExif(options.Exif);
+        var xmp = options.Xmp is { } xmpOptions ? BuildXmpPacket(xmpOptions) : default;
 
         var required = (long)width * height * channels;
         if (pixels.Length < required)
@@ -69,7 +70,7 @@ public static class JpegEncoder
         BuildTables(scale, yTable, uvTable, fdtblY, fdtblUv);
 
         var w = new JpegWriter(EstimateCapacity(width, height));
-        WriteHeaders(w, width, height, subsample, yTable, uvTable, exif.Span);
+        WriteHeaders(w, width, height, subsample, yTable, uvTable, exif.Span, xmp);
         EncodeScan(w, pixels, width, height, channels, subsample, fdtblY, fdtblUv);
 
         // Flush the entropy stream with the reference's 1-fill and close with EOI.
@@ -92,6 +93,19 @@ public static class JpegEncoder
         if (!tiffHeader)
             throw new ArgumentException("EXIF blob must be a TIFF structure (II*\\0 or MM\\0* header, at least 8 bytes), without the Exif\\0\\0 signature.", "options");
         return blob;
+    }
+
+    /// <summary>Builds the XMP packet before anything is written; a bad packet is an <see cref="ArgumentException"/> on <c>options</c>.</summary>
+    private static byte[] BuildXmpPacket(JpegXmp xmp)
+    {
+        try
+        {
+            return xmp.BuildPacket();
+        }
+        catch (ArgumentException ex)
+        {
+            throw new ArgumentException(ex.Message, "options", ex);
+        }
     }
 
     private static int EstimateCapacity(int width, int height) =>
@@ -198,7 +212,7 @@ public static class JpegEncoder
 
     // -------------------------------------------------------------- headers
 
-    private static void WriteHeaders(JpegWriter w, int width, int height, bool subsample, ReadOnlySpan<byte> yTable, ReadOnlySpan<byte> uvTable, ReadOnlySpan<byte> exif)
+    private static void WriteHeaders(JpegWriter w, int width, int height, bool subsample, ReadOnlySpan<byte> yTable, ReadOnlySpan<byte> uvTable, ReadOnlySpan<byte> exif, ReadOnlySpan<byte> xmp)
     {
         // SOI + APP0 JFIF.
         ReadOnlySpan<byte> head0a =
@@ -227,6 +241,18 @@ public static class JpegEncoder
             w.Put((byte)length);
             w.Write("Exif\0\0"u8);
             w.Write(exif);
+        }
+        if (!xmp.IsEmpty)
+        {
+            // APP1 XMP identifier (NUL included) + the packet; the length was range-checked when it was built.
+            ReadOnlySpan<byte> id = "http://ns.adobe.com/xap/1.0/\0"u8;
+            var length = 2 + id.Length + xmp.Length;
+            w.Put(0xFF);
+            w.Put(0xE1);
+            w.Put((byte)(length >> 8));
+            w.Put((byte)length);
+            w.Write(id);
+            w.Write(xmp);
         }
         w.Write(head0b);
         w.Write(yTable);
