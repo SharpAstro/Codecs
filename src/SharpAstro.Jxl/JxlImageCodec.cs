@@ -128,9 +128,8 @@ public static class JxlImageCodec
         int n = width * height;
         if (r.Length < n || g.Length < n || b.Length < n)
             throw new ArgumentException("Each RGB channel must hold width*height samples.");
-        int[][] rgb = [r[..n].ToArray(), g[..n].ToArray(), b[..n].ToArray()];
         int globalScale = JxlVarDctEncoder.GlobalScaleForDistance(distance);
-        return JxlVarDctEncoder.EncodeRgb24(rgb, width, height, globalScale);
+        return JxlVarDctEncoder.EncodeRgb24(r[..n], g[..n], b[..n], width, height, globalScale);
     }
 
     /// <summary>

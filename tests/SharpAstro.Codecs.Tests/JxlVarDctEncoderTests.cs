@@ -76,7 +76,7 @@ public sealed class JxlVarDctEncoderTests
         // consistent (every section reader accepts what the writer emitted) before the libjxl check.
         const int w = 32, h = 32;
         int[][] rgb = Gradient(w, h);
-        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], w, h);
 
         int[][] recon = JxlVarDctFrame.DecodeToRgb24(jxl);
 
@@ -96,7 +96,7 @@ public sealed class JxlVarDctEncoderTests
     public void MultiGroup_SelfRoundTrip_ReconstructsWithinTolerance(int w, int h)
     {
         int[][] rgb = FullGradient(w, h);
-        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], w, h);
 
         int[][] recon = JxlVarDctFrame.DecodeToRgb24(jxl);
 
@@ -118,7 +118,7 @@ public sealed class JxlVarDctEncoderTests
     public void MultiGroup_DecodesInLibjxl_LowRmse(int w, int h)
     {
         int[][] rgb = FullGradient(w, h);
-        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], w, h);
 
         using var img = new MagickImage(jxl); // libjxl decode — throws if malformed
         img.Width.ShouldBe((uint)w);
@@ -133,7 +133,7 @@ public sealed class JxlVarDctEncoderTests
     public void MultiLfGroup_DecodesInLibjxl_LowRmse(int w, int h)
     {
         int[][] rgb = FullGradient(w, h);
-        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], w, h);
 
         using var img = new MagickImage(jxl); // libjxl decode — throws if malformed
         img.Width.ShouldBe((uint)w);
@@ -146,7 +146,7 @@ public sealed class JxlVarDctEncoderTests
     {
         const int w = 2304, h = 264; // 2 LF groups
         int[][] rgb = FullGradient(w, h);
-        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], w, h);
 
         int[][] recon = JxlVarDctFrame.DecodeToRgb24(jxl);
 
@@ -169,7 +169,7 @@ public sealed class JxlVarDctEncoderTests
     public void BigImage_DecodesInLibjxl_LowRmse(int w, int h)
     {
         int[][] rgb = FullGradient(w, h);
-        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], w, h);
 
         using var img = new MagickImage(jxl); // libjxl decode — throws if malformed
         img.Width.ShouldBe((uint)w);
@@ -183,7 +183,7 @@ public sealed class JxlVarDctEncoderTests
         // 4×4 LF groups, 32×32 = 1024 PassGroups (~67 MP). The heaviest self-consistency check.
         const int w = 8192, h = 8192;
         int[][] rgb = FullGradient(w, h);
-        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], w, h);
 
         int[][] recon = JxlVarDctFrame.DecodeToRgb24(jxl);
 
@@ -201,7 +201,7 @@ public sealed class JxlVarDctEncoderTests
     public void Cap_RejectsOversizedDimensions()
     {
         int[][] rgb = Solid(8, 8, 0, 0, 0);
-        Should.Throw<NotSupportedException>(() => JxlVarDctEncoder.EncodeRgb24(rgb, 16392, 8));
+        Should.Throw<NotSupportedException>(() => JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], 16392, 8));
     }
 
     [Fact]
@@ -227,7 +227,7 @@ public sealed class JxlVarDctEncoderTests
     {
         const int w = 32, h = 32;
         int[][] rgb = Solid(w, h, 180, 90, 60);
-        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], w, h);
 
         using var img = new MagickImage(jxl); // libjxl decode — throws if our bytes are malformed
         img.Width.ShouldBe((uint)w);
@@ -240,7 +240,7 @@ public sealed class JxlVarDctEncoderTests
     {
         const int w = 64, h = 48;
         int[][] rgb = Gradient(w, h);
-        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb, w, h);
+        byte[] jxl = JxlVarDctEncoder.EncodeRgb24(rgb[0], rgb[1], rgb[2], w, h);
 
         using var img = new MagickImage(jxl);
         img.Width.ShouldBe((uint)w);

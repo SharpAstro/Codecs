@@ -40,14 +40,15 @@ internal static class JxlVarDctFrame
         int numChannels = 3 + meta.NumExtraChannels;
         int nodeLimit = (int)Math.Min(1 << 22, 1024 + (long)width * height * numChannels / 16);
 
-        var hfGrid = new int[3][];
+        // Only the LF DC (one sample per block) and the output span the image. HF coefficients are decoded,
+        // reconstructed and written out one PassGroup at a time through GroupReconstructor's buffers.
         var fullLfMod = new int[3][]; // modular channel order [Y, X, B], full bw×bh
         for (int c = 0; c < 3; c++)
-        {
-            hfGrid[c] = new int[width * height];
             fullLfMod[c] = new int[bw * bh];
-        }
         var fullBlockGrid = new JxlBlockInfo[bw * bh];
+        var rgb = new int[3][];
+        for (int c = 0; c < 3; c++)
+            rgb[c] = new int[width * height];
 
         JxlLfGlobalVarDct lfVarDct;
         int extraPrecision;
@@ -60,7 +61,8 @@ internal static class JxlVarDctFrame
             extraPrecision = lg.ExtraPrecision;
             PlaceLfGroup(lg, 0, lfgpr, bw, fullLfMod, fullBlockGrid);
             JxlHfGlobal hfGlobal = JxlHfGlobal.Read(ref br, numGroups, lfVarDct.NumBlockClusters);
-            DecodePassGroup(ref br, hfGlobal, fullBlockGrid, bw, groupIdx: 0, gpr: 1, hfGrid);
+            var recon = new GroupReconstructor(lfVarDct, fullBlockGrid, fullLfMod, extraPrecision, bw, bh, width, rgb);
+            DecodePassGroup(ref br, hfGlobal, recon, groupIdx: 0, gpr: 1);
         }
         else
         {
@@ -88,34 +90,77 @@ internal static class JxlVarDctFrame
             var hfgBr = new JxlBitReader(cs.AsSpan(offsets[hfgIdx], (int)toc.Sizes[hfgIdx]));
             JxlHfGlobal hfGlobal = JxlHfGlobal.Read(ref hfgBr, numGroups, lfVarDct.NumBlockClusters);
 
+            var recon = new GroupReconstructor(lfVarDct, fullBlockGrid, fullLfMod, extraPrecision, bw, bh, width, rgb);
             for (int g = 0; g < numGroups; g++)
             {
                 int idx = hfgIdx + 1 + g;
                 var pgBr = new JxlBitReader(cs.AsSpan(offsets[idx], (int)toc.Sizes[idx]));
-                DecodePassGroup(ref pgBr, hfGlobal, fullBlockGrid, bw, g, gpr, hfGrid);
+                DecodePassGroup(ref pgBr, hfGlobal, recon, g, gpr);
             }
         }
 
-        // Reconstruct pixels. LfQuant is modular order [Y, X, B]; map back to physical [X, Y, B].
-        int hfMul = fullBlockGrid[0].HfMul;
-        var encoded = new JxlVarDctImage.Encoded
-        {
-            Width = width, Height = height, Bw = bw, Bh = bh,
-            GlobalScale = lfVarDct.GlobalScale, QuantLf = lfVarDct.QuantLf,
-            HfMul = hfMul, ExtraPrecision = extraPrecision,
-            LfQuant = [fullLfMod[1], fullLfMod[0], fullLfMod[2]],
-            HfQuant = hfGrid,
-        };
-        float[][] srgb = JxlVarDctImage.Decode(encoded);
-
-        var rgb = new int[3][];
-        for (int c = 0; c < 3; c++)
-        {
-            rgb[c] = new int[width * height];
-            for (int i = 0; i < width * height; i++)
-                rgb[c][i] = (int)MathF.Round(Math.Clamp(srgb[c][i], 0f, 1f) * 255f);
-        }
         return rgb;
+    }
+
+    /// <summary>
+    /// Everything a PassGroup needs to turn its HF coefficients into output pixels: the frame's LF DC and
+    /// block grid (complete before any PassGroup is read), the transform settings, and the group-sized
+    /// buffers that are reused from one group to the next.
+    /// </summary>
+    private sealed class GroupReconstructor
+    {
+        public GroupReconstructor(
+            JxlLfGlobalVarDct lfVarDct, JxlBlockInfo[] blockGrid, int[][] lfMod, int extraPrecision,
+            int bw, int bh, int width, int[][] rgb)
+        {
+            BlockGrid = blockGrid;
+            Bw = bw;
+            Bh = bh;
+            Width = width;
+            Rgb = rgb;
+            // LfQuant is modular order [Y, X, B]; the transform wants physical [X, Y, B].
+            LfPhys = [lfMod[1], lfMod[0], lfMod[2]];
+            Settings = new JxlVarDctImage.Settings(
+                lfVarDct.GlobalScale, lfVarDct.QuantLf, blockGrid[0].HfMul, extraPrecision);
+            int groupPixels = Math.Min(GroupBlocks, bw) * 8 * (Math.Min(GroupBlocks, bh) * 8);
+            Workspace = new JxlVarDctImage.Workspace(groupPixels);
+            GroupHf = [new int[groupPixels], new int[groupPixels], new int[groupPixels]];
+        }
+
+        public JxlBlockInfo[] BlockGrid { get; }
+        public int Bw { get; }
+        public int Bh { get; }
+        public int Width { get; }
+        public int[][] Rgb { get; }
+        public int[][] LfPhys { get; }
+        public JxlVarDctImage.Settings Settings { get; }
+        public JxlVarDctImage.Workspace Workspace { get; }
+        public int[][] GroupHf { get; }
+
+        /// <summary>Reconstruct the group at blocks (<paramref name="bx0"/>, <paramref name="by0"/>) from
+        /// <see cref="GroupHf"/> and write its pixels into <see cref="Rgb"/>.</summary>
+        public void Reconstruct(int bx0, int by0, int bwG, int bhG)
+        {
+            int subW = bwG * 8;
+            var lf = new JxlVarDctImage.PlaneView[3];
+            var hf = new JxlVarDctImage.PlaneView[3];
+            for (int c = 0; c < 3; c++)
+            {
+                lf[c] = new(LfPhys[c], Bw, bx0, by0);
+                hf[c] = new(GroupHf[c], subW, 0, 0);
+            }
+            JxlVarDctImage.ReconstructRegion(Workspace, bwG, bhG, Settings, lf, hf);
+
+            float[][] srgb = Workspace.Coeff;
+            for (int c = 0; c < 3; c++)
+                for (int py = 0; py < bhG * 8; py++)
+                {
+                    int dst = (by0 * 8 + py) * Width + bx0 * 8;
+                    int src = py * subW;
+                    for (int px = 0; px < subW; px++)
+                        Rgb[c][dst + px] = (int)MathF.Round(Math.Clamp(srgb[c][src + px], 0f, 1f) * 255f);
+                }
+        }
     }
 
     private static (JxlLfGlobalVarDct LfVarDct, JxlMaConfig Tree) ParseLfGlobal(ref JxlBitReader br, int nodeLimit)
@@ -158,11 +203,14 @@ internal static class JxlVarDctFrame
             }
     }
 
-    /// <summary>Decode one PassGroup's HF coefficients (a ≤32×32-block region) into the full grid.</summary>
+    /// <summary>
+    /// Decode one PassGroup's HF coefficients (a ≤32×32-block region) and reconstruct its pixels straight
+    /// into the output.
+    /// </summary>
     private static void DecodePassGroup(
-        ref JxlBitReader br, JxlHfGlobal hfGlobal, JxlBlockInfo[] blockGrid, int bw, int groupIdx, int gpr, int[][] hfGrid)
+        ref JxlBitReader br, JxlHfGlobal hfGlobal, GroupReconstructor recon, int groupIdx, int gpr)
     {
-        int bh = blockGrid.Length / bw;
+        int bw = recon.Bw, bh = recon.Bh;
         int gcol = groupIdx % gpr, grow = groupIdx / gpr;
         int bx0 = gcol * GroupBlocks, by0 = grow * GroupBlocks;
         int bwG = Math.Min(GroupBlocks, bw - bx0);
@@ -171,24 +219,21 @@ internal static class JxlVarDctFrame
         var subGrid = new JxlBlockInfo[bwG * bhG];
         for (int y = 0; y < bhG; y++)
             for (int x = 0; x < bwG; x++)
-                subGrid[y * bwG + x] = blockGrid[(by0 + y) * bw + (bx0 + x)];
+                subGrid[y * bwG + x] = recon.BlockGrid[(by0 + y) * bw + (bx0 + x)];
 
-        int subW = bwG * 8;
-        var subCoeff = new int[3][];
+        // JxlHfCoeff.Decode writes only up to each block's last nonzero coefficient, so the reused buffer
+        // must start from the zeros a fresh allocation would have.
+        int subPixels = bwG * 8 * (bhG * 8);
         for (int c = 0; c < 3; c++)
-            subCoeff[c] = new int[subW * (bhG * 8)];
+            Array.Clear(recon.GroupHf[c], 0, subPixels);
 
         var p = new JxlHfCoeff.Params
         {
             Bw = bwG, Bh = bhG, BlockGrid = subGrid,
             NumBlockClusters = 15, BlockCtxMap = JxlLfGlobalVarDct.DefaultBlockCtxMap, // our encoder's default HfBlockContext
         };
-        JxlHfCoeff.Decode(ref br, hfGlobal.HfDist, hfGlobal.HfDist.ClusterMap, hfGlobal.NumHfPresets, p, subCoeff);
+        JxlHfCoeff.Decode(ref br, hfGlobal.HfDist, hfGlobal.HfDist.ClusterMap, hfGlobal.NumHfPresets, p, recon.GroupHf);
 
-        int gridW = bw * 8;
-        for (int c = 0; c < 3; c++)
-            for (int py = 0; py < bhG * 8; py++)
-                for (int px = 0; px < bwG * 8; px++)
-                    hfGrid[c][(by0 * 8 + py) * gridW + bx0 * 8 + px] = subCoeff[c][py * subW + px];
+        recon.Reconstruct(bx0, by0, bwG, bhG);
     }
 }
