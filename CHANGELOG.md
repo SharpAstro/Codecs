@@ -21,7 +21,10 @@ written as an `iTXt` chunk after the image data: UTF-8 of any length, deflated p
 `PngWriter.TextCompressionThreshold` (1 KiB). A keyword the PNG spec forbids (empty, over 79 characters, outside
 Latin-1 printable, or with a leading, trailing or doubled space; `PngText.IsValidKeyword`) is an
 `ArgumentException`. `PngImage.Text` reads `tEXt`, `zTXt` and `iTXt` alike, in file order, so text another tool
-wrote reads the same way; a malformed text chunk is skipped, never a failed decode. For an application's own record
+wrote reads the same way; a malformed text chunk is skipped, never a failed decode. Deflated text stops
+inflating at `PngReader.MaxInflatedTextBytes` (8 MiB, libpng's default) and the chunk is skipped, so a few KB of
+crafted text cannot ask for gigabytes; an `iCCP` profile gets its own cap, `MaxInflatedIccProfileBytes` (16 MiB),
+and past it fails the decode as a malformed `iCCP` already does. For an application's own record
 inside the image it saved (TianWen's save-as-displayed writes its rendition this way), checked against Pillow,
 which reads the three chunks back, the deflated one included.
 

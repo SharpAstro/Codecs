@@ -29,6 +29,19 @@ public static class PngReader
     private static readonly byte[] Signature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
     /// <summary>
+    /// The most a <c>zTXt</c> or compressed <c>iTXt</c> chunk may inflate to, in bytes (8 MiB, libpng's default
+    /// chunk limit). A few kilobytes of deflate can claim gigabytes, so inflation stops here and the chunk is
+    /// skipped, as a malformed text chunk is.
+    /// </summary>
+    public const int MaxInflatedTextBytes = 8 * 1024 * 1024;
+
+    /// <summary>
+    /// The most an <c>iCCP</c> profile may inflate to, in bytes (16 MiB; real profiles are kilobytes to a few
+    /// megabytes). Past it the decode fails with <see cref="InvalidDataException"/>, as a malformed <c>iCCP</c> does.
+    /// </summary>
+    public const int MaxInflatedIccProfileBytes = 16 * 1024 * 1024;
+
+    /// <summary>
     /// <see cref="Decode"/> without the exceptions: false for a stream that is not a PNG, is corrupt,
     /// or uses a feature this reader does not cover yet (Adam7 interlace, sub-byte depths). It makes no
     /// judgement about the colour signalling, so it is the shared first step of every projection — the
@@ -168,7 +181,9 @@ public static class PngReader
                 if (chunkData[nullIdx + 1] != 0)
                     throw new InvalidDataException(
                         $"iCCP compression method must be 0, got {chunkData[nullIdx + 1]}");
-                iccProfileRaw = DeflateInflate(chunkData[(nullIdx + 2)..]);
+                iccProfileRaw = DeflateInflate(chunkData[(nullIdx + 2)..], MaxInflatedIccProfileBytes)
+                    ?? throw new InvalidDataException(
+                        $"iCCP profile inflates past {MaxInflatedIccProfileBytes} bytes");
             }
             else if (typeBytes.SequenceEqual("sRGB"u8))
             {
@@ -408,12 +423,6 @@ public static class PngReader
     }
 
     /// <summary>
-    /// Inflate a deflate-compressed byte stream (zlib-wrapped). PNG IDAT
-    /// payload is the concatenation of zero or more zlib streams — but the
-    /// spec mandates exactly one logical zlib stream across all IDATs, so
-    /// concat-then-inflate works.
-    /// </summary>
-    /// <summary>
     /// One text chunk as a <see cref="PngText"/> (PNG spec 11.3.4): <c>tEXt</c> keyword and Latin-1 text,
     /// <c>zTXt</c> keyword and deflated Latin-1 text, <c>iTXt</c> keyword, flags, language and translated keyword,
     /// then UTF-8 text, deflated when its flag says so. Null for a chunk that does not parse.
@@ -430,12 +439,13 @@ public static class PngReader
             if (type.SequenceEqual("tEXt"u8))
                 return new PngText(keyword, System.Text.Encoding.Latin1.GetString(rest));
             if (type.SequenceEqual("zTXt"u8))
-                return rest.Length >= 1 && rest[0] == 0
-                    ? new PngText(keyword, System.Text.Encoding.Latin1.GetString(DeflateInflate(rest[1..])))
+                return rest.Length >= 1 && rest[0] == 0 && DeflateInflate(rest[1..], MaxInflatedTextBytes) is { } latin1
+                    ? new PngText(keyword, System.Text.Encoding.Latin1.GetString(latin1))
                     : null;
 
             // iTXt: compression flag, compression method, language tag and null, translated keyword and null, text.
-            if (rest.Length < 2 || rest[1] != 0)
+            // The flag is 0 or 1 and nothing else; any other value is malformed, not uncompressed.
+            if (rest.Length < 2 || rest[0] > 1 || rest[1] != 0)
                 return null;
             var compressed = rest[0] == 1;
             var afterFlags = rest[2..];
@@ -447,7 +457,11 @@ public static class PngReader
             if (translatedEnd < 0)
                 return null;
             var payload = afterLanguage[(translatedEnd + 1)..];
-            return new PngText(keyword, System.Text.Encoding.UTF8.GetString(compressed ? DeflateInflate(payload) : payload));
+            if (!compressed)
+                return new PngText(keyword, System.Text.Encoding.UTF8.GetString(payload));
+            return DeflateInflate(payload, MaxInflatedTextBytes) is { } utf8
+                ? new PngText(keyword, System.Text.Encoding.UTF8.GetString(utf8))
+                : null;
         }
         catch (InvalidDataException)
         {
@@ -455,7 +469,15 @@ public static class PngReader
         }
     }
 
-    private static byte[] DeflateInflate(ReadOnlySpan<byte> compressed)
+    /// <summary>
+    /// Inflate a deflate-compressed byte stream (zlib-wrapped). PNG IDAT
+    /// payload is the concatenation of zero or more zlib streams — but the
+    /// spec mandates exactly one logical zlib stream across all IDATs, so
+    /// concat-then-inflate works.
+    /// Null once the output would pass <paramref name="maxBytes"/>: reading stops there, so a
+    /// small stream that claims gigabytes costs at most the cap.
+    /// </summary>
+    private static byte[]? DeflateInflate(ReadOnlySpan<byte> compressed, int maxBytes)
     {
         // Copy the span into a backing array so we can wrap it in a stream.
         // ZLibStream is the .NET 6+ wrapper that handles the 2-byte zlib header
@@ -463,7 +485,14 @@ public static class PngReader
         using var input = new MemoryStream(compressed.ToArray(), writable: false);
         using var z = new ZLibStream(input, CompressionMode.Decompress);
         using var output = new MemoryStream();
-        z.CopyTo(output);
+        var buffer = new byte[81920];
+        int read;
+        while ((read = z.Read(buffer)) > 0)
+        {
+            if (output.Length + read > maxBytes)
+                return null;
+            output.Write(buffer, 0, read);
+        }
         return output.ToArray();
     }
 

@@ -233,6 +233,13 @@ public static class PngWriter
     private static byte[] EncodeCore(ReadOnlySpan<byte> samples, int width, int height,
         byte bitDepth, byte colorType, int srcChannels, int dstChannels, PngWriteOptions options)
     {
+        // Refuse a bad keyword before the pixels are deflated, not after: the text is written last.
+        if (options.Text is { Count: > 0 } textToCheck)
+        {
+            foreach (var entry in textToCheck)
+                ValidateKeyword(entry.Keyword);
+        }
+
         using var ms = new MemoryStream();
         ms.Write(Signature);
 
@@ -737,11 +744,6 @@ public static class PngWriter
     /// </summary>
     private static void WriteItxtChunk(Stream output, PngText entry)
     {
-        if (!PngText.IsValidKeyword(entry.Keyword))
-            throw new ArgumentException(
-                $"'{entry.Keyword}' is not a PNG text keyword: 1 to 79 Latin-1 printable characters, no leading, trailing or doubled space",
-                nameof(PngWriteOptions.Text));
-
         var text = System.Text.Encoding.UTF8.GetBytes(entry.Text);
         var compress = text.Length > TextCompressionThreshold;
         using var body = new MemoryStream();
@@ -761,6 +763,14 @@ public static class PngWriter
             body.Write(text);
         }
         WriteChunk(output, "iTXt"u8, body.GetBuffer().AsSpan(0, (int)body.Length));
+    }
+
+    private static void ValidateKeyword(string keyword)
+    {
+        if (!PngText.IsValidKeyword(keyword))
+            throw new ArgumentException(
+                $"'{keyword}' is not a PNG text keyword: 1 to 79 Latin-1 printable characters, no leading, trailing or doubled space",
+                nameof(PngWriteOptions.Text));
     }
 
     private static void WriteChunk(Stream output, ReadOnlySpan<byte> type, ReadOnlySpan<byte> data)
