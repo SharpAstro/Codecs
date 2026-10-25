@@ -14,6 +14,21 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.23
+
+**`SharpAstro.Png` decodes 1-, 2- and 4-bit greyscale and indexed images.** They are the sub-byte depths PNG allows
+(colour types 0 and 3), and the reader refused them with `NotSupportedException`, so `TryDecode` and `TryDecodeRgba8` said
+false. Emoji fonts store small CBDT bitmaps that way: Noto Color Emoji's U+1F6D1 is a 4-bit indexed PNG. SharpAstro.Fonts
+then had no colour bitmap and fell through to an outline the font does not have, and pilot's GUI crashed on Linux.
+
+- A packed row is unfiltered with a one-byte filter step, as PNG section 9.2 sets for depths under 8, then unpacked to one byte per
+  sample, most significant bits first, with the row's padding bits skipped.
+- An index stays as it is. A grey level is scaled to 0-255 (a 4-bit `0xF` is 255), so the image reads as 8-bit greyscale.
+- `PngImage.BitDepth` is therefore 8 for such an image. The new `PngImage.SourceBitDepth` keeps IHDR's own depth, and
+  equals `BitDepth` for an image not read from a file.
+- Tested against ImageMagick at each depth and both colour types, with an odd width (`PngSubByteDepthTests`).
+- Adam7 interlacing is still refused.
+
 ## 3.22
 
 **`SharpAstro.Jpeg` writes EXIF and XMP.** `JpegEncodeOptions` gains two options, both off by default; with both
