@@ -13,14 +13,14 @@ namespace SharpAstro.Png;
 /// declaration, gAMA / cHRM color hints, and EXIF.
 /// </summary>
 /// <remarks>
-/// <para>First-cut scope:</para>
+/// <para>Scope:</para>
 /// <list type="bullet">
-///   <item>Bit depth 8 and 16 per sample.</item>
-///   <item>Color types 0 (Gray), 2 (RGB), 4 (Gray + Alpha), 6 (RGBA).</item>
+///   <item>Every bit depth PNG allows: 8 and 16 per sample, and 1, 2 and 4 for greyscale and
+///   indexed, whose samples are unpacked to one byte each (see <see cref="PngImage.BitDepth"/>).</item>
+///   <item>Color types 0 (Gray), 2 (RGB), 3 (Indexed, PLTE + tRNS), 4 (Gray + Alpha), 6 (RGBA).</item>
 ///   <item>Non-interlaced only (<c>InterlaceMethod = 0</c>).</item>
 /// </list>
-/// <para>Indexed-color (PLTE / tRNS lookup), sub-byte bit depths (1/2/4),
-/// and Adam7 interlacing are deferred to a follow-up. APNG and PNG-3 HDR
+/// <para>Adam7 interlacing is deferred to a follow-up. APNG and PNG-3 HDR
 /// chunks (<c>cICP</c> / <c>mDCv</c> / <c>cLLI</c>) will layer on top of
 /// this decoder.</para>
 /// </remarks>
@@ -43,7 +43,7 @@ public static class PngReader
 
     /// <summary>
     /// <see cref="Decode"/> without the exceptions: false for a stream that is not a PNG, is corrupt,
-    /// or uses a feature this reader does not cover yet (Adam7 interlace, sub-byte depths). It makes no
+    /// or uses a feature this reader does not cover yet (Adam7 interlace). It makes no
     /// judgement about the colour signalling, so it is the shared first step of every projection — the
     /// RGBA8 display ones in <see cref="PngImageDecoder"/>, which refuse cICP PQ/HLG, and a float one
     /// that would decode those.
@@ -252,7 +252,9 @@ public static class PngReader
         {
             Width = width.Value,
             Height = height.Value,
-            BitDepth = bitDepth.Value,
+            // A sub-byte image's samples come back unpacked, one byte each: they are 8-bit samples now.
+            BitDepth = bitDepth.Value < 8 ? 8 : bitDepth.Value,
+            SourceBitDepth = bitDepth.Value,
             ColorType = colorType.Value,
             Pixels = pixels,
             Palette = palette,
@@ -288,16 +290,6 @@ public static class PngReader
         if (!ok)
             throw new InvalidDataException(
                 $"Invalid (ColorType={colorType}, BitDepth={bitDepth}) combination per PNG spec");
-
-        // Indexed-color is supported at 8-bit (one palette index per byte). Sub-byte
-        // indexed (1/2/4-bit) shares the general sub-byte gap below (it needs bit
-        // unpacking the unfilter path doesn't do yet).
-        if (colorType == 3 && bitDepth != 8)
-            throw new NotSupportedException(
-                $"Indexed-color PNGs are supported at 8-bit only for now (got {bitDepth}-bit)");
-        if (bitDepth is 1 or 2 or 4)
-            throw new NotSupportedException(
-                $"Sub-byte bit depths ({bitDepth}-bit) not yet supported; only 8 and 16 bit-per-sample for now");
     }
 
     /// <summary>
@@ -323,6 +315,10 @@ public static class PngReader
     private static unsafe byte[] InflateAndUnfilter(ReadOnlySpan<byte> data, List<(int Offset, int Length)> idat,
         int width, int height, int bitDepth, int colorType)
     {
+        if (bitDepth < 8)
+        {
+            return InflateAndUnfilterSubByte(data, idat, width, height, bitDepth, colorType);
+        }
         var samplesPerPixel = SamplesPerPixel(colorType);
         var bytesPerSample = bitDepth / 8;
         var bytesPerPixel = samplesPerPixel * bytesPerSample;
@@ -357,6 +353,55 @@ public static class PngReader
             // A byte past the last row is as much a mismatch as a row short.
             if (z.Read(filterType) != 0)
                 throw LengthMismatch(expected + 1, expected, width, height, bytesPerPixel);
+        }
+
+        return pixels;
+    }
+
+    /// <summary>
+    /// <see cref="InflateAndUnfilter"/> for 1-, 2- and 4-bit greyscale and indexed images (one sample per pixel, packed
+    /// most significant bits first, each row padded to a whole byte). A packed row is inflated and unfiltered against
+    /// the packed row above, with a filter step of one byte as PNG §9.2 sets for depths under 8, then unpacked to one
+    /// byte per sample: an index as it is, a grey level scaled to the full 0-255 range (a 4-bit 0xF is 255, a 1-bit 1 is
+    /// 255) so the result reads as 8-bit greyscale. Emoji fonts' CBDT bitmaps use 4-bit indexed PNGs (Noto Color
+    /// Emoji's U+1F6D1), which the reader refused.
+    /// </summary>
+    private static unsafe byte[] InflateAndUnfilterSubByte(ReadOnlySpan<byte> data, List<(int Offset, int Length)> idat,
+        int width, int height, int bitDepth, int colorType)
+    {
+        var packedBytes = checked((int)(((long)width * bitDepth + 7) / 8));
+        var expected = ((long)packedBytes + 1) * height;
+        var pixels = new byte[checked((long)width * height)];
+        var row = new byte[packedBytes];
+        var above = new byte[packedBytes];
+        var max = (1 << bitDepth) - 1;
+        var gray = colorType == 0;
+
+        fixed (byte* pinned = data)
+        {
+            using var z = new ZLibStream(new IdatStream(pinned, idat), CompressionMode.Decompress);
+            Span<byte> filterType = stackalloc byte[1];
+            long inflated = 0;
+            for (var y = 0; y < height; y++)
+            {
+                inflated += ReadFully(z, filterType);
+                inflated += ReadFully(z, row);
+                if (inflated != (long)(y + 1) * (packedBytes + 1))
+                    throw LengthMismatch(inflated, expected, width, height, 1);
+                PngPredictor.UnfilterRow(filterType[0], row, above, 1);
+
+                var output = pixels.AsSpan(y * width, width);
+                for (var x = 0; x < width; x++)
+                {
+                    var bit = x * bitDepth;
+                    var sample = (row[bit >> 3] >> (8 - bitDepth - (bit & 7))) & max;
+                    output[x] = (byte)(gray ? sample * 255 / max : sample);
+                }
+                (row, above) = (above, row);
+            }
+
+            if (z.Read(filterType) != 0)
+                throw LengthMismatch(expected + 1, expected, width, height, 1);
         }
 
         return pixels;
@@ -538,8 +583,15 @@ public sealed record PngImage
     /// <summary>Image height in pixels.</summary>
     public required int Height { get; init; }
 
-    /// <summary>Bits per sample as declared in IHDR (8 or 16 in the v1 decoder).</summary>
+    /// <summary>
+    /// Bits per sample in <see cref="Pixels"/>: 8 or 16. A 1-, 2- or 4-bit image's samples are unpacked to one byte
+    /// each (a grey level scaled to 0-255, an index as it is), so it reads 8 here; IHDR's own depth is
+    /// <see cref="SourceBitDepth"/>.
+    /// </summary>
     public required int BitDepth { get; init; }
+
+    /// <summary>Bits per sample as declared in IHDR: 1, 2, 4, 8 or 16; <see cref="BitDepth"/> for an image not read from a file.</summary>
+    public int SourceBitDepth { get => field == 0 ? BitDepth : field; init; }
 
     /// <summary>PNG color type: 0=Gray, 2=RGB, 3=Indexed, 4=Gray+Alpha, 6=RGBA.</summary>
     public required int ColorType { get; init; }
