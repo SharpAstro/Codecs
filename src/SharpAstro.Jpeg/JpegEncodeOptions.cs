@@ -48,4 +48,16 @@ public sealed record JpegEncodeOptions
 
     /// <summary>Largest <see cref="Exif"/> blob that fits one APP1 segment: 65535 - 2 (length field) - 6 (<c>Exif\0\0</c>).</summary>
     public const int MaxExifBytes = 65535 - 2 - 6;
+
+    /// <summary>
+    /// When set, written as an APP1 <c>http://ns.adobe.com/xap/1.0/\0</c> XMP segment after the EXIF APP1 (if
+    /// <see cref="Exif"/> is set) and before the quantisation tables. <see cref="JpegXmp.BuildPacket"/> builds the
+    /// packet; one that is invalid or over <see cref="MaxXmpPacketBytes"/> is an <see cref="System.ArgumentException"/>
+    /// from <see cref="JpegEncoder.Encode"/>, before any output. <c>null</c> (the default) writes no segment and leaves
+    /// the output byte-identical to an encode without the option.
+    /// </summary>
+    public JpegXmp? Xmp { get; init; }
+
+    /// <summary>Largest XMP packet that fits one APP1 segment: 65535 - 2 (length field) - 29 (<c>http://ns.adobe.com/xap/1.0/\0</c>).</summary>
+    public const int MaxXmpPacketBytes = 65535 - 2 - 29;
 }

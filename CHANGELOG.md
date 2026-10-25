@@ -14,6 +14,48 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.22
+
+**`SharpAstro.Jpeg` writes EXIF and XMP.** `JpegEncodeOptions` gains two options, both off by default; with both
+`null` the encoder's bytes are identical to 3.21's. Each is an APP1 segment written in this order: SOI, APP0 (JFIF),
+the EXIF APP1, the XMP APP1, then DQT.
+
+- **EXIF.** `SharpAstro.Exif`'s new `ExifWriter.Build(ExifWriteData)` makes the blob and `JpegEncodeOptions.Exif`
+  (`ReadOnlyMemory<byte>?`) writes it behind `Exif\0\0`. It takes bytes, not the Exif package's types, so
+  `SharpAstro.Jpeg` gains no dependency (Exif pulls in Tiff and Png). The blob is a little-endian TIFF structure with
+  IFD0 `ImageDescription` (0x010E), `Software` (0x0131), `DateTime` (0x0132, to the second, no zone) and `Artist`
+  (0x013B), plus an ExifIFD pointer (0x8769) to a sub-IFD holding `UserComment` (0x9286); every field is optional.
+  IFD0 text is 7-bit ASCII, because that is what the TIFF/EXIF ASCII type is, so a character above U+007F or an
+  embedded NUL there is an `ArgumentException` instead of bytes another reader would take for Latin-1.
+  **`UserComment` is where text that needs Unicode goes**, with the character code EXIF 2.3 defines: plain 7-bit text
+  is `ASCII\0\0\0` + the bytes, anything else `UNICODE\0` + UTF-16 in the blob's byte order (little-endian). An
+  unpaired surrogate is refused.
+- **XMP.** `JpegEncodeOptions.Xmp` takes a `JpegXmp`: `CreatorTool` (`xmp:CreatorTool`), `Description`
+  (`dc:description`) and a caller-owned namespace (`CustomNamespaceUri` + `CustomPrefix`) with `CustomProperties`
+  key/value pairs, written as attributes of one `rdf:Description` inside `x:xmpmeta`/`rdf:RDF`, behind
+  `http://ns.adobe.com/xap/1.0/\0`. The packet is an escaped string template, the way `GainMapXmp`'s packets are:
+  no `XmlSerializer`, no DTD, no namespace-aware writer, so **XMP was kept and the package stays AOT-clean** (a
+  clean `--no-incremental` Release build adds no IL2xxx/IL3xxx warnings). `< > & " '` are escaped, tab / newline /
+  carriage return are written as character references (a parser would otherwise normalise them to a space), and
+  non-ASCII is UTF-8. `JpegXmp.BuildPacket()` returns the packet bytes. There is no `xpacket` wrapper.
+- **Refusals**, all an `ArgumentException` (`ParamName` `options`) from `JpegEncoder.Encode` raised before the pixel
+  buffer is looked at, so before any output. EXIF: a blob over `JpegEncodeOptions.MaxExifBytes` (65527, the APP1
+  limit less the length field and signature), empty, or without a TIFF header (which includes one that already
+  carries `Exif\0\0`). XMP: a packet over `JpegEncodeOptions.MaxXmpPacketBytes` (65504, counted in UTF-8 bytes;
+  **Extended XMP is not written**, so a larger packet is refused rather than split); a custom key that is not an XML
+  NCName (`XmlConvert.VerifyNCName`), is empty or is repeated; custom properties with no prefix or namespace; a
+  prefix that is not an NCName, starts with `xml`, or is one the packet uses itself (`x`, `rdf`, `xmp`, `dc`); a
+  namespace URI that is one of the packet's own; and text XML 1.0 cannot carry (C0 controls other than tab, LF and
+  CR, U+FFFE / U+FFFF, an unpaired surrogate). Both limits are tested at exactly the limit and one over.
+- **What external readers confirmed.** Magick.NET 14.13.1 (libjpeg for the container) reads the EXIF profile back:
+  `ImageDescription`, `Software`, `Artist` and `DateTime` as written, `UserComment` as the raw UNDEFINED bytes with
+  its character code, the `UNICODE\0` case byte for byte; and the XMP profile back as the packet written, whose
+  attribute values parse back through `XDocument`, escaped and non-ASCII text included. Our own `ExifReader.FromJpeg`
+  and `JpegSegmentScanner` + `XDocument.Parse` read both segments from one file, and the image still decodes.
+- **Consumer.** TianWen's `DisplayRasterExport` (the save-as-displayed path, which already encodes a JPEG and splices
+  in an sRGB ICC profile) is the intended user, so a saved JPEG can carry the app, target and exposure it came from
+  the way a PNG can carry text since 3.21. Adopting it is a change in TianWen, not in this repo.
+
 ## 3.21
 
 **`SharpAstro.Png` reads and writes text.** `PngWriteOptions.Text` takes a list of `PngText(Keyword, Text)`, each
