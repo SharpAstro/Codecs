@@ -93,6 +93,68 @@ public sealed class PngTextTests
         image.Width.ShouldBe(4);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ItxtWithALanguageTagAndTranslatedKeywordIsRead(bool compressed)
+    {
+        // Our writer leaves both empty, so build one by hand to walk the reader past a real language tag and
+        // translated keyword: keyword, null, flag, method 0, "en", null, "Titel", null, then the text.
+        var utf8 = Encoding.UTF8.GetBytes("Sculptor Galaxy ★");
+        byte[] itxt = [.. Encoding.Latin1.GetBytes("Title"), 0, compressed ? (byte)1 : (byte)0, 0,
+            .. Encoding.ASCII.GetBytes("en"), 0, .. Encoding.UTF8.GetBytes("Titel"), 0, .. compressed ? Deflate(utf8) : utf8];
+        var png = InsertBeforeIend(PngWriter.Encode(TinyRgba, 4, 4), ("iTXt", itxt));
+
+        PngReader.Decode(png).Text.ShouldBe([new PngText("Title", "Sculptor Galaxy ★")]);
+    }
+
+    [Theory]
+    [InlineData("zTXt")]
+    [InlineData("iTXt")]
+    public void TextThatInflatesPastTheCapIsSkipped(string type)
+    {
+        // A few KB of deflate can claim gigabytes; past the cap the chunk is dropped, like a malformed one.
+        var bomb = Deflate(new byte[PngReader.MaxInflatedTextBytes + 1]);
+        byte[] data = type == "zTXt"
+            ? [.. Encoding.Latin1.GetBytes("Comment"), 0, 0, .. bomb]
+            : [.. Encoding.Latin1.GetBytes("Comment"), 0, 1, 0, 0, 0, .. bomb];
+        var png = InsertBeforeIend(PngWriter.Encode(TinyRgba, 4, 4), (type, data));
+
+        var image = PngReader.Decode(png);
+        image.Text.ShouldBeEmpty();
+        image.Width.ShouldBe(4);
+    }
+
+    [Fact]
+    public void TextExactlyAtTheCapIsRead()
+    {
+        var png = InsertBeforeIend(PngWriter.Encode(TinyRgba, 4, 4),
+            ("zTXt", [.. Encoding.Latin1.GetBytes("Comment"), 0, 0, .. Deflate(new byte[PngReader.MaxInflatedTextBytes])]));
+
+        PngReader.Decode(png).Text.Single().Text.Length.ShouldBe(PngReader.MaxInflatedTextBytes);
+    }
+
+    [Fact]
+    public void AnIccProfileThatInflatesPastTheCapIsRefused()
+    {
+        var png = InsertBeforeIend(PngWriter.Encode(TinyRgba, 4, 4),
+            ("iCCP", [.. Encoding.Latin1.GetBytes("ICC Profile"), 0, 0, .. Deflate(new byte[PngReader.MaxInflatedIccProfileBytes + 1])]));
+
+        Should.Throw<InvalidDataException>(() => PngReader.Decode(png));
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(255)]
+    public void ItxtWithACompressionFlagOtherThanZeroOrOneIsSkipped(byte flag)
+    {
+        // The spec allows only 0 (uncompressed) and 1 (deflated); anything else is malformed, not uncompressed.
+        var png = InsertBeforeIend(PngWriter.Encode(TinyRgba, 4, 4),
+            ("iTXt", [.. Encoding.Latin1.GetBytes("Comment"), 0, flag, 0, 0, 0, .. Encoding.UTF8.GetBytes("plain")]));
+
+        PngReader.Decode(png).Text.ShouldBeEmpty();
+    }
+
     [Fact]
     public void APngWithNoTextHasAnEmptyList()
     {
