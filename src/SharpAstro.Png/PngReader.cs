@@ -71,6 +71,7 @@ public static class PngReader
         byte[]? iccProfileRaw = null;       // zlib-deflated, as on disk
         string? iccProfileName = null;
         byte[]? rawExif = null;
+        List<PngText>? text = null;
         bool sawSrgb = false;
         byte srgbRenderingIntent = 0;
         uint? gamma100k = null;
@@ -192,6 +193,12 @@ public static class PngReader
             {
                 rawExif = chunkData.ToArray();
             }
+            else if (typeBytes.SequenceEqual("tEXt"u8) || typeBytes.SequenceEqual("zTXt"u8) || typeBytes.SequenceEqual("iTXt"u8))
+            {
+                // Text is never critical: a malformed text chunk is skipped, not a failed decode.
+                if (TryReadText(typeBytes, chunkData) is { } entry)
+                    (text ??= []).Add(entry);
+            }
             else if (typeBytes.SequenceEqual("cICP"u8))
             {
                 cicp = CicpChunk.Read(chunkData);
@@ -241,6 +248,7 @@ public static class PngReader
             Gamma = gamma100k.HasValue ? gamma100k.Value / 100_000.0 : null,
             Chromaticity = chrm,
             Exif = rawExif,
+            Text = text is null ? [] : [.. text],
             Cicp = cicp,
             Mdcv = mdcv,
             Clli = clli,
@@ -405,6 +413,48 @@ public static class PngReader
     /// spec mandates exactly one logical zlib stream across all IDATs, so
     /// concat-then-inflate works.
     /// </summary>
+    /// <summary>
+    /// One text chunk as a <see cref="PngText"/> (PNG spec 11.3.4): <c>tEXt</c> keyword and Latin-1 text,
+    /// <c>zTXt</c> keyword and deflated Latin-1 text, <c>iTXt</c> keyword, flags, language and translated keyword,
+    /// then UTF-8 text, deflated when its flag says so. Null for a chunk that does not parse.
+    /// </summary>
+    private static PngText? TryReadText(ReadOnlySpan<byte> type, ReadOnlySpan<byte> data)
+    {
+        var keywordEnd = data.IndexOf((byte)0);
+        if (keywordEnd is <= 0 or > PngText.MaxKeywordLength)
+            return null;
+        var keyword = System.Text.Encoding.Latin1.GetString(data[..keywordEnd]);
+        var rest = data[(keywordEnd + 1)..];
+        try
+        {
+            if (type.SequenceEqual("tEXt"u8))
+                return new PngText(keyword, System.Text.Encoding.Latin1.GetString(rest));
+            if (type.SequenceEqual("zTXt"u8))
+                return rest.Length >= 1 && rest[0] == 0
+                    ? new PngText(keyword, System.Text.Encoding.Latin1.GetString(DeflateInflate(rest[1..])))
+                    : null;
+
+            // iTXt: compression flag, compression method, language tag and null, translated keyword and null, text.
+            if (rest.Length < 2 || rest[1] != 0)
+                return null;
+            var compressed = rest[0] == 1;
+            var afterFlags = rest[2..];
+            var languageEnd = afterFlags.IndexOf((byte)0);
+            if (languageEnd < 0)
+                return null;
+            var afterLanguage = afterFlags[(languageEnd + 1)..];
+            var translatedEnd = afterLanguage.IndexOf((byte)0);
+            if (translatedEnd < 0)
+                return null;
+            var payload = afterLanguage[(translatedEnd + 1)..];
+            return new PngText(keyword, System.Text.Encoding.UTF8.GetString(compressed ? DeflateInflate(payload) : payload));
+        }
+        catch (InvalidDataException)
+        {
+            return null;
+        }
+    }
+
     private static byte[] DeflateInflate(ReadOnlySpan<byte> compressed)
     {
         // Copy the span into a backing array so we can wrap it in a stream.
@@ -506,6 +556,12 @@ public sealed record PngImage
 
     /// <summary>Raw EXIF blob from the <c>eXIf</c> chunk, or null if absent.</summary>
     public byte[]? Exif { get; init; }
+
+    /// <summary>
+    /// Every text chunk (<c>tEXt</c>, <c>zTXt</c>, <c>iTXt</c>) in file order, one <see cref="PngText"/> each;
+    /// empty when there are none. A text chunk that does not parse is left out, never a failed decode.
+    /// </summary>
+    public IReadOnlyList<PngText> Text { get; init; } = [];
 
     /// <summary>PNG-3 <c>cICP</c> Coding-Independent Code Points (HDR color signaling), or null if absent.</summary>
     public CicpChunk? Cicp { get; init; }

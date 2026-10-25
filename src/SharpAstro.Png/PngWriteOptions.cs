@@ -47,6 +47,13 @@ public sealed record PngWriteOptions
     public byte[]? Exif { get; init; }
 
     /// <summary>
+    /// Textual entries (<see cref="PngText"/>), each written as an <c>iTXt</c> chunk after the image data, in
+    /// order: UTF-8 text of any length, deflated when over <see cref="PngWriter.TextCompressionThreshold"/> bytes.
+    /// A keyword the spec does not allow (<see cref="PngText.IsValidKeyword"/>) is an <see cref="System.ArgumentException"/>.
+    /// </summary>
+    public IReadOnlyList<PngText>? Text { get; init; }
+
+    /// <summary>
     /// When set, emit a PNG-3 <c>cICP</c> chunk — Coding-Independent Code
     /// Points declaring color primaries + transfer function. This is how
     /// PNG-3 signals HDR (e.g. <see cref="CicpChunk.Hdr10Pq"/>).
