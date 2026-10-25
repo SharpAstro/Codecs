@@ -31,4 +31,21 @@ public sealed record JpegEncodeOptions
     /// <summary>Chroma subsampling. <see cref="JpegSubsampling.Auto"/> derives it
     /// from <see cref="Quality"/> exactly as the reference encoder does.</summary>
     public JpegSubsampling Subsampling { get; init; } = JpegSubsampling.Auto;
+
+    /// <summary>
+    /// When set, written as an APP1 <c>Exif\0\0</c> segment right after the APP0 JFIF header. The bytes are the
+    /// TIFF-structured EXIF blob itself (<c>II*\0</c> or <c>MM\0*</c> onwards, <b>without</b> the <c>Exif\0\0</c>
+    /// signature, which the encoder adds); <c>SharpAstro.Exif</c>'s <c>ExifWriter.Build</c> makes one. Taking bytes
+    /// keeps this package free of a dependency on the Exif package. <c>null</c> (the default) writes no segment and
+    /// leaves the output byte-identical to an encode without the option.
+    /// <para>
+    /// The segment length field is 16 bits, so the blob is at most <see cref="MaxExifBytes"/> bytes (65527: 65535
+    /// less the length field and the six signature bytes). A blob that is longer, empty, or does not start with a TIFF
+    /// header is an <see cref="System.ArgumentException"/> from <see cref="JpegEncoder.Encode"/>, before any output.
+    /// </para>
+    /// </summary>
+    public ReadOnlyMemory<byte>? Exif { get; init; }
+
+    /// <summary>Largest <see cref="Exif"/> blob that fits one APP1 segment: 65535 - 2 (length field) - 6 (<c>Exif\0\0</c>).</summary>
+    public const int MaxExifBytes = 65535 - 2 - 6;
 }

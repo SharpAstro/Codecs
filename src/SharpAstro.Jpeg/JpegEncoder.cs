@@ -43,6 +43,8 @@ public static class JpegEncoder
         options ??= new JpegEncodeOptions();
         if (options.Quality is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(options), options.Quality, "Quality must be 1..100.");
 
+        var exif = ValidateExif(options.Exif);
+
         var required = (long)width * height * channels;
         if (pixels.Length < required)
             throw new ArgumentException($"Pixel buffer too small: {pixels.Length} < {required} (width*height*channels).", nameof(pixels));
@@ -67,7 +69,7 @@ public static class JpegEncoder
         BuildTables(scale, yTable, uvTable, fdtblY, fdtblUv);
 
         var w = new JpegWriter(EstimateCapacity(width, height));
-        WriteHeaders(w, width, height, subsample, yTable, uvTable);
+        WriteHeaders(w, width, height, subsample, yTable, uvTable, exif.Span);
         EncodeScan(w, pixels, width, height, channels, subsample, fdtblY, fdtblUv);
 
         // Flush the entropy stream with the reference's 1-fill and close with EOI.
@@ -75,6 +77,21 @@ public static class JpegEncoder
         w.Put(0xFF);
         w.Put(0xD9);
         return w.ToArray();
+    }
+
+    /// <summary>Checks the EXIF blob before anything is written; returns it, or empty for "no segment".</summary>
+    private static ReadOnlyMemory<byte> ValidateExif(ReadOnlyMemory<byte>? exif)
+    {
+        if (exif is not { } blob) return default;
+        if (blob.Length > JpegEncodeOptions.MaxExifBytes)
+            throw new ArgumentException($"EXIF blob is {blob.Length} bytes; one APP1 segment holds at most {JpegEncodeOptions.MaxExifBytes}.", "options");
+        var s = blob.Span;
+        var tiffHeader = s.Length >= 8
+            && ((s[0] == (byte)'I' && s[1] == (byte)'I' && s[2] == 42 && s[3] == 0)
+                || (s[0] == (byte)'M' && s[1] == (byte)'M' && s[2] == 0 && s[3] == 42));
+        if (!tiffHeader)
+            throw new ArgumentException("EXIF blob must be a TIFF structure (II*\\0 or MM\\0* header, at least 8 bytes), without the Exif\\0\\0 signature.", "options");
+        return blob;
     }
 
     private static int EstimateCapacity(int width, int height) =>
@@ -181,13 +198,15 @@ public static class JpegEncoder
 
     // -------------------------------------------------------------- headers
 
-    private static void WriteHeaders(JpegWriter w, int width, int height, bool subsample, ReadOnlySpan<byte> yTable, ReadOnlySpan<byte> uvTable)
+    private static void WriteHeaders(JpegWriter w, int width, int height, bool subsample, ReadOnlySpan<byte> yTable, ReadOnlySpan<byte> uvTable, ReadOnlySpan<byte> exif)
     {
-        // SOI + APP0 JFIF + the DQT marker/length and the first table's Pq/Tq byte.
-        ReadOnlySpan<byte> head0 =
+        // SOI + APP0 JFIF.
+        ReadOnlySpan<byte> head0a =
         [
-            0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, (byte)'J', (byte)'F', (byte)'I', (byte)'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xFF, 0xDB, 0, 0x84, 0,
+            0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, (byte)'J', (byte)'F', (byte)'I', (byte)'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0,
         ];
+        // The DQT marker/length and the first table's Pq/Tq byte.
+        ReadOnlySpan<byte> head0b = [0xFF, 0xDB, 0, 0x84, 0];
         // SOS: 3 components, DC/AC table selectors, Ss=0 Se=0x3F Ah/Al=0.
         ReadOnlySpan<byte> head2 = [0xFF, 0xDA, 0, 0xC, 3, 1, 0, 2, 0x11, 3, 0x11, 0, 0x3F, 0];
         // SOF0 (frame) + the DHT marker/length and the first table's Tc/Th byte.
@@ -197,7 +216,19 @@ public static class JpegEncoder
             3, 1, (byte)(subsample ? 0x22 : 0x11), 0, 2, 0x11, 1, 3, 0x11, 1, 0xFF, 0xC4, 0x01, 0xA2, 0,
         ];
 
-        w.Write(head0);
+        w.Write(head0a);
+        if (!exif.IsEmpty)
+        {
+            // APP1 "Exif\0\0" + the TIFF blob; the length field counts itself (already range-checked in Encode).
+            var length = 2 + 6 + exif.Length;
+            w.Put(0xFF);
+            w.Put(0xE1);
+            w.Put((byte)(length >> 8));
+            w.Put((byte)length);
+            w.Write("Exif\0\0"u8);
+            w.Write(exif);
+        }
+        w.Write(head0b);
         w.Write(yTable);
         w.Put(1);
         w.Write(uvTable);

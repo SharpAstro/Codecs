@@ -10,6 +10,7 @@ namespace SharpAstro.Exif;
 internal static class ExifTag
 {
     // TIFF/EXIF IFD0 + ExifIFD scalars
+    public const ushort ImageDescription   = 0x010E;
     public const ushort Orientation        = 0x0112;
     public const ushort Software           = 0x0131;
     public const ushort DateTime           = 0x0132; // file modification time
@@ -22,6 +23,8 @@ internal static class ExifTag
     public const ushort FNumber            = 0x829D;
     public const ushort IsoSpeedRatings    = 0x8827;
     public const ushort DateTimeOriginal   = 0x9003; // capture time
+    public const ushort ExifIfdPointer     = 0x8769; // IFD0 LONG: offset of the Exif sub-IFD
+    public const ushort UserComment        = 0x9286; // UNDEFINED: first 8 bytes name the character code
     public const ushort FocalLength        = 0x920A;
     public const ushort FocalLengthIn35mm  = 0xA405;
     public const ushort PixelXDimension    = 0xA002;
