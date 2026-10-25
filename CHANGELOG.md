@@ -14,6 +14,17 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.21
+
+**`SharpAstro.Png` reads and writes text.** `PngWriteOptions.Text` takes a list of `PngText(Keyword, Text)`, each
+written as an `iTXt` chunk after the image data: UTF-8 of any length, deflated past
+`PngWriter.TextCompressionThreshold` (1 KiB). A keyword the PNG spec forbids (empty, over 79 characters, outside
+Latin-1 printable, or with a leading, trailing or doubled space; `PngText.IsValidKeyword`) is an
+`ArgumentException`. `PngImage.Text` reads `tEXt`, `zTXt` and `iTXt` alike, in file order, so text another tool
+wrote reads the same way; a malformed text chunk is skipped, never a failed decode. For an application's own record
+inside the image it saved (TianWen's save-as-displayed writes its rendition this way), checked against Pillow,
+which reads the three chunks back, the deflated one included.
+
 ## 3.20
 
 `SharpAstro.Jxl`'s lossy VarDCT path **works one 256-px group at a time** and no longer builds

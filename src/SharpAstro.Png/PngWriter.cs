@@ -309,6 +309,14 @@ public static class PngWriter
         if (options.Exif is { Length: > 0 } exif)
             WriteChunk(ms, "eXIf"u8, exif);
 
+        // Text after the image data too: the spec allows it anywhere between IHDR and IEND, and a reader that stops
+        // at the pixels has what it needs before reaching it.
+        if (options.Text is { Count: > 0 } text)
+        {
+            foreach (var entry in text)
+                WriteItxtChunk(ms, entry);
+        }
+
         WriteChunk(ms, "IEND"u8, ReadOnlySpan<byte>.Empty);
         return ms.ToArray();
     }
@@ -717,6 +725,42 @@ public static class PngWriter
         Span<byte> crcBuf = stackalloc byte[4];
         WriteBE(crcBuf, Crc32(crcSpan, ReadOnlySpan<byte>.Empty));
         ms.Write(crcBuf);
+    }
+
+    /// <summary>The text length, in UTF-8 bytes, above which an <c>iTXt</c> chunk's text is deflated.</summary>
+    public const int TextCompressionThreshold = 1024;
+
+    /// <summary>
+    /// One <c>iTXt</c> chunk (PNG spec 11.3.4.5): the keyword in Latin-1 and a null, the compression flag and
+    /// method, an empty language tag and an empty translated keyword (each null-terminated), then the text in
+    /// UTF-8, deflated when long.
+    /// </summary>
+    private static void WriteItxtChunk(Stream output, PngText entry)
+    {
+        if (!PngText.IsValidKeyword(entry.Keyword))
+            throw new ArgumentException(
+                $"'{entry.Keyword}' is not a PNG text keyword: 1 to 79 Latin-1 printable characters, no leading, trailing or doubled space",
+                nameof(PngWriteOptions.Text));
+
+        var text = System.Text.Encoding.UTF8.GetBytes(entry.Text);
+        var compress = text.Length > TextCompressionThreshold;
+        using var body = new MemoryStream();
+        body.Write(System.Text.Encoding.Latin1.GetBytes(entry.Keyword));
+        body.WriteByte(0);                            // keyword terminator
+        body.WriteByte(compress ? (byte)1 : (byte)0); // compression flag
+        body.WriteByte(0);                            // compression method 0 (zlib)
+        body.WriteByte(0);                            // empty language tag
+        body.WriteByte(0);                            // empty translated keyword
+        if (compress)
+        {
+            using var z = new ZLibStream(body, CompressionLevel.Optimal, leaveOpen: true);
+            z.Write(text);
+        }
+        else
+        {
+            body.Write(text);
+        }
+        WriteChunk(output, "iTXt"u8, body.GetBuffer().AsSpan(0, (int)body.Length));
     }
 
     private static void WriteChunk(Stream output, ReadOnlySpan<byte> type, ReadOnlySpan<byte> data)
