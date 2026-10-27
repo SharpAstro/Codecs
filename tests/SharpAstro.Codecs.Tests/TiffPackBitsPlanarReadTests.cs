@@ -270,6 +270,8 @@ public sealed class TiffPackBitsPlanarReadTests
             var n = BinaryPrimitives.ReadUInt32LittleEndian(tiff.AsSpan(at + 4, 4));
             var valueField = tiff.AsSpan(at + 8, 4);
 
+            if (type != 3 && type != 4) continue;
+
             var inline = type switch
             {
                 3 => n * 2u <= 4u,
