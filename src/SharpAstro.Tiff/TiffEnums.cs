@@ -7,6 +7,7 @@ public enum TiffCompression : ushort
     Jpeg         = 7,    // New-style JPEG (TIFF Technical Note #2)
     Deflate      = 8,    // Adobe Deflate
     ZlibPkzip    = 32946, // PKZIP / zlib (identical bytes to Deflate=8)
+    PackBits     = 32773, // Macintosh RLE (TIFF 6.0 section 9)
 }
 
 public enum TiffPhotometric : ushort
