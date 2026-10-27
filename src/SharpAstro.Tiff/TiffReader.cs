@@ -34,11 +34,16 @@ namespace SharpAstro.Tiff;
 /// <item>Both planar configs, for strips and tiles: PlanarConfig=Separate planes are decoded one
 ///       sample per pixel and interleaved, so <see cref="TiffPage.Pixels"/> and the sink always see
 ///       chunky rows.</item>
+/// <item>On-demand segment read: <see cref="ReadLayout(ReadOnlySpan{byte}, int)"/> describes how a page
+///       is cut into strips or tiles, and <c>ReadSegment</c> decodes ONE of them into a caller's buffer
+///       from a span, a seekable stream or a file path, reading only that segment's bytes (every
+///       plane's, for a planar page). It runs the same decode, swap, predictor and interleave as
+///       <see cref="ReadInto{TSink}"/>, so it equals that rectangle of the whole page.</item>
 /// </list>
 /// JPEG / BigTIFF are out of scope -- when TianWen needs them, add them
 /// here (the existing code loops over segments and dispatches on compression).
 /// </summary>
-public static class TiffReader
+public static partial class TiffReader
 {
     /// <summary>Decode every page from a TIFF in-memory.</summary>
     public static TiffDocument Read(ReadOnlySpan<byte> tiff)
@@ -173,172 +178,34 @@ public static class TiffReader
         bool fileIsLE, int pageIndex, ref TSink sink)
         where TSink : ITiffStripSink
     {
-        // ---- Parse the IFD into a tag dictionary ---------------------------
-        if (ifdOffset + 2 > tiff.Length) throw new InvalidDataException("IFD offset out of bounds");
-        var entryCount = ReadUInt16(tiff.Slice(ifdOffset, 2), fileIsLE);
-        const int entrySize = 12;
-
-        var directoryEnd = ifdOffset + 2 + entryCount * entrySize;
-        if (directoryEnd + 4 > tiff.Length) throw new InvalidDataException("IFD truncated");
-
-        // ---- Required tags ------------------------------------------------
-        var width = 0;
-        var height = 0;
-        var samplesPerPixel = 1;
-        var bitsPerSample = 1;
-        var compression = TiffCompression.Uncompressed;
-        var photometric = TiffPhotometric.MinIsBlack;
-        var sampleFormat = TiffSampleFormat.Uint;
-        var planarConfig = TiffPlanarConfig.Contig;
-        var predictor = TiffPredictor.None;
-        var rowsPerStrip = 0;
-        uint[]? stripOffsets = null;
-        uint[]? stripByteCounts = null;
-        var tileWidth = 0;
-        var tileHeight = 0;
-        uint[]? tileOffsets = null;
-        uint[]? tileByteCounts = null;
-        float? sMin = null;
-        float? sMax = null;
-        byte[]? icc = null;
-        int? exifIfdOffset = null;
-        int? gpsIfdOffset = null;
-
-        for (var i = 0; i < entryCount; i++)
-        {
-            var entryStart = ifdOffset + 2 + i * entrySize;
-            var tag = ReadUInt16(tiff.Slice(entryStart, 2), fileIsLE);
-            var type = (TiffFieldType)ReadUInt16(tiff.Slice(entryStart + 2, 2), fileIsLE);
-            var count = (int)ReadUInt32(tiff.Slice(entryStart + 4, 4), fileIsLE);
-            var valueSpan = tiff.Slice(entryStart + 8, 4);
-
-            switch (tag)
-            {
-                case TiffTag.ImageWidth:
-                    width = (int)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.ImageLength:
-                    height = (int)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.SamplesPerPixel:
-                    samplesPerPixel = (int)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.BitsPerSample:
-                    bitsPerSample = (int)ReadShortArray(tiff, type, count, valueSpan, fileIsLE)[0];
-                    break;
-                case TiffTag.Compression:
-                    compression = (TiffCompression)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.PhotometricInterp:
-                    photometric = (TiffPhotometric)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.Predictor:
-                    predictor = (TiffPredictor)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.PlanarConfig:
-                    planarConfig = (TiffPlanarConfig)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.RowsPerStrip:
-                    rowsPerStrip = (int)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.StripOffsets:
-                    stripOffsets = ReadLongOrShortArray(tiff, type, count, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.StripByteCounts:
-                    stripByteCounts = ReadLongOrShortArray(tiff, type, count, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.TileWidth:
-                    tileWidth = (int)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.TileLength:
-                    tileHeight = (int)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.TileOffsets:
-                    tileOffsets = ReadLongOrShortArray(tiff, type, count, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.TileByteCounts:
-                    tileByteCounts = ReadLongOrShortArray(tiff, type, count, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.SampleFormat:
-                    sampleFormat = (TiffSampleFormat)ReadShortArray(tiff, type, count, valueSpan, fileIsLE)[0];
-                    break;
-                case TiffTag.SMinSampleValue:
-                    sMin = ReadFloatArray(tiff, type, count, valueSpan, fileIsLE)[0];
-                    break;
-                case TiffTag.SMaxSampleValue:
-                    sMax = ReadFloatArray(tiff, type, count, valueSpan, fileIsLE)[0];
-                    break;
-                case TiffTag.IccProfile:
-                    icc = ReadByteArray(tiff, type, count, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.ExifIfd:
-                    // Sub-IFD pointer — capture the offset so a caller can pass
-                    // it to SharpAstro.Exif.ExifReader.FromIfd without re-walking.
-                    exifIfdOffset = (int)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                case TiffTag.GpsInfoIfd:
-                    gpsIfdOffset = (int)ReadScalar(type, valueSpan, fileIsLE);
-                    break;
-                default:
-                    // Unrecognised tag — TIFF spec says skip unknown tags.
-                    break;
-            }
-        }
-
-        var nextIfdOffset = (int)ReadUInt32(tiff.Slice(directoryEnd, 4), fileIsLE);
-
-        // ---- Validate the layout we're willing to handle ------------------
-        if (width <= 0 || height <= 0)
-            throw new InvalidDataException("ImageWidth/ImageLength missing or invalid");
-        if (planarConfig is not (TiffPlanarConfig.Contig or TiffPlanarConfig.Separate))
-            throw new NotSupportedException($"PlanarConfig={(ushort)planarConfig} not supported");
-
-        // Which layout a page uses is decided by the tags PRESENT, never by a preference. TIFF 6.0
-        // p.68 makes strips and tiles mutually exclusive, so a page carrying both is malformed and is
-        // refused here rather than read as whichever kind this reader happens to look for first.
-        var isTiled = tileOffsets is not null || tileByteCounts is not null || tileWidth > 0 || tileHeight > 0;
-        if (isTiled && (stripOffsets is not null || stripByteCounts is not null))
-            throw new InvalidDataException("Page carries both strip and tile tags; TIFF 6.0 makes the two layouts exclusive");
-
-        var segmentOffsets = isTiled ? tileOffsets : stripOffsets;
-        var segmentByteCounts = isTiled ? tileByteCounts : stripByteCounts;
-        if (segmentOffsets is null || segmentByteCounts is null)
-            throw new NotSupportedException(isTiled
-                ? "Tiled page is missing TileOffsets or TileByteCounts"
-                : "Page has neither strip nor tile offsets");
-        if (segmentOffsets.Length != segmentByteCounts.Length)
-            throw new InvalidDataException("Segment offset / byte-count arrays differ in length");
-
-        if (isTiled && (tileWidth <= 0 || tileHeight <= 0))
-            throw new InvalidDataException("TileWidth/TileLength missing or invalid on a tiled page");
-
-        // Deliberately NOT checked: the spec's "multiple of 16" rule. That constrains writers; a
-        // file breaking it still states its own geometry unambiguously, and refusing to read one
-        // would lose data for a rule the reader does not depend on.
-        var geometry = new TiffSegmentGeometry(width, height, samplesPerPixel,
-            planarConfig == TiffPlanarConfig.Separate, isTiled, rowsPerStrip, tileWidth, tileHeight);
+        // ---- Parse and validate the IFD (shared with the on-demand segment read) ----
+        var src = new SpanBytes(tiff);
+        var ifd = TiffIfdParser.Parse(ref src, ifdOffset, fileIsLE);
+        var width = ifd.Width;
+        var height = ifd.Height;
+        var samplesPerPixel = ifd.SamplesPerPixel;
+        var bitsPerSample = ifd.BitsPerSample;
+        var compression = ifd.Compression;
+        var photometric = ifd.Photometric;
+        var sampleFormat = ifd.SampleFormat;
+        var predictor = ifd.Predictor;
+        var rowsPerStrip = ifd.RowsPerStrip;
+        var isTiled = ifd.IsTiled;
+        var tileWidth = ifd.TileWidth;
+        var tileHeight = ifd.TileHeight;
+        var segmentOffsets = ifd.SegmentOffsets;
+        var segmentByteCounts = ifd.SegmentByteCounts;
+        var geometry = ifd.Geometry;
+        var sMin = ifd.SMin;
+        var sMax = ifd.SMax;
+        var icc = ifd.Icc;
+        var exifIfdOffset = ifd.ExifIfdOffset;
+        var gpsIfdOffset = ifd.GpsInfoIfdOffset;
+        var nextIfdOffset = (int)ifd.NextIfdOffset;
         var planar = geometry.IsPlanar;
         var planes = geometry.PlaneCount;
         var tilesAcross = geometry.SegmentsAcross;
         var tilesDown = geometry.SegmentsDown;
-
-        // Tiled pages and planar strips are checked exactly; a chunky strip list stays lenient (a short
-        // one delivers the rows it covers), as it always has.
-        if ((isTiled || planar) && segmentOffsets.Length < geometry.TotalSegments)
-            throw new InvalidDataException(isTiled
-                ? $"Tiled page lists {segmentOffsets.Length} tiles, but {tilesAcross}x{tilesDown}x{planes} plane(s) are needed to cover {width}x{height}"
-                : $"Planar page lists {segmentOffsets.Length} strips, but {tilesDown}x{planes} planes are needed");
-        if (bitsPerSample != 8 && bitsPerSample != 16 && bitsPerSample != 32)
-            throw new NotSupportedException($"BitsPerSample={bitsPerSample} not supported (expected 8/16/32)");
-        if (sampleFormat is not (TiffSampleFormat.Uint or TiffSampleFormat.Int or TiffSampleFormat.IeeeFloat))
-            throw new NotSupportedException($"SampleFormat={sampleFormat} not supported");
-        // Refuse an unhandled predictor rather than decoding past it. An un-inverted predictor
-        // yields a full-size, entirely plausible buffer of WRONG pixels -- no exception, no
-        // short read, correct dimensions -- so staying quiet here is indistinguishable from
-        // success to every caller downstream.
-        if (predictor is not (TiffPredictor.None or TiffPredictor.HorizontalDifferencing))
-            throw new NotSupportedException($"Predictor={predictor} not supported in this reader");
-
         // ---- Decode strips, normalise each, hand it to the sink -----------
         var bytesPerPixel = samplesPerPixel * (bitsPerSample / 8);
         var bytesPerRow = width * bytesPerPixel;
@@ -600,7 +467,7 @@ public static class TiffReader
     /// (truncated) segment cannot supply is zeroed rather than left behind: the band is reused, so "not
     /// written" would mean the previous band's pixels, which looks like real image content.
     /// </summary>
-    private static void PlaceRows(ReadOnlySpan<byte> samples, byte[] band, int rows, int srcRowBytes,
+    private static void PlaceRows(ReadOnlySpan<byte> samples, Span<byte> band, int rows, int srcRowBytes,
         int dstRowBytes, int firstPixel, int colPixels, int srcPixelBytes, int dstPixelBytes,
         int bytesPerSample, int plane)
     {
@@ -613,9 +480,9 @@ public static class TiffReader
                 var src = row * srcRowBytes;
                 var have = Math.Clamp(samples.Length - src, 0, colBytes);
                 if (have > 0)
-                    samples.Slice(src, have).CopyTo(band.AsSpan(dst, have));
+                    samples.Slice(src, have).CopyTo(band.Slice(dst, have));
                 if (have < colBytes)
-                    band.AsSpan(dst + have, colBytes - have).Clear();
+                    band.Slice(dst + have, colBytes - have).Clear();
             }
             return;
         }
@@ -626,7 +493,7 @@ public static class TiffReader
             var src = row * srcRowBytes;
             for (var px = 0; px < colPixels; px++, dst += dstPixelBytes, src += srcPixelBytes)
             {
-                var target = band.AsSpan(dst, bytesPerSample);
+                var target = band.Slice(dst, bytesPerSample);
                 if (src + bytesPerSample <= samples.Length)
                     samples.Slice(src, bytesPerSample).CopyTo(target);
                 else
@@ -773,64 +640,6 @@ public static class TiffReader
         TiffFieldType.Long  => ReadUInt32(valueOrOffset.Slice(0, 4), fileIsLE),
         _ => throw new NotSupportedException($"Scalar tag has unexpected type {type}"),
     };
-
-    private static ushort[] ReadShortArray(ReadOnlySpan<byte> tiff, TiffFieldType type, int count, ReadOnlySpan<byte> valueSpan, bool fileIsLE)
-    {
-        if (type != TiffFieldType.Short)
-            throw new NotSupportedException($"Expected SHORT, got {type}");
-        var totalBytes = count * 2;
-        var data = totalBytes <= 4
-            ? valueSpan.Slice(0, totalBytes)
-            : tiff.Slice((int)ReadUInt32(valueSpan, fileIsLE), totalBytes);
-        var result = new ushort[count];
-        for (var i = 0; i < count; i++)
-            result[i] = ReadUInt16(data.Slice(i * 2, 2), fileIsLE);
-        return result;
-    }
-
-    private static uint[] ReadLongOrShortArray(ReadOnlySpan<byte> tiff, TiffFieldType type, int count, ReadOnlySpan<byte> valueSpan, bool fileIsLE)
-    {
-        var elemSize = type switch
-        {
-            TiffFieldType.Short => 2,
-            TiffFieldType.Long  => 4,
-            _ => throw new NotSupportedException($"Expected SHORT/LONG, got {type}"),
-        };
-        var totalBytes = count * elemSize;
-        var data = totalBytes <= 4
-            ? valueSpan.Slice(0, totalBytes)
-            : tiff.Slice((int)ReadUInt32(valueSpan, fileIsLE), totalBytes);
-        var result = new uint[count];
-        for (var i = 0; i < count; i++)
-            result[i] = elemSize == 2
-                ? ReadUInt16(data.Slice(i * 2, 2), fileIsLE)
-                : ReadUInt32(data.Slice(i * 4, 4), fileIsLE);
-        return result;
-    }
-
-    private static float[] ReadFloatArray(ReadOnlySpan<byte> tiff, TiffFieldType type, int count, ReadOnlySpan<byte> valueSpan, bool fileIsLE)
-    {
-        if (type != TiffFieldType.Float)
-            throw new NotSupportedException($"Expected FLOAT, got {type}");
-        var totalBytes = count * 4;
-        var data = totalBytes <= 4
-            ? valueSpan.Slice(0, totalBytes)
-            : tiff.Slice((int)ReadUInt32(valueSpan, fileIsLE), totalBytes);
-        var result = new float[count];
-        for (var i = 0; i < count; i++)
-            result[i] = ReadSingle(data.Slice(i * 4, 4), fileIsLE);
-        return result;
-    }
-
-    private static byte[] ReadByteArray(ReadOnlySpan<byte> tiff, TiffFieldType type, int count, ReadOnlySpan<byte> valueSpan, bool fileIsLE)
-    {
-        if (type != TiffFieldType.Undefined && type != TiffFieldType.Byte)
-            throw new NotSupportedException($"Expected UNDEFINED/BYTE, got {type}");
-        var data = count <= 4
-            ? valueSpan.Slice(0, count)
-            : tiff.Slice((int)ReadUInt32(valueSpan, fileIsLE), count);
-        return data.ToArray();
-    }
 }
 
 /// <summary>
