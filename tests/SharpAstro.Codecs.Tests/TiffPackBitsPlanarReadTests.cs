@@ -225,19 +225,19 @@ public sealed class TiffPackBitsPlanarReadTests
                 image.ReadPixels(source.Bytes, new PixelReadSettings(width, height, StorageType.Char, mapping));
                 break;
             case Kind.U16:
-                image.ReadPixels(source.Shorts, new PixelReadSettings(width, height, StorageType.Short, mapping));
+                image.ReadPixels(System.Runtime.InteropServices.MemoryMarshal.AsBytes<ushort>(source.Shorts).ToArray(), new PixelReadSettings(width, height, StorageType.Short, mapping));
                 break;
             case Kind.U32:
-                image.ReadPixels(source.Ints, new PixelReadSettings(width, height, StorageType.Integer, mapping));
+                image.ReadPixels(System.Runtime.InteropServices.MemoryMarshal.AsBytes<uint>(source.Ints).ToArray(), new PixelReadSettings(width, height, StorageType.Int32, mapping));
                 break;
             default:
-                image.ReadPixels(source.Floats, new PixelReadSettings(width, height, StorageType.Float, mapping));
+                image.ReadPixels(System.Runtime.InteropServices.MemoryMarshal.AsBytes<float>(source.Floats).ToArray(), new PixelReadSettings(width, height, StorageType.Float, mapping));
                 break;
         }
 
         if (spp == 1) image.ColorSpace = ColorSpace.Gray;
         image.Depth = kind switch { Kind.U8 => 8u, Kind.U16 => 16u, _ => 32u };
-        image.Interlace = planar ? Interlace.Plane : Interlace.NoInterlace;
+        image.Settings.Interlace = planar ? Interlace.Plane : Interlace.NoInterlace;
         image.Settings.Compression = compression;
         image.Settings.SetDefine(MagickFormat.Tiff, "predictor", predictor.ToString());
         if (tiled)
