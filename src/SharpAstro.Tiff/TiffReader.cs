@@ -23,15 +23,19 @@ namespace SharpAstro.Tiff;
 ///       exclusive.</item>
 /// <item>Bit depths 8, 16, 32 — uniform across all samples (per TIFF norm).</item>
 /// <item>Compression: <see cref="TiffCompression.Uncompressed"/>, <see cref="TiffCompression.Lzw"/>,
-///       <see cref="TiffCompression.Deflate"/>, <see cref="TiffCompression.ZlibPkzip"/>.</item>
-/// <item>Sample formats: <see cref="TiffSampleFormat.Uint"/>, <see cref="TiffSampleFormat.IeeeFloat"/>.</item>
+///       <see cref="TiffCompression.Deflate"/>, <see cref="TiffCompression.ZlibPkzip"/>,
+///       <see cref="TiffCompression.PackBits"/>.</item>
+/// <item>Sample formats: <see cref="TiffSampleFormat.Uint"/>, <see cref="TiffSampleFormat.Int"/>,
+///       <see cref="TiffSampleFormat.IeeeFloat"/>.</item>
 /// <item>Predictors: <see cref="TiffPredictor.None"/> and
 ///       <see cref="TiffPredictor.HorizontalDifferencing"/> -- the default for
 ///       every writer that emits ZIP compression. <see cref="TiffPredictor.FloatingPoint"/>
 ///       throws rather than decoding past it.</item>
-/// <item>Contiguous planar config only (one sample per pixel position; chunky).</item>
+/// <item>Both planar configs, for strips and tiles: PlanarConfig=Separate planes are decoded one
+///       sample per pixel and interleaved, so <see cref="TiffPage.Pixels"/> and the sink always see
+///       chunky rows.</item>
 /// </list>
-/// JPEG / BigTIFF / planar-separate are out of scope -- when TianWen needs them, add them
+/// JPEG / BigTIFF are out of scope -- when TianWen needs them, add them
 /// here (the existing code loops over segments and dispatches on compression).
 /// </summary>
 public static class TiffReader
@@ -286,8 +290,8 @@ public static class TiffReader
         // ---- Validate the layout we're willing to handle ------------------
         if (width <= 0 || height <= 0)
             throw new InvalidDataException("ImageWidth/ImageLength missing or invalid");
-        if (planarConfig != TiffPlanarConfig.Contig)
-            throw new NotSupportedException("Only PlanarConfig=Contig is supported");
+        if (planarConfig is not (TiffPlanarConfig.Contig or TiffPlanarConfig.Separate))
+            throw new NotSupportedException($"PlanarConfig={(ushort)planarConfig} not supported");
 
         // Which layout a page uses is decided by the tags PRESENT, never by a preference. TIFF 6.0
         // p.68 makes strips and tiles mutually exclusive, so a page carrying both is malformed and is
@@ -305,22 +309,25 @@ public static class TiffReader
         if (segmentOffsets.Length != segmentByteCounts.Length)
             throw new InvalidDataException("Segment offset / byte-count arrays differ in length");
 
-        var tilesAcross = 0;
-        var tilesDown = 0;
-        if (isTiled)
-        {
-            if (tileWidth <= 0 || tileHeight <= 0)
-                throw new InvalidDataException("TileWidth/TileLength missing or invalid on a tiled page");
+        if (isTiled && (tileWidth <= 0 || tileHeight <= 0))
+            throw new InvalidDataException("TileWidth/TileLength missing or invalid on a tiled page");
 
-            // Deliberately NOT checked: the spec's "multiple of 16" rule. That constrains writers; a
-            // file breaking it still states its own geometry unambiguously, and refusing to read one
-            // would lose data for a rule the reader does not depend on.
-            tilesAcross = (width + tileWidth - 1) / tileWidth;
-            tilesDown = (height + tileHeight - 1) / tileHeight;
-            if (segmentOffsets.Length < tilesAcross * tilesDown)
-                throw new InvalidDataException(
-                    $"Tiled page lists {segmentOffsets.Length} tiles, but {tilesAcross}x{tilesDown} are needed to cover {width}x{height}");
-        }
+        // Deliberately NOT checked: the spec's "multiple of 16" rule. That constrains writers; a
+        // file breaking it still states its own geometry unambiguously, and refusing to read one
+        // would lose data for a rule the reader does not depend on.
+        var geometry = new TiffSegmentGeometry(width, height, samplesPerPixel,
+            planarConfig == TiffPlanarConfig.Separate, isTiled, rowsPerStrip, tileWidth, tileHeight);
+        var planar = geometry.IsPlanar;
+        var planes = geometry.PlaneCount;
+        var tilesAcross = geometry.SegmentsAcross;
+        var tilesDown = geometry.SegmentsDown;
+
+        // Tiled pages and planar strips are checked exactly; a chunky strip list stays lenient (a short
+        // one delivers the rows it covers), as it always has.
+        if ((isTiled || planar) && segmentOffsets.Length < geometry.TotalSegments)
+            throw new InvalidDataException(isTiled
+                ? $"Tiled page lists {segmentOffsets.Length} tiles, but {tilesAcross}x{tilesDown}x{planes} plane(s) are needed to cover {width}x{height}"
+                : $"Planar page lists {segmentOffsets.Length} strips, but {tilesDown}x{planes} planes are needed");
         if (bitsPerSample != 8 && bitsPerSample != 16 && bitsPerSample != 32)
             throw new NotSupportedException($"BitsPerSample={bitsPerSample} not supported (expected 8/16/32)");
         if (sampleFormat is not (TiffSampleFormat.Uint or TiffSampleFormat.Int or TiffSampleFormat.IeeeFloat))
@@ -365,9 +372,12 @@ public static class TiffReader
             return (page, nextIfdOffset);
         }
 
-        // RowsPerStrip defaults to the whole image in one strip (2^32-1 per TIFF 6.0), and a file may
-        // omit it, so a missing or absurd value becomes the image height rather than a zero step.
-        var rowsPerStripEffective = rowsPerStrip > 0 && rowsPerStrip <= height ? rowsPerStrip : height;
+        // Inside one segment a planar page holds a single sample per pixel; the planes are interleaved
+        // into the chunky band below, so the sink still sees whole interleaved rows.
+        var bytesPerSample = bitsPerSample / 8;
+        var segBytesPerPixel = planar ? bytesPerSample : bytesPerPixel;
+        var segSamplesPerPixel = geometry.SegmentSamplesPerPixel;
+        var bandRows = geometry.SegmentHeight;
 
         // 8-bit samples have no byte order, and neither has a file that already matches the host --
         // which in practice is nearly every file, since writers emit II and hosts are little-endian.
@@ -387,11 +397,10 @@ public static class TiffReader
         // definition and the useful ones come first, so nothing below the image is ever decoded --
         // which also stops a page that declares a tile taller than itself from sizing the buffers off
         // that declaration rather than off the picture.
-        var tileRowBytes = tileWidth * bytesPerPixel;
-        var bandRows = Math.Min(tileHeight, height);
+        var tileRowBytes = tileWidth * segBytesPerPixel;
         var segmentCapacity = isTiled
             ? checked(tileRowBytes * bandRows)
-            : checked(rowsPerStripEffective * bytesPerRow);
+            : checked(bandRows * width * segBytesPerPixel);
 
         // ONE scratch buffer for every segment, plus ONE MemoryStream for the inflate path -- not one
         // of each per segment. A writer emitting ZIP almost always emits RowsPerStrip=1, so a real
@@ -406,7 +415,7 @@ public static class TiffReader
         // assembled unconditionally: a tile as wide as the image would already BE a band and could go
         // straight through, but that needs width to be a multiple of 16 (the spec's tile rule) and is
         // not worth a second path through this loop.
-        byte[]? band = isTiled ? ArrayPool<byte>.Shared.Rent(checked(bandRows * bytesPerRow)) : null;
+        byte[]? band = isTiled || planar ? ArrayPool<byte>.Shared.Rent(checked(bandRows * bytesPerRow)) : null;
 
         byte[]? inflateSource = null;
         MemoryStream? scratchStream = null;
@@ -428,42 +437,35 @@ public static class TiffReader
             {
                 for (var tileY = 0; tileY < tilesDown; tileY++)
                 {
-                    var firstRow = tileY * tileHeight;
-                    var rowsInBand = Math.Min(tileHeight, height - firstRow);
+                    var firstRow = geometry.FirstRow(tileY);
+                    var rowsInBand = geometry.RowCount(tileY);
 
                     for (var tileX = 0; tileX < tilesAcross; tileX++)
                     {
-                        var index = (tileY * tilesAcross) + tileX;
-                        var samples = DecodeSegment(tiff, segmentOffsets[index], segmentByteCounts[index],
-                            index, compression, passFileBytesThrough, scratch, inflateSource, scratchStream,
-                            segmentCapacity);
-
-                        // Normalise the TILE, at the TILE's width. Horizontal differencing restarts at
-                        // every row of every tile (TIFF 6.0 section 14) and a tile's row is tileWidth
-                        // wide, not the image's -- run it at image width and the picture decodes
-                        // without complaint, correct down its first tile column and drifting across
-                        // the rest.
-                        if (needsSwap)
-                            SwapPixelsToHostOrder(scratch!.AsSpan(0, samples.Length), bitsPerSample);
-                        if (needsPredictor)
-                            UndoHorizontalDifferencing(scratch!.AsSpan(0, samples.Length), tileWidth, samplesPerPixel, bitsPerSample);
-
-                        // Copy the part of the tile the image actually covers, dropping an edge tile's
-                        // padding. What a SHORT (truncated) tile cannot supply is zeroed rather than
-                        // left behind: the band is reused across tile rows, so "not written" would
-                        // mean the previous band's pixels, which is the one failure here that looks
-                        // like real image content.
                         var firstCol = tileX * tileWidth;
-                        var colBytes = Math.Min(tileWidth, width - firstCol) * bytesPerPixel;
-                        for (var row = 0; row < rowsInBand; row++)
+                        var colPixels = Math.Min(tileWidth, width - firstCol);
+
+                        // A planar page stores each sample's tile separately: decode every plane's tile
+                        // at one sample per pixel and scatter it into its channel of the chunky band.
+                        for (var plane = 0; plane < planes; plane++)
                         {
-                            var dst = (row * bytesPerRow) + (firstCol * bytesPerPixel);
-                            var src = row * tileRowBytes;
-                            var have = Math.Clamp(samples.Length - src, 0, colBytes);
-                            if (have > 0)
-                                samples.Slice(src, have).CopyTo(band!.AsSpan(dst, have));
-                            if (have < colBytes)
-                                band!.AsSpan(dst + have, colBytes - have).Clear();
+                            var index = geometry.SegmentIndex(plane, tileY, tileX);
+                            var samples = DecodeSegment(tiff, segmentOffsets[index], segmentByteCounts[index],
+                                index, compression, passFileBytesThrough, scratch, inflateSource, scratchStream,
+                                segmentCapacity);
+
+                            // Normalise the TILE, at the TILE's width. Horizontal differencing restarts at
+                            // every row of every tile (TIFF 6.0 section 14) and a tile's row is tileWidth
+                            // wide, not the image's -- run it at image width and the picture decodes
+                            // without complaint, correct down its first tile column and drifting across
+                            // the rest.
+                            if (needsSwap)
+                                SwapPixelsToHostOrder(scratch!.AsSpan(0, samples.Length), bitsPerSample);
+                            if (needsPredictor)
+                                UndoHorizontalDifferencing(scratch!.AsSpan(0, samples.Length), tileWidth, segSamplesPerPixel, bitsPerSample);
+
+                            PlaceRows(samples, band!, rowsInBand, tileRowBytes, bytesPerRow, firstCol, colPixels,
+                                segBytesPerPixel, bytesPerPixel, bytesPerSample, plane);
                         }
                     }
 
@@ -472,25 +474,49 @@ public static class TiffReader
             }
             else
             {
-                var rowCursor = 0;
-                for (var i = 0; i < segmentOffsets.Length && rowCursor < height; i++)
+                for (var strip = 0; strip < geometry.SegmentsDown; strip++)
                 {
-                    var rowCount = Math.Min(rowsPerStripEffective, height - rowCursor);
-                    var samples = DecodeSegment(tiff, segmentOffsets[i], segmentByteCounts[i], i,
-                        compression, passFileBytesThrough, scratch, inflateSource, scratchStream,
-                        rowCount * bytesPerRow);
+                    var rowCursor = geometry.FirstRow(strip);
+                    var rowCount = geometry.RowCount(strip);
 
-                    // Normalise this strip, not the assembled image. Both passes are row-local -- the
-                    // swap is per sample, and differencing restarts at every row (TIFF 6.0 section 14)
-                    // -- and strips hold whole rows, so a strip seam is never a special case and the
-                    // result is identical to running them once over a whole raster.
-                    if (needsSwap)
-                        SwapPixelsToHostOrder(scratch!.AsSpan(0, samples.Length), bitsPerSample);
-                    if (needsPredictor)
-                        UndoHorizontalDifferencing(scratch!.AsSpan(0, samples.Length), width, samplesPerPixel, bitsPerSample);
+                    if (!planar)
+                    {
+                        var index = geometry.SegmentIndex(0, strip);
+                        // A chunky strip list may be short (truncated file): deliver the rows it covers.
+                        if (index >= segmentOffsets.Length) break;
+                        var samples = DecodeSegment(tiff, segmentOffsets[index], segmentByteCounts[index], index,
+                            compression, passFileBytesThrough, scratch, inflateSource, scratchStream,
+                            rowCount * bytesPerRow);
 
-                    sink.Strip(pageIndex, rowCursor, rowCount, samples);
-                    rowCursor += rowCount;
+                        // Normalise this strip, not the assembled image. Both passes are row-local -- the
+                        // swap is per sample, and differencing restarts at every row (TIFF 6.0 section 14)
+                        // -- and strips hold whole rows, so a strip seam is never a special case and the
+                        // result is identical to running them once over a whole raster.
+                        if (needsSwap)
+                            SwapPixelsToHostOrder(scratch!.AsSpan(0, samples.Length), bitsPerSample);
+                        if (needsPredictor)
+                            UndoHorizontalDifferencing(scratch!.AsSpan(0, samples.Length), width, samplesPerPixel, bitsPerSample);
+
+                        sink.Strip(pageIndex, rowCursor, rowCount, samples);
+                        continue;
+                    }
+
+                    for (var plane = 0; plane < planes; plane++)
+                    {
+                        var index = geometry.SegmentIndex(plane, strip);
+                        var samples = DecodeSegment(tiff, segmentOffsets[index], segmentByteCounts[index], index,
+                            compression, passFileBytesThrough, scratch, inflateSource, scratchStream,
+                            rowCount * width * segBytesPerPixel);
+                        if (needsSwap)
+                            SwapPixelsToHostOrder(scratch!.AsSpan(0, samples.Length), bitsPerSample);
+                        if (needsPredictor)
+                            UndoHorizontalDifferencing(scratch!.AsSpan(0, samples.Length), width, segSamplesPerPixel, bitsPerSample);
+
+                        PlaceRows(samples, band!, rowCount, width * segBytesPerPixel, bytesPerRow, 0, width,
+                            segBytesPerPixel, bytesPerPixel, bytesPerSample, plane);
+                    }
+
+                    sink.Strip(pageIndex, rowCursor, rowCount, band!.AsSpan(0, rowCount * bytesPerRow));
                 }
             }
         }
@@ -555,8 +581,57 @@ public static class TiffReader
                 var decoded = InflateInto(scratchStream, scratch!.AsSpan(0, capacity));
                 return scratch.AsSpan(0, decoded);
             }
+            case TiffCompression.PackBits:
+            {
+                var decoded = TiffPackBits.Decode(segment, scratch!.AsSpan(0, capacity));
+                return scratch.AsSpan(0, decoded);
+            }
             default:
                 throw new NotSupportedException($"Compression {compression} not supported in this reader");
+        }
+    }
+
+    /// <summary>
+    /// Copy <paramref name="rows"/> rows of a decoded segment into the chunky band, starting at pixel
+    /// <paramref name="firstPixel"/> of each band row and covering <paramref name="colPixels"/> pixels,
+    /// so an edge tile's padding is dropped. When the segment is chunky (<paramref name="srcPixelBytes"/>
+    /// equals <paramref name="dstPixelBytes"/>) rows are copied whole; when it is one plane of a
+    /// separate-planes page each sample is scattered into channel <paramref name="plane"/>. What a SHORT
+    /// (truncated) segment cannot supply is zeroed rather than left behind: the band is reused, so "not
+    /// written" would mean the previous band's pixels, which looks like real image content.
+    /// </summary>
+    private static void PlaceRows(ReadOnlySpan<byte> samples, byte[] band, int rows, int srcRowBytes,
+        int dstRowBytes, int firstPixel, int colPixels, int srcPixelBytes, int dstPixelBytes,
+        int bytesPerSample, int plane)
+    {
+        if (srcPixelBytes == dstPixelBytes)
+        {
+            var colBytes = colPixels * dstPixelBytes;
+            for (var row = 0; row < rows; row++)
+            {
+                var dst = (row * dstRowBytes) + (firstPixel * dstPixelBytes);
+                var src = row * srcRowBytes;
+                var have = Math.Clamp(samples.Length - src, 0, colBytes);
+                if (have > 0)
+                    samples.Slice(src, have).CopyTo(band.AsSpan(dst, have));
+                if (have < colBytes)
+                    band.AsSpan(dst + have, colBytes - have).Clear();
+            }
+            return;
+        }
+
+        for (var row = 0; row < rows; row++)
+        {
+            var dst = (row * dstRowBytes) + (firstPixel * dstPixelBytes) + (plane * bytesPerSample);
+            var src = row * srcRowBytes;
+            for (var px = 0; px < colPixels; px++, dst += dstPixelBytes, src += srcPixelBytes)
+            {
+                var target = band.AsSpan(dst, bytesPerSample);
+                if (src + bytesPerSample <= samples.Length)
+                    samples.Slice(src, bytesPerSample).CopyTo(target);
+                else
+                    target.Clear();
+            }
         }
     }
 
