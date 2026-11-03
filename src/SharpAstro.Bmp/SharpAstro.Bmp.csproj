@@ -8,8 +8,8 @@
     <PackageId>SharpAstro.Bmp</PackageId>
     <Product>SharpAstro.Bmp</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure C# BMP (Windows and OS/2 DIB) image decoder for .NET.</Description>
-    <PackageTags>bmp image codec decoder dib rle icc aot</PackageTags>
+    <Description>Pure C# BMP (Windows and OS/2 DIB) image decoder and encoder for .NET.</Description>
+    <PackageTags>bmp image codec decoder encoder dib rle icc aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>

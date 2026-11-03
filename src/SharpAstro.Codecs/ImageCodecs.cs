@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics.CodeAnalysis;
 using SharpAstro.Codecs.Abstractions;
+using SharpAstro.Bmp;
 using SharpAstro.Exr;
 using SharpAstro.Jbig2;
 using SharpAstro.Jpeg;
@@ -19,7 +20,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2 and JPEG 2000. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP and BMP. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -51,6 +52,11 @@ namespace SharpAstro.Codecs;
 /// WebP is decoded by <see cref="WebpImageDecoder"/>: lossy (VP8), lossless (VP8L)
 /// and, for an animation, its first composited frame. It returns RGB8 or RGBA8
 /// according to the container's alpha declaration.
+/// </para>
+/// <para>
+/// BMP is decoded by <see cref="BmpImageDecoder"/>: Windows and OS/2 DIBs at 1 to 32 bits, RLE4/RLE8 and
+/// bit-field masks, as RGB8 or, when the file has alpha, RGBA8, with a V5 ICC profile passed through.
+/// <c>BI_PNG</c>, <c>BI_JPEG</c> and <c>BI_CMYK</c> files answer false.
 /// </para>
 /// <para>
 /// A gain-map ("Ultra HDR") JPEG is recognised too: <see cref="TryDecode"/> +
@@ -97,6 +103,9 @@ public static class ImageCodecs
         Register<Jbig2ImageDecoder>(),
         Register<Jpeg2000ImageDecoder>(),
         Register<WebpImageDecoder>(),
+        // BMP's signature is two letters, so BmpImageDecoder.CanDecode also checks the DIB header size and
+        // the zeroed reserved words; it collides with nothing above.
+        Register<BmpImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>

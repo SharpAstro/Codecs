@@ -1,6 +1,6 @@
 # SharpAstro.Bmp
 
-Pure-managed BMP decoding for .NET 10, written from the Microsoft `BITMAPCOREHEADER` /
+Pure-managed BMP decoding and encoding for .NET 10, written from the Microsoft `BITMAPCOREHEADER` /
 `BITMAPINFOHEADER` / V4 / V5 documentation. Output is validated pixel by pixel against ImageMagick.
 
 ```csharp
@@ -13,6 +13,20 @@ Console.WriteLine($"{image.Width} × {image.Height}, {image.Channels} channels")
 if (BmpDecoder.TryReadInfo(data, out BmpInfo info)) // headers only, no pixels
     Console.WriteLine($"{info.HeaderKind}, {info.BitsPerPixel} bpp, {info.Compression}, top-down: {info.TopDown}");
 ```
+
+## Writing
+
+```csharp
+byte[] bmp24 = BmpEncoder.EncodeRgb24(rgb, width, height);    // 24-bit BGR, 40-byte header
+byte[] bmp32 = BmpEncoder.EncodeRgba32(rgba, width, height);  // 32-bit BGRA, V4 header, alpha mask 0xFF000000
+```
+
+Input is 8-bit, top row first, non-premultiplied; an optional `stride` argument skips padding between input rows.
+Output is uncompressed, bottom-up, rows padded to four bytes. The 32-bit file uses `BI_BITFIELDS` with an explicit
+alpha mask, so alpha survives in ImageMagick, stb_image and this package's decoder. Bad dimensions, strides or a too
+short input throw `ArgumentException` before anything is allocated.
+
+The facade (`SharpAstro.Codecs`) registers `BmpImageDecoder`, so `ImageCodecs.TryDecode` and friends read BMP too.
 
 ## What is read
 
