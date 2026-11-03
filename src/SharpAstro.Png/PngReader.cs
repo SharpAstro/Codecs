@@ -84,7 +84,7 @@ public static class PngReader
     /// before animation chunks were read; the animation is reported in <see cref="PngImage.Animation"/>.</para>
     /// <para><b>A malformed animation is refused, not downgraded to its default image.</b> Once an <c>acTL</c> chunk
     /// stands in front of the <c>IDAT</c> the file claims to be an animation, and if its animation chunks then break
-    /// the rules (a second <c>acTL</c> in front of the <c>IDAT</c>; sequence numbers that are not 0, 1, 2, ... in order across <c>fcTL</c>
+    /// the rules (a second <c>acTL</c>; sequence numbers that are not 0, 1, 2, ... in order across <c>fcTL</c>
     /// and <c>fdAT</c>; an empty frame or one outside the canvas; a dispose or blend operation that does not exist; a
     /// frame count that is not the number of <c>fcTL</c> chunks; a frame with no data; a first frame that does not
     /// cover the canvas when the <c>IDAT</c> is that frame) the decode throws <see cref="InvalidDataException"/> and

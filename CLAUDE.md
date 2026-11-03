@@ -853,7 +853,7 @@ floating-point transcription for every pair of alphas, reproduces Pillow's diges
 paste, and pins how far apart the two are on `apng-blend-over-partial-alpha.png` (up to 91 of 255 in alpha). Do not
 "fix" the reader to match Pillow there.
 
-**Speed and memory, measured** (`benchmarks/.../ApngCompositeBenchmarks.cs`, `ApngOverKernelBenchmarks`; table in the 3.26
+**Speed and memory, measured** (`benchmarks/.../ApngCompositeBenchmarks.cs`, `ApngOverKernelBenchmarks`; table in the 3.28
 CHANGELOG entry (APNG block)). The compositor keeps one grow-only samples buffer, snapshot and row scratch for the whole animation and
 inflates into them (`DecodeFrameSamplesInto`), so streaming 8 frames of 1080p went 134.5 MB -> 23.7 MB (canvas, IDAT image, samples)
 and 362 -> 308 ms; a frame's time is otherwise inflate plus unfilter, which the compositing code does not touch. The OVER blend has
@@ -877,7 +877,7 @@ high-byte mapping as any 16-bit PNG.
 `PngFloatFill`. Each colour sample is a lookup in a 256- or 65536-entry table that `PngHdr` builds with the
 **reference's own arithmetic**, so the shipped fill is **bit-identical** to `FillReference` (the scalar spec the tests
 and tiny images use) and there is no second kernel to keep equal; `PngFloatFillEquivalenceTests` is the guard. The
-flight's numbers are in the `3.28` CHANGELOG entry; the ones worth keeping in mind when touching it:
+flight's numbers are in the `3.26` CHANGELOG entry; the ones worth keeping in mind when touching it:
 
 - **Measured at 1080p** (arm64, BenchmarkDotNet, same sitting): the table fill is **26x** the scalar reference on PQ
   (151.4 → 5.8 ms), 28x on PQ RGBA16, 26x on sRGB RGBA8, and 2.8x on HLG (45.5 → 16.3 ms; its per-pixel OOTF `pow`
