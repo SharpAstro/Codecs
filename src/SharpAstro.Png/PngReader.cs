@@ -84,7 +84,7 @@ public static class PngReader
     /// before animation chunks were read; the animation is reported in <see cref="PngImage.Animation"/>.</para>
     /// <para><b>A malformed animation is refused, not downgraded to its default image.</b> Once an <c>acTL</c> chunk
     /// stands in front of the <c>IDAT</c> the file claims to be an animation, and if its animation chunks then break
-    /// the rules (a second or late <c>acTL</c>; sequence numbers that are not 0, 1, 2, ... in order across <c>fcTL</c>
+    /// the rules (a second <c>acTL</c> in front of the <c>IDAT</c>; sequence numbers that are not 0, 1, 2, ... in order across <c>fcTL</c>
     /// and <c>fdAT</c>; an empty frame or one outside the canvas; a dispose or blend operation that does not exist; a
     /// frame count that is not the number of <c>fcTL</c> chunks; a frame with no data; a first frame that does not
     /// cover the canvas when the <c>IDAT</c> is that frame) the decode throws <see cref="InvalidDataException"/> and
@@ -200,14 +200,17 @@ public static class PngReader
                     throw new InvalidDataException("acTL before IHDR");
                 if (actl is not null)
                     throw new InvalidDataException("Multiple acTL chunks");
-                if (idatChunks.Count > 0)
-                    throw new InvalidDataException($"acTL chunk at byte {pos} follows the first IDAT; it must come before");
-                if (len != 8)
-                    throw new InvalidDataException($"acTL length must be 8, got {len}");
-                var frameCount = BinaryPrimitives.ReadUInt32BigEndian(chunkData[..4]);
-                if (frameCount is 0 or > int.MaxValue)
-                    throw new InvalidDataException($"acTL frame count must be between 1 and {int.MaxValue}, got {frameCount}");
-                actl = ((int)frameCount, BinaryPrimitives.ReadUInt32BigEndian(chunkData[4..]));
+                // An acTL after the first IDAT does not make the stream an APNG: it is an unknown ancillary chunk, skipped as
+                // before (actl stays null, so the fcTL / fdAT chunks after it are skipped too), as libpng's APNG patch does.
+                if (idatChunks.Count == 0)
+                {
+                    if (len != 8)
+                        throw new InvalidDataException($"acTL length must be 8, got {len}");
+                    var frameCount = BinaryPrimitives.ReadUInt32BigEndian(chunkData[..4]);
+                    if (frameCount is 0 or > int.MaxValue)
+                        throw new InvalidDataException($"acTL frame count must be between 1 and {int.MaxValue}, got {frameCount}");
+                    actl = ((int)frameCount, BinaryPrimitives.ReadUInt32BigEndian(chunkData[4..]));
+                }
             }
             else if (typeBytes.SequenceEqual("fcTL"u8) && actl is { } declared)
             {

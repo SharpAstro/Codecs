@@ -155,6 +155,8 @@ What was done, and what each part is worth:
 - **Checked and left alone:** the SOURCE copy, the BACKGROUND clear and the PREVIOUS snapshot/restore are `Span.CopyTo` / `Clear`
   per row, already memmove; a vector loop cannot beat them. With SOURCE at 305 ms for eight frames, about 38 ms a frame,
   almost all of it is inflate plus unfilter, the part of `PngReader` that the still-image decode shares, not the compositing.
+  The RGB, grey and palette expansion to RGBA8 (`ExpandRowToRgba8`) was checked the same way and left scalar: SOURCE RGB8 at 297.8 ms
+  against RGBA8 at 304.9 ms for eight 1080p frames shows the expansion is negligible next to inflate.
   `PngPredictor`'s filters were not touched here: Up could be vectorized, but Sub, Average and Paeth are sequential, so it would
   be a still-image decode change with a smaller reach than its effort, and it is not measured.
 

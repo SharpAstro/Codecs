@@ -64,7 +64,6 @@
          entry points being PngReader.EnumerateFrames / DecodeFrames. -->
     <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
     <!-- The APNG benchmarks flip PngCompositor.ForceScalar to A/B the vector OVER against the scalar one end to end. -->
-
     <InternalsVisibleTo Include="SharpAstro.Codecs.Benchmarks" />
   </ItemGroup>
 

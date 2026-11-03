@@ -218,6 +218,28 @@ public sealed class PngApngTests
         img.Pixels.ShouldBe(PngReader.Decode(apng).Pixels);
     }
 
+    /// <summary>An acTL after the first IDAT does not make the stream an APNG: a plain PNG with an unknown ancillary chunk, decoded as before.</summary>
+    [Theory]
+    [InlineData(Base)]
+    [InlineData(DefaultImageFile)]
+    public void AnActlAfterTheIdat_IsSkippedAsAnUnknownAncillaryChunk(string file)
+    {
+        var apng = Bytes(file);
+        var chunks = Parse(apng).ToList();
+        var actl = Nth(chunks, "acTL", 0);
+        chunks.Remove(actl);
+        chunks.Insert(chunks.IndexOf(Nth(chunks, "IDAT", 0)) + 1, actl);
+        var late = Build(chunks);
+        var stripped = Build(Parse(apng).Where(c => c.Type != "acTL").ToList());
+
+        var img = PngReader.Decode(late);
+
+        img.Animation.ShouldBeNull();
+        img.IsAnimated.ShouldBeFalse();
+        img.Pixels.ShouldBe(PngReader.Decode(stripped).Pixels);
+        PngReader.TryDecode(late, out _).ShouldBeTrue();
+    }
+
     // ---------------------------------------------------------------- each frame's own sub-image
 
     [Theory]
@@ -732,7 +754,6 @@ public sealed class PngApngTests
 
         // acTL itself
         ["actl-twice"] = (c => { c.Insert(2, Nth(c, "acTL", 0) with { }); }, "Multiple acTL"),
-        ["actl-after-idat"] = (c => { var a = Nth(c, "acTL", 0); c.Remove(a); c.Insert(c.IndexOf(Nth(c, "IDAT", 0)) + 1, a); }, "follows the first IDAT"),
         ["actl-wrong-length"] = (c => { var i = c.IndexOf(Nth(c, "acTL", 0)); c[i] = new Chunk("acTL", c[i].Data[..7]); }, "acTL length"),
 
         // the first frame is the IDAT image, so it must be the canvas
