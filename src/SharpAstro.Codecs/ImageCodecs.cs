@@ -56,7 +56,8 @@ namespace SharpAstro.Codecs;
 /// <para>
 /// GIF (<c>GIF87a</c> / <c>GIF89a</c>) is decoded by <see cref="GifImageDecoder"/>: the first frame
 /// composited onto the logical screen, always as 8-bit RGBA (transparent pixels have alpha 0). A
-/// truncated file decodes what is there; <c>GifDecoder</c> reports that and the animation structure.
+/// truncated file decodes what is there; <c>GifDecoder</c> reports that and the animation structure,
+/// and <c>GifDecoder.DecodeAnimation</c> / <c>GifAnimationDecoder</c> give every composited frame.
 /// </para>
 /// <para>
 /// A gain-map ("Ultra HDR") JPEG is recognised too: <see cref="TryDecode"/> +

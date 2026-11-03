@@ -9,8 +9,8 @@
     <PackageId>SharpAstro.Gif</PackageId>
     <Product>SharpAstro.Gif</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure C# GIF87a/GIF89a decoder for .NET: logical screen, global and local palettes, interlacing, transparency, first-frame RGBA8. Decode only; AOT-compatible.</Description>
-    <PackageTags>gif image codec decoder lzw palette interlace transparency aot</PackageTags>
+    <Description>Pure C# GIF87a/GIF89a decoder for .NET: logical screen, global and local palettes, interlacing, transparency, first-frame and composited animation-frame RGBA8 (disposal, loop count, raw delays). Decode only; AOT-compatible.</Description>
+    <PackageTags>gif image codec decoder lzw palette interlace transparency animation aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>

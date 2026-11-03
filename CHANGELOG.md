@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Gif`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -13,6 +13,35 @@ This file was created at 3.10 by migrating the note trail out of the two comment
 it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose above a variable that no
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
+
+## 3.29
+
+**New package: `SharpAstro.Gif` reads GIF (87a and 89a), stills and animations.** Decode only, by design: there is no GIF
+encoder and none is planned. It is registered with the `SharpAstro.Codecs` facade, which returns the first frame composited onto
+the logical screen as RGBA8, as it does for animated WebP.
+
+- **Stills and animations.** `GifDecoder.Decode` / `DecodeTo` give frame 0. `GifDecoder.DecodeAnimation` gives every frame as a
+  full-canvas, non-premultiplied RGBA8 copy with its raw delay (1/100 s, 0 stays 0: no browser "0 means 100 ms" policy),
+  disposal method and the file's loop count, refusing canvas x frames above `DefaultMaximumAnimationPixels` (2^28, or a caller's
+  limit) before any canvas is allocated, so a few hundred bytes cannot declare 10 GiB of frames. `GifAnimationDecoder` streams
+  through one canvas (plus a copy of one rectangle, only for a frame that asks for disposal 3); its `Current` shares that canvas
+  until the next `MoveNext`, as `PngReader.EnumerateFrames` does.
+- **Disposal and transparency**, written from GIF89a and settled where the spec is open by observing Magick.NET's `Coalesce()`:
+  methods 0, 1 and the reserved 4-7 leave the canvas, 2 clears the frame rectangle to alpha 0 *keeping its RGB* (Coalesce's
+  answer), 3 puts back the rectangle's earlier content (on frame 0, the initial canvas); a frame is disposed before the next is
+  drawn and the last frame's disposal never applies. A transparent pixel of a later frame leaves the canvas alone, and over an
+  already transparent pixel it reads 0,0,0,0. The canvas before frame 0 is the global table's background-index colour (alpha 0 when
+  frame 0 has a transparent index; white with no global table). The background index is reported on `GifInfo`; whether to honour it
+  (browsers ignore it) is the caller's policy.
+- **Checked against Magick.NET frame for frame**, alpha-0 RGB included: ImageMagick-written animations of every disposal method,
+  local palettes, transparency, sub-rectangle frames, interlace and odd sizes, plus hand-built files for what Magick will not write
+  (reserved disposal values, chains of disposal 2 and 3, a frame 0 smaller than the screen). No install, no skip.
+- **Incomplete files decode what is there**: a file or LZW stream that ends inside a frame yields that frame partly drawn with
+  `IsTruncated` set, and the frames before it are exactly what a whole file gives. Malformed structure throws `InvalidDataException`.
+  A screen above 2^26 pixels and a frame outside the screen are refused before any raster is allocated.
+- **LZW moved to `SharpAstro.Codecs.Abstractions`.** `SharpAstro.Tiff`'s internal LZW decoder was generalised over GIF's three
+  parameters (bit order, early change, root size) and moved there as one internal decoder TIFF and GIF share. TIFF's behaviour
+  is byte-identical (its LZW tests are unchanged).
 
 ## 3.28
 
