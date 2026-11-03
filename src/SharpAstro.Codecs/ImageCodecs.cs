@@ -9,6 +9,7 @@ using SharpAstro.Jpeg2000;
 using SharpAstro.Jxl;
 using SharpAstro.Jxr;
 using SharpAstro.Png;
+using SharpAstro.Tga;
 using SharpAstro.Tiff;
 using SharpAstro.Webp;
 
@@ -20,7 +21,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP and GIF. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP, GIF and TGA. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -58,6 +59,13 @@ namespace SharpAstro.Codecs;
 /// composited onto the logical screen, always as 8-bit RGBA (transparent pixels have alpha 0). A
 /// truncated file decodes what is there; <c>GifDecoder</c> reports that and the animation structure,
 /// and <c>GifDecoder.DecodeAnimation</c> / <c>GifAnimationDecoder</c> give every composited frame.
+/// </para>
+/// <para>
+/// TGA is the one format recognised by its <b>end</b> rather than its start. A TGA has no magic number, so a
+/// header guess would claim arbitrary bytes; <see cref="TgaImageDecoder"/> instead requires the TGA 2.0
+/// footer (<c>TRUEVISION-XFILE.\0</c>, the last 18 bytes) and a header <c>TgaReader</c> accepts. It is
+/// registered last, and a footerless (TGA 1.0) file is not recognised here: decode it with
+/// <c>TgaReader.Decode</c> directly. Opaque TGAs decode as RGB8, ones with alpha as RGBA8.
 /// </para>
 /// <para>
 /// A gain-map ("Ultra HDR") JPEG is recognised too: <see cref="TryDecode"/> +
@@ -105,6 +113,9 @@ public static class ImageCodecs
         Register<Jpeg2000ImageDecoder>(),
         Register<WebpImageDecoder>(),
         Register<GifImageDecoder>(),
+        // Last on purpose: TGA is sniffed by its trailing footer, not a leading magic number, so it
+        // can only ever claim a stream that no leading-signature codec above already took.
+        Register<TgaImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>
