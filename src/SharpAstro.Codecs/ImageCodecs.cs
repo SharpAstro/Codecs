@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics.CodeAnalysis;
 using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Exr;
+using SharpAstro.Gif;
 using SharpAstro.Jbig2;
 using SharpAstro.Jpeg;
 using SharpAstro.Jpeg2000;
@@ -19,7 +20,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2 and JPEG 2000. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP and GIF. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -51,6 +52,11 @@ namespace SharpAstro.Codecs;
 /// WebP is decoded by <see cref="WebpImageDecoder"/>: lossy (VP8), lossless (VP8L)
 /// and, for an animation, its first composited frame. It returns RGB8 or RGBA8
 /// according to the container's alpha declaration.
+/// </para>
+/// <para>
+/// GIF (<c>GIF87a</c> / <c>GIF89a</c>) is decoded by <see cref="GifImageDecoder"/>: the first frame
+/// composited onto the logical screen, always as 8-bit RGBA (transparent pixels have alpha 0). A
+/// truncated file decodes what is there; <c>GifDecoder</c> reports that and the animation structure.
 /// </para>
 /// <para>
 /// A gain-map ("Ultra HDR") JPEG is recognised too: <see cref="TryDecode"/> +
@@ -97,6 +103,7 @@ public static class ImageCodecs
         Register<Jbig2ImageDecoder>(),
         Register<Jpeg2000ImageDecoder>(),
         Register<WebpImageDecoder>(),
+        Register<GifImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>

@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsAotCompatible>true</IsAotCompatible>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>SharpAstro.Gif</PackageId>
+    <Product>SharpAstro.Gif</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>Pure C# GIF87a/GIF89a decoder for .NET: logical screen, global and local palettes, interlacing, transparency, first-frame RGBA8. Decode only; AOT-compatible.</Description>
+    <PackageTags>gif image codec decoder lzw palette interlace transparency aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\UNLICENSE" Pack="true" PackagePath="\" Link="UNLICENSE" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+</Project>

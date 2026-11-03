@@ -19,6 +19,7 @@ package instead of cherry-picking codecs.
 | **JPEG XL** | ✅ | ✅ | clean-room; lossless Modular + lossy VarDCT |
 | **JBIG2** | ✅ | — | bilevel, for PDF's `/JBIG2Decode`. Every region type T.88 defines, on the arithmetic path |
 | **WebP** | ✅ | — | VP8 lossy, VP8L lossless, ALPH, animation + seek, ICC/EXIF/XMP metadata |
+| **GIF** | ✅ (first frame) | — | GIF87a/GIF89a, global/local palettes, interlace, transparency; LZW shared with TIFF |
 | **EXIF** | ✅ | — | metadata only, from JPEG / TIFF / PNG |
 
 See **[CODECS.md](CODECS.md)** for the full per-package matrix, what each codec does and does not
