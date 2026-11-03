@@ -377,12 +377,12 @@ public sealed class JpegFittedDecodeTests
     // ============================================================ 3. the sink on its own
 
     /// <summary>Hands <paramref name="source"/> (<paramref name="sw"/>×<paramref name="sh"/>) to a fresh sink the way the engine does, with an optional abandoned first attempt.</summary>
-    private static byte[] RunSink(byte[] source, int sw, int sh, int tw, int th, int firstRow = 0, int abandonedRows = 0)
+    private static byte[] RunSink(byte[] source, int sw, int sh, int tw, int th, int firstRow = 0, int abandonedRows = 0, bool wide = false)
     {
         var dest = new byte[tw * th * 4];
         // A region's rows are numbered as the image's, and the engine's Begin is told the image's size, not the region's.
         JpegRegion? region = firstRow == 0 ? null : new JpegRegion(2, firstRow, sw, sh);
-        var sink = new JpegFittedSink(dest, tw, th, region);
+        var sink = new JpegFittedSink(dest, tw, th, region, forceWideSums: wide);
         try
         {
             if (region is null)
@@ -464,6 +464,101 @@ public sealed class JpegFittedDecodeTests
     }
 
     [Fact]
+    public void TheWideAndTheNarrowPath_AgreeWithTheReferenceAndEachOther()
+    {
+        // The sink has two paths: 32-bit column sums with a multiply-high divide (the one every ordinary fit takes) and
+        // the 64-bit sums with a real divide (a box over ~16.7 million pixels, and the fallback). A given machine only
+        // ever takes one for a given size, so the other would rot unseen: this drives both over the same geometries,
+        // the identity (a divisor of 1, which the reciprocal cannot represent) and the one-pixel box included.
+        var count = 0;
+        for (var sw = 1; sw <= 11; sw++)
+        {
+            for (var sh = 1; sh <= 11; sh++)
+            {
+                var source = Noise(sw, sh, (uint)(sw * 17 + sh * 3));
+                for (var tw = 1; tw <= sw; tw++)
+                {
+                    for (var th = 1; th <= sh; th++)
+                    {
+                        var expected = ReferenceShrink(source, sw, sh, tw, th);
+                        RunSink(source, sw, sh, tw, th, wide: false).ShouldBe(expected, $"narrow {sw}×{sh} → {tw}×{th}");
+                        RunSink(source, sw, sh, tw, th, wide: true).ShouldBe(expected, $"wide {sw}×{sh} → {tw}×{th}");
+                        count++;
+                    }
+                }
+            }
+        }
+
+        count.ShouldBe(Enumerable.Range(1, 11).Sum() * Enumerable.Range(1, 11).Sum());
+
+        // Widths that are not a multiple of the 16 bytes (4 pixels) one vector add takes, and not a multiple of its tail.
+        foreach (var (sw, sh, tw, th) in new[] { (4, 3, 2, 2), (5, 4, 3, 3), (7, 5, 2, 4), (33, 9, 10, 4), (35, 8, 35, 8), (61, 47, 13, 7) })
+        {
+            var source = Noise(sw, sh, 123);
+            var expected = ReferenceShrink(source, sw, sh, tw, th);
+            RunSink(source, sw, sh, tw, th, wide: false).ShouldBe(expected, $"narrow {sw}×{sh} → {tw}×{th}");
+            RunSink(source, sw, sh, tw, th, wide: true).ShouldBe(expected, $"wide {sw}×{sh} → {tw}×{th}");
+        }
+    }
+
+    [Fact]
+    public void ABoxJustInsideTheNarrowPathsRange_IsTheMean()
+    {
+        // 4095×4095 = 16,769,025 pixels in one box, of 255 in every channel: the sums are 4.28e9, a hair under 2^32, which is
+        // the largest the 32-bit sums are allowed to reach. A sum that wrapped, or a rounding half added in the wrong place,
+        // would land on something other than 255. Rows are fed to the sink directly (a source this size is 67 MB).
+        const int side = 4095;
+        var dest = new byte[4];
+        var sink = new JpegFittedSink(dest, 1, 1, null);
+        try
+        {
+            sink.Begin(side, side);
+            for (var row = 0; row < side; row++)
+            {
+                sink.RowBuffer(row).Fill(255);
+                sink.RowDone(row);
+            }
+        }
+        finally
+        {
+            sink.Release();
+        }
+
+        dest.ShouldBe(new byte[] { 255, 255, 255, 255 });
+
+        // And over varied rows, against the wide path and against a sum made here in long.
+        var pixel = new byte[4];
+        foreach (var wide in new[] { false, true })
+        {
+            var result = new byte[4];
+            long[] sums = new long[4];
+            var s = new JpegFittedSink(result, 1, 1, null, forceWideSums: wide);
+            try
+            {
+                s.Begin(side, side);
+                for (var row = 0; row < side; row++)
+                {
+                    var span = s.RowBuffer(row);
+                    for (var i = 0; i < span.Length; i++)
+                        span[i] = (byte)(255 - ((row * 7 + i * 13) % 5));
+                    for (var i = 0; i < span.Length; i++)
+                        sums[i & 3] += span[i];
+                    s.RowDone(row);
+                }
+            }
+            finally
+            {
+                s.Release();
+            }
+
+            var n = (long)side * side;
+            for (var c = 0; c < 4; c++)
+                pixel[c] = (byte)((sums[c] + n / 2) / n);
+            result.ShouldBe(pixel, $"wide: {wide}");
+        }
+    }
+
+    [Fact]
     public void TheSink_BeginsOverWhenTheRowsComeAgainFromTheFirst()
     {
         // The engine's restart delivers every row again from the first, after some of them. Whatever the first attempt
@@ -475,7 +570,10 @@ public sealed class JpegFittedDecodeTests
                 var source = Noise(sw, sh, 5);
                 var expected = ReferenceShrink(source, sw, sh, tw, th);
                 for (var abandoned = 1; abandoned < sh; abandoned++)
-                    RunSink(source, sw, sh, tw, th, firstRow, abandoned).ShouldBe(expected, $"row {firstRow} {sw}×{sh} → {tw}×{th} after {abandoned} rows");
+                {
+                    foreach (var wide in new[] { false, true })
+                        RunSink(source, sw, sh, tw, th, firstRow, abandoned, wide).ShouldBe(expected, $"row {firstRow} {sw}×{sh} → {tw}×{th} after {abandoned} rows, wide: {wide}");
+                }
             }
         }
     }

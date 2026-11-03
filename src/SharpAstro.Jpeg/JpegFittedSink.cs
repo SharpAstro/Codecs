@@ -1,4 +1,7 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 namespace SharpAstro.Jpeg;
 
@@ -43,12 +46,22 @@ internal ref struct JpegFittedSink : IJpegRowSink
     private int _targetRow;                // the target row being accumulated
     private int _boxStart, _boxEnd;        // its source rows, counted from the first: [start, end)
 
-    public JpegFittedSink(Span<byte> destination, int targetWidth, int targetHeight, JpegRegion? region)
+    // The narrow path (see "Two paths" on the class): the rows of a target row's box are summed per SOURCE column into
+    // 32-bit lanes (one vector add per 4 bytes), and the column boxes are only folded when the target row is written.
+    private readonly bool _forceWide;
+    private bool _wide;
+    private uint[]? _columnSums;           // pooled: sourceWidth * 4 sums over the rows of the box under way (narrow path)
+    private int _narrowestColumn;          // sourceWidth / targetWidth: every column box is this wide or one wider
+
+    /// <param name="forceWideSums">Always take the 64-bit path, which is the only one for a box over about 16.7 million
+    /// pixels. Only the tests pass it, to pin the two paths to each other where both are defined.</param>
+    public JpegFittedSink(Span<byte> destination, int targetWidth, int targetHeight, JpegRegion? region, bool forceWideSums = false)
     {
         _destination = destination;
         _targetWidth = targetWidth;
         _targetHeight = targetHeight;
         _region = region;
+        _forceWide = forceWideSums;
     }
 
     /// <summary>Called once the frame header is read and any region is checked, before a row is decoded.</summary>
@@ -86,9 +99,23 @@ internal ref struct JpegFittedSink : IJpegRowSink
             _columnBounds[dx] = (int)((long)dx * sourceWidth / _targetWidth);
 
         _rowScratch = ArrayPool<byte>.Shared.Rent(sourceWidth * 4);
-        _accumulator = ArrayPool<long>.Shared.Rent(_targetWidth * 4);
+
+        // A box is at most ceil(h / newH) rows by ceil(w / newW) columns. 255 times that must fit a uint with room for
+        // the n/2 that is added before dividing; 2^24 pixels (a 4096×4096 box) does, so only a scan fitted to a few
+        // pixels takes the wide path.
+        _narrowestColumn = sourceWidth / _targetWidth;
+        var largestBox = (long)((sourceHeight + _targetHeight - 1) / _targetHeight) * ((sourceWidth + _targetWidth - 1) / _targetWidth);
+        _wide = _forceWide || largestBox > MaxNarrowBox;
+        if (_wide)
+            _accumulator = ArrayPool<long>.Shared.Rent(_targetWidth * 4);
+        else
+            _columnSums = ArrayPool<uint>.Shared.Rent(sourceWidth * 4);
+
         StartOver();
     }
+
+    /// <summary>The most pixels a box may hold for its sums, plus the rounding half, to fit a <c>uint</c>.</summary>
+    private const long MaxNarrowBox = 16_777_215;
 
     public Span<byte> RowBuffer(int row) => _rowScratch.AsSpan(0, _sourceWidth * 4);
 
@@ -101,10 +128,18 @@ internal ref struct JpegFittedSink : IJpegRowSink
         if (sourceRow == 0)
             StartOver();
 
-        Accumulate();
+        if (_wide)
+            Accumulate();
+        else
+            AddRow(sourceRow == _boxStart);
 
         if (sourceRow + 1 == _boxEnd)
-            WriteTargetRow();
+        {
+            if (_wide)
+                WriteTargetRow();
+            else
+                WriteTargetRowNarrow();
+        }
     }
 
     /// <summary>Returns the pooled buffers. Safe to call more than once, and after a <see cref="Begin"/> that threw.</summary>
@@ -116,15 +151,20 @@ internal ref struct JpegFittedSink : IJpegRowSink
             ArrayPool<byte>.Shared.Return(scratch);
         if (_accumulator is { } sums)
             ArrayPool<long>.Shared.Return(sums);
+        if (_columnSums is { } columns)
+            ArrayPool<uint>.Shared.Return(columns);
 
         _columnBounds = null;
         _rowScratch = null;
         _accumulator = null;
+        _columnSums = null;
     }
 
     private void StartOver()
     {
-        _accumulator.AsSpan(0, _targetWidth * 4).Clear();
+        // The narrow path needs no clearing: the first row of a box stores into its sums rather than adding to them.
+        if (_wide)
+            _accumulator.AsSpan(0, _targetWidth * 4).Clear();
         _targetRow = 0;
         _boxStart = 0;
         _boxEnd = RowEnd(0);
@@ -186,4 +226,128 @@ internal ref struct JpegFittedSink : IJpegRowSink
         // Past the last target row nothing more arrives; the sentinel only has to never be reached.
         _boxEnd = _targetRow < _targetHeight ? RowEnd(_targetRow) : int.MaxValue;
     }
+
+    /// <summary>
+    /// Narrow path: adds the source row just converted into the per-source-column sums (stores it when it is the first
+    /// row of the box, so nothing needs clearing). Four lanes per pixel, 16 bytes at a time with portable
+    /// <see cref="Vector128"/>; the scalar loop is the reference and the fallback.
+    /// </summary>
+    private readonly void AddRow(bool first)
+    {
+        var row = _rowScratch.AsSpan(0, _sourceWidth * 4);
+        var sums = _columnSums.AsSpan(0, _sourceWidth * 4);
+        var i = 0;
+
+        if (Vector128.IsHardwareAccelerated)
+        {
+            ref var src = ref MemoryMarshal.GetReference(row);
+            ref var dst = ref MemoryMarshal.GetReference(sums);
+            for (; i + 16 <= row.Length; i += 16)
+            {
+                var bytes = Vector128.LoadUnsafe(ref src, (nuint)i);
+                var low = Vector128.WidenLower(bytes);
+                var high = Vector128.WidenUpper(bytes);
+                var p0 = Vector128.WidenLower(low);
+                var p1 = Vector128.WidenUpper(low);
+                var p2 = Vector128.WidenLower(high);
+                var p3 = Vector128.WidenUpper(high);
+                if (!first)
+                {
+                    p0 += Vector128.LoadUnsafe(ref dst, (nuint)i);
+                    p1 += Vector128.LoadUnsafe(ref dst, (nuint)i + 4);
+                    p2 += Vector128.LoadUnsafe(ref dst, (nuint)i + 8);
+                    p3 += Vector128.LoadUnsafe(ref dst, (nuint)i + 12);
+                }
+
+                p0.StoreUnsafe(ref dst, (nuint)i);
+                p1.StoreUnsafe(ref dst, (nuint)i + 4);
+                p2.StoreUnsafe(ref dst, (nuint)i + 8);
+                p3.StoreUnsafe(ref dst, (nuint)i + 12);
+            }
+        }
+
+        if (first)
+        {
+            for (; i < row.Length; ++i)
+                sums[i] = row[i];
+        }
+        else
+        {
+            for (; i < row.Length; ++i)
+                sums[i] += row[i];
+        }
+    }
+
+    /// <summary>
+    /// Narrow path: the box's rows have all arrived. Folds the per-source-column sums into the target columns, divides
+    /// with a multiply-high instead of a 64-bit divide per channel, writes the row and moves on.
+    ///
+    /// <para>A column box is <c>sourceWidth / targetWidth</c> or one more pixels wide and a row box likewise, so a target
+    /// row has two possible divisors across its columns (times the one row count), whose reciprocals are made once.
+    /// <c>floor(a / d)</c> for any 32-bit <c>a</c> and <c>d &gt; 1</c> is the high 64 bits of <c>a * (2^64 / d + 1)</c>
+    /// (Lemire, Kaser and Kurz, <i>Faster remainder by direct computation</i>); <c>d = 1</c> would overflow that constant
+    /// and is the identity, which a one-to-one fit takes.</para>
+    /// </summary>
+    private void WriteTargetRowNarrow()
+    {
+        var bounds = _columnBounds.AsSpan(0, _targetWidth + 1);
+        var sums = _columnSums.AsSpan(0, _sourceWidth * 4);
+        var rowsInBox = (uint)(_boxEnd - _boxStart);
+        var dst = _destination.Slice(_targetRow * _targetWidth * 4, _targetWidth * 4);
+
+        var narrow = _narrowestColumn;
+        uint nA = rowsInBox * (uint)narrow, nB = nA + rowsInBox;
+        uint halfA = nA / 2, halfB = nB / 2;
+        var mA = Reciprocal(nA);
+        var mB = Reciprocal(nB);
+        var useVector = Vector128.IsHardwareAccelerated;
+
+        for (var dx = 0; dx < _targetWidth; ++dx)
+        {
+            var start = bounds[dx];
+            var end = bounds[dx + 1];
+            var wide = end - start != narrow;
+            var n = wide ? nB : nA;
+            var half = wide ? halfB : halfA;
+            var m = wide ? mB : mA;
+
+            uint r, g, b, a;
+            if (useVector)
+            {
+                ref var column = ref MemoryMarshal.GetReference(sums);
+                var acc = Vector128<uint>.Zero;
+                for (var i = start; i < end; ++i)
+                    acc += Vector128.LoadUnsafe(ref column, (nuint)(i * 4));
+                acc += Vector128.Create(half);
+                (r, g, b, a) = (acc.GetElement(0), acc.GetElement(1), acc.GetElement(2), acc.GetElement(3));
+            }
+            else
+            {
+                r = g = b = a = half;
+                for (var i = start * 4; i < end * 4; i += 4)
+                {
+                    r += sums[i];
+                    g += sums[i + 1];
+                    b += sums[i + 2];
+                    a += sums[i + 3];
+                }
+            }
+
+            var s = dx * 4;
+            dst[s] = (byte)Divide(r, n, m);
+            dst[s + 1] = (byte)Divide(g, n, m);
+            dst[s + 2] = (byte)Divide(b, n, m);
+            dst[s + 3] = (byte)Divide(a, n, m);
+        }
+
+        ++_targetRow;
+        _boxStart = _boxEnd;
+        _boxEnd = _targetRow < _targetHeight ? RowEnd(_targetRow) : int.MaxValue;
+    }
+
+    private static ulong Reciprocal(uint divisor) => divisor == 1 ? 0 : ulong.MaxValue / divisor + 1;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static uint Divide(uint value, uint divisor, ulong reciprocal)
+        => divisor == 1 ? value : (uint)Math.BigMul(reciprocal, value, out _);
 }
