@@ -341,8 +341,10 @@ public sealed class WebpLosslessEncoderMatchFinderTests
         int count = Vp8LMatchFinder.Find(argb, 128, plan, new Vp8LDistanceMapper(128), buffer);
         Assert.Equal(4, count);
         Assert.Equal(new[] { 4096, 4096, 4096, 4095 }, buffer.Take(count).Select(Vp8LMatchFinder.Length).ToArray());
-        // Distance 1 and one row up (128) tie on length; the row above has the smaller plane code (1, not 2).
-        Assert.All(buffer.Take(count), c => Assert.Equal(128, Vp8LMatchFinder.Distance(c)));
+        // Distance 1 and one row up (128) tie on length and the row above has the smaller plane code
+        // (1, not 2), but nothing is a row up from position 1, so the first copy is at distance 1.
+        Assert.Equal(1, Vp8LMatchFinder.Distance(buffer[0]));
+        Assert.All(buffer.Skip(1).Take(count - 1), c => Assert.Equal(128, Vp8LMatchFinder.Distance(c)));
         Assert.Equal(1, Vp8LMatchFinder.Position(buffer[0]));
         Assert.Equal(argb.Length, Vp8LMatchFinder.Position(buffer[3]) + Vp8LMatchFinder.Length(buffer[3]));
     }
