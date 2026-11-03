@@ -40,6 +40,7 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Webp", "src\SharpAstro.Webp\SharpAstro.Webp.csproj", "{24EF0F4E-B23E-4B9D-AFA8-25B17D8480A2}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Radiance", "src\SharpAstro.Radiance\SharpAstro.Radiance.csproj", "{9132CF6D-FA76-4FF3-AF3E-2B5F05907DD3}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpAstro.Tga", "src\SharpAstro.Tga\SharpAstro.Tga.csproj", "{E78CE88E-2998-46C0-A882-363AA2A4355E}"
 EndProject
 Global
