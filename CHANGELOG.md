@@ -14,6 +14,53 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.32
+
+**`SharpAstro.Webp` gains a lossless (VP8L) encoder** (Codecs #57), measured against `cwebp -lossless`. (3.31 is the GIF
+reader's number; this release takes 3.32 so the two do not collide.) The encoder is spec-derived from RFC 9649 alone, with
+`cwebp` / `dwebp` 1.6.0 as black-box oracles and no libwebp source read.
+
+- **API:** `WebpEncoder.EncodeLossless` (RGBA8), `EncodeLosslessRgb`, `EncodeLosslessGray`, with an optional stride and
+  `WebpEncodeOptions` (`Effort` 0-9, default 6; ICC / EXIF / XMP). The output always decodes to exactly the input pixels, colour
+  under transparent pixels included. Dimensions over 16384 or 2^26 pixels are refused before anything is allocated.
+- **Three rungs, each chosen per image by exact cost:** literal-only prefix codes (Effort 0); LZ77 backward references with the 2D
+  distance codes and a colour cache; the four transforms (subtract green, predictor, cross colour, colour indexing) with meta prefix
+  codes, the untransformed image always a candidate from Effort 3.
+- **Bounded on hostile input:** chain depth (2-512) and nice length (16-4096) are fixed per effort, and the plan charges its working
+  bytes up front against a 1 GiB ceiling (shrinking the window, then dropping backward references). Pinned by
+  `WebpLosslessEncoderPathologicalInputTests`: over-size refusal allocates under 64 KiB, and all-distinct, one-colour and
+  short-period 1024x1024 images round-trip at efforts 0, 6 and 9 within a timeout and an allocated-bytes-per-pixel bound (the
+  all-distinct image, the worst, allocates 14.6 / 859 / 1,375 bytes a pixel over a whole encode at effort 0 / 6 / 9; the bound
+  counts cumulative allocation, which is above what is live).
+- **Measured in one sitting** (`--webp-encode-report`: every output decoded exactly by our decoder and by `dwebp`; and
+  `WebpEncodeBenchmarks`, BenchmarkDotNet). Size in bytes, ratio to `cwebp` at its default in brackets:
+
+  | 1080p image | e0 | e3 | e6 | e9 | cwebp | cwebp -z 9 |
+  |---|---:|---:|---:|---:|---:|---:|
+  | photo (generated) | 5,764,676 (2.34) | 3,419,704 (1.39) | 2,493,350 (1.01) | 2,442,902 (0.99) | 2,458,700 | 2,420,600 |
+  | screenshot (generated) | 1,840,078 (5.23) | 331,212 (0.94) | 295,052 (0.84) | 280,090 (0.80) | 352,006 | 327,912 |
+  | lossless-1080p | 1,664,148 (12.69) | 146,992 (1.12) | 147,888 (1.13) | 132,306 (1.01) | 131,186 | 131,752 |
+  | lossy-opaque-1080p | 2,054,058 (7.50) | 304,750 (1.11) | 285,248 (1.04) | 282,188 (1.03) | 274,018 | 273,488 |
+  | lossy-alpha-1080p | 2,054,058 (7.49) | 316,544 (1.15) | 295,830 (1.08) | 283,060 (1.03) | 274,182 | 273,062 |
+
+  The ten corpus images (16x16 to 320x240) are in `CODECS.md`; at effort 6 they are 0.33-1.08 of `cwebp`'s default (`lossless-palette-16`
+  0.77 and `lossless-exact-alpha` 0.33, the 17x17 `lossless-near60` 1.08). Encode time, 1080p (BenchmarkDotNet steady state / the report's cold
+  single run / `cwebp` default / `cwebp -z 9`):
+
+  | 1080p image | e0 | e3 | e6 | e9 | cwebp | cwebp -z 9 |
+  |---|---:|---:|---:|---:|---:|---:|
+  | photo | 35.5 ms / 82 ms | 1.19 s / 5.4 s | 6.53 s / 13.8 s | 24.8 s / 55.3 s | 1.1 s | 77.3 s |
+  | screenshot | 28.5 ms / 43 ms | 0.82 s / 1.4 s | 4.82 s / 10.7 s | 30.6 s / 41.1 s | 0.61 s | 12.5 s |
+  | lossless-1080p | 44.5 ms / 51 ms | 0.92 s / 1.3 s | 6.37 s / 8.5 s | 13.4 s / 22.7 s | 0.75 s | 4.2 s |
+
+  Effort 6 is 1.0-1.1x `cwebp`'s default size on photographic content and smaller on screenshots and palette images, at 6-13x
+  its time. Effort 9 is within 1% of `cwebp -z 9` on the photo. Size is not monotone in effort (the photo is 1.39 at effort 3,
+  1.29 at 4, 1.02 at 5). BenchmarkDotNet's `Error` at effort 6+ is wider than the gap between neighbouring efforts, so read those
+  rows to a factor of about 1.5; the report's first images pay JIT.
+- **Allocation, 1080p (BenchmarkDotNet, cumulative):** effort 0 14 MB, effort 3 80-97 MB, effort 6 380-715 MB, effort 9 2.5-5.5 GB.
+- **Tools:** `dotnet run -c Release --project benchmarks/SharpAstro.Codecs.Benchmarks -- --webp-encode-report` (about 11 minutes in
+  full; options in `CLAUDE.md`) and `-- --filter '*WebpEncodeBenchmarks*'` (about 18 minutes).
+
 ## 3.30
 
 **New package `SharpAstro.Bmp`: BMP read and write, registered with the facade** (issue #53, stb_image parity). BMP was one
