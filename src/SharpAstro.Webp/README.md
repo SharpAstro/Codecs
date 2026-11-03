@@ -2,8 +2,8 @@
 
 Pure-managed WebP decoding for .NET 10, derived from RFC 6386 and RFC 9649.
 The only encoder is lossless (VP8L): `WebpEncoder.EncodeLossless` / `EncodeLosslessRgb` /
-`EncodeLosslessGray`, at its simplest rung (literal-only prefix codes, no transforms, no
-backward references, no colour cache), with optional ICC/EXIF/XMP. There is no lossy encoder.
+`EncodeLosslessGray`, at its second rung (LZ77 backward references with the 2D distance codes and a colour cache,
+chosen per image, no transforms yet), with optional ICC/EXIF/XMP; `WebpEncodeOptions.Effort` 0 is literal-only, higher trades time for size. There is no lossy encoder.
 
 Supported input includes VP8 lossy, VP8L lossless, ALPH transparency, and
 animated WebP with full-canvas RGBA frames, random seeking, and frame timing.

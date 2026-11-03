@@ -341,7 +341,8 @@ public sealed class WebpLosslessEncoderMatchFinderTests
         int count = Vp8LMatchFinder.Find(argb, 128, plan, new Vp8LDistanceMapper(128), buffer);
         Assert.Equal(4, count);
         Assert.Equal(new[] { 4096, 4096, 4096, 4095 }, buffer.Take(count).Select(Vp8LMatchFinder.Length).ToArray());
-        Assert.All(buffer.Take(count), c => Assert.Equal(1, Vp8LMatchFinder.Distance(c)));
+        // Distance 1 and one row up (128) tie on length; the row above has the smaller plane code (1, not 2).
+        Assert.All(buffer.Take(count), c => Assert.Equal(128, Vp8LMatchFinder.Distance(c)));
         Assert.Equal(1, Vp8LMatchFinder.Position(buffer[0]));
         Assert.Equal(argb.Length, Vp8LMatchFinder.Position(buffer[3]) + Vp8LMatchFinder.Length(buffer[3]));
     }
@@ -410,7 +411,8 @@ public sealed class WebpLosslessEncoderEffortTests
     public void BackwardReferencesAndTheCacheBeatLiteralOnlyOnRepetitiveImages(string name)
     {
         int literalOnly = Size(name, 0);
-        foreach (int effort in new[] { 1, 3, 6, 9 })
+        // Not effort 1: its 2^14 window cannot reach the far repeat, so it has nothing to find there.
+        foreach (int effort in new[] { 3, 6, 9 })
         {
             int size = Size(name, effort);
             Assert.True(size < literalOnly, $"{name} at effort {effort}: {size} bytes, literal-only {literalOnly}");
