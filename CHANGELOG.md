@@ -53,7 +53,58 @@ and H.273.
   PQ and HLG fixture in `Fixtures/Cicp` (full and narrow range) within 1e-4 relative, BT.2111 / BT.2408 patches against
   their nominal levels (PQ 58 % grey is about 203 cd/m2, HLG 75 % grey 203, HLG 38 % grey 26, PQ 100 % 10 000 cd/m2, HLG
   100 % 1000 cd/m2), and each SDR fixture against its own `TryDecodeRgba8` output linearised, within 8-bit quantisation.
-  A 1080p 16-bit RGB decode takes 70-150 ms.
+- **Speed and memory, measured (BenchmarkDotNet 0.15.8, `[MemoryDiagnoser]`, .NET 10.0.12 arm64, Snapdragon X Elite,
+  1920x1080, medians of 6, one sitting; `benchmarks/SharpAstro.Codecs.Benchmarks/PngHdr*.cs`).** The float projection is a
+  table lookup per colour sample, built with the reference's own arithmetic, so it is bit-identical to the scalar reference
+  (`PngFloatFillEquivalenceTests`) rather than within a tolerance. What it costs above the shared inflate + unfilter:
+
+  | 1080p | `PngReader.TryDecode` alone | fill, scalar reference | fill, shipped | whole `TryDecodeRgbaFloat` |
+  |---|---|---|---|---|
+  | PQ RGB16 | 87.7 ms | 151.4 ms | **5.8 ms** (26x) | 94.1 ms (+7 %) |
+  | PQ RGB16 narrow range | same | 146.8 ms | 6.2 ms (24x) | n/a |
+  | PQ RGBA16 | same | 158.3 ms | 5.6 ms (28x) | n/a |
+  | HLG RGB16 | same | 45.5 ms | 16.3 ms (2.8x) | 105.6 ms (+20 %) |
+  | sRGB RGBA8 | n/a | 79.9 ms | 3.1 ms (26x) | 56.3 ms |
+
+  The whole-decode numbers add up (87.7 + 5.8 = 93.6 against 94.1 measured; 87.7 + 16.3 = 104.0 against 105.6), so the
+  allocation and the large-object GCs it triggers cost about 0.5-1.5 ms. HLG is the slow one because its OOTF couples the
+  three channels (one `pow` per pixel, about 5 ns) on top of a scene-light table. Narrow range is free per pixel: the
+  expansion is folded into the table build.
+- **Allocation check: exactly one raster plus the reader's pixels, nothing per pixel or per row.** 1080p PQ RGB16
+  allocates 43.52 MB (BenchmarkDotNet's MB, 2^20 bytes) = 31.64 MB (the 33 177 600-byte `float[]`) + 11.88 MB (the reader's decoded samples, the same 11.88 MB
+  `TryDecode` alone allocates); sRGB RGBA8 39.56 MB, likewise. At 4K UHD (3840x2160) it is 174.05 MB = 126.56 MB `float[]`
+  + 47.48 MB pixels. The fill itself allocates 0 B for HLG, RGBA16 and sRGB; the 2-4 KB shown for PQ RGB16 is the 256 KiB
+  pooled 16-bit table's first rent spread over 64/128 measured calls (262 144 B / 4096 B = 64), not something that grows
+  with the image. 8-bit tables are `stackalloc`. Only the scalar reference (tiny images, and the tests' oracle) allocates a
+  row scratch, 34.6 KB once per call. The 4K *timings* are not quoted: with four iterations and a 127 MiB array landing on
+  the large-object heap, the run's standard deviation was larger than its mean.
+- **In-place and strip conversion are not possible here, and that is measured rather than assumed.** The projection is
+  2.7x larger than the pixels it reads (16 B per pixel out, 6 B in for RGB16), so it cannot overwrite the reader's buffer;
+  and `PngReader` inflates and unfilters the whole image into one `Pixels` array before anything can be projected, so a
+  strip pipeline would first need a streaming reader. The one avoidable cost is the large-object `float[]` itself (about
+  0.7 Gen2 collections per 1080p decode, small here because the array holds no references): a caller-supplied destination
+  overload would let a caller reuse it, a separate API decision that is not made here.
+- **Vector candidates tried and dropped (all portable `Vector128`, all in `PngHdrCandidates`).**
+  - *PQ curve in float over `Vector128`* (exp/log, four samples per step): 6.3 ms per 2^20 samples against 24.2 ms for the
+    scalar double curve (3.8x), but a 65 536-entry table is **0.86 ms** (28x, 7x faster than the vector curve) and exact,
+    where the vector form is 1.1e-4 off in relative terms. The table wins and stays. The only place a vector curve could
+    still go is the table *build* (about 1.5 ms, 65 536 scalar evaluations at about 23 ns), and it would give up the
+    bit-identical table for about 1 ms of a 94 ms decode.
+  - *HLG OOTF gain four pixels at a time*: 17.9 ms against 16.3 ms for the shipped scalar `pow` per pixel (the same-sitting
+    A/B in the candidate class read 0.86 +/- 0.14 against a noisy 21.3 ms baseline, so it is no better than noise), and 5.6e-7
+    off the reference. Its ceiling is small even if the staging were free: a vector `pow` costs about 3.2 ns per lane in the
+    curve benchmark against about 5 ns scalar here, so at most about 4 ms of a 105 ms HLG decode, for a path that is no
+    longer bit-identical. Dropped.
+  - *One `Vector128` store per pixel for the RGB16 table fill*: 4.97 ms against 5.62 ms, bit-identical, but the 0.65 ms is
+    inside the shipped path's own error (+/- 1.8 ms) and is 0.7 % of a 94 ms decode, which no end-to-end run could see. The
+    fill is a table-load and store stream, the same shape as the YCbCr row in `CLAUDE.md`. Dropped.
+  - *Narrow-range expansion and the RGBA16 alpha division* have no candidate: narrow range is in the table build (6.2 ms
+    against 5.8 ms full range, within noise), and RGBA16's per-sample `/ 65535f` costs nothing measurable (5.6 ms against
+    5.8 ms for RGB16 with no alpha at all).
+
+  Nothing vector ships, so there is no second kernel for a test to pin to the scalar one. The shipped path is the table, and
+  `PngFloatFillEquivalenceTests` pins it bit-for-bit to `FillReference` for every colour type, depth, range and transfer
+  (both sides of the table break-even, indexed, and the conformance files).
 
 ## 3.25
 
