@@ -201,9 +201,11 @@ def sha256(b):
 # ---------------------------------------------------------------- the cases
 
 class Case:
-    def __init__(self, name, frames, disposals, blends, durations, loop=0, default_image=None, note=""):
+    def __init__(self, name, frames, disposals, blends, durations, loop=0, default_image=None, note="", rects=None):
         self.name, self.frames, self.disposals, self.blends = name, frames, disposals, blends
         self.durations, self.loop, self.default_image, self.note = durations, loop, default_image, note
+        # the intended (x, y, w, h) of every frame; frame 0 is the full canvas
+        self.rects = rects or [(0, 0, W, H), R1, R2, R3][:len(frames)]
 
 
 DURATIONS = [100, 200, 150, 250]  # ms; Pillow writes them as 1/10, 1/5, 3/20, 1/4 s
@@ -304,8 +306,13 @@ PALETTE = [
 TRNS = bytes([0, 255, 255, 128])  # entries past the end are opaque
 
 
+# The indexed case's own rectangles, of odd width: a 4-bit row of 23 or 25 pixels is padded to a whole byte.
+RI1 = (5, 3, 23, 13)
+RI2 = (19, 11, 25, 15)
+
+
 def indexed_case():
-    # 8 colours -> Pillow writes 4-bit indexed, so frames are sub-byte packed rows of odd widths.
+    # 8 colours -> Pillow writes 4-bit indexed, so frames are sub-byte packed rows (odd widths -> padded rows).
     def paletted(fn):
         img = Image.new("P", (W, H))
         img.putpalette([c for rgb in PALETTE for c in rgb])
@@ -339,13 +346,14 @@ def indexed_case():
             return 6
         return 0 if (i + 2 * j) % 5 == 0 else 7
 
-    g1 = with_patch(cur, R1, patch_a)
+    g1 = with_patch(cur, RI1, patch_a)
     frames.append(to_img(g1))
     # frame 2 follows a dispose_op PREVIOUS frame, so it is drawn over the canvas of frame 0
-    g2 = with_patch(cur, R2, patch_b)
+    g2 = with_patch(cur, RI2, patch_b)
     frames.append(to_img(g2))
     disposals = [NONE, PREVIOUS, NONE]
     return Case("apng-indexed-trns", frames, disposals, [SOURCE] * 3, DURATIONS[:3], loop=5,
+                rects=[(0, 0, W, H), RI1, RI2],
                 note="colour type 3 at 4 bits (PLTE + tRNS incl. a half-transparent entry), dispose none/previous, blend source")
 
 
@@ -381,7 +389,7 @@ def write_case(case, out_dir):
 
 
 def expected_rects(case):
-    return [(0, 0, W, H) if k == 0 else RECTS[k] for k in range(len(case.frames))]
+    return case.rects
 
 
 def verify_and_reference(case, path):

@@ -54,4 +54,10 @@
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The tests drive the per-frame APNG decode directly (PngReader.DecodeFrameSamples),
+         which is internal until frame compositing gives it a public entry point. -->
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
 </Project>

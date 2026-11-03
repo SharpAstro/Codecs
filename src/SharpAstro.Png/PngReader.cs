@@ -20,9 +20,14 @@ namespace SharpAstro.Png;
 ///   <item>Color types 0 (Gray), 2 (RGB), 3 (Indexed, PLTE + tRNS), 4 (Gray + Alpha), 6 (RGBA).</item>
 ///   <item>Non-interlaced only (<c>InterlaceMethod = 0</c>).</item>
 /// </list>
-/// <para>Adam7 interlacing is deferred to a follow-up. APNG and PNG-3 HDR
-/// chunks (<c>cICP</c> / <c>mDCv</c> / <c>cLLI</c>) will layer on top of
-/// this decoder.</para>
+/// <para>Adam7 interlacing is deferred to a follow-up. PNG-3 HDR chunks (<c>cICP</c> / <c>mDCv</c> /
+/// <c>cLLI</c>) are read and kept as they come.</para>
+/// <para>APNG (animated PNG): the <c>acTL</c>, <c>fcTL</c> and <c>fdAT</c> chunks are parsed and validated, and
+/// <see cref="PngImage.Animation"/> reports the frame count, play count, whether the <c>IDAT</c> image is the first
+/// frame, and every frame's rectangle, delay, dispose and blend operation. Each frame's sub-image can be inflated and
+/// unfiltered through the same path as the <c>IDAT</c> image (<see cref="PngImage.Pixels"/> stays the <c>IDAT</c>
+/// image, which is what an APNG-unaware reader shows). Compositing the frames onto a canvas is not done yet; it is
+/// the next step.</para>
 /// </remarks>
 public static class PngReader
 {
@@ -42,8 +47,9 @@ public static class PngReader
     public const int MaxInflatedIccProfileBytes = 16 * 1024 * 1024;
 
     /// <summary>
-    /// <see cref="Decode"/> without the exceptions: false for a stream that is not a PNG, is corrupt,
-    /// or uses a feature this reader does not cover yet (Adam7 interlace). It makes no
+    /// <see cref="Decode"/> without the exceptions: false for a stream that is not a PNG, is corrupt (an
+    /// animation whose chunks break the APNG rules included), or uses a feature this reader does not cover yet
+    /// (Adam7 interlace). It makes no
     /// judgement about the colour signalling, so it is the shared first step of every projection — the
     /// RGBA8 display ones in <see cref="PngImageDecoder"/>, which refuse cICP PQ/HLG, and a float one
     /// that would decode those.
@@ -69,6 +75,22 @@ public static class PngReader
     /// preserve bit patterns exactly (see <see cref="PngImage.AsUInt16Samples"/>
     /// for a native-endian view).
     /// </summary>
+    /// <remarks>
+    /// <para>For an APNG, <see cref="PngImage.Pixels"/> is the <c>IDAT</c> image, the default image, exactly as it was
+    /// before animation chunks were read; the animation is reported in <see cref="PngImage.Animation"/>.</para>
+    /// <para><b>A malformed animation is refused, not downgraded to its default image.</b> Once an <c>acTL</c> chunk
+    /// stands in front of the <c>IDAT</c> the file claims to be an animation, and if its animation chunks then break
+    /// the rules (a second or late <c>acTL</c>; sequence numbers that are not 0, 1, 2, ... in order across <c>fcTL</c>
+    /// and <c>fdAT</c>; an empty frame or one outside the canvas; a dispose or blend operation that does not exist; a
+    /// frame count that is not the number of <c>fcTL</c> chunks; a frame with no data; a first frame that does not
+    /// cover the canvas when the <c>IDAT</c> is that frame) the decode throws <see cref="InvalidDataException"/> and
+    /// <see cref="TryDecode"/> answers false. A still-image caller does not get the default image in that case,
+    /// deliberately: a reader that cannot tell that frames were dropped would show half of a file whose own metadata
+    /// contradicts itself, which is how corrupt files go unnoticed; and the check costs only files that declare an
+    /// animation. <c>fcTL</c> and <c>fdAT</c> chunks with no <c>acTL</c> do not declare one, and are skipped as unknown
+    /// ancillary chunks always were.</para>
+    /// </remarks>
+    /// <exception cref="InvalidDataException">The stream is not a PNG, is corrupt, or declares an animation that is malformed.</exception>
     public static PngImage Decode(ReadOnlySpan<byte> data)
     {
         if (data.Length < Signature.Length || !data[..Signature.Length].SequenceEqual(Signature))
@@ -79,6 +101,13 @@ public static class PngReader
              compressionMethod = null, filterMethod = null, interlaceMethod = null;
         // Where each IDAT's payload lies in the input: read in place, never copied out.
         var idatChunks = new List<(int Offset, int Length)>();
+        // APNG. Everything below is only touched once an acTL has been seen in front of the IDAT: fcTL and fdAT
+        // chunks without one do not declare an animation and are skipped like any unknown ancillary chunk.
+        (int Frames, uint Plays)? actl = null;
+        var frames = new List<PngFrameControl>();
+        var frameData = new List<List<(int Offset, int Length)>>();     // per frame: payloads, fdAT's sequence number left out
+        bool idatIsFirstFrame = false;      // the first fcTL came before the first IDAT
+        uint nextSequence = 0;              // the number the next fcTL or fdAT must carry
         byte[]? palette = null;             // PLTE: 3 bytes (RGB) per entry
         byte[]? paletteAlpha = null;        // tRNS (indexed meaning): 1 alpha byte per entry
         byte[]? iccProfileRaw = null;       // zlib-deflated, as on disk
@@ -149,6 +178,87 @@ public static class PngReader
                 if (width is null)
                     throw new InvalidDataException("IDAT before IHDR");
                 idatChunks.Add((pos + 8, len));
+                if (frames.Count > 0)
+                {
+                    // An fcTL already stands in front: the IDATs are its data only if it is the first frame's.
+                    if (!idatIsFirstFrame || frames.Count > 1)
+                        throw new InvalidDataException(
+                            $"IDAT chunk at byte {pos} follows the fcTL of frame {frames.Count - 1}; only the first frame's data can be IDAT");
+                    frameData[0].Add((pos + 8, len));
+                }
+            }
+            else if (typeBytes.SequenceEqual("acTL"u8))
+            {
+                if (width is null)
+                    throw new InvalidDataException("acTL before IHDR");
+                if (actl is not null)
+                    throw new InvalidDataException("Multiple acTL chunks");
+                if (idatChunks.Count > 0)
+                    throw new InvalidDataException($"acTL chunk at byte {pos} follows the first IDAT; it must come before");
+                if (len != 8)
+                    throw new InvalidDataException($"acTL length must be 8, got {len}");
+                var frameCount = BinaryPrimitives.ReadUInt32BigEndian(chunkData[..4]);
+                if (frameCount is 0 or > int.MaxValue)
+                    throw new InvalidDataException($"acTL frame count must be between 1 and {int.MaxValue}, got {frameCount}");
+                actl = ((int)frameCount, BinaryPrimitives.ReadUInt32BigEndian(chunkData[4..]));
+            }
+            else if (typeBytes.SequenceEqual("fcTL"u8) && actl is { } declared)
+            {
+                if (len != 26)
+                    throw new InvalidDataException($"fcTL length must be 26, got {len}");
+                CheckSequenceNumber("fcTL", pos, chunkData, ref nextSequence);
+                var frameWidth = BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(4, 4));
+                var frameHeight = BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(8, 4));
+                var xOffset = BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(12, 4));
+                var yOffset = BinaryPrimitives.ReadUInt32BigEndian(chunkData.Slice(16, 4));
+                var disposeOp = chunkData[24];
+                var blendOp = chunkData[25];
+                var n = frames.Count;
+                if (n >= declared.Frames)
+                    throw new InvalidDataException($"acTL declares {declared.Frames} frames but the file has more fcTL chunks");
+                if (frameWidth == 0 || frameHeight == 0)
+                    throw new InvalidDataException($"fcTL of frame {n} is empty ({frameWidth}×{frameHeight})");
+                // The sums are in long: both offsets and sizes are 32-bit and an offset near the top would wrap an int.
+                if ((long)xOffset + frameWidth > width!.Value || (long)yOffset + frameHeight > height!.Value)
+                    throw new InvalidDataException(
+                        $"Frame {n} ({frameWidth}×{frameHeight} at {xOffset},{yOffset}) does not fit the {width}×{height} canvas");
+                if (disposeOp > (byte)PngDisposeOp.Previous)
+                    throw new InvalidDataException($"Frame {n} has dispose_op {disposeOp}; only 0, 1 and 2 are defined");
+                if (blendOp > (byte)PngBlendOp.Over)
+                    throw new InvalidDataException($"Frame {n} has blend_op {blendOp}; only 0 and 1 are defined");
+                if (n == 0)
+                {
+                    // An IDAT already seen means the default image is not part of the animation; otherwise the
+                    // IDATs that follow this fcTL are its data, and the spec makes it the whole canvas.
+                    idatIsFirstFrame = idatChunks.Count == 0;
+                    if (idatIsFirstFrame && (xOffset != 0 || yOffset != 0 || frameWidth != width || frameHeight != height))
+                        throw new InvalidDataException(
+                            $"The first frame's IDAT is the default image, so its rectangle must be the whole canvas, " +
+                            $"but it is {frameWidth}×{frameHeight} at {xOffset},{yOffset} on {width}×{height}");
+                }
+                frames.Add(new PngFrameControl(
+                    SequenceNumber: (int)BinaryPrimitives.ReadUInt32BigEndian(chunkData[..4]),
+                    Width: (int)frameWidth,
+                    Height: (int)frameHeight,
+                    XOffset: (int)xOffset,
+                    YOffset: (int)yOffset,
+                    DelayNumerator: BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(20, 2)),
+                    DelayDenominator: BinaryPrimitives.ReadUInt16BigEndian(chunkData.Slice(22, 2)),
+                    DisposeOp: (PngDisposeOp)disposeOp,
+                    BlendOp: (PngBlendOp)blendOp));
+                frameData.Add([]);
+            }
+            else if (typeBytes.SequenceEqual("fdAT"u8) && actl is not null)
+            {
+                if (len < 4)
+                    throw new InvalidDataException($"fdAT length must be at least 4, got {len}");
+                CheckSequenceNumber("fdAT", pos, chunkData, ref nextSequence);
+                if (frames.Count == 0)
+                    throw new InvalidDataException($"fdAT chunk at byte {pos} comes before any fcTL");
+                if (idatIsFirstFrame && frames.Count == 1)
+                    throw new InvalidDataException($"fdAT chunk at byte {pos} follows frame 0, whose data is the IDAT");
+                // The first 4 bytes are the sequence number; the zlib data starts after them.
+                frameData[^1].Add((pos + 8 + 4, len - 4));
             }
             else if (typeBytes.SequenceEqual("IEND"u8))
             {
@@ -244,6 +354,21 @@ public static class PngReader
         if (colorType == 3 && palette is null)
             throw new InvalidDataException("Indexed-color PNG missing required PLTE chunk");
 
+        PngAnimation? animation = null;
+        if (actl is { } counts)
+        {
+            if (frames.Count != counts.Frames)
+                throw new InvalidDataException(
+                    $"acTL declares {counts.Frames} frames but the file has {frames.Count} fcTL chunks");
+            for (var i = 0; i < frames.Count; i++)
+                if (frameData[i].Count == 0)
+                    throw new InvalidDataException($"Frame {i} has no image data");
+            animation = new PngAnimation(counts.Frames, counts.Plays, idatIsFirstFrame, frames.ToArray())
+            {
+                FrameData = frameData.ConvertAll(ranges => (IReadOnlyList<(int Offset, int Length)>)ranges.ToArray()),
+            };
+        }
+
         // The IDAT chunks are one zlib stream — the spec lets a producer split IDATs anywhere, even
         // mid-deflate-token — inflated straight into the samples a row at a time.
         var pixels = InflateAndUnfilter(data, idatChunks, width.Value, height!.Value, bitDepth!.Value, colorType!.Value);
@@ -269,7 +394,48 @@ public static class PngReader
             Cicp = cicp,
             Mdcv = mdcv,
             Clli = clli,
+            Animation = animation,
         };
+    }
+
+    /// <summary>
+    /// The sequence number every <c>fcTL</c> and <c>fdAT</c> opens with. They share one count that runs 0, 1, 2, ...
+    /// in file order with no gap and no repeat (APNG), so a chunk whose number is not the next one is out of order,
+    /// repeated, or has a chunk missing before it.
+    /// </summary>
+    private static void CheckSequenceNumber(string chunk, int pos, ReadOnlySpan<byte> chunkData, ref uint next)
+    {
+        var sequence = BinaryPrimitives.ReadUInt32BigEndian(chunkData[..4]);
+        if (sequence != next)
+            throw new InvalidDataException(
+                $"{chunk} chunk at byte {pos} has sequence number {sequence} but {next} was expected; " +
+                "the numbers of fcTL and fdAT chunks run 0, 1, 2, ... in file order with no gap or repeat");
+        next++;
+    }
+
+    /// <summary>
+    /// The unfiltered samples of one animation frame's own sub-image, found where <paramref name="image"/>'s
+    /// <see cref="PngImage.Animation"/> says its data lies in <paramref name="data"/>, through the same inflate and
+    /// unfilter path the <c>IDAT</c> image takes: <c>Frames[i].Width</c> × <c>Frames[i].Height</c> pixels in the
+    /// layout of <see cref="PngImage.Pixels"/> (16-bit samples big-endian, 1-, 2- and 4-bit samples unpacked to one
+    /// byte). No compositing: this is the frame as stored, not the canvas.
+    /// </summary>
+    /// <param name="data">The file <paramref name="image"/> was decoded from; the animation records offsets into it.</param>
+    /// <exception cref="InvalidOperationException">The image has no animation.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="frameIndex"/> is not a frame of the animation.</exception>
+    /// <exception cref="ArgumentException"><paramref name="data"/> is shorter than where the frame's data lies, so it is not that file.</exception>
+    /// <exception cref="InvalidDataException">The frame's zlib stream is corrupt or does not inflate to its size.</exception>
+    internal static byte[] DecodeFrameSamples(ReadOnlySpan<byte> data, PngImage image, int frameIndex)
+    {
+        var animation = image.Animation ?? throw new InvalidOperationException("The image has no animation");
+        if ((uint)frameIndex >= (uint)animation.Frames.Count)
+            throw new ArgumentOutOfRangeException(nameof(frameIndex), frameIndex, $"The animation has {animation.Frames.Count} frames");
+        var frame = animation.Frames[frameIndex];
+        var ranges = animation.FrameData[frameIndex];
+        foreach (var (offset, length) in ranges)
+            if ((long)offset + length > data.Length)
+                throw new ArgumentException("data is not the file the image was decoded from", nameof(data));
+        return InflateAndUnfilter(data, ranges, frame.Width, frame.Height, image.SourceBitDepth, image.ColorType);
     }
 
     /// <summary>
@@ -303,8 +469,11 @@ public static class PngReader
     };
 
     /// <summary>
-    /// Inflates the IDAT stream and runs the row-defilter, returning the raw sample bytes in row-major
-    /// order. 16-bit samples stay in PNG's network (big-endian) byte order so the returned buffer is
+    /// Inflates an image's data stream (the IDATs, or one animation frame's fdATs) and runs the row-defilter,
+    /// returning the raw sample bytes in row-major order. <paramref name="idat"/> lists where each chunk's zlib
+    /// payload lies in <paramref name="data"/>; whatever is not zlib data, which is the 4-byte sequence number that
+    /// opens every fdAT payload, is already left out of the range. <paramref name="width"/> and
+    /// <paramref name="height"/> are those of the image or frame being decoded, not necessarily the canvas's. 16-bit samples stay in PNG's network (big-endian) byte order so the returned buffer is
     /// byte-identical to what the encoder fed in.
     /// <para>The samples are the only buffer the size of the image: the compressed bytes are read where
     /// they lie in <paramref name="data"/>, and each row is inflated straight into its place in the result
@@ -312,7 +481,7 @@ public static class PngReader
     /// copy that again into a stream, inflate into a growing stream, copy that out, and unfilter the copy
     /// into a new array: the image's bytes three or four times over before the samples existed.</para>
     /// </summary>
-    private static unsafe byte[] InflateAndUnfilter(ReadOnlySpan<byte> data, List<(int Offset, int Length)> idat,
+    private static unsafe byte[] InflateAndUnfilter(ReadOnlySpan<byte> data, IReadOnlyList<(int Offset, int Length)> idat,
         int width, int height, int bitDepth, int colorType)
     {
         if (bitDepth < 8)
@@ -331,7 +500,7 @@ public static class PngReader
         {
             // ZLibStream is the .NET 6+ wrapper that handles the 2-byte zlib header
             // + Adler32 trailer around the raw deflate bitstream.
-            using var z = new ZLibStream(new IdatStream(pinned, idat), CompressionMode.Decompress);
+            using var z = new ZLibStream(new ChunkPayloadStream(pinned, idat), CompressionMode.Decompress);
             Span<byte> filterType = stackalloc byte[1];
             long inflated = 0;
             for (var y = 0; y < height; y++)
@@ -366,7 +535,7 @@ public static class PngReader
     /// 255) so the result reads as 8-bit greyscale. Emoji fonts' CBDT bitmaps use 4-bit indexed PNGs (Noto Color
     /// Emoji's U+1F6D1), which the reader refused.
     /// </summary>
-    private static unsafe byte[] InflateAndUnfilterSubByte(ReadOnlySpan<byte> data, List<(int Offset, int Length)> idat,
+    private static unsafe byte[] InflateAndUnfilterSubByte(ReadOnlySpan<byte> data, IReadOnlyList<(int Offset, int Length)> idat,
         int width, int height, int bitDepth, int colorType)
     {
         var packedBytes = checked((int)(((long)width * bitDepth + 7) / 8));
@@ -379,7 +548,7 @@ public static class PngReader
 
         fixed (byte* pinned = data)
         {
-            using var z = new ZLibStream(new IdatStream(pinned, idat), CompressionMode.Decompress);
+            using var z = new ZLibStream(new ChunkPayloadStream(pinned, idat), CompressionMode.Decompress);
             Span<byte> filterType = stackalloc byte[1];
             long inflated = 0;
             for (var y = 0; y < height; y++)
@@ -425,11 +594,11 @@ public static class PngReader
     }
 
     /// <summary>
-    /// The IDAT payloads, in order, as one read-only stream over the pinned input, so the zlib stream they
-    /// make up together is inflated without first being copied into one array. Only valid inside the
-    /// <c>fixed</c> scope that pinned the input.
+    /// The chunk payloads of one image's data, in order (the IDATs, or one frame's fdATs without their sequence
+    /// numbers), as one read-only stream over the pinned input, so the zlib stream they make up together is inflated
+    /// without first being copied into one array. Only valid inside the <c>fixed</c> scope that pinned the input.
     /// </summary>
-    private sealed unsafe class IdatStream(byte* data, List<(int Offset, int Length)> chunks) : Stream
+    private sealed unsafe class ChunkPayloadStream(byte* data, IReadOnlyList<(int Offset, int Length)> chunks) : Stream
     {
         private int _chunk;
         private int _offsetInChunk;
@@ -655,6 +824,20 @@ public sealed record PngImage
 
     /// <summary>True if any PNG-3 HDR signaling chunk (cICP / mDCv / cLLI) is present.</summary>
     public bool HasHdrSignaling => Cicp is not null || Mdcv is not null || Clli is not null;
+
+    /// <summary>
+    /// The animation the file declares with <c>acTL</c> / <c>fcTL</c> / <c>fdAT</c> chunks (APNG), or null for a
+    /// still PNG, which is every file without an <c>acTL</c>. <see cref="Pixels"/> is the <c>IDAT</c> image either
+    /// way: the first frame when <see cref="PngAnimation.DefaultImageIsFirstFrame"/>, otherwise a default image that
+    /// is not part of the animation.
+    /// </summary>
+    public PngAnimation? Animation { get; init; }
+
+    /// <summary>
+    /// True when the file declares an animation of more than one frame. A file whose <c>acTL</c> says 1 frame has an
+    /// <see cref="Animation"/> but is a still image, and reads false here.
+    /// </summary>
+    public bool IsAnimated => Animation is { FrameCount: > 1 };
 
     /// <summary>
     /// Sample count per row (<see cref="Width"/> × samples-per-pixel for the color type).

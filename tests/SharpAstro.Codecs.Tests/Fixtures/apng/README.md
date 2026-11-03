@@ -25,7 +25,8 @@ not exercise what its name says fails the run; nothing is committed for it.
 ## Files
 
 Canvas 48x32 for all of them. Frame 0 is the full canvas; frames 1-3 sit on sub-rectangles
-`(6,4,24x14)`, `(18,10,26x18)` and `(2,20,14x10)`, so offsets matter; the first two overlap.
+`(6,4,24x14)`, `(18,10,26x18)` and `(2,20,14x10)`, so offsets matter; the first two overlap
+(the indexed file has its own, odd-width ones).
 Patches have an opaque outer ring and a lattice of transparent-black holes (alpha 0) inside, which
 is what tells `blend_op` SOURCE (a hole replaces what is beneath) from OVER (it shows through), and
 what `dispose_op` left behind where frames overlap. Delays are 1/10, 1/5, 3/20, 1/4 s.
@@ -35,7 +36,7 @@ what `dispose_op` left behind where frames overlap. Delays are 1/10, 1/5, 3/20, 
 | `apng-dispose-{none,background,previous}-blend-{source,over}.png` | All six `dispose_op` x `blend_op` pairs, 4 RGBA8 frames, alpha only 0 or 255. dispose_op is set on the interior frames (none: all frames; background: frames 1-2; previous: frame 1), so each pair is visible in the result. The six files decode to six distinct canvases at frames 2 and 3. Their encoded sub-images are the same bytes; only the `fcTL` ops differ. |
 | `apng-blend-over-partial-alpha.png` | `blend_op` OVER with partial alpha in the source (alpha ramp 40-240) **and** in the destination (the background's lower-right corner fades). See the caveat below. |
 | `apng-default-image.png` | `acTL` then `IDAT` then `fcTL`/`fdAT`: the IDAT image is a cover that is **not** part of the animation (4 animation frames, all in `fdAT`). dispose/blend mixed per frame. |
-| `apng-indexed-trns.png` | Colour type 3 at **4 bits** (Pillow picks 4-bit for 8 colours): PLTE + tRNS `[0, 255, 255, 128]` (transparent, opaque, half-transparent entries), 3 frames, dispose none/previous, blend source. Sub-byte rows at odd widths. |
+| `apng-indexed-trns.png` | Colour type 3 at **4 bits** (Pillow picks 4-bit for 8 colours): PLTE + tRNS `[0, 255, 255, 128]` (transparent, opaque, half-transparent entries), 3 frames, dispose none/previous, blend source. Frames 1 and 2 are 23 and 25 pixels wide, so their 4-bit rows are padded to whole bytes. |
 | `apng-rgb8.png` | Colour type 2, 8-bit, opaque, sub-rectangle frames, `num_plays = 2`. |
 | `apng-gray-alpha.png` | Colour type 4 (gray + alpha), 8-bit, dispose none/background, blend source/over. |
 
