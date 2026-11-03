@@ -18,8 +18,6 @@ internal static class JpegResample
     public const int Hv2 = 3;
     public const int Generic = 4;
 
-    internal static bool ForceScalar; // TEMPORARY: A/B switch for the benchmark, removed before commit
-
     /// <summary>
     /// Runs the selected kernel. <paramref name="inNear"/>/<paramref name="inFar"/>
     /// are row offsets into <paramref name="plane"/>; <paramref name="w"/> is the
@@ -27,7 +25,7 @@ internal static class JpegResample
     /// </summary>
     public static void Row(int kind, Span<byte> dst, ReadOnlySpan<byte> plane, int inNear, int inFar, int w, int hs)
     {
-        if (!ForceScalar && Vector128.IsHardwareAccelerated && BitConverter.IsLittleEndian)
+        if (Vector128.IsHardwareAccelerated && BitConverter.IsLittleEndian)
             RowSimd(kind, dst, plane, inNear, inFar, w, hs);
         else
             RowScalar(kind, dst, plane, inNear, inFar, w, hs);

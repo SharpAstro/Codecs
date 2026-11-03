@@ -425,9 +425,9 @@ internal static class JpegScanReport
 }
 
 /// <summary>
-/// The chroma upsamplers' <c>Vector128</c> form against the scalar kernel, in one run. The end-to-end pair is the
-/// decision (a 4:2:0 decode is the Hv2 kernel on both chroma planes, every row); the per-row pairs say which kernel
-/// is worth what in isolation, which over-predicts (see CLAUDE.md, "An isolated kernel measurement over-predicts").
+/// The chroma upsamplers' <c>Vector128</c> form against the scalar kernel. The per-row pairs say which kernel is worth
+/// what in isolation, which over-predicts (see CLAUDE.md, "An isolated kernel measurement over-predicts"); the whole
+/// 4:2:0 decode (the Hv2 kernel on both chroma planes, every row) is what decided it.
 /// </summary>
 [MemoryDiagnoser]
 public class JpegUpsampleBenchmarks
@@ -464,20 +464,11 @@ public class JpegUpsampleBenchmarks
         _dst = new byte[RowWidth * 2];
     }
 
-    [Benchmark(Baseline = true, Description = "4:2:0 DecodeTo, scalar upsample")]
-    public (int, int) DecodeScalar()
-    {
-        JpegResample.ForceScalar = true;
-        try { return JpegDecoder.DecodeTo(_jpeg420, _rgba); }
-        finally { JpegResample.ForceScalar = false; }
-    }
-
-    [Benchmark(Description = "4:2:0 DecodeTo, Vector128 upsample")]
-    public (int, int) DecodeVector()
-    {
-        JpegResample.ForceScalar = false;
-        return JpegDecoder.DecodeTo(_jpeg420, _rgba);
-    }
+    // The end-to-end decision (4:2:0 DecodeTo, scalar vs Vector128 upsample, A/B'd in one sitting through a temporary
+    // static switch that has since been removed) is recorded in CLAUDE.md and the CHANGELOG. What stays is the whole
+    // decode as the number a change to the kernels must not regress, and the per-row pairs.
+    [Benchmark(Description = "4:2:0 DecodeTo (Vector128 upsample)")]
+    public (int, int) Decode() => JpegDecoder.DecodeTo(_jpeg420, _rgba);
 
     private void Rows(bool simd, int kind)
     {

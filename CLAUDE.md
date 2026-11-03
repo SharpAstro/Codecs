@@ -141,10 +141,19 @@ SOF0, 1x1 x3 and DRI 638, since a silently missing DRI would turn every case int
 middle third 111.1 ms (**0.33**; 275 of 825 MCU rows, a third of the RGBA); fitted 3165x4096 526.9 ms; fitted region 151.8 ms;
 decode-then-shrink 432.8 ms and 178 MiB per call. Things the next person would trip over:
 
-- **The fitted decode is a memory win and not a time win.** It is slower than decode-then-shrink on the whole image (the run-to-run
-  spread on this machine is large enough that a five-run report once had them the other way round by 10%, so trust BenchmarkDotNet).
-  The likely cost is `JpegFittedSink`'s per-channel 64-bit division in `WriteTargetRow` and its scalar adds in `Accumulate`;
-  not profiled. Faster than decode-then-shrink is open.
+- **The fitted decode is a memory win and, since the sink's perf review, a time win.** The figures above are the first cut
+  (527 ms against 433 ms for decode-then-shrink). The cost was `JpegFittedSink`'s per-channel 64-bit division in `WriteTargetRow`
+  and its scalar adds in `Accumulate`. It now sums each source row into per-column `uint` sums in `Vector128<uint>` lanes
+  (`AddRow`) and divides by a reciprocal multiply-high (`WriteTargetRowNarrow`; Lemire fastdiv, `d == 1` the identity). In one sitting:
+  fitted 3165x4096 396.5 ms against 516.0 ms for the old sink (-23%) and 431.1 ms for decode-then-shrink; fitted middle third
+  134.9 against 172.6 ms (-22%); fitted 510x660 344.9 against 361.8 ms (-5%, the thumbnail ratio has little to add). Three things to keep:
+  - **The 32-bit sums are exact only up to a box of 16,777,215 pixels** (`MaxNarrowBox`, 2^24 - 1: 255 x that is below 2^32). Above it
+    the sink takes the old `long` path (`Accumulate`/`WriteTargetRow`), which is also the reference: `forceWideSums` on
+    `DecodeFittedToWithStats` and the sink's constructor selects it. `TheWideAndTheNarrowPath_AgreeWithTheReferenceAndEachOther`
+    and `ABoxJustInsideTheNarrowPathsRange_IsTheMean` pin both and the boundary; the 5100x6600 -> 1x1 test stays on the wide path.
+  - **The A/B is `forceWideSums`**, kept as a parameter and not a static, with the three `*Wide` cases in `JpegDecodeScanBenchmarks`.
+  - **A BenchmarkDotNet run is `--job short`** (3 iterations) here, so single cases swing by 10-30% between sittings (the same
+    whole-image fit read 452 and 396 ms). Only compare cases from one run.
 - **BenchmarkDotNet's `Allocated` cannot show strip memory**: strips are pooled, so after the first iteration a decode allocates
   next to nothing. `dotnet run -c Release --project benchmarks/SharpAstro.Codecs.Benchmarks -- --jpeg-scan-report` prints
   `PeakPlaneBytes`, MCU rows entropy-decoded and IDCT'd and the byte-equality check against Decode plus a box filter, through
@@ -234,8 +243,16 @@ colour-convert kernel was written, reasoned to be an improvement, and measured a
 - **`YCbCrToRgbaRow` is store-bound, not compute-bound.** Writing 4 bytes/pixel is ~6.2 ms of a
   ~7.7 ms kernel; all the fixed-point colour math is the other ~1.4 ms. So the ceiling for
   vectorizing it is ~1.5% of decode, and the best attempt (`Vector128` + a real shuffle-based
-  interleaved store) captured about a third of that. `JpegResample` is the same shape, worse —
-  one `(3*a+b+2)>>2` per output byte.
+  interleaved store) captured about a third of that. `JpegResample` was assumed to be the same
+  shape, worse — one `(3*a+b+2)>>2` per output byte — and **was measured to be the opposite** (issue #28's
+  perf review): it writes one byte plane with contiguous vector stores (H2/Hv2 interleave even and odd outputs in-lane as `even | odd<<8`), not a 4-byte-per-pixel store. `RowSimd` (V2/H2/Hv2 in 16-bit
+  `Vector128` lanes, the stb sums fit exactly; edges and tail scalar; `RowScalar` is the stb transliteration and
+  the reference) took a 4:2:0 2048x1536 `DecodeTo` from 24.7 to 21.7 ms (**-12%**; a noisier second run
+  41.9 -> 30.6 ms), where an isolated row loop predicts about 10x. `JpegResampleEquivalenceTests` drives both
+  forms (widths 1-100 through two vector bodies and the tail, 16-bit lane limits, row offsets inside a larger
+  plane, short destination and plane still throw). The A/B was a temporary static switch, removed: only
+  `JpegUpsampleBenchmarks`' per-row pairs and a whole-decode case remain. Not tried: the grey, RGB-marked and
+  CMYK interleave loops in `JpegCore.EmitRow`, which are store-bound like `YCbCrToRgbaRow` and serve rare inputs.
 - **`Vector<T>` has no portable interleaved store.** Extracting lanes to scratch and then running
   the same per-pixel byte loop adds the vector work *on top of* the scalar work instead of
   replacing it. Where an interleaved store is needed, `Vector128.Shuffle` (pshufb / tbl) is the

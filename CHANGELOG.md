@@ -65,14 +65,46 @@ entropy-decode share is larger here). BenchmarkDotNet, one run, all cases in one
   BenchmarkDotNet's `Allocated` column cannot show that: strips come from `ArrayPool`, so after the first iteration a decode
   "allocates" almost nothing however much it holds. Read the table's `Allocated` for the replaced path, which genuinely
   allocates 178 MiB per call (the full RGBA plus the target), and the strip figure for the rest.
-- **The fitted decode saves memory, not time.** Fitting the whole image took 527 ms against 433 ms for decode-then-shrink, 22% *slower*,
-  and slower than a plain full decode (probably the filter's scalar adds in the row loop and a 64-bit division per output
-  channel at the end of each target row where the viewer's filter divides in 32 bits; not profiled). The five-run report, run on
-  a noisier machine, put the two within 10% of each other the other way round (524 against 578 ms), so call it a wash
-  and not a win. What it removes is the 178 MiB per call: 49.5 MiB of destination is all that is held, in place of 128.4 MiB
-  of RGBA plus the target. Fitting a region is where time is saved too, because the cost is the region's (0.45 of the whole-image
-  fit). A fitted decode that is faster than decode-then-shrink is a follow-up.
+- **The first cut of the fitted decode saved memory, not time.** Fitting the whole image took 527 ms against 433 ms for
+  decode-then-shrink, 22% *slower*, and slower than a plain full decode. The performance review below fixed that: it is now
+  faster than decode-then-shrink as well. What it removes is the 178 MiB per call: 49.5 MiB of destination is all that is held,
+  in place of 128.4 MiB of RGBA plus the target. Fitting a region saves time too, because the cost is the region's.
 - Byte equality, checked in the benchmark's report: `DecodeFittedTo` equals `Decode` followed by the box filter, byte for byte.
+
+**Performance review** (same release, after the table above; BenchmarkDotNet `--job short`, so three iterations a case and
+a large run-to-run spread on this machine: only same-sitting pairs are compared). It looked at every row loop of the strip
+pipeline, `DecodeRegionTo` and the fitted decode for vectorization and for avoidable allocation, and kept two changes:
+
+- **The fitted sink sums in 32-bit vector lanes and divides by multiply-high.** `JpegFittedSink` kept `long` sums per channel
+  and did a 64-bit division per output channel. It now adds each source row into per-column `uint` sums with `Vector128<uint>`
+  (portable, scalar fallback kept) and divides by a reciprocal multiply (Lemire fastdiv, with `d == 1` as the identity). That is
+  exact only while a box sum fits 32 bits, so a box of more than 16,777,215 pixels takes the old 64-bit path; `forceWideSums`
+  selects it for tests and for the A/B. Output is byte-identical (`JpegFittedDecodeTests`, 151 cases, now run on both paths and
+  with a box just inside the narrow path's range). One sitting, 5100x6600 DRI = 638 scan, new sink against the old one:
+
+  | Case | New sink | Old sink |
+  |---|--:|--:|
+  | Fitted whole image to 3165x4096 | 396.5 ms | 516.0 ms (**-23%**) |
+  | Fitted middle third to 3165x1365 | 134.9 ms | 172.6 ms (**-22%**) |
+  | Fitted whole image to 510x660 | 344.9 ms | 361.8 ms (-5%) |
+
+  In the same sitting a full `DecodeTo` was 325.9 ms, `DecodeRegionTo` of the middle third 112.3 ms (0.34), and decode-then-shrink
+  431.1 ms. The sink's overhead on a plain decode fell from about 190 ms to about 71 ms, and **the fitted decode (396.5 ms) now
+  beats decode-then-shrink (431.1 ms) on time as well as memory.**
+- **The chroma upsamplers V2, H2 and Hv2 have a `Vector128` form** (`JpegResample.RowSimd`; the stb transliteration stays as
+  `RowScalar`, and is the whole of `Row` where there is no Vector128 hardware). They compute in 16-bit lanes, which the stb sums
+  fit exactly (Hv2's `3*t + t' + 8` peaks at 4088), with the two edge samples and the tail done by the scalar formulas. One sitting,
+  4:2:0 2048x1536 `DecodeTo`, scalar against vector upsample: **24.7 -> 21.7 ms (0.88)**; a second, much noisier 12-iteration run
+  read 41.9 -> 30.6 ms (0.75). The direction agreed both times; trust the first for size. Per row of 2550 samples, 2000 rows,
+  in isolation (which over-predicts): V2 3.53 -> 0.35 ms, H2 6.5 -> 0.61 ms, Hv2 6.1 -> 1.3 ms. `JpegResampleEquivalenceTests` pins the
+  vector kernels byte-equal to the scalar ones at every width from 1 to 100 and at image widths, at the 16-bit lanes' limits, at non-zero
+  row offsets inside a larger plane, and checks the bounds checks still throw.
+- **Not vectorized, and why.** `YCbCrToRgbaRow` already has a measured rejection (store-bound; see CLAUDE.md). The grey, RGB-marked
+  and CMYK interleave loops are the same shape (four byte stores a pixel, almost no arithmetic) and serve rare inputs, so no vector
+  version was tried; they allocate nothing.
+- **Memory, checked.** Strips are rented once per decode and reused (about 21 KB allocated per call, whatever the height); there is no full-height intermediate anywhere in the strip pipeline,
+  `DecodeRegionTo` or the fitted decode. The peak sample memory on the issue's shape is 0.19 MiB against 3 x 64 MiB for
+  whole planes. The narrow sink holds `sourceWidth * 4` `uint` column sums in place of the `long` accumulator.
 
 ## 3.23
 
