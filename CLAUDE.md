@@ -106,6 +106,35 @@ whole-image value, so there is one `EmitRow` and one `StreamScan`. What is not o
   the only ones that reach it), and the skip-ahead disabled (exactly the two cost tests: the pixels are still right,
   so nothing else can see it).
 
+**`DecodeFittedTo` is a sink, not a third engine** (issue #28 ask 2). `JpegFittedSink` is an `IJpegRowSink` that
+box-filters the rows `JpegCore` hands it, so everything above (strips, region, restarts, whole-plane fallback) applies to
+it unchanged, and the full-resolution RGBA never exists: the engine converts a row into the sink's one scratch row, the
+sink adds it into the sums of its target row, and writes the target row when that box's last source row arrives. Held:
+one source row, `targetWidth * 4` sums, `targetWidth + 1` column bounds; allocated after a warm-up, about 21 KB
+whatever the height (measured: byte-identical at 1300 and 2600 rows). What is not obvious:
+
+- **The filter is the viewer's `RgbaBoxDownsample.Shrink`, line for line, and that is a claim about partitions.** Shrink
+  writes the box as `[dx*w/newW, min(w, max(lower+1, (dx+1)*w/newW)))`. With `newW <= w` the `max`/`min` never fire (the
+  upper bound is the next box's lower bound), so the boxes tile the source and one pass over the rows equals "convert
+  everything, then filter". With `newW > w` they would overlap, so a larger target is an `ArgumentException`, not an
+  approximation. The test file transcribes Shrink (with its `int` sums) and demands byte equality, not "within 1".
+- **The sums are `long`, Shrink's are `int`.** Shrink wraps for a box over 2^31/255 (about 8.4 M pixels): a 5100x6600
+  scan fitted to 1x1 is 33.7 M. Everything Shrink computes without overflow is identical; where it wraps this gives the
+  mean. `ABoxOfMoreThanEightMillionPixels_IsTheMean_NotAWrappedSum` is the only test that sees `int` sums (the mutation
+  that wraps them fails that and nothing else), so keep it.
+- **A region's rows are the image's row numbers.** The sink is told the image's size in `Begin` but its source is the
+  region's, and its first row is `region.Y`, so a restart "from row 0" is "from the first row" there. The start-over on
+  the first row is defensive (a restart delivers every row first, so the sums are already empty); only
+  `TheSink_BeginsOverWhenTheRowsComeAgainFromTheFirst`, which abandons an attempt part-way, can see it.
+- **No `ThrowIfTooLarge`.** The destination sinks refuse a raster over `int.MaxValue` bytes; this one never holds one, so
+  a source of any size the frame allows can be fitted. The destination check is the target's size.
+- **The cost is the region's.** The same `PlanRows`/restart skip-ahead apply, so a fitted decode of a region of a
+  row-restart scan entropy-decodes about that region's MCU rows (`AFittedDecodeOfARegion_CostsWhatTheRegionCosts`).
+- **Mutation-checked** (deliberate bugs, one at a time, all caught): no `+ n/2` rounding (140 tests fail), column bounds
+  rounded up (140), row bounds rounded up (140), region rows not offset by `region.Y` (71), a full-height RGBA allocated
+  in `Begin` (the two allocation tests, with 20.8 MB against the 260 KB bound), `int`-wrapping sums (the overflow test
+  alone) and no start-over on the first row (the sink restart test alone).
+
 `SharpAstro.Jpeg` also ships a **second, structurally unrelated decoder**: `LosslessJpeg`
 (ITU-T T.81 Annex H, SOF3) — Huffman-coded sample-difference predictors 1–7, no quantisation,
 **up to 16-bit precision**, DRI/RSTn restarts, point transform. It shares no code with

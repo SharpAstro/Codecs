@@ -496,6 +496,10 @@ public sealed class JpegFittedDecodeTests
     {
         // A scan after the streamed one overwrites its blocks in the full decode, which therefore decodes again with
         // whole planes and delivers the rows again. The sink sees both attempts and must end with the second's.
+        // This pins the end to end result and that the region's first row (not 0) is what the second attempt starts
+        // from. It cannot see a sink that forgets to start its sums over: here the first attempt delivers every row
+        // before the restart, so the sums are empty anyway. TheSink_BeginsOverWhenTheRowsComeAgainFromTheFirst
+        // abandons an attempt part-way and is the one that does (mutation-checked: it alone fails without the reset).
         var jpeg = JpegRegionDecodeTests.Build(61, 47, "2x2,1x1,1x1", Kind.RestartRow);
         var sos = JpegStripDecodeTests.FirstSos(jpeg);
         var scan = jpeg[sos..^2];

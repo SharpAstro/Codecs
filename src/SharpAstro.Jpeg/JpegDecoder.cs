@@ -22,6 +22,14 @@ namespace SharpAstro.Jpeg;
 /// coefficients whole, since every scan is needed). Baseline streams whose scans do not each carry every
 /// component fall back to whole planes. The output is byte-identical either way.
 /// </para>
+///
+/// <para>
+/// <see cref="DecodeRegionTo"/> decodes one rectangle of the output, and <see cref="DecodeFittedTo"/> decodes
+/// (optionally a rectangle) straight down to a target size by box filtering in the row loop, so that a viewer showing
+/// a large scan small, or part of it, never builds the full-resolution image. Both are exact: the region is the same
+/// crop of <see cref="Decode"/>, and the fitted result is <see cref="Decode"/> followed by the viewer's box filter,
+/// byte for byte.
+/// </para>
 /// </summary>
 public static class JpegDecoder
 {
