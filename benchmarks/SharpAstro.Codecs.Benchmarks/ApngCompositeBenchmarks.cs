@@ -28,7 +28,8 @@ public class ApngCompositeBenchmarks
         ApngBenchmarkInputs.ManySmall,
         ApngBenchmarkInputs.LargeOverMixed,
         ApngBenchmarkInputs.LargeOverPartial,
-        ApngBenchmarkInputs.LargeSource)]
+        ApngBenchmarkInputs.LargeSource,
+        ApngBenchmarkInputs.LargeRgb8)]
     public string Fixture { get; set; } = string.Empty;
 
     private byte[] _png = [];
@@ -68,6 +69,7 @@ internal static class ApngBenchmarkInputs
     public const string LargeOverMixed = "large-1080p-x8-over-mixed";
     public const string LargeOverPartial = "large-1080p-x8-over-partial";
     public const string LargeSource = "large-1080p-x8-source";
+    public const string LargeRgb8 = "large-1080p-x8-rgb8-source";
 
     public static byte[] Build(string name) => name switch
     {
@@ -78,12 +80,14 @@ internal static class ApngBenchmarkInputs
         // the same, but half of every frame is partial alpha: every one of those pixels takes the divisions.
         LargeOverPartial => Build(1920, 1080, 8, 1920, 1080, PngBlendOp.Over, Alpha.Partial, cycleDispose: false),
         LargeSource => Build(1920, 1080, 8, 1920, 1080, PngBlendOp.Source, Alpha.Sprite, cycleDispose: false),
+        // opaque colour type 2: every frame is expanded from RGB to RGBA8 before it is drawn.
+        LargeRgb8 => Build(1920, 1080, 8, 1920, 1080, PngBlendOp.Source, Alpha.Sprite, cycleDispose: false, rgb: true),
         _ => throw new ArgumentException(name),
     };
 
     private enum Alpha { Sprite, Partial }
 
-    private static byte[] Build(int canvasW, int canvasH, int frames, int frameW, int frameH, PngBlendOp blend, Alpha alpha, bool cycleDispose)
+    private static byte[] Build(int canvasW, int canvasH, int frames, int frameW, int frameH, PngBlendOp blend, Alpha alpha, bool cycleDispose, bool rgb = false)
     {
         var chunks = new List<(string Type, byte[] Data)>();
         uint sequence = 0;
@@ -92,7 +96,7 @@ internal static class ApngBenchmarkInputs
             var w = i == 0 ? canvasW : frameW;
             var h = i == 0 ? canvasH : frameH;
             var rgba = Frame(w, h, i, alpha, firstFrame: i == 0);
-            var parts = Split(PngWriter.Encode(rgba, w, h));
+            var parts = Split(rgb ? PngWriter.EncodeRgb8(DropAlpha(rgba), w, h) : PngWriter.Encode(rgba, w, h));
             if (i == 0)
             {
                 chunks.Add(parts.First(c => c.Type == "IHDR"));
@@ -173,6 +177,18 @@ internal static class ApngBenchmarkInputs
                 rgba[o + 3] = a;
             }
         return rgba;
+    }
+
+    private static byte[] DropAlpha(byte[] rgba)
+    {
+        var rgb = new byte[rgba.Length / 4 * 3];
+        for (int i = 0, o = 0; i < rgba.Length; i += 4, o += 3)
+        {
+            rgb[o] = rgba[i];
+            rgb[o + 1] = rgba[i + 1];
+            rgb[o + 2] = rgba[i + 2];
+        }
+        return rgb;
     }
 
     private static List<(string Type, byte[] Data)> Split(byte[] png)

@@ -439,18 +439,23 @@ public static class PngReader
     {
         if (image.Animation is null)
             return [new PngFrame(0, image.ToRgba8(), 0, 1)];
-        // Checked here, before the iterator, so a canvas too big to hold throws at the call and not at MoveNext.
+        CheckCanvasFits(image);
+        return Composite(data, image);
+    }
+
+    // Checked before the iterator, so a canvas too big to hold throws at the call and not at MoveNext.
+    private static void CheckCanvasFits(PngImage image)
+    {
         if ((long)image.Width * image.Height * 4 > int.MaxValue)
             throw new InvalidDataException($"A {image.Width}×{image.Height} canvas does not fit a byte array as RGBA8");
-        return Composite(data, image);
     }
 
     private static IEnumerable<PngFrame> Composite(ReadOnlyMemory<byte> data, PngImage image)
     {
-        var compositor = new PngCompositor(data, image);
+        var compositor = new PngCompositor(image);
         for (var i = 0; i < compositor.FrameCount; i++)
         {
-            compositor.Draw(i);
+            compositor.Draw(data.Span, i);
             var control = image.Animation!.Frames[i];
             yield return new PngFrame(i, compositor.Canvas, control.DelayNumerator, control.DelayDenominator);
         }
@@ -495,8 +500,21 @@ public static class PngReader
                 "Use EnumerateFrames to stream it.");
 
         var frames = new List<PngFrame>(frameCount);
-        foreach (var frame in EnumerateDecoded(data.ToArray(), image))
-            frames.Add(frame with { Rgba = (byte[])frame.Rgba.Clone() });
+        if (image.Animation is null)
+            frames.Add(new PngFrame(0, image.ToRgba8(), 0, 1));
+        else
+        {
+            // Drawn straight from the caller's span: an iterator cannot hold one, and copying the whole file to a
+            // Memory<byte> for it would keep a second copy of the compressed data for no reason.
+            CheckCanvasFits(image);
+            var compositor = new PngCompositor(image);
+            for (var i = 0; i < compositor.FrameCount; i++)
+            {
+                compositor.Draw(data, i);
+                var control = image.Animation.Frames[i];
+                frames.Add(new PngFrame(i, (byte[])compositor.Canvas.Clone(), control.DelayNumerator, control.DelayDenominator));
+            }
+        }
         return new PngFrameSequence(image.Width, image.Height, image.Animation?.PlayCount ?? 1, frames.AsReadOnly());
     }
 
@@ -538,6 +556,25 @@ public static class PngReader
             if ((long)offset + length > data.Length)
                 throw new ArgumentException("data is not the file the image was decoded from", nameof(data));
         return InflateAndUnfilter(data, ranges, frame.Width, frame.Height, image.SourceBitDepth, image.ColorType);
+    }
+
+    /// <summary>
+    /// <see cref="DecodeFrameSamples"/> into <paramref name="destination"/>, which must hold at least
+    /// <see cref="SampleBytes"/> bytes of the frame (<c>Frames[i].Width</c> x <c>Frames[i].Height</c> at the image's
+    /// source depth and colour type): the compositor reuses one buffer for every frame instead of allocating one each.
+    /// The bytes past the frame's samples are not touched.
+    /// </summary>
+    internal static void DecodeFrameSamplesInto(ReadOnlySpan<byte> data, PngImage image, int frameIndex, Span<byte> destination)
+    {
+        var animation = image.Animation ?? throw new InvalidOperationException("The image has no animation");
+        if ((uint)frameIndex >= (uint)animation.Frames.Count)
+            throw new ArgumentOutOfRangeException(nameof(frameIndex), frameIndex, $"The animation has {animation.Frames.Count} frames");
+        var frame = animation.Frames[frameIndex];
+        var ranges = animation.FrameData[frameIndex];
+        foreach (var (offset, length) in ranges)
+            if ((long)offset + length > data.Length)
+                throw new ArgumentException("data is not the file the image was decoded from", nameof(data));
+        InflateAndUnfilterInto(data, ranges, frame.Width, frame.Height, image.SourceBitDepth, image.ColorType, destination);
     }
 
     /// <summary>
@@ -583,21 +620,46 @@ public static class PngReader
     /// copy that again into a stream, inflate into a growing stream, copy that out, and unfilter the copy
     /// into a new array: the image's bytes three or four times over before the samples existed.</para>
     /// </summary>
-    private static unsafe byte[] InflateAndUnfilter(ReadOnlySpan<byte> data, IReadOnlyList<(int Offset, int Length)> idat,
+    private static byte[] InflateAndUnfilter(ReadOnlySpan<byte> data, IReadOnlyList<(int Offset, int Length)> idat,
         int width, int height, int bitDepth, int colorType)
+    {
+        var pixels = new byte[SampleBytes(width, height, bitDepth, colorType)];
+        InflateAndUnfilterInto(data, idat, width, height, bitDepth, colorType, pixels);
+        return pixels;
+    }
+
+    /// <summary>The size in bytes of the sample buffer <see cref="InflateAndUnfilterInto"/> fills: one byte per sample below 8 bits, else the samples' own width.</summary>
+    internal static int SampleBytes(int width, int height, int bitDepth, int colorType) =>
+        bitDepth < 8
+            ? checked(width * height)
+            : checked(width * SamplesPerPixel(colorType) * (bitDepth / 8) * height);
+
+    /// <summary>
+    /// <see cref="InflateAndUnfilter"/> into a buffer the caller owns, <paramref name="pixels"/>, which must be at least
+    /// <see cref="SampleBytes"/> long (the leading bytes are written, the rest left alone): a caller that decodes many
+    /// frames of one size keeps one buffer and reuses it instead of allocating, and zeroing, a new one per frame.
+    /// </summary>
+    private static unsafe void InflateAndUnfilterInto(ReadOnlySpan<byte> data, IReadOnlyList<(int Offset, int Length)> idat,
+        int width, int height, int bitDepth, int colorType, Span<byte> pixels)
     {
         if (bitDepth < 8)
         {
-            return InflateAndUnfilterSubByte(data, idat, width, height, bitDepth, colorType);
+            InflateAndUnfilterSubByte(data, idat, width, height, bitDepth, colorType, pixels);
+            return;
         }
         var samplesPerPixel = SamplesPerPixel(colorType);
         var bytesPerSample = bitDepth / 8;
         var bytesPerPixel = samplesPerPixel * bytesPerSample;
         var rowBytes = checked(width * bytesPerPixel);
         var expected = ((long)rowBytes + 1) * height;
-        var pixels = new byte[checked((long)rowBytes * height)];
-        var firstRowAbove = new byte[rowBytes];
+        if (pixels.Length < (long)rowBytes * height)
+            throw new ArgumentException("The sample buffer is too small for the image", nameof(pixels));
+        // The row above the first is all zero; rented, so cleared by hand.
+        var firstRowAbove = System.Buffers.ArrayPool<byte>.Shared.Rent(rowBytes);
+        firstRowAbove.AsSpan(0, rowBytes).Clear();
 
+        try
+        {
         fixed (byte* pinned = data)
         {
             // ZLibStream is the .NET 6+ wrapper that handles the 2-byte zlib header
@@ -607,7 +669,7 @@ public static class PngReader
             long inflated = 0;
             for (var y = 0; y < height; y++)
             {
-                var row = pixels.AsSpan(y * rowBytes, rowBytes);
+                var row = pixels.Slice(y * rowBytes, rowBytes);
                 inflated += ReadFully(z, filterType);
                 inflated += ReadFully(z, row);
                 if (inflated != (long)(y + 1) * (rowBytes + 1))
@@ -617,7 +679,7 @@ public static class PngReader
                 // least 1 — for 8-bit single-channel images that's 1; for 16-bit RGBA
                 // it's 8. The filter formulas only need the "left neighbour" offset, so
                 // bytesPerPixel here matches PNG spec §9.2.
-                var above = y == 0 ? firstRowAbove : pixels.AsSpan((y - 1) * rowBytes, rowBytes);
+                var above = y == 0 ? firstRowAbove.AsSpan(0, rowBytes) : pixels.Slice((y - 1) * rowBytes, rowBytes);
                 PngPredictor.UnfilterRow(filterType[0], row, above, bytesPerPixel);
             }
 
@@ -625,8 +687,11 @@ public static class PngReader
             if (z.Read(filterType) != 0)
                 throw LengthMismatch(expected + 1, expected, width, height, bytesPerPixel);
         }
-
-        return pixels;
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(firstRowAbove);
+        }
     }
 
     /// <summary>
@@ -637,12 +702,13 @@ public static class PngReader
     /// 255) so the result reads as 8-bit greyscale. Emoji fonts' CBDT bitmaps use 4-bit indexed PNGs (Noto Color
     /// Emoji's U+1F6D1), which the reader refused.
     /// </summary>
-    private static unsafe byte[] InflateAndUnfilterSubByte(ReadOnlySpan<byte> data, IReadOnlyList<(int Offset, int Length)> idat,
-        int width, int height, int bitDepth, int colorType)
+    private static unsafe void InflateAndUnfilterSubByte(ReadOnlySpan<byte> data, IReadOnlyList<(int Offset, int Length)> idat,
+        int width, int height, int bitDepth, int colorType, Span<byte> pixels)
     {
         var packedBytes = checked((int)(((long)width * bitDepth + 7) / 8));
         var expected = ((long)packedBytes + 1) * height;
-        var pixels = new byte[checked((long)width * height)];
+        if (pixels.Length < (long)width * height)
+            throw new ArgumentException("The sample buffer is too small for the image", nameof(pixels));
         var row = new byte[packedBytes];
         var above = new byte[packedBytes];
         var max = (1 << bitDepth) - 1;
@@ -661,7 +727,7 @@ public static class PngReader
                     throw LengthMismatch(inflated, expected, width, height, 1);
                 PngPredictor.UnfilterRow(filterType[0], row, above, 1);
 
-                var output = pixels.AsSpan(y * width, width);
+                var output = pixels.Slice(y * width, width);
                 for (var x = 0; x < width; x++)
                 {
                     var bit = x * bitDepth;
@@ -674,8 +740,6 @@ public static class PngReader
             if (z.Read(filterType) != 0)
                 throw LengthMismatch(expected + 1, expected, width, height, 1);
         }
-
-        return pixels;
     }
 
     private static InvalidDataException LengthMismatch(long inflated, long expected, int width, int height, int bytesPerPixel) =>
@@ -1001,7 +1065,6 @@ public sealed record PngImage
     {
         var w = Width;
         var h = Height;
-        var src = Pixels;
         var spp = SamplesPerPixel;
         var step = BitDepth == 16 ? 2 : 1; // bytes per sample (high byte first for 16-bit)
         var rowBytes = w * spp * step;
@@ -1009,60 +1072,80 @@ public sealed record PngImage
             throw new ArgumentException($"Destination too small: {destination.Length} < {w * h * 4} (Width*Height*4).", nameof(destination));
 
         for (var y = 0; y < h; y++)
+            ExpandRowToRgba8(ColorType, step, Palette, PaletteAlpha,
+                Pixels.AsSpan(y * rowBytes, rowBytes), destination.Slice(y * w * 4, w * 4));
+    }
+
+    /// <summary>
+    /// One row of <see cref="ExpandToRgba8(Span{byte})"/>: <paramref name="source"/> holds <c>width</c> pixels of the
+    /// given colour type at <paramref name="step"/> bytes per sample, <paramref name="destination"/> receives
+    /// <c>width * 4</c> bytes. The colour type is decided once per row rather than once per pixel, which is what
+    /// the per-pixel switch this replaces cost. The mapping is the one <see cref="ExpandToRgba8(Span{byte})"/>
+    /// documents, unchanged.
+    /// </summary>
+    internal static void ExpandRowToRgba8(int colorType, int step, byte[]? palette, byte[]? paletteAlpha,
+        ReadOnlySpan<byte> source, Span<byte> destination)
+    {
+        var width = destination.Length / 4;
+        switch (colorType)
         {
-            var srcRow = y * rowBytes;
-            var dstRow = y * w * 4;
-            for (var x = 0; x < w; x++)
-            {
-                var s = srcRow + x * spp * step;
-                byte r, g, b, a;
-                switch (ColorType)
+            case 6: // RGBA
+                if (step == 1)
+                    source[..(width * 4)].CopyTo(destination);
+                else
+                    for (int x = 0, s = 0; x < width; x++, s += 8)
+                    {
+                        var d = destination.Slice(x * 4, 4);
+                        d[0] = source[s]; d[1] = source[s + 2]; d[2] = source[s + 4]; d[3] = source[s + 6];
+                    }
+                break;
+            case 2: // RGB
+                for (int x = 0, s = 0, d = 0; x < width; x++, s += 3 * step, d += 4)
                 {
-                    case 0: // greyscale
-                        r = g = b = src[s];
-                        a = 255;
-                        break;
-                    case 2: // RGB
-                        r = src[s];
-                        g = src[s + step];
-                        b = src[s + 2 * step];
-                        a = 255;
-                        break;
-                    case 3: // indexed: src[s] is an index into Palette (+ optional PaletteAlpha)
-                        if (Palette is not { } pal)
-                            throw new InvalidDataException("Indexed PNG has no palette to expand to RGBA8");
-                        var idx = src[s];
-                        var pi = idx * 3;
-                        if (pi + 2 >= pal.Length)
-                            throw new InvalidDataException(
-                                $"Palette index {idx} out of range (palette has {pal.Length / 3} entries)");
-                        r = pal[pi];
-                        g = pal[pi + 1];
-                        b = pal[pi + 2];
-                        a = PaletteAlpha is { } pa && idx < pa.Length ? pa[idx] : (byte)255;
-                        break;
-                    case 4: // greyscale + alpha
-                        r = g = b = src[s];
-                        a = src[s + step];
-                        break;
-                    case 6: // RGBA
-                        r = src[s];
-                        g = src[s + step];
-                        b = src[s + 2 * step];
-                        a = src[s + 3 * step];
-                        break;
-                    default:
-                        // Unreachable in practice: SamplesPerPixel (read above) already
-                        // throws for any color type outside {0,2,3,4,6}. Kept for definite
-                        // assignment of r/g/b/a and as a defensive backstop.
-                        throw new InvalidDataException($"Cannot expand PNG color type {ColorType} to RGBA8");
+                    destination[d] = source[s];
+                    destination[d + 1] = source[s + step];
+                    destination[d + 2] = source[s + 2 * step];
+                    destination[d + 3] = 255;
                 }
-                var d = dstRow + x * 4;
-                destination[d] = r;
-                destination[d + 1] = g;
-                destination[d + 2] = b;
-                destination[d + 3] = a;
-            }
+                break;
+            case 0: // greyscale
+                for (int x = 0, s = 0, d = 0; x < width; x++, s += step, d += 4)
+                {
+                    var g = source[s];
+                    destination[d] = destination[d + 1] = destination[d + 2] = g;
+                    destination[d + 3] = 255;
+                }
+                break;
+            case 4: // greyscale + alpha
+                for (int x = 0, s = 0, d = 0; x < width; x++, s += 2 * step, d += 4)
+                {
+                    var g = source[s];
+                    destination[d] = destination[d + 1] = destination[d + 2] = g;
+                    destination[d + 3] = source[s + step];
+                }
+                break;
+            case 3: // indexed: a sample is an index into the palette (+ optional palette alpha)
+                if (width == 0)
+                    break;
+                if (palette is not { } pal)
+                    throw new InvalidDataException("Indexed PNG has no palette to expand to RGBA8");
+                for (int x = 0, s = 0, d = 0; x < width; x++, s += step, d += 4)
+                {
+                    var idx = source[s];
+                    var pi = idx * 3;
+                    if (pi + 2 >= pal.Length)
+                        throw new InvalidDataException(
+                            $"Palette index {idx} out of range (palette has {pal.Length / 3} entries)");
+                    destination[d] = pal[pi];
+                    destination[d + 1] = pal[pi + 1];
+                    destination[d + 2] = pal[pi + 2];
+                    destination[d + 3] = paletteAlpha is { } pa && idx < pa.Length ? pa[idx] : (byte)255;
+                }
+                break;
+            default:
+                // Unreachable through the image: SamplesPerPixel already throws for a colour type outside
+                // {0,2,3,4,6}. Kept as a backstop for the direct callers.
+                throw new InvalidDataException($"Cannot expand PNG color type {colorType} to RGBA8");
         }
     }
 }
