@@ -32,6 +32,7 @@
     <ProjectReference Include="..\..\src\SharpAstro.Jpeg\SharpAstro.Jpeg.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jxr\SharpAstro.Jxr.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Exr\SharpAstro.Exr.csproj" />
+    <ProjectReference Include="..\..\src\SharpAstro.Radiance\SharpAstro.Radiance.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jxl\SharpAstro.Jxl.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jbig2\SharpAstro.Jbig2.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jpeg2000\SharpAstro.Jpeg2000.csproj" />
