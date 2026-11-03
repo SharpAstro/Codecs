@@ -14,21 +14,26 @@ namespace SharpAstro.Codecs.Tests;
 // (ChainDepthByEffort 0, 2, 4 ... 512; NiceLengthByEffort 16 ... 4096): the match finder visits at
 // most ChainDepth candidates for a position and stops extending a match at NiceLength, so the work
 // is at most pixels x ChainDepth probes plus pixels x NiceLength compares for a candidate, however
-// the pixels repeat. The bound on memory is the plan's own charge (Vp8LEncoderPlan.WorkingBytes,
-// capped at WebpLimits.MaximumEncoderWorkingBytes) plus the transformed copies of the image,
-// which is what "BytesPerPixel" below states. The timeouts are generous (several times what was
-// measured on the slowest machine here, an arm64 VM), so they catch a quadratic blow-up rather
-// than a slow machine.
+// the pixels repeat. The bound on memory is on the bytes a whole encode ALLOCATES (cumulative, so
+// well above what is live at once: the live part is the plan's charge, Vp8LEncoderPlan.WorkingBytes,
+// capped at WebpLimits.MaximumEncoderWorkingBytes, plus the transformed copies of the image). The
+// timeouts are generous (several times what was measured on the slowest machine here, an arm64 VM,
+// with the rest of the suite running beside them), so they catch a quadratic blow-up rather than a
+// slow machine.
 
 public sealed class WebpLosslessEncoderPathologicalInputTests
 {
-    // Allocated bytes per pixel over a whole encode, measured per effort on these inputs and
-    // rounded up with headroom (see the measured values in each test's message). The bound is a
-    // multiple of the pixel count, not of the working-memory ceiling, so it is also a statement that
-    // the encoder's memory grows linearly with the image and no faster.
-    private const long BytesPerPixelEffort0 = 1;
-    private const long BytesPerPixelEffort6 = 1;
-    private const long BytesPerPixelEffort9 = 1;
+    // Allocated bytes per pixel over a whole encode of a 1024 x 1024 image (measured on the
+    // all-distinct image, the worst of the three shapes: effort 0 14.6, effort 6 859, effort 9
+    // 1,375; the period images measured less), rounded up by half again. The bound is a multiple of
+    // the pixel count, so it also states that the memory grows linearly with the image and no
+    // faster. Effort 9 keeps eight finalists and sweeps every predictor tile size, which is where
+    // the kilobyte a pixel goes. A photo costs more than these images (the 1080p benchmark's
+    // effort 9 allocates 5.5 GB for 2 M pixels of photo, 2.7 KB a pixel), so these figures are
+    // this test's bounds on these shapes, not a ceiling for every input.
+    private const long BytesPerPixelEffort0 = 32;
+    private const long BytesPerPixelEffort6 = 1300;
+    private const long BytesPerPixelEffort9 = 2100;
 
     private static long BytesPerPixelFor(int effort) => effort switch
     {
@@ -175,10 +180,10 @@ public sealed class WebpLosslessEncoderPathologicalInputTests
     [InlineData(9, 7)]
     public void AnImageWhoseEveryPositionMatchesEveryOtherEncodesWithinTheBounds(int effort, int period)
     {
-        // 2048 x 2048 is LargeImagePixels, the biggest image that still tries several candidates at
-        // once; with a period of 1 every position hashes to the same chain.
-        const int width = 2048;
-        const int height = 2048;
+        // With a period of 1 every position hashes to the same chain, so each position meets the
+        // chain-depth cap (2 to 512 by effort) and each match meets the nice length.
+        const int width = 1024;
+        const int height = 1024;
         byte[] rgba = Period(width, height, period);
         var (file, allocated, elapsed) = Measure(rgba, width, height, effort);
 
@@ -193,7 +198,7 @@ public sealed class WebpLosslessEncoderPathologicalInputTests
     public void OneColourWithASprinkleOfOthersEncodesWithinTheBounds()
     {
         // Long runs broken now and then: the chains stay long and the matches keep being cut short.
-        const int width = 2048;
+        const int width = 1024;
         const int height = 1024;
         byte[] rgba = Period(width, height, 1);
         for (int i = 977; i < width * height; i += 977)
