@@ -5,6 +5,7 @@ using SharpAstro.Codecs;
 using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Jpeg;
 using SharpAstro.Png;
+using SharpAstro.Radiance;
 using Shouldly;
 using Xunit;
 
@@ -158,5 +159,40 @@ public sealed class ImageCodecsTests
         JpegDecoder.DecodeTo(bytes, direct);
 
         viaFacade.ShouldBe(direct);
+    }
+
+    // --- Radiance ---
+
+    [Fact]
+    public void Radiance_hdr_decodes_through_the_facade_and_is_refused_by_the_8bit_path()
+    {
+        var rgb = new float[] { 1f, 0.5f, 0.25f, 0f, 0f, 0f, 2f, 4f, 8f, 0.125f, 0.0625f, 0.5f };
+        var hdr = RadianceFile.Write(rgb, 4, 1);
+
+        ImageCodecs.CanDecode(hdr).ShouldBeTrue();
+        ImageCodecs.TryReadInfo(hdr, out var info).ShouldBeTrue();
+        info.ShouldBe(new ImageInfo(4, 1, 3, SampleFormat.Float32));
+
+        ImageCodecs.TryDecode(hdr, out var img).ShouldBeTrue();
+        img.ShouldNotBeNull();
+        (img.Width, img.Height, img.Channels, img.SampleFormat).ShouldBe((4, 1, 3, SampleFormat.Float32));
+        img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Linear);
+        img.ColorEncoding.Float.ShouldBe(FloatSemantics.SceneReferred);
+        var f = img.ToFloats();
+        f[..3].ToArray().ShouldBe([1f, 0.5f, 0.25f]);
+        f[8..11].ToArray().ShouldBe([2f, 4f, 8f]);
+
+        ImageCodecs.TryDecodeIntoRgba8(hdr, new byte[16]).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Radiance_rgbe_short_magic_sniffs_through_the_facade()
+    {
+        byte[] hdr = [.. "#?RGBE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n"u8, 128, 128, 128, 129];
+
+        ImageCodecs.CanDecode(hdr).ShouldBeTrue();
+        ImageCodecs.TryDecode(hdr, out var img).ShouldBeTrue();
+        img.ShouldNotBeNull();
+        img.ToFloats()[..3].ToArray().ShouldBe([1f, 1f, 1f]);
     }
 }

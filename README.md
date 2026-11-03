@@ -16,6 +16,7 @@ package instead of cherry-picking codecs.
 | **TIFF** | ✅ | ✅ | multi-page, 8/16/32-bit uint + float, Deflate/Zlib/LZW, Predictor 2 |
 | **JPEG XR** | ✅ | ✅ | jxrlib-exact — codestream byte-identical to the reference encoder |
 | **OpenEXR** | ✅ | ✅ | scanline, HALF/FLOAT/UINT, NONE/RLE/ZIP/ZIPS/PIZ |
+| **Radiance RGBE** | ✅ | ✅ | `.hdr` / `.pic` to scene-linear float RGB; RGBE and XYZE, new/old RLE, EXPOSURE reported; value-exact vs Magick.NET both ways |
 | **JPEG XL** | ✅ | ✅ | clean-room; lossless Modular + lossy VarDCT |
 | **JBIG2** | ✅ | — | bilevel, for PDF's `/JBIG2Decode`. Every region type T.88 defines, on the arithmetic path |
 | **WebP** | ✅ | — | VP8 lossy, VP8L lossless, ALPH, animation + seek, ICC/EXIF/XMP metadata |
@@ -35,7 +36,7 @@ lockstep (shared Major.Minor + CI run-number patch).
 ## NuGet
 
 ```
-# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, .jb2):
+# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, Radiance .hdr, .jb2):
 dotnet add package SharpAstro.Codecs
 
 # ...or reference just the format(s) you need:

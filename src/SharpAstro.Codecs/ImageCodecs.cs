@@ -8,6 +8,7 @@ using SharpAstro.Jpeg2000;
 using SharpAstro.Jxl;
 using SharpAstro.Jxr;
 using SharpAstro.Png;
+using SharpAstro.Radiance;
 using SharpAstro.Tiff;
 using SharpAstro.Webp;
 
@@ -19,7 +20,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2 and JPEG 2000. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP and Radiance RGBE. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -41,7 +42,11 @@ namespace SharpAstro.Codecs;
 /// still hands back every component, with the JP2 colour box reported.
 /// </para>
 /// <para>
-/// Float-sample content (EXR, HDR float JXR/JXL/TIFF) decodes through
+/// Radiance (<c>.hdr</c> / <c>.pic</c>) decodes to three-channel scene-linear float; an XYZE file is tagged
+/// <c>ColorPrimaries.SMPTE428</c> (CIE XYZ) rather than presented as RGB.
+/// </para>
+/// <para>
+/// Float-sample content (EXR, Radiance, HDR float JXR/JXL/TIFF) decodes through
 /// <see cref="TryDecode"/> with <see cref="IDecodedImage.ColorEncoding"/>
 /// declaring its meaning; <see cref="TryDecodeIntoRgba8"/> serves the
 /// integer-sample display path only - projecting HDR float to 8 bits is a
@@ -97,6 +102,8 @@ public static class ImageCodecs
         Register<Jbig2ImageDecoder>(),
         Register<Jpeg2000ImageDecoder>(),
         Register<WebpImageDecoder>(),
+        // '#?RADIANCE' / '#?RGBE' collides with no binary signature above.
+        Register<RadianceImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>

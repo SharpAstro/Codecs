@@ -53,6 +53,50 @@ public static class RadianceFile
     /// an unsupported FORMAT or orientation, or a size over <paramref name="maximumPixels"/>.</exception>
     public static RadianceImage Read(ReadOnlySpan<byte> data, long maximumPixels = DefaultMaximumPixels)
     {
+        var (header, pos) = ReadHeader(data, maximumPixels);
+        int width = header.Width, height = header.Height;
+
+        var pixels = new float[checked(width * height * 3)];
+        var scan = new byte[width * 4];
+        var body = data[pos..];
+        int bp = 0;
+        for (int y = 0; y < height; y++)
+        {
+            ReadScanline(body, ref bp, scan, width);
+            int o = y * width * 3;
+            for (int x = 0; x < width; x++, o += 3)
+            {
+                int e = scan[x * 4 + 3];
+                if (e == 0) continue; // exponent byte 0 means black; the array is already 0f
+                float f = MathF.ScaleB(1f, e - 136);
+                pixels[o] = scan[x * 4] * f;
+                pixels[o + 1] = scan[x * 4 + 1] * f;
+                pixels[o + 2] = scan[x * 4 + 2] * f;
+            }
+        }
+
+        return new RadianceImage
+        {
+            Width = width,
+            Height = height,
+            Pixels = pixels,
+            Format = header.Format,
+            Exposure = header.Exposure,
+            HeaderLines = header.HeaderLines,
+        };
+    }
+
+    /// <summary>
+    /// Read only the header (magic line, <c>FORMAT=</c>/<c>EXPOSURE=</c> lines, resolution line): no scanline is
+    /// decoded and no pixel array is allocated, so this is cheap on any file. <see cref="RadianceImage.Pixels"/> of the
+    /// result is empty. Applies the same refusals as <see cref="Read"/> up to and including the pixel ceiling.
+    /// </summary>
+    /// <exception cref="InvalidDataException">A malformed or unsupported header, or a size over <paramref name="maximumPixels"/>.</exception>
+    public static RadianceImage ReadInfo(ReadOnlySpan<byte> data, long maximumPixels = DefaultMaximumPixels) =>
+        ReadHeader(data, maximumPixels).Header;
+
+    private static (RadianceImage Header, int BodyStart) ReadHeader(ReadOnlySpan<byte> data, long maximumPixels)
+    {
         int pos = 0;
         string magic = ReadLine(data, ref pos) ?? throw new InvalidDataException("Radiance: empty file.");
         if (magic != "#?RADIANCE" && magic != "#?RGBE")
@@ -90,34 +134,15 @@ public static class RadianceFile
         if ((long)width * height > maximumPixels)
             throw new InvalidDataException($"Radiance: {width}x{height} exceeds the {maximumPixels}-pixel limit.");
 
-        var pixels = new float[checked(width * height * 3)];
-        var scan = new byte[width * 4];
-        var body = data[pos..];
-        int bp = 0;
-        for (int y = 0; y < height; y++)
-        {
-            ReadScanline(body, ref bp, scan, width);
-            int o = y * width * 3;
-            for (int x = 0; x < width; x++, o += 3)
-            {
-                int e = scan[x * 4 + 3];
-                if (e == 0) continue; // exponent byte 0 means black; the array is already 0f
-                float f = MathF.ScaleB(1f, e - 136);
-                pixels[o] = scan[x * 4] * f;
-                pixels[o + 1] = scan[x * 4 + 1] * f;
-                pixels[o + 2] = scan[x * 4 + 2] * f;
-            }
-        }
-
-        return new RadianceImage
+        return (new RadianceImage
         {
             Width = width,
             Height = height,
-            Pixels = pixels,
+            Pixels = [],
             Format = format,
             Exposure = exposure,
             HeaderLines = headerLines,
-        };
+        }, pos);
     }
 
     /// <summary>One header line without its terminator (a trailing CR is dropped), or null at end of data.</summary>

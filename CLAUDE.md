@@ -11,7 +11,7 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Exif`,
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Exif`,
   `Color.Icc`, `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered
   *ahead of* the plain JPEG decoder).
 
@@ -896,6 +896,20 @@ flight's numbers are in the `3.26` CHANGELOG entry; the ones worth keeping in mi
   `PngHdrFloat4kBenchmarks` *timings* are too noisy to decide anything (the 127 MiB array lands on the large-object
   heap); its allocated-bytes column is what it is for.
 
+`SharpAstro.Radiance` (3.29) is the Radiance RGBE (`.hdr` / `.pic`) codec, written for stb_image HDR parity (Codecs #56). stb_image is
+public domain, so unlike the notice-retaining sources above it may be *read* for behaviour; the validation does not rest on it,
+though. **Magick.NET is the oracle both ways** (`RadianceOracleTests`): ImageMagick-written files must decode to our floats and ours
+must decode to ImageMagick's, decoded-to-decoded bit-exact. Things that are not obvious:
+
+- **The value convention is `mantissa * 2^(e - 136)`, with no `+ 0.5`** and `e == 0` black. Radiance's own `colr_color` adds
+  the 0.5; ImageMagick (and stb_image) do not. Measured against Magick.NET, and a bias of `e - 135` fails 24 tests.
+- **`EXPOSURE=` is reported on `RadianceImage.Exposure`, not applied**, and XYZE is reported (`RadianceImage.Format`), not
+  converted: the facade adapter tags it `ColorPrimaries.SMPTE428` so it cannot be read as RGB. Only `-Y h +X w` is read.
+- **Pixel ceilings are charged from the header.** `RadianceFile.Read` defaults to 2^28 pixels; `RadianceImageDecoder` uses
+  2^26 (`MaximumPixels`) because the facade raster is a byte copy of the floats. A run-length scanline can describe far more
+  pixels than it has bytes, so input size is no bound (the same lesson as the JBIG2 and JPEG 2000 sections).
+- **The facade adapter is float-tier only**: `TryDecodeIntoRgba8` is always false, like EXR.
+
 ## Oracle harnesses (all codecs)
 
 There are multiple oracle mechanisms, with different acquisition stories. All of them
@@ -910,6 +924,7 @@ refuses to accept that silence.
 | JPEG **encode** | `jpegenc.exe` (stb_image_write wrapper) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpegenc/build.sh` — downloads the header **pinned by commit SHA + SHA-256**, clang-builds into `Oracle/bin/`. Git-ignored; `jpegenc.c` + `build.sh` are the committed source of truth. **CI runs it.** |
 | JPEG **decode** | committed golden digests | No external dependency — `Fixtures/jpeg-oracle-golden.tsv` (decode) and `jpeg-encoder-golden.tsv` (encode) run in CI unconditionally. Regenerate with `REGEN_JPEG_ORACLE=1`. |
 | JXL, EXR | Magick.NET (libjxl / OpenEXR) | Just a NuGet reference — no build step. |
+| Radiance **both ways** | Magick.NET (ImageMagick) | Just a NuGet reference. `RadianceOracleTests`: ImageMagick-written files decode to our floats, ours decode to ImageMagick's, bit-exact. Nothing to install, nothing to skip. |
 | JBIG2 **MMR** | Magick.NET (libtiff, CCITT Group 4) | Just a NuGet reference. `Group4Tiff` has libtiff encode the raster as Group 4 and unwraps the codestream — T.6 is exactly what T.88 §6.2.6 carries. Nothing to install, nothing to skip. |
 | TIFF **tiled write** | Magick.NET (libtiff) | Just a NuGet reference. `TiffWriterTiledOracleTests` has libtiff read back what `TiffWriter` emits in `TiffLayout.Tiled`. Nothing to install, nothing to skip. Kept as an oracle even though `TiffReader` reads tiles now: writer and reader agree about tile order by construction, so a round trip cannot see a consistent transpose. |
 | TIFF **tiled read** | Magick.NET (libtiff) | The same reference, run the other way: `TiffTiledReadTests` has libtiff WRITE the tiled file (`tile-geometry` + `predictor` defines) and reads it back with `TiffReader`. **The predictor is why it must be a foreign encoder** -- `TiffWriter` emits none, so nothing we write exercises Predictor 2, and inverting it at image width rather than TILE width decodes with no error into a picture that is right in its first tile column and drifts across the rest. That sabotage fails exactly the two libtiff cases and nothing else in the suite. |

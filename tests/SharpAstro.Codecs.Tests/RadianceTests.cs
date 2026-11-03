@@ -409,4 +409,24 @@ public sealed class RadianceTests
         Should.Throw<ArgumentException>(() => RadianceFile.Write(new float[5], 1, 1));
         Should.Throw<ArgumentOutOfRangeException>(() => RadianceFile.Write(new float[0], 0, 1));
     }
+
+    [Fact]
+    public void ReadInfo_reports_the_header_without_touching_the_pixels()
+    {
+        var f = File(2, 1, Px(128, 64, 32, 129, 0, 0, 0, 0), "EXPOSURE=2", "EXPOSURE=4");
+        var info = RadianceFile.ReadInfo(f);
+        var full = RadianceFile.Read(f);
+        (info.Width, info.Height, info.Format, info.Exposure).ShouldBe((2, 1, RadianceFormat.Rgbe, 8.0));
+        info.HeaderLines.ShouldBe(full.HeaderLines);
+        info.Pixels.ShouldBeEmpty();
+
+        // No body at all: Read needs scanlines, ReadInfo does not.
+        var headOnly = f[..^8];
+        RadianceFile.ReadInfo(headOnly).Width.ShouldBe(2);
+        Should.Throw<InvalidDataException>(() => RadianceFile.Read(headOnly));
+
+        // The same refusals as Read for the header itself, ceiling included.
+        Should.Throw<InvalidDataException>(() => RadianceFile.ReadInfo(f, maximumPixels: 1));
+        Should.Throw<InvalidDataException>(() => RadianceFile.ReadInfo(Head("+Y 1 +X 1")));
+    }
 }
