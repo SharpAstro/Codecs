@@ -441,11 +441,13 @@ public sealed class JpegRegionDecodeTests
     }
 
     [Fact]
-    public void RestartMarkersOutOfSequence_AreNotSkippedThrough()
+    public void RestartMarkersOutOfSequence_StillDecodeLikeTheFullDecode()
     {
         // RST numbers cycle 0..7. Swapping two markers' numbers leaves the count right and the sequence wrong; a full
-        // decode takes any RSTn as a restart and does not notice, so the region must produce the same pixels. Interval 3
-        // over 4:2:0 gives well over eight markers, so the cycle wraps.
+        // decode takes any RSTn as a restart and does not notice, so the region must produce the same pixels, whether
+        // it skips by counting or (as it does, being cautious about the sequence) falls back to the top. This does not
+        // tell the two apart: DamagedRestartMarkers_... does, with markers that are missing. Interval 3 over 4:2:0
+        // gives well over eight markers, so the cycle wraps.
         var pristine = JpegStripDecodeTests.BuildDcOnlyJpeg(163, 125, [(2, 2), (1, 1), (1, 1)], restartInterval: 3);
         var rsts = JpegStripDecodeTests.RstOffsets(pristine);
         rsts.Count.ShouldBeGreaterThan(10);
@@ -494,7 +496,10 @@ public sealed class JpegRegionDecodeTests
             foreach (var interval in new[] { 0, 4 })
             {
                 var separate = JpegStripDecodeTests.BuildDcOnlyJpeg(83, 61, layout, separateScans: true, restartInterval: interval);
-                JpegDecoder.DecodeWithStats(separate, JpegScale.Full, out _).WholePlanes.ShouldBeTrue();
+                // A single component's one scan covers the frame, so grey streams even when asked for "separate"
+                // scans; it is compared too, but only a frame with several components is forced onto whole planes.
+                if (layout.Length > 1)
+                    JpegDecoder.DecodeWithStats(separate, JpegScale.Full, out _).WholePlanes.ShouldBeTrue();
                 ShouldMatchWhereFullDecodeSucceeds(separate, $"separate scans DRI {interval}").ShouldBeGreaterThan(0);
             }
         }

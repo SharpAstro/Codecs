@@ -81,6 +81,30 @@ IDCT from them in `Finish`. `JpegCore.Run` owns the lifetime. Things that are no
   in the caller's buffer, where it used to leave it untouched.
 - `JpegDecodeStats.PeakPlaneBytes` counts the strip/plane arrays held (rented length, so pool rounding is
   in it); line buffers and progressive coefficients are not. `Run` returns it; the public API discards it.
+  `EntropyUnits` / `TransformedUnits` count MCU rows entropy-decoded and IDCT'd; the region cost tests read them.
+
+**`DecodeRegionTo` is the same engine narrowed, not a second one** (issue #28 ask 1). `SetRegion` leaves every
+full-decode default (`_unitStart/_unitEnd`, `_cropX/_cropW`, `_outEnd`, each component's `WinA/WinN/BlkLo/BlkHi`) at its
+whole-image value, so there is one `EmitRow` and one `StreamScan`. What is not obvious:
+
+- **Rows are seeded in closed form.** The `YStep/YPos/Line0/Line1` loop has no data dependence, so `SeedRows` jumps it
+  to the region's first row; the units the first and last row read (`PlaneRowsRead`) give the margin for V2/Hv2's far
+  row with no special case. A kernel that reads only the near row (H2, generic) does not pull the unit above in.
+- **Columns run the resample kernels unchanged over a window**, widened one sample each side for H2/Hv2 and clipped to
+  the row, then crop. The kernels treat the first/last sample they are given as the image edge, so the window's interior
+  edge spoils exactly the margin that is cropped away. Note stb's *right* edge is not the mirror of its left
+  (`3*in[w-2] + in[w-1]`), so an "interior-span variant" of the arithmetic would have to reproduce that; running the
+  real kernel avoids copying it. A region's strips hold only those block columns (`Stride`/`ColBase`).
+- **Restart skip-ahead counts markers, and trusts neither their numbers nor the interval sizes.** It requires RST0..7 in
+  sequence and falls back to the top of the scan otherwise (a deleted marker shifts every later one, and only the
+  sequence check sees it). It cannot check that each skipped interval really holds DRI MCUs; a stream whose intervals do
+  not is corrupt in a way only decoding them would show. The region also never reads past its last unit, so a second
+  scan or an Adobe/JFIF marker *after* the scan (both already restart the full decode) goes unseen unless the region
+  reaches the end of the scan. Documented on `DecodeRegionTo`; both are invalid files.
+- **Mutation-checked** (deliberate bugs, one at a time): no horizontal margin (31 tests fail), no far-row margin (35),
+  RST numbers unchecked (the damaged-marker test), the partial-unit clear ignoring `ColBase` (the two salvage tests,
+  the only ones that reach it), and the skip-ahead disabled (exactly the two cost tests: the pixels are still right,
+  so nothing else can see it).
 
 `SharpAstro.Jpeg` also ships a **second, structurally unrelated decoder**: `LosslessJpeg`
 (ITU-T T.81 Annex H, SOF3) — Huffman-coded sample-difference predictors 1–7, no quantisation,
