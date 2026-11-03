@@ -289,6 +289,63 @@ internal static class PngHdr
         }
     }
 
+    // ---- code tables (the float fill's fast path) ------------------------------------------
+
+    /// <summary>
+    /// The whole code-to-linear map as a table: <c>table[c] = ToLinear(CodeToSignal(c))</c> for every
+    /// code <c>c</c> in <c>0 .. 2^bitDepth - 1</c>, on a single-channel (grey) scale. Because each
+    /// entry is produced by the very same <see cref="CodeToSignal"/> and <see cref="ToLinear"/> a
+    /// per-sample caller would use, looking a code up is <b>bit-identical</b> to computing it; the
+    /// table also folds in the narrow-range expansion and the clamp. For every transfer but HLG this
+    /// is the colour channel's final value whatever the pixel's other channels are; for HLG it is the
+    /// final value of a <i>grey</i> pixel only, and an RGB pixel needs <see cref="BuildHlgSceneLightTable"/>
+    /// and <see cref="HlgSceneToLinear"/> (the OOTF couples its channels).
+    /// </summary>
+    /// <param name="table">Exactly <c>2^bitDepth</c> floats.</param>
+    /// <exception cref="ArgumentOutOfRangeException">The bit depth is invalid for the range (see
+    /// <see cref="CodeToSignal"/>), or <paramref name="table"/> is not <c>2^bitDepth</c> long.</exception>
+    /// <exception cref="NotSupportedException"><paramref name="transfer"/> is not
+    /// <see cref="IsSupportedTransfer">supported</see>.</exception>
+    public static void BuildLinearTable(TransferFunction transfer, ColorPrimaries primaries, int bitDepth, bool fullRange, Span<float> table)
+    {
+        FillSignalTable(bitDepth, fullRange, table);
+        ToLinear(transfer, primaries, table, 1, 1);
+    }
+
+    /// <summary>
+    /// <see cref="BuildLinearTable"/>'s HLG sibling for RGB pixels: <c>table[c] = HlgInverseOetf(CodeToSignal(c))</c>,
+    /// the normalised <i>scene</i> light that <see cref="HlgSceneToLinear"/> then takes through the OOTF.
+    /// </summary>
+    public static void BuildHlgSceneLightTable(int bitDepth, bool fullRange, Span<float> table)
+    {
+        FillSignalTable(bitDepth, fullRange, table);
+        for (int i = 0; i < table.Length; i++)
+            table[i] = HlgInverseOetf(table[i]);
+    }
+
+    /// <summary>
+    /// The per-pixel half of an HLG RGB pixel: scene light <c>(er, eg, eb)</c> (from
+    /// <see cref="BuildHlgSceneLightTable"/>) to linear light on the <c>1.0 = 203 cd/m²</c> scale,
+    /// the same <see cref="HlgOotf"/> and the same division by <see cref="ReferenceWhiteNits"/>
+    /// <see cref="ToLinear"/> performs, so the result is bit-identical to it.
+    /// </summary>
+    public static void HlgSceneToLinear(float er, float eg, float eb, LumaWeights weights, out float r, out float g, out float b)
+    {
+        var (fr, fg, fb) = HlgOotf(er, eg, eb, weights);
+        r = fr / ReferenceWhiteNits;
+        g = fg / ReferenceWhiteNits;
+        b = fb / ReferenceWhiteNits;
+    }
+
+    private static void FillSignalTable(int bitDepth, bool fullRange, Span<float> table)
+    {
+        ValidateBitDepth(bitDepth, fullRange);
+        if (table.Length != 1 << bitDepth)
+            throw new ArgumentOutOfRangeException(nameof(table), table.Length, $"A {bitDepth}-bit code table has {1 << bitDepth} entries.");
+        for (int c = 0; c < table.Length; c++)
+            table[c] = CodeToSignalUnchecked(c, bitDepth, fullRange);
+    }
+
     // ---- internals -----------------------------------------------------------------------
 
     private static void ValidateBitDepth(int bitDepth, bool fullRange)
