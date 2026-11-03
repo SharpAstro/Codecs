@@ -16,7 +16,8 @@ internal static class Vp8LDecoder
     private static readonly int[] CodeLengthCodeOrder =
         { 17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
 
-    private static readonly (int X, int Y)[] DistanceMap =
+    // RFC 9649 section 4.2.2 (the 120 plane codes). Shared with the encoder, which maps distances back through it.
+    internal static readonly (int X, int Y)[] DistanceMap =
     {
         (0, 1), (1, 0), (1, 1), (-1, 1), (0, 2), (2, 0), (1, 2), (-1, 2),
         (2, 1), (-2, 1), (2, 2), (-2, 2), (0, 3), (3, 0), (1, 3), (-1, 3),
@@ -618,7 +619,8 @@ internal static class Vp8LDecoder
         return offset + reader.ReadBits(extraBits) + 1;
     }
 
-    private static int Distance(int distanceCode, int width)
+    /// <summary>The linear distance a distance code stands for at <paramref name="width"/> (plane codes 1..120, else code - 120).</summary>
+    internal static int Distance(int distanceCode, int width)
     {
         if (distanceCode > 120)
         {

@@ -274,7 +274,11 @@ lossless images. Its four generated WebP inputs are checked in under
 Regenerate them with
 `bash benchmarks/SharpAstro.Codecs.Benchmarks/generate-webp-inputs.sh`, then
 run `dotnet run -c Release --project benchmarks/SharpAstro.Codecs.Benchmarks
--- --filter '*Webp*'`. libwebp is found through `LIBWEBP_PATH`, or else the
+-- --filter '*Webp*'`. The encoder has its own: `--filter '*WebpEncodeBenchmarks*'` is encode time per
+Effort on 1080p, and `-- --webp-encode-report` (options `--efforts=0,3,6,9`, `--only=name`, `--no-corpus`,
+`--no-1080p`, `--out=file`) prints size and wall time against `cwebp -lossless` at its default and `-z 9`
+and checks every output decodes exactly (ours and `dwebp`); it needs `cwebp` / `dwebp` from `Oracle/webp/bin`
+or PATH and takes about 11 minutes in full. libwebp is found through `LIBWEBP_PATH`, or else the
 platform's usual shared-library names (`libwebp.so.7`, Homebrew's
 `libwebp.dylib`, `libwebp.dll`). On Windows, set `LIBWEBP_PATH` to a webp DLL
 (e.g. vcpkg's); the official release archive ships only a static library. The animation case measures full
@@ -743,7 +747,7 @@ and `Jpeg2000Decoder.Decode` still hands back every component with the colour re
 `SharpAstro.Webp` decodes VP8 lossy, VP8L lossless, ALPH transparency, and
 animated WebP. Animation frames are full-canvas RGBA8; both materialized
 decoding and seeking are supported. ICC, EXIF, and XMP payloads are preserved.
-There is no encoder, and the facade returns frame 0 for animated input.
+The only encoder is lossless VP8L (`WebpEncoder`, rung 3: the four transforms, LZ77 backward references, colour cache and meta prefix codes, each chosen per image by exact cost, the untransformed image always a candidate from Effort 3; `plan with { Transforms = false }` is the previous rung's configuration for size comparisons; Effort 0 is the literal-only setting of the same encoder, spec-derived from RFC 9649 only; `cwebp`/`dwebp` are black-box oracles fetched by `Oracle/webp/fetch.sh`). The facade returns frame 0 for animated input.
 Declared canvases above 67,108,864 pixels are rejected before raster allocation.
 
 This decoder is spec-derived from the **prose and tables** of RFC 6386 / RFC 9649.
@@ -833,6 +837,51 @@ The frame's RFC 9649 blend flag requires alpha blending; this decoder follows
 that rule, while `anim_dump` 1.6.0 emits this fixture's frame uncomposited.
 The fixture is excluded from that oracle comparison and remains covered by
 compositing and seek-versus-sequential tests.
+
+### The lossless encoder (3.32): provenance, rungs and what was measured
+
+`WebpEncoder.EncodeLossless` / `EncodeLosslessRgb` / `EncodeLosslessGray` write VP8L. **Provenance:** spec-derived from RFC 9649
+alone, same line as the decoder: no libwebp, libvpx or RFC 6386 §20 source was read, and `cwebp` / `dwebp` 1.6.0 are black-box oracles
+(`Oracle/webp/fetch.sh` puts them in `Oracle/webp/bin`; `WebpOracle` resolves `DWEBP` / `ANIM_DUMP`, then `bin`, then PATH; only the encode report in the benchmarks project looks up `cwebp`, from `CWEBP`, then `bin`, then PATH). `cwebp` is run
+with `-lossless -exact`, because our output keeps the colour under transparent pixels. The rungs, each a superset of the last and each
+decided **by exact cost** (the real bit count of the candidate, not an estimate):
+
+1. literal-only prefix codes (this is Effort 0);
+2. LZ77 backward references with the 2D distance codes, and a colour cache (`Vp8LMatchFinder`, hash chains);
+3. the four transforms (subtract green, predictor, cross colour, colour indexing) and meta prefix codes (an entropy image). The pipeline
+   is chosen by cost, the untransformed image is always a candidate from Effort 3, and `plan with { Transforms = false }` is rung 2's
+   configuration, kept for size comparisons.
+
+`WebpEncodeOptions.Effort` 0-9 (default 6) is a table in `Vp8LEncoderPlan`: window 2^14-2^20, chain depth 2-512, nice length 16-4096,
+1-8 finalists (above 2^22 pixels only one), predictor tile sizes, colour cache sizes, lazy matching from 4. **Two caps bound pathological
+input, and neither depends on the pixels:** the chain depth and nice length per effort (a one-colour 1024x1024 image costs the chain
+depth per position and no more), and `WebpLimits.MaximumEncoderWorkingBytes` (1 GiB), which the plan charges up front and meets by shrinking
+the window and then dropping backward references. Dimensions over 16384 or 2^26 pixels are refused before anything is allocated.
+`WebpLosslessEncoderPathologicalInputTests` pins all of it: refusal allocates under 64 KiB, and an all-distinct, a one-colour and a
+short-period 1024x1024 image encode and round-trip at efforts 0, 6 and 9 within a timeout and a bytes-allocated-per-pixel bound
+(measured 14.6 / 859 / 1,375 bytes a pixel for effort 0 / 6 / 9 on the all-distinct image, bounds 32 / 1,300 / 2,100). **That bound is on
+bytes allocated over a whole encode, which is cumulative and several times what is live at once**; the live figure is the plan's
+charge. A photo allocates more than those images (2.7 KB a pixel at effort 9), so the bound is for those shapes, not for every input.
+
+**Measured** (3.32, one sitting: `--webp-encode-report` and `WebpEncodeBenchmarks`; the full tables are in `CODECS.md` and the CHANGELOG):
+at 1080p effort 6 is 1.01x `cwebp`'s default size on the generated photo, 0.84x on the screenshot, 1.13x on a lossless-sourced image and
+1.04-1.08x on lossy-sourced ones; effort 9 is 0.99x / 0.80x / 1.01x / 1.03x. Time at effort 6 is 4.8-6.5 s steady-state (8.5-13.8 s cold in the
+report) against `cwebp`'s 0.6-1.1 s, so **6-13x slower**; effort 9 is 13-31 s. Effort 0 is 28-45 ms. Things the next person would trip over:
+
+- **Size is not monotone in effort.** The photo is 1.39x at effort 3, 1.29x at 4, 1.02x at 5; `lossless-1080p` is 1.06x at 5 and 1.13x at 6.
+  Do not assume a higher effort is smaller, and do not "fix" a test that expects it.
+- **The report's first image pays JIT and tiering**, so its times are about 2x the BenchmarkDotNet steady state at efforts 5-7
+  (photo effort 6: 13.8 s against 6.5 s). Use BenchmarkDotNet for time, the report for size, and say which one a number came from.
+  BenchmarkDotNet's `Error` at effort 6 and above is wider than the gap between neighbouring efforts (3 iterations, one encode each,
+  `RunStrategy.Monitoring`), so those rows are good to a factor of about 1.5.
+- **cwebp's PNG reader is the only input that works on Windows**: the Windows build fails on PAM through WIC ("IWICImagingFactory_CreateDecoderFromStream failed"),
+  so the report writes a PNG with `SharpAstro.Png` and gives that to `cwebp`.
+- **Is another stage worth it?** For size, mostly not: the remaining gap is 0-8% on photographic and lossy-sourced content and we are
+  ahead on screenshots, palette and alpha images. For **speed** a stage would pay. It has not been profiled, so this is a hypothesis: the
+  6-13x is the exact-cost sweep over predictor tiles, cache sizes and finalists, which runs the whole pipeline to count bits. Ranking those
+  with a cheap estimate and paying the exact cost only for the winner is the lever to try first, and it should also cut the 1-5 GB of
+  cumulative allocation at the top efforts. It is not scheduled (no consumer here has asked for faster encodes); profile first, and
+  measure with the two tools above before and after.
 
 ## APNG (animated PNG) — spec-derived, Pillow as the independent reference
 
