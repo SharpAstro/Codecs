@@ -185,7 +185,6 @@ the first step of stb_image parity: the stb port removed earlier took TGA with i
 Tests: `TgaFacadeTests` (footered files through `TryDecode` / `TryReadInfo` / `TryDecodeIntoRgba8` equal `TgaReader`; footerless
 files and random bytes are not recognised; corrupt footered files return false), alongside the reader, writer and refusal tests.
 
-
 ## 3.28
 
 **`SharpAstro.Png`'s APNG compositing allocates a fraction of what it did, and is 6-16% faster.** No API change. The
