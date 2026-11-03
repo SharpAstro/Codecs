@@ -30,6 +30,8 @@
 
   <ItemGroup>
     <None Update="webp-inputs\*.webp" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Third-party inputs from fetch-webp-external.sh; git-ignored, so usually absent. -->
+    <None Update="webp-inputs\external\*.webp" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
