@@ -743,7 +743,7 @@ and `Jpeg2000Decoder.Decode` still hands back every component with the colour re
 `SharpAstro.Webp` decodes VP8 lossy, VP8L lossless, ALPH transparency, and
 animated WebP. Animation frames are full-canvas RGBA8; both materialized
 decoding and seeking are supported. ICC, EXIF, and XMP payloads are preserved.
-The only encoder is lossless VP8L (`WebpEncoder`, rung 2: LZ77 backward references + colour cache, no transforms yet; Effort 0 is the literal-only setting of the same encoder, spec-derived from RFC 9649 only; `cwebp`/`dwebp` are black-box oracles fetched by `Oracle/webp/fetch.sh`). The facade returns frame 0 for animated input.
+The only encoder is lossless VP8L (`WebpEncoder`, rung 3: the four transforms, LZ77 backward references, colour cache and meta prefix codes, each chosen per image by exact cost, the untransformed image always a candidate from Effort 3; `plan with { Transforms = false }` is the previous rung's configuration for size comparisons; Effort 0 is the literal-only setting of the same encoder, spec-derived from RFC 9649 only; `cwebp`/`dwebp` are black-box oracles fetched by `Oracle/webp/fetch.sh`). The facade returns frame 0 for animated input.
 Declared canvases above 67,108,864 pixels are rejected before raster allocation.
 
 This decoder is spec-derived from the **prose and tables** of RFC 6386 / RFC 9649.

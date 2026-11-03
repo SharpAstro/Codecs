@@ -1018,7 +1018,7 @@ public sealed class WebpLosslessEncoderOracleTests
         Assert.True(image.Rgba.AsSpan().SequenceEqual(pixels), Describe(image.Rgba, pixels));
     }
 
-    private static string Describe(byte[] expected, byte[] actual)
+    internal static string Describe(byte[] expected, byte[] actual)
     {
         if (expected.Length != actual.Length)
         {
@@ -1034,7 +1034,7 @@ public sealed class WebpLosslessEncoderOracleTests
         return $"first difference at byte {i} (pixel {i / 4}, channel {i % 4}): expected {expected[i]}, dwebp gave {actual[i]}";
     }
 
-    private static (int Width, int Height, byte[] Rgba) RunDwebpPam(string dwebp, byte[] file)
+    internal static (int Width, int Height, byte[] Rgba) RunDwebpPam(string dwebp, byte[] file)
     {
         string stem = Path.Combine(Path.GetTempPath(), $"webp-lossless-encoder-{Guid.NewGuid():N}");
         string input = stem + ".webp";

@@ -18,16 +18,22 @@ public sealed class WebpEncodeOptions
 
     /// <summary>
     /// How hard the encoder tries, 0 (fastest) to 9 (smallest output). 0 writes literal-only
-    /// prefix codes. From 1 up it searches for LZ77 backward references (a wider window and deeper
-    /// hash chains as the effort rises, lazy matching from 4) and from 2 up it also tries colour
-    /// caches (a few sizes, then all of 1 to 11 bits from 7) and keeps whichever costs fewest bits.
+    /// prefix codes. From 1 up it tries the transforms (subtract green, the predictor with a mode
+    /// per tile, colour indexing; the cross colour transform from 3), searches for LZ77 backward
+    /// references (a wider window and deeper hash chains as the effort rises, lazy matching from 4),
+    /// and from 2 up also tries colour caches (a few sizes, then all of 1 to 11 bits from 7). From 4
+    /// it also tries grouping tiles into several prefix-code groups. Higher efforts try more tile
+    /// sizes, more transform combinations and more of the candidates in full; every choice is costed
+    /// exactly and the cheapest is written, and from 3 up the output is never larger than the same
+    /// image without transforms.
     /// </summary>
     public int Effort { get; init; } = 6;
 }
 
 /// <summary>
-/// A WebP encoder. Lossless output only so far: VP8L with LZ77 backward references and a colour
-/// cache chosen per image, but no transforms (predictor, colour, subtract-green, palette) yet.
+/// A WebP encoder. Lossless output only so far: VP8L with the four transforms (subtract green,
+/// predictor, cross colour, colour indexing), LZ77 backward references, a colour cache and meta
+/// prefix codes, each chosen per image.
 /// </summary>
 public static class WebpEncoder
 {

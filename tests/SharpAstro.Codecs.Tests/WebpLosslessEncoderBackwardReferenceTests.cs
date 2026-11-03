@@ -227,7 +227,12 @@ public sealed class WebpLosslessEncoderColourCacheTests
     public void ACachePaysOnImagesWithFewColoursAndIsWrittenWithinOneToEleven(string name)
     {
         var image = WebpLosslessEncoderCorpus.Get(name);
-        byte[] file = WebpEncoder.EncodeLossless(image.Rgba, image.Width, image.Height, options: new WebpEncodeOptions { Effort = 9 });
+
+        // The second rung's configuration: with transforms on, a palette image is colour indexed
+        // and the cache the header names (if any) belongs to the indexed image, after the transforms.
+        var plan = Vp8LEncoderPlan.Create((long)image.Width * image.Height, 9, WebpLimits.MaximumEncoderWorkingBytes) with { Transforms = false };
+        byte[] vp8l = Vp8LEncoder.Encode(WebpLosslessEncoderCorpus.ToArgb(image.Rgba), image.Width, image.Height, false, plan);
+        byte[] file = WebpWriter.Write(vp8l, image.Width, image.Height, false, null, null, null);
         int bits = CacheBitsOf(file);
         Assert.InRange(bits, 0, 11);
         if (name != "flat-ui")
