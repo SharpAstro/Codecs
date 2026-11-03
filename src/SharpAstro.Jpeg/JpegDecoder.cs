@@ -170,10 +170,10 @@ public static class JpegDecoder
     /// <see cref="DecodeWithStats"/> does for a full decode. <paramref name="forceWholePlanes"/> runs the whole-plane
     /// engine, whose rows the sink must accept from the first again after a restart.
     /// </summary>
-    internal static JpegDecodeStats DecodeFittedToWithStats(ReadOnlySpan<byte> data, int targetWidth, int targetHeight, Span<byte> rgbaDestination, JpegScale scale = JpegScale.Full, JpegRegion? region = null, bool forceWholePlanes = false)
+    internal static JpegDecodeStats DecodeFittedToWithStats(ReadOnlySpan<byte> data, int targetWidth, int targetHeight, Span<byte> rgbaDestination, JpegScale scale = JpegScale.Full, JpegRegion? region = null, bool forceWholePlanes = false, bool forceWideSums = false)
     {
         ValidateTarget(targetWidth, targetHeight);
-        var sink = new JpegFittedSink(rgbaDestination, targetWidth, targetHeight, region);
+        var sink = new JpegFittedSink(rgbaDestination, targetWidth, targetHeight, region, forceWideSums);
         try
         {
             return JpegCore.Run(data, ValidateScale(scale), ref sink, forceWholePlanes, region);

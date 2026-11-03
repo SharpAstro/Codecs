@@ -157,6 +157,22 @@ public class JpegDecodeScanBenchmarks
     public (int, int) FittedThumb() => JpegDecoder.DecodeFittedTo(_jpeg, ThumbWidth, ThumbHeight, _thumb);
 
     /// <summary>
+    /// The fitted sink's 64-bit path (what it was before 3.25's vector sums, kept as the reference and as the fallback
+    /// for a box over 2^24 pixels), measured beside the 32-bit lane path it is paired with above, in the same run.
+    /// </summary>
+    [Benchmark(Description = "scan: fitted to 3165x4096, 64-bit sums (old sink)")]
+    public long FittedWide() => JpegDecoder.DecodeFittedToWithStats(
+        _jpeg, JpegIssueScan.FitWidth, JpegIssueScan.FitHeight, _fitted, forceWideSums: true).PeakPlaneBytes;
+
+    [Benchmark(Description = "scan: fitted middle third to 3165x1365, 64-bit sums (old sink)")]
+    public long RegionFittedWide() => JpegDecoder.DecodeFittedToWithStats(
+        _jpeg, JpegIssueScan.FitWidth, JpegIssueScan.BandFitHeight, _bandFitted, JpegScale.Full, JpegIssueScan.Band, forceWideSums: true).PeakPlaneBytes;
+
+    [Benchmark(Description = "scan: fitted to 510x660 (10x boxes), 64-bit sums (old sink)")]
+    public long FittedThumbWide() => JpegDecoder.DecodeFittedToWithStats(
+        _jpeg, ThumbWidth, ThumbHeight, _thumb, forceWideSums: true).PeakPlaneBytes;
+
+    /// <summary>
     /// The strip pipeline against the engine it replaced: <c>forceWholePlanes</c> runs the pre-strip path (three
     /// 33.7 MB planes per call, a fresh <c>new byte[]</c> each, so Gen2/LOH traffic that the pooled strips do not have).
     /// The destination is the same, so a pair differs only in the engine.
