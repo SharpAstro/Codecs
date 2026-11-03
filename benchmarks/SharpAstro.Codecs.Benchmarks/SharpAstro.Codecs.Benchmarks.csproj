@@ -9,10 +9,16 @@
     <!-- Not a shipped package: this project exists to measure the ones that are. -->
     <IsPackable>false</IsPackable>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <!-- Magick.NET bundles ImageMagick, whose CVEs (NU190x) live in decoders for exotic formats.
+         Here it only ENCODES a raster the benchmark generates itself (a baseline 4:4:4 JPEG with
+         a restart interval, which JpegEncoder does not write); nothing foreign is ever decoded.
+         Never shipped, like the test project's reference, so silence the audit noise the same way. -->
+    <NoWarn>$(NoWarn);NU1901;NU1902;NU1903;NU1904</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Magick.NET-Q16-HDRI-AnyCPU" />
   </ItemGroup>
 
   <ItemGroup>

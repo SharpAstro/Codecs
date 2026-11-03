@@ -5,18 +5,32 @@ namespace SharpAstro.Jpeg;
 
 /// <summary>
 /// The decoder engine: marker parsing, Huffman/entropy decode (baseline +
-/// progressive), restart intervals, per-component sample planes, and the final
-/// upsample + colour-convert pass. The full-scale pipeline is a 1:1 port of
+/// progressive), restart intervals, per-component sample strips, and the
+/// upsample + colour-convert pass that feeds a row sink. The full-scale pipeline is a 1:1 port of
 /// stb_image's JPEG decoder, so output is byte-exact against StbImageSharp. That
 /// port (<c>StbImage.Generated.Jpg.cs</c>) is no longer in this repo — the
 /// guarantee now lives as a committed golden digest baseline
 /// (<c>Fixtures/jpeg-oracle-golden.tsv</c>, driven by <c>JpegDecoderOracleTests</c>).
+///
+/// <para><b>Strips, not planes.</b> stb decodes every block into whole-image component planes and only then
+/// upsamples and colour-converts. Here the IDCT writes one <i>unit</i> at a time — an MCU row of an interleaved
+/// scan, a block row of a single-component scan — into a per-component strip a few rows tall, and every output
+/// row whose source rows are complete is assembled and handed to the <see cref="IJpegRowSink"/> straight away.
+/// The strip keeps the plane rows the upsampler still needs from the unit above (its "far" row), so the
+/// output is the same bytes stb produces, from memory that depends on the image's width and not its height.
+/// The assembly keeps stb's per-component row state machine (<c>YStep</c>/<c>Line0</c>/<c>Line1</c>) verbatim;
+/// only the rows it points at now live in a strip. Three cases cannot stream and keep whole planes, sized
+/// exactly: baseline scans that are not one full scan (several non-interleaved scans), a stream whose
+/// colour markers change after the scan, and the restart after either of those is found out late.
+/// Progressive streams keep their coefficients whole-image (every scan is needed) and stream the IDCT from
+/// those at the end, so their sample planes never exist either.</para>
+///
 /// Departures from the reference:
 ///
 /// <list type="bullet">
-/// <item>Component planes, progressive coefficient buffers, and line buffers are
+/// <item>Component strips, progressive coefficient buffers, and line buffers are
 /// rented from <see cref="ArrayPool{T}"/> instead of malloc'd — and zeroed, so
-/// plane padding is deterministic where stb reads malloc garbage (valid streams
+/// strip padding is deterministic where stb reads malloc garbage (valid streams
 /// never observe either).</item>
 /// <item>A scale denominator of 2/4/8 swaps the 8×8 IDCT for the reduced kernel,
 /// shrinking planes and output by the square of the factor (the entropy layout —
@@ -72,14 +86,52 @@ internal ref struct JpegCore
     private readonly int _scale;     // 1, 2, 4, 8
     private readonly int _blockSize; // 8 / _scale — IDCT output tile edge
 
+    // --- strip pipeline ---
+
+    /// <summary>
+    /// Extra plane rows a strip holds on top of one unit. After a unit the upsampler's lowest row still
+    /// to be read trails the newest decoded row by at most two (a component whose next output row sits one
+    /// short of its unit boundary because another component's kernel blends a far row), so a unit plus
+    /// two retained rows always fits. <c>BeginUnit</c> checks it rather than trusting this comment.
+    /// </summary>
+    private const int StripMargin = 2;
+
+    private bool _usePlanes;         // whole-image planes instead of strips (forced, or the fallback cases)
+    private bool _streaming;          // the scan being decoded streams through strips
+    private bool _streamedScan;       // a scan has streamed already (to the end or to a salvaged early end)
+    private bool _stripsReady, _planesReady, _pipelineReady;
+    private bool _streamJfif;         // colour markers when the streamed scan began; see DecodeBody
+    private int _streamApp14;
+    private bool _isRgb;
+    private int _nextOut;             // next output row to assemble
+    private int _totalUnits;          // MCU rows (interleaved) or block rows (single component)
+    private int _unitsPushed;         // units whose samples are in the strips
+    private long _peakPlaneBytes;
+    private readonly (byte[] Arr, int Off)[] _rows = new (byte[], int)[4];
+
+    // --- region decode (DecodeRegionTo) ---
+    //
+    // A full decode is the region that happens to be the whole image: every one of these has its full-image value
+    // until SetRegion narrows it, so the assembly below has a single code path and the full decode does not branch.
+
+    private bool _region;
+    private int _outEnd;              // one past the last output row to assemble: OutY, or the region's end
+    private int _cropX, _cropW;       // output columns assembled per row: [0, OutX), or the region's
+    private int _unitStart, _unitEnd; // units that get IDCT and assembly: [0, _totalUnits), or the ones the region reads
+    private int _entropyUnits, _transformedUnits;
+
     internal int OutX { get; private set; }
     internal int OutY { get; private set; }
 
-    public JpegCore(ReadOnlySpan<byte> data, int scale)
+    /// <summary>What this decode held and which engine ran it (see <see cref="JpegDecodeStats"/>).</summary>
+    internal JpegDecodeStats Stats => new(_peakPlaneBytes, _usePlanes, false, _streamedScan ? _entropyUnits : _totalUnits, _transformedUnits);
+
+    public JpegCore(ReadOnlySpan<byte> data, int scale, bool wholePlanes = false)
     {
         _data = data;
         _scale = scale;
         _blockSize = 8 / scale;
+        _usePlanes = wholePlanes;
     }
 
     private sealed class Component
@@ -88,15 +140,31 @@ internal ref struct JpegCore
         public int DcPred;
         public int X, Y;             // full-resolution sample dimensions
         public int W2, H2;           // scaled plane stride / height
-        public byte[]? Data;         // pooled sample plane (W2 * H2)
+        public byte[]? Data;         // strip (a few unit rows) or, in the plane fallback, the whole plane (W2 * H2)
+        public bool DataPooled;      // Data came from ArrayPool (strips); whole planes are exact-size arrays
+        public int StripBase;        // plane row held at Data's row 0 (always 0 for whole planes)
+        public int StripRows;        // Data's capacity in plane rows
+        public int Stride;           // Data's row length: W2, or (for a region's strip) just the block columns it reads
+        public int ColBase;          // plane column held at Data's column 0 (0 unless a region's strip starts further in)
+        public int Avail;            // plane rows decoded so far, counted from row 0; int.MaxValue once complete
+        public int UnitBlockRows;    // block rows per unit: V for interleaved scans, 1 for a single component
         public short[]? Coeff;       // pooled coefficient store (progressive only)
         public int CoeffW, CoeffH;   // in 8×8 blocks (full resolution)
-        public byte[]? LineBuf;      // pooled upsample row buffer
+        public byte[]? LineBuf;      // pooled upsample row buffer (components that are not 1:1)
 
         // per-decode resample state (mirrors stb's stbi__resample)
         public int Hs, Vs, YStep, YPos, WLores, YsScaled;
-        public int Line0, Line1;     // row offsets into Data
+        public int Line0, Line1;     // plane ROW indices (stb keeps offsets); the strip maps them to Data
         public int ResampleKind;
+        public bool UsesFar;         // the kernel blends the far row as well as the near one
+
+        // The columns the upsampler is run over, in this component's own samples: [WinA, WinA + WinN). The whole
+        // row for a full decode; for a region, its columns plus the neighbour the horizontal kernels read beyond
+        // each interior edge. CropOff is where the region's first pixel sits in the kernel's output.
+        public int WinA, WinN, CropOff;
+
+        // Block columns that are IDCT'd: everything, or just the ones that hold the window.
+        public int BlkLo, BlkHi;
     }
 
     private enum ScanMode
@@ -132,26 +200,150 @@ internal ref struct JpegCore
         return new JpegInfo(ImgX, ImgY, ImgN, _progressive) { ChromaSubsampled = subsampled };
     }
 
-    /// <summary>Runs the full entropy decode into the (pooled) component planes.</summary>
-    public void LoadImage()
+    /// <summary>
+    /// Decodes <paramref name="data"/> and streams every output row to <paramref name="sink"/>, returning
+    /// what the decode held. Owns the engine's lifetime: the buffers are returned on every path, including
+    /// exceptions, and a stream that cannot be decoded a few rows at a time is decoded again with whole planes.
+    /// </summary>
+    /// <param name="forceWholePlanes">Diagnostic: run the whole-plane engine, which is stb's pipeline as it was
+    /// before strips. Tests use it as the reference the strip pipeline has to reproduce byte for byte.</param>
+    /// <param name="region">Decode only this rectangle of the output (see <see cref="SetRegion"/>); the sink then
+    /// receives only its rows, <c>region.Width</c> pixels wide.</param>
+    internal static JpegDecodeStats Run<TSink>(ReadOnlySpan<byte> data, int scale, ref TSink sink, bool forceWholePlanes = false, JpegRegion? region = null)
+        where TSink : IJpegRowSink, allows ref struct
     {
-        DecodeJpegImage();
-        OutX = (ImgX + _scale - 1) / _scale;
-        OutY = (ImgY + _scale - 1) / _scale;
-        if ((long)OutX * OutY * 4 > int.MaxValue)
-            throw Err("too large");
+        var core = new JpegCore(data, scale, forceWholePlanes);
+        long peak;
+        try
+        {
+            core.ReadHeader();
+            if (region is { } r)
+                core.SetRegion(r);
+            sink.Begin(core.OutX, core.OutY);
+            if (core.DecodeBody(ref sink))
+                return core.Stats;
+
+            peak = core._peakPlaneBytes;
+        }
+        finally
+        {
+            core.ReturnBuffers();
+        }
+
+        // The stream would not stream (see DecodeBody). The sink has some of its rows already; the whole-plane
+        // engine delivers all of them again from row 0.
+        var again = new JpegCore(data, scale, wholePlanes: true);
+        try
+        {
+            again.ReadHeader();
+            if (region is { } r2)
+                again.SetRegion(r2);
+            again.DecodeBody(ref sink);
+            var stats = again.Stats;
+            return stats with { PeakPlaneBytes = Math.Max(peak, stats.PeakPlaneBytes), Restarted = true };
+        }
+        finally
+        {
+            again.ReturnBuffers();
+        }
     }
 
-    /// <summary>Upsamples + colour-converts the decoded planes into packed RGBA rows.</summary>
-    public void AssembleRgba(Span<byte> dest)
+    /// <summary>
+    /// Parses SOI → SOF and sets up the frame geometry (<see cref="OutX"/>, <see cref="OutY"/>, the MCU grid
+    /// and the progressive coefficient stores). Decodes no entropy data and holds no sample memory yet.
+    /// </summary>
+    public void ReadHeader()
     {
-        var isRgb = ImgN == 3 && (_rgbCount == 3 || (_app14ColorTransform == 0 && !_jfif));
-        var decodeN = ImgN;
+        _restartInterval = 0;
+        DecodeHeader(ScanMode.Load);
+    }
 
-        for (var k = 0; k < decodeN; ++k)
+    /// <summary>
+    /// Narrows the decode to a rectangle of the output (pixels at this decode's scale). Call after
+    /// <see cref="ReadHeader"/>, before <see cref="DecodeBody"/>. Only the region's rows and columns are assembled
+    /// and handed to the sink, which is asked for rows of <c>w * 4</c> bytes; everything else this class does for a
+    /// full decode it does for the region, bit for bit (the row state machine is seeded where a full decode would
+    /// have it at the region's first row, and the upsamplers see their real image edges only at real image edges).
+    /// What decode work is left out is described at <see cref="PlanRows"/>, <see cref="PlanColumns"/> and
+    /// <see cref="StreamScan"/>.
+    /// </summary>
+    /// <exception cref="ArgumentException">The region is empty or not entirely inside the output.</exception>
+    public void SetRegion(JpegRegion region)
+    {
+        var (x, y, w, h) = (region.X, region.Y, region.Width, region.Height);
+        if (x < 0 || y < 0 || w <= 0 || h <= 0 || x > OutX - w || y > OutY - h)
+        {
+            throw new ArgumentException(
+                $"Region ({x}, {y}) {w}×{h} is empty or not inside the {OutX}×{OutY} image at this scale.", nameof(region));
+        }
+
+        _region = true;
+        _cropX = x;
+        _cropW = w;
+        _nextOut = y;
+        _outEnd = y + h;
+    }
+
+    /// <summary>
+    /// Decodes the scans and streams every output row to <paramref name="sink"/>. Returns false when the stream
+    /// cannot be decoded a few rows at a time and must be decoded again with whole planes
+    /// (<c>new JpegCore(data, scale, wholePlanes: true)</c>); the rows already delivered are then overwritten.
+    /// That is the case when
+    /// <list type="bullet">
+    /// <item>a scan follows the one that streamed: today's decoder lets a later scan overwrite the blocks of an
+    /// earlier one, and rows already delivered cannot be taken back, or</item>
+    /// <item>an Adobe or JFIF marker after the scan changed the colour model: today's decoder converts with the
+    /// state at the end of the stream, and the rows streamed used the state at the start of the scan.</item>
+    /// </list>
+    /// Neither occurs in a valid file; both are cheap to detect and are the only reasons for a restart.
+    /// </summary>
+    public bool DecodeBody<TSink>(ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        if (!DecodeJpegImage(ref sink))
+            return false;
+
+        if (_streamedScan && (_jfif != _streamJfif || _app14ColorTransform != _streamApp14))
+            return false;
+
+        CompleteImage(ref sink);
+        return true;
+    }
+
+    /// <summary>
+    /// Makes sure every output row has been delivered. Reached after the markers are exhausted, which for a
+    /// salvaged stream can be before any scan, or before a progressive stream's <see cref="Finish"/>: the planes
+    /// such a decode leaves are zero, and the same zero rows go through the same assembly as everything else.
+    /// </summary>
+    private void CompleteImage<TSink>(ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        if (_usePlanes)
+        {
+            EnsurePlanes(); // a stream with no scan at all still converts (zero) planes
+            EmitAllRows(ref sink);
+        }
+        else if (_nextOut < _outEnd)
+        {
+            EnsureStrips();
+            FlushZeroUnits(_unitsPushed, ref sink);
+        }
+    }
+
+    // ============================== sample memory ==============================
+
+    /// <summary>
+    /// Per-component resample state, once. This is the setup stb's <c>stbi__resample</c> does before its row loop.
+    /// </summary>
+    private void PreparePipeline()
+    {
+        if (_pipelineReady)
+            return;
+
+        _pipelineReady = true;
+        for (var k = 0; k < ImgN; ++k)
         {
             var c = _comp[k];
-            c.LineBuf = ArrayPool<byte>.Shared.Rent(OutX + 3);
             c.Hs = _imgHMax / c.H;
             c.Vs = _imgVMax / c.V;
             c.YStep = c.Vs >> 1;
@@ -165,107 +357,174 @@ internal ref struct JpegCore
                 c.Hs == 2 && c.Vs == 1 ? JpegResample.H2 :
                 c.Hs == 2 && c.Vs == 2 ? JpegResample.Hv2 :
                 JpegResample.Generic;
+            c.UsesFar = c.ResampleKind == JpegResample.V2 || c.ResampleKind == JpegResample.Hv2;
+            PlanColumns(c);
+
+            // The 1:1 kernel aliases the plane row instead of copying it, so only the others need a buffer.
+            if (c.ResampleKind != JpegResample.OneToOne)
+                c.LineBuf = ArrayPool<byte>.Shared.Rent(_region ? c.WinN * c.Hs + 3 : OutX + 3);
         }
 
-        // Current output-resolution row per component: (array, offset) because the
-        // 1:1 kernel aliases the plane directly instead of copying.
-        var rows = new (byte[] Arr, int Off)[4];
+        _isRgb = ComputeIsRgb();
+        if (_region)
+            PlanRows();
+    }
 
-        for (var j = 0; j < OutY; ++j)
+    /// <summary>
+    /// Which of the component's columns the upsampler runs over, and which block columns that needs. A full decode
+    /// runs it over the whole row, which is the only place its kernels meet the image's own edges.
+    ///
+    /// <para>A region's window is its columns widened by one sample on each side wherever the kernel reads a
+    /// horizontal neighbour (H2 and Hv2), and clipped to the row. The kernels treat the first and last sample they
+    /// are given as the image edge, and their output for those two samples is the edge's, not the interior's. So the
+    /// widening is what makes an <i>interior</i> window edge harmless: the samples it spoils are the margin, which
+    /// is cropped away, and at a real image edge there is no margin and the kernel's edge rule is the right one.
+    /// This is the kernels themselves, run unchanged, on a span of the row; no second copy of their arithmetic.</para>
+    /// </summary>
+    private void PlanColumns(Component c)
+    {
+        if (!_region)
         {
-            for (var k = 0; k < decodeN; ++k)
-            {
-                var c = _comp[k];
-                var yBot = c.YStep >= (c.Vs >> 1);
-                var inNear = yBot ? c.Line1 : c.Line0;
-                var inFar = yBot ? c.Line0 : c.Line1;
-                if (c.ResampleKind == JpegResample.OneToOne)
-                {
-                    rows[k] = (c.Data!, inNear);
-                }
-                else
-                {
-                    JpegResample.Row(c.ResampleKind, c.LineBuf, c.Data, inNear, inFar, c.WLores, c.Hs);
-                    rows[k] = (c.LineBuf!, 0);
-                }
+            c.WinA = 0;
+            c.WinN = c.WLores;
+            c.CropOff = 0;
+            c.BlkLo = 0;
+            c.BlkHi = int.MaxValue;
+            return;
+        }
 
-                if (++c.YStep >= c.Vs)
-                {
-                    c.YStep = 0;
-                    c.Line0 = c.Line1;
-                    if (++c.YPos < c.YsScaled)
-                        c.Line1 += c.W2;
-                }
-            }
+        var first = _cropX / c.Hs;
+        var last = (_cropX + _cropW - 1) / c.Hs;
+        var margin = c.ResampleKind == JpegResample.H2 || c.ResampleKind == JpegResample.Hv2;
+        var a = margin ? Math.Max(0, first - 1) : first;
+        var b = margin ? Math.Min(c.WLores, last + 2) : last + 1; // exclusive; last < WLores
+        c.WinA = a;
+        c.WinN = b - a;
+        c.CropOff = _cropX - a * c.Hs;
+        c.BlkLo = a / _blockSize;
+        c.BlkHi = (b - 1) / _blockSize;
+    }
 
-            var outRow = dest.Slice(j * OutX * 4, OutX * 4);
-            var y = rows[0].Arr.AsSpan(rows[0].Off);
+    /// <summary>
+    /// A region's rows. Puts each component's row state where a full decode has it when it reaches the region's
+    /// first row (<see cref="SeedRows"/>), then works out which units that and the region's last row read, which
+    /// is where the margin the vertical upsamplers need comes from: an output row on a unit boundary blends a
+    /// plane row of the unit above (or below) whenever the kernel reads a far row.
+    /// </summary>
+    private void PlanRows()
+    {
+        var first = _nextOut;
+        var last = _outEnd - 1;
+        var u0 = int.MaxValue;
+        var u1 = 0;
+        for (var k = 0; k < ImgN; ++k)
+        {
+            var c = _comp[k];
+            var rowsPerUnit = c.UnitBlockRows * _blockSize;
+            SeedRows(c, first);
+            u0 = Math.Min(u0, PlaneRowsRead(c).Lowest / rowsPerUnit);
+            SeedRows(c, last);
+            u1 = Math.Max(u1, PlaneRowsRead(c).Deepest / rowsPerUnit);
+            SeedRows(c, first);
+        }
 
-            if (ImgN == 3)
-            {
-                if (isRgb)
-                {
-                    var g = rows[1].Arr.AsSpan(rows[1].Off);
-                    var b = rows[2].Arr.AsSpan(rows[2].Off);
-                    for (var i = 0; i < OutX; ++i)
-                    {
-                        outRow[i * 4 + 0] = y[i];
-                        outRow[i * 4 + 1] = g[i];
-                        outRow[i * 4 + 2] = b[i];
-                        outRow[i * 4 + 3] = 255;
-                    }
-                }
-                else
-                {
-                    JpegColor.YCbCrToRgbaRow(outRow, y, rows[1].Arr.AsSpan(rows[1].Off), rows[2].Arr.AsSpan(rows[2].Off), OutX);
-                }
-            }
-            else if (ImgN == 4)
-            {
-                var c1 = rows[1].Arr.AsSpan(rows[1].Off);
-                var c2 = rows[2].Arr.AsSpan(rows[2].Off);
-                var c3 = rows[3].Arr.AsSpan(rows[3].Off);
-                if (_app14ColorTransform == 0)
-                {
-                    // Plain Adobe CMYK: fold K into each ink channel.
-                    for (var i = 0; i < OutX; ++i)
-                    {
-                        var m = c3[i];
-                        outRow[i * 4 + 0] = JpegColor.Blinn8x8(y[i], m);
-                        outRow[i * 4 + 1] = JpegColor.Blinn8x8(c1[i], m);
-                        outRow[i * 4 + 2] = JpegColor.Blinn8x8(c2[i], m);
-                        outRow[i * 4 + 3] = 255;
-                    }
-                }
-                else if (_app14ColorTransform == 2)
-                {
-                    // YCCK: YCbCr → RGB, invert to CMY, then fold K.
-                    JpegColor.YCbCrToRgbaRow(outRow, y, c1, c2, OutX);
-                    for (var i = 0; i < OutX; ++i)
-                    {
-                        var m = c3[i];
-                        outRow[i * 4 + 0] = JpegColor.Blinn8x8((byte)(255 - outRow[i * 4 + 0]), m);
-                        outRow[i * 4 + 1] = JpegColor.Blinn8x8((byte)(255 - outRow[i * 4 + 1]), m);
-                        outRow[i * 4 + 2] = JpegColor.Blinn8x8((byte)(255 - outRow[i * 4 + 2]), m);
-                    }
-                }
-                else
-                {
-                    // No (or unrecognised) transform tag — stb treats it as YCbCr.
-                    JpegColor.YCbCrToRgbaRow(outRow, y, c1, c2, OutX);
-                }
-            }
-            else // grayscale
-            {
-                for (var i = 0; i < OutX; ++i)
-                {
-                    var v = y[i];
-                    outRow[i * 4 + 0] = v;
-                    outRow[i * 4 + 1] = v;
-                    outRow[i * 4 + 2] = v;
-                    outRow[i * 4 + 3] = 255;
-                }
-            }
+        _unitStart = u0;
+        _unitEnd = Math.Min(u1, _totalUnits - 1) + 1;
+        _unitsPushed = u0;
+    }
+
+    /// <summary>
+    /// Sets the component's row state to what stb's per-row loop leaves it at after <paramref name="j"/> rows,
+    /// in closed form (the loop has no data dependence, so it can be jumped). <c>YStep</c> starts at
+    /// <c>Vs/2</c> and wraps at <c>Vs</c>; each wrap moves <c>YPos</c> on and, until the plane's last row, moves
+    /// <c>Line1</c> down one with <c>Line0</c> trailing it. <c>RegionDecodeTests</c> pins this against the loop itself
+    /// by comparing every region with the matching crop of a full decode.
+    /// </summary>
+    private static void SeedRows(Component c, int j)
+    {
+        var total = (long)(c.Vs >> 1) + j;
+        var wraps = (int)(total / c.Vs);
+        c.YStep = (int)(total % c.Vs);
+        c.YPos = wraps;
+        c.Line1 = Math.Min(wraps, c.YsScaled - 1);
+        c.Line0 = wraps == 0 ? 0 : Math.Min(wraps - 1, c.YsScaled - 1);
+    }
+
+    /// <summary>
+    /// The shallowest and deepest plane rows the next output row reads, given the row state. A kernel that blends
+    /// a far row reads both of <c>Line0</c>/<c>Line1</c>; one that does not reads only the near row, which is
+    /// <c>Line1</c> in the lower half of a vertical expansion and <c>Line0</c> in the upper (see <see cref="EmitRow"/>).
+    /// </summary>
+    private static (int Lowest, int Deepest) PlaneRowsRead(Component c)
+    {
+        var yBot = c.YStep >= (c.Vs >> 1);
+        var near = yBot ? c.Line1 : c.Line0;
+        return (c.UsesFar ? c.Line0 : near, (c.UsesFar || yBot) ? c.Line1 : c.Line0);
+    }
+
+    private bool ComputeIsRgb() => ImgN == 3 && (_rgbCount == 3 || (_app14ColorTransform == 0 && !_jfif));
+
+    /// <summary>
+    /// Rents each component's strip: one unit of rows plus <see cref="StripMargin"/>, zeroed. The size is a
+    /// function of the image's width and sampling and nothing else, a few hundred KB for a 5100-wide scan.
+    /// The pool's power-of-two rounding can at worst double that, which is the cost of a second strip. It is
+    /// not the 64 MiB rent a 33,660,000-byte whole plane costs (issue #28).
+    /// </summary>
+    private void EnsureStrips()
+    {
+        if (_stripsReady)
+            return;
+
+        _stripsReady = true;
+        PreparePipeline();
+        _streamJfif = _jfif;
+        _streamApp14 = _app14ColorTransform;
+
+        for (var k = 0; k < ImgN; ++k)
+        {
+            var c = _comp[k];
+            c.StripRows = c.UnitBlockRows * _blockSize + StripMargin;
+
+            // A region's strip holds only the block columns it reads, and starts at the first unit it reads: the
+            // plane rows and columns above and left of that are never written, and never read.
+            c.ColBase = c.BlkLo * _blockSize;
+            c.Stride = _region ? (c.BlkHi - c.BlkLo + 1) * _blockSize : c.W2;
+            var length = c.StripRows * c.Stride;
+            c.Data = ArrayPool<byte>.Shared.Rent(length);
+            c.DataPooled = true;
+            // Zeroed as the whole plane was, so what a salvaged stream never writes is deterministic.
+            c.Data.AsSpan(0, length).Clear();
+            c.StripBase = _unitStart * c.UnitBlockRows * _blockSize;
+            c.Avail = c.StripBase;
+            _peakPlaneBytes += c.Data.Length;
+        }
+    }
+
+    /// <summary>
+    /// Whole-image planes, for the cases that cannot stream (see <see cref="DecodeBody"/>). They are allocated at
+    /// their exact size rather than rented: <c>ArrayPool&lt;byte&gt;.Shared</c> rounds a rent up to the next
+    /// power of two, and a plane just over one (a 5100×6600 scan's 33,660,000 bytes) rented a 64 MiB array.
+    /// A new array is zeroed by the runtime, as the rented planes were cleared.
+    /// </summary>
+    private void EnsurePlanes()
+    {
+        if (_planesReady)
+            return;
+
+        _planesReady = true;
+        PreparePipeline();
+        for (var k = 0; k < ImgN; ++k)
+        {
+            var c = _comp[k];
+            var length = c.W2 * c.H2; // ≤ int.MaxValue, checked with the frame header
+            c.Data = new byte[length];
+            c.DataPooled = false;
+            c.StripBase = 0;
+            c.Stride = c.W2; // whole planes, even for a region: only the assembly is cropped
+            c.ColBase = 0;
+            c.StripRows = c.H2;
+            c.Avail = int.MaxValue;
+            _peakPlaneBytes += length;
         }
     }
 
@@ -277,7 +536,8 @@ internal ref struct JpegCore
             var c = _comp[i];
             if (c.Data != null)
             {
-                ArrayPool<byte>.Shared.Return(c.Data);
+                if (c.DataPooled)
+                    ArrayPool<byte>.Shared.Return(c.Data);
                 c.Data = null;
             }
 
@@ -293,6 +553,239 @@ internal ref struct JpegCore
                 c.LineBuf = null;
             }
         }
+    }
+
+    // ============================== strips: unit bookkeeping ==============================
+
+    /// <summary>
+    /// Before a unit's samples are written: slides each strip down so the plane rows the upsampler has not
+    /// finished with sit at its top, and the unit lands after them. <c>Line0</c> is the lowest row any
+    /// remaining output row can read (<c>Line1</c> only ever moves up from it), so everything under it is dead.
+    /// </summary>
+    private void BeginUnit()
+    {
+        ++_transformedUnits;
+        for (var k = 0; k < ImgN; ++k)
+        {
+            var c = _comp[k];
+            var low = Math.Min(c.Line0, c.Avail);
+            if (low > c.StripBase)
+            {
+                var keep = c.Avail - low;
+                if (keep > 0)
+                    c.Data.AsSpan((low - c.StripBase) * c.Stride, keep * c.Stride).CopyTo(c.Data); // memmove: overlap is fine
+                c.StripBase = low;
+            }
+
+            if (c.Avail - c.StripBase + c.UnitBlockRows * _blockSize > c.StripRows)
+                throw new InvalidOperationException("JPEG: strip window overflow (decoder bug)");
+        }
+    }
+
+    /// <summary>
+    /// After a unit's samples are written: marks them available and assembles every output row they complete.
+    /// The last unit marks everything available, because nothing will be written after it, and the rows that
+    /// the upsampler clamps to the plane's last row are then ready.
+    /// </summary>
+    private void EndUnit<TSink>(int unit, ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        var last = unit == _totalUnits - 1;
+        for (var k = 0; k < ImgN; ++k)
+        {
+            var c = _comp[k];
+            c.Avail = last ? int.MaxValue : (unit + 1) * c.UnitBlockRows * _blockSize;
+        }
+
+        _unitsPushed = unit + 1;
+        EmitReadyRows(ref sink);
+    }
+
+    /// <summary>
+    /// Zeroes plane columns <paramref name="fromCol"/>.. of the strip rows <paramref name="unit"/> occupies (the
+    /// part of that range the strip holds: a region's strip starts at <c>ColBase</c>).
+    /// </summary>
+    private void ClearUnitColumns(Component c, int unit, int fromCol)
+    {
+        var from = Math.Clamp(fromCol - c.ColBase, 0, c.Stride);
+        var rows = c.UnitBlockRows * _blockSize;
+        var first = unit * rows - c.StripBase;
+        for (var r = 0; r < rows; ++r)
+            c.Data.AsSpan((first + r) * c.Stride + from, c.Stride - from).Clear();
+    }
+
+    /// <summary>
+    /// Pushes all-zero units through the assembly from <paramref name="from"/> on. A zero plane is what today's
+    /// decoder leaves wherever a scan did not reach, so a salvaged stream (restart interval run out, no scan,
+    /// a bad marker, a progressive stream that never finished) converts the same zeros, blended with the rows
+    /// above exactly as the whole planes were.
+    /// </summary>
+    private void FlushZeroUnits<TSink>(int from, ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        for (var u = from; u < _unitEnd; ++u)
+        {
+            BeginUnit();
+            for (var k = 0; k < ImgN; ++k)
+                ClearUnitColumns(_comp[k], u, 0);
+            EndUnit(u, ref sink);
+        }
+    }
+
+    // ============================== assembly ==============================
+
+    /// <summary>
+    /// Assembles every output row whose source rows are decoded. Whether the next row is ready is a function of
+    /// stb's row state: the deepest plane row it reads is <c>Line1</c> (the far row, for kernels that blend
+    /// it, and for the near row whenever it is the lower of the pair) or <c>Line0</c>.
+    /// </summary>
+    private void EmitReadyRows<TSink>(ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        while (_nextOut < _outEnd && NextRowIsReady())
+        {
+            EmitRow(_nextOut, ref sink);
+            ++_nextOut;
+        }
+    }
+
+    private bool NextRowIsReady()
+    {
+        for (var k = 0; k < ImgN; ++k)
+        {
+            var c = _comp[k];
+            var need = (c.UsesFar || c.YStep >= (c.Vs >> 1)) ? c.Line1 : c.Line0;
+            if (need >= c.Avail)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>The whole-plane engine: every plane is complete, so every row is ready.</summary>
+    private void EmitAllRows<TSink>(ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        // Converted with the colour markers as they stand at the end of the stream, as stb does.
+        _isRgb = ComputeIsRgb();
+        while (_nextOut < _outEnd)
+        {
+            EmitRow(_nextOut, ref sink);
+            ++_nextOut;
+        }
+    }
+
+    /// <summary>
+    /// Upsamples and colour-converts output row <paramref name="j"/> into the sink: stb's per-row loop body,
+    /// unchanged except that <c>Line0</c>/<c>Line1</c> are plane rows and the strip maps them to offsets, and that
+    /// the columns are the window <see cref="PlanColumns"/> chose (all of them, for a full decode) cropped to the
+    /// <c>_cropW</c> output pixels the sink wants.
+    /// </summary>
+    private void EmitRow<TSink>(int j, ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        // Current output-resolution row per component: (array, offset) because the
+        // 1:1 kernel aliases the plane directly instead of copying.
+        var rows = _rows;
+        var decodeN = ImgN;
+        var width = _cropW;
+
+        for (var k = 0; k < decodeN; ++k)
+        {
+            var c = _comp[k];
+            var yBot = c.YStep >= (c.Vs >> 1);
+            var inNear = ((yBot ? c.Line1 : c.Line0) - c.StripBase) * c.Stride;
+            var inFar = ((yBot ? c.Line0 : c.Line1) - c.StripBase) * c.Stride;
+            if (c.ResampleKind == JpegResample.OneToOne)
+            {
+                rows[k] = (c.Data!, inNear + (_cropX - c.ColBase));
+            }
+            else
+            {
+                var shift = c.WinA - c.ColBase;
+                JpegResample.Row(c.ResampleKind, c.LineBuf, c.Data, inNear + shift, inFar + shift, c.WinN, c.Hs);
+                rows[k] = (c.LineBuf!, c.CropOff);
+            }
+
+            if (++c.YStep >= c.Vs)
+            {
+                c.YStep = 0;
+                c.Line0 = c.Line1;
+                if (++c.YPos < c.YsScaled)
+                    ++c.Line1;
+            }
+        }
+
+        var outRow = sink.RowBuffer(j);
+        var y = rows[0].Arr.AsSpan(rows[0].Off);
+
+        if (ImgN == 3)
+        {
+            if (_isRgb)
+            {
+                var g = rows[1].Arr.AsSpan(rows[1].Off);
+                var b = rows[2].Arr.AsSpan(rows[2].Off);
+                for (var i = 0; i < width; ++i)
+                {
+                    outRow[i * 4 + 0] = y[i];
+                    outRow[i * 4 + 1] = g[i];
+                    outRow[i * 4 + 2] = b[i];
+                    outRow[i * 4 + 3] = 255;
+                }
+            }
+            else
+            {
+                JpegColor.YCbCrToRgbaRow(outRow, y, rows[1].Arr.AsSpan(rows[1].Off), rows[2].Arr.AsSpan(rows[2].Off), width);
+            }
+        }
+        else if (ImgN == 4)
+        {
+            var c1 = rows[1].Arr.AsSpan(rows[1].Off);
+            var c2 = rows[2].Arr.AsSpan(rows[2].Off);
+            var c3 = rows[3].Arr.AsSpan(rows[3].Off);
+            if (_app14ColorTransform == 0)
+            {
+                // Plain Adobe CMYK: fold K into each ink channel.
+                for (var i = 0; i < width; ++i)
+                {
+                    var m = c3[i];
+                    outRow[i * 4 + 0] = JpegColor.Blinn8x8(y[i], m);
+                    outRow[i * 4 + 1] = JpegColor.Blinn8x8(c1[i], m);
+                    outRow[i * 4 + 2] = JpegColor.Blinn8x8(c2[i], m);
+                    outRow[i * 4 + 3] = 255;
+                }
+            }
+            else if (_app14ColorTransform == 2)
+            {
+                // YCCK: YCbCr → RGB, invert to CMY, then fold K.
+                JpegColor.YCbCrToRgbaRow(outRow, y, c1, c2, width);
+                for (var i = 0; i < width; ++i)
+                {
+                    var m = c3[i];
+                    outRow[i * 4 + 0] = JpegColor.Blinn8x8((byte)(255 - outRow[i * 4 + 0]), m);
+                    outRow[i * 4 + 1] = JpegColor.Blinn8x8((byte)(255 - outRow[i * 4 + 1]), m);
+                    outRow[i * 4 + 2] = JpegColor.Blinn8x8((byte)(255 - outRow[i * 4 + 2]), m);
+                }
+            }
+            else
+            {
+                // No (or unrecognised) transform tag — stb treats it as YCbCr.
+                JpegColor.YCbCrToRgbaRow(outRow, y, c1, c2, width);
+            }
+        }
+        else // grayscale
+        {
+            for (var i = 0; i < width; ++i)
+            {
+                var v = y[i];
+                outRow[i * 4 + 0] = v;
+                outRow[i * 4 + 1] = v;
+                outRow[i * 4 + 2] = v;
+                outRow[i * 4 + 3] = 255;
+            }
+        }
+
+        sink.RowDone(j);
     }
 
     // ============================== byte reader ==============================
@@ -818,8 +1311,238 @@ internal ref struct JpegCore
         }
     }
 
-    /// <summary>Progressive only: dequantize the accumulated coefficients and IDCT every block.</summary>
-    private void Finish()
+    /// <summary>
+    /// Baseline, one scan that carries every component (interleaved, or the only component): entropy-decode a
+    /// unit, IDCT it into the strips, assemble what that completes, and go on. Same block order, restart handling
+    /// and salvage as <see cref="ParseEntropyCodedData"/>; the planes it would leave are what the strips hold at the
+    /// time, and what a scan never reaches is zero rows.
+    /// </summary>
+    private void StreamScan<TSink>(ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        // A single component is scanned on its own block grid (no MCU padding) and restarts count blocks; otherwise
+        // an MCU is the interleaved h×v blocks of every component. A unit is one row of either.
+        var single = ImgN == 1;
+        var mcusPerUnit = single ? (_comp[_order[0]].X + 7) >> 3 : _imgMcuX;
+
+        // What a full decode does, narrowed to a region: entropy-decode from the unit the region starts in (found
+        // through the restart markers, when there are any) to the one it ends in, and IDCT and assemble only the
+        // units from _unitStart on. For a full decode _unitStart is 0, _unitEnd the frame's, and the seek is a no-op.
+        var firstUnit = 0;
+        var firstMcu = 0;
+        if (_region && _restartInterval != 0)
+            SeekToRestartInterval(mcusPerUnit, out firstUnit, out firstMcu);
+
+        Reset();
+        Span<short> data = stackalloc short[64];
+        for (var j = firstUnit; j < _unitEnd; ++j)
+        {
+            // Units above the region are decoded only to keep the bit stream in step: no strip rows, no IDCT.
+            var emit = j >= _unitStart;
+            if (emit)
+                BeginUnit();
+            ++_entropyUnits;
+
+            for (var i = j == firstUnit ? firstMcu : 0; i < mcusPerUnit; ++i)
+            {
+                if (single)
+                {
+                    var n = _order[0];
+                    var c = _comp[n];
+                    DecodeBlock(data, _huffDc[c.Hd], _huffAc[c.Ha], _fastAc[c.Ha], n, _dequant[c.Tq]);
+                    if (emit && InColumns(c, i))
+                        IdctToPlane(c, i, j, data);
+                }
+                else
+                {
+                    for (var k = 0; k < _scanN; ++k)
+                    {
+                        var n = _order[k];
+                        var c = _comp[n];
+                        for (var y = 0; y < c.V; ++y)
+                        {
+                            for (var x = 0; x < c.H; ++x)
+                            {
+                                DecodeBlock(data, _huffDc[c.Hd], _huffAc[c.Ha], _fastAc[c.Ha], n, _dequant[c.Tq]);
+                                var bx = i * c.H + x;
+                                if (emit && InColumns(c, bx))
+                                    IdctToPlane(c, bx, j * c.V + y, data);
+                            }
+                        }
+                    }
+                }
+
+                if (!CheckRestart())
+                {
+                    EndScanEarly(j, i + 1, ref sink);
+                    return;
+                }
+            }
+
+            if (emit)
+                EndUnit(j, ref sink);
+        }
+
+        // A region stops here, mid-stream: the rest of the scan, and whatever follows it, is not read. The marker
+        // loop that called this ends the decode when it finds the entropy data where a marker should be.
+    }
+
+    /// <summary>
+    /// The scan stopped after the last whole MCU (block) of <paramref name="unit"/>'s first
+    /// <paramref name="doneMcus"/>: its restart interval ran out without an RSTn, or the stream ended there. That is also how
+    /// every scan with a restart interval that divides the image ends (the last interval's RSTn never comes), where
+    /// nothing is left to zero. What the scan did not decode is zero in today's planes: the rest of this unit's
+    /// rows, and every unit below. (A region only has the units it reads to zero, and none at all when the scan
+    /// stopped before reaching them.)
+    /// </summary>
+    private void EndScanEarly<TSink>(int unit, int doneMcus, ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        if (unit >= _unitStart)
+        {
+            for (var k = 0; k < ImgN; ++k)
+            {
+                var c = _comp[k];
+                var doneBlockCols = ImgN == 1 ? doneMcus : doneMcus * c.H;
+                ClearUnitColumns(c, unit, Math.Min(doneBlockCols * _blockSize, c.W2));
+            }
+
+            EndUnit(unit, ref sink);
+        }
+
+        FlushZeroUnits(Math.Max(unit + 1, _unitStart), ref sink);
+    }
+
+    /// <summary>
+    /// Moves the byte position to the start of the restart interval that contains the first MCU a region needs,
+    /// so that the intervals before it are never entropy-decoded. Interval <c>r</c> starts after the <c>r</c>th
+    /// RSTn marker, with its bit reader and DC predictors reset, which is exactly the state <see cref="Reset"/> sets;
+    /// so decoding from there is the same decode the full one does from that point on.
+    ///
+    /// <para>The markers are counted, not trusted: each must be the next one in the RST0..RST7 cycle, and the scan
+    /// must not end (EOI, any other marker, end of data) before the interval is reached. If the sequence does not
+    /// check out, nothing moves and the decode starts from the top of the scan, as a full decode does, which is
+    /// also what reproduces a damaged stream's salvage exactly. What is not checked is the size of the intervals
+    /// that are skipped: the full decode takes DRI MCUs per interval whatever the data holds, and a stream whose
+    /// intervals do not hold that many (corrupt, not just truncated) is one a skip cannot tell from a good one.</para>
+    /// </summary>
+    /// <param name="unit">The unit the decode starts in: at most the region's first.</param>
+    /// <param name="mcu">The MCU of that unit it starts at; 0 unless the interval starts mid-row.</param>
+    private void SeekToRestartInterval(int mcusPerUnit, out int unit, out int mcu)
+    {
+        unit = 0;
+        mcu = 0;
+        var interval = (int)((long)_unitStart * mcusPerUnit / _restartInterval);
+        if (interval == 0 || !TryFindRestartInterval(interval, out var at))
+            return;
+
+        _pos = at;
+        var start = (long)interval * _restartInterval; // the first MCU of that interval; <= the region's first
+        unit = (int)(start / mcusPerUnit);
+        mcu = (int)(start % mcusPerUnit);
+    }
+
+    /// <summary>
+    /// The byte position just after the <paramref name="interval"/>th RSTn marker of the entropy-coded data at
+    /// the current position (so where interval <paramref name="interval"/> begins), or false when the data does not
+    /// have that many markers in sequence. A marker is <c>0xFF</c> then a code that is neither <c>0x00</c> (a stuffed
+    /// data byte) nor <c>0xFF</c> (fill, which may precede the code); entropy-coded data holds no other <c>0xFF</c>.
+    /// </summary>
+    private bool TryFindRestartInterval(int interval, out int position)
+    {
+        position = 0;
+        var p = _pos;
+        for (var r = 0; r < interval; ++r)
+        {
+            while (true)
+            {
+                var ff = _data.Slice(p).IndexOf((byte)0xFF);
+                if (ff < 0 || p + ff + 1 >= _data.Length)
+                    return false;
+
+                p += ff;
+                var code = _data[p + 1];
+                if (code == 0x00 || code == 0xFF)
+                {
+                    p += code == 0x00 ? 2 : 1; // a stuffed byte; or a fill byte, the next 0xFF may start the marker
+                    continue;
+                }
+
+                if (code != 0xD0 + (r & 7))
+                    return false; // EOI, another marker, or an RSTn out of sequence
+
+                p += 2;
+                break;
+            }
+        }
+
+        position = p;
+        return true;
+    }
+
+    /// <summary>
+    /// Whether the scan just parsed carries every component exactly once, so that it alone fills the planes and
+    /// can stream. A single-component frame qualifies on its own scan. A scan that names a component twice, or
+    /// leaves one out, would leave a plane at zero in a way whole planes reproduce trivially, so it keeps them.
+    /// </summary>
+    private bool ScanCoversEveryComponent()
+    {
+        if (ImgN == 1)
+            return _scanN == 1;
+        if (_scanN != ImgN)
+            return false;
+
+        var seen = 0;
+        for (var i = 0; i < _scanN; ++i)
+            seen |= 1 << _order[i];
+        return seen == (1 << ImgN) - 1;
+    }
+
+    /// <summary>Progressive only: dequantize the accumulated coefficients and IDCT every block, a unit at a time.</summary>
+    private void FinishStreamed<TSink>(ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        EnsureStrips();
+        Span<short> block = stackalloc short[64];
+        for (var u = _unitStart; u < _unitEnd; ++u)
+        {
+            BeginUnit();
+            for (var n = 0; n < ImgN; ++n)
+            {
+                var c = _comp[n];
+                var dequant = _dequant[c.Tq];
+                var w = (c.X + 7) >> 3;
+                var h = (c.Y + 7) >> 3;
+
+                // Blocks beyond the component's own grid are never IDCT'd, so their samples are zero, as in a
+                // zeroed plane. The strip holds the last unit's samples there until cleared.
+                ClearUnitColumns(c, u, 0);
+                for (var y = 0; y < c.UnitBlockRows; ++y)
+                {
+                    var by = u * c.UnitBlockRows + y;
+                    if (by >= h)
+                        break;
+                    // Only the block columns the strip holds (all of them, for a full decode).
+                    for (var bx = c.BlkLo; bx < w && bx <= c.BlkHi; ++bx)
+                    {
+                        var coeff = c.Coeff.AsSpan(64 * (bx + by * c.CoeffW), 64);
+                        for (var k = 0; k < 64; ++k)
+                            block[k] = (short)(coeff[k] * dequant[k]);
+                        IdctToPlane(c, bx, by, block);
+                    }
+                }
+            }
+
+            EndUnit(u, ref sink);
+        }
+    }
+
+    /// <summary>
+    /// Progressive only, whole-plane engine: dequantize the accumulated coefficients and IDCT every block into
+    /// the whole planes. This is stb's <c>stbi__jpeg_finish</c>, kept as the reference the streamed
+    /// <see cref="FinishStreamed"/> must reproduce.
+    /// </summary>
+    private void FinishWholePlanes()
     {
         Span<short> block = stackalloc short[64];
         for (var n = 0; n < ImgN; ++n)
@@ -841,14 +1564,21 @@ internal ref struct JpegCore
         }
     }
 
+    /// <summary>
+    /// Writes block (<paramref name="bx"/>, <paramref name="by"/>) of the component's block grid into its plane
+    /// rows, which sit at <c>StripBase</c> and below in the strip (the whole plane has <c>StripBase</c> 0).
+    /// </summary>
     private void IdctToPlane(Component c, int bx, int by, scoped ReadOnlySpan<short> data)
     {
-        var off = c.W2 * by * _blockSize + bx * _blockSize;
+        var off = (by * _blockSize - c.StripBase) * c.Stride + (bx * _blockSize - c.ColBase);
         if (_blockSize == 8)
-            JpegIdct.Idct8x8(c.Data!, off, c.W2, data);
+            JpegIdct.Idct8x8(c.Data!, off, c.Stride, data);
         else
-            JpegIdct.IdctReduced(c.Data!, off, c.W2, data, _blockSize);
+            JpegIdct.IdctReduced(c.Data!, off, c.Stride, data, _blockSize);
     }
+
+    /// <summary>Whether block column <paramref name="bx"/> is one the strip holds (always, for a full decode).</summary>
+    private static bool InColumns(Component c, int bx) => (uint)(bx - c.BlkLo) <= (uint)(c.BlkHi - c.BlkLo);
 
     // ============================== marker parsing ==============================
 
@@ -1102,6 +1832,20 @@ internal ref struct JpegCore
         _imgMcuX = (ImgX + _imgMcuW - 1) / _imgMcuW;
         _imgMcuY = (ImgY + _imgMcuH - 1) / _imgMcuH;
 
+        OutX = (ImgX + _scale - 1) / _scale;
+        OutY = (ImgY + _scale - 1) / _scale;
+
+        // A unit is what one pass of the entropy decoder fills before the rows it completes are assembled:
+        // an MCU row of an interleaved scan, a block row when the only component is scanned on its own grid.
+        _totalUnits = ImgN == 1 ? (ImgY + 7) >> 3 : _imgMcuY;
+
+        // The whole image, until SetRegion narrows it.
+        _unitStart = 0;
+        _unitEnd = _totalUnits;
+        _outEnd = OutY;
+        _cropX = 0;
+        _cropW = OutX;
+
         var b = _blockSize;
         for (var i = 0; i < ImgN; ++i)
         {
@@ -1113,12 +1857,10 @@ internal ref struct JpegCore
             if ((long)comp.W2 * comp.H2 > int.MaxValue)
                 throw Err("too large");
 
-            var planeLen = comp.W2 * comp.H2;
-            comp.Data = ArrayPool<byte>.Shared.Rent(planeLen);
-            // stb leaves its malloc'd plane uninitialised; valid streams write
-            // every block before any read, but zeroing keeps pooled reuse
-            // deterministic for malformed inputs.
-            comp.Data.AsSpan(0, planeLen).Clear();
+            comp.UnitBlockRows = ImgN == 1 ? 1 : comp.V;
+
+            // No sample memory yet: strips (or, for the cases that cannot stream, whole planes) are
+            // allocated when the first scan says which. See EnsureStrips / EnsurePlanes.
 
             if (_progressive)
             {
@@ -1182,17 +1924,44 @@ internal ref struct JpegCore
         return 0xff;
     }
 
-    private void DecodeJpegImage()
+    /// <summary>
+    /// The marker loop after the frame header. Returns false when the stream turned out not to stream (see
+    /// <see cref="DecodeBody"/>); true otherwise, including when a bad marker made it stop early and salvage.
+    /// </summary>
+    private bool DecodeJpegImage<TSink>(ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
     {
-        _restartInterval = 0;
-        DecodeHeader(ScanMode.Load);
         int m = GetMarker();
         while (m != 0xd9) // EOI
         {
             if (m == 0xda) // SOS
             {
                 ProcessScanHeader();
-                ParseEntropyCodedData();
+                if (_streamedScan)
+                    return false; // a later scan overwrites the streamed one's blocks: needs whole planes
+
+                if (!_progressive && !_usePlanes)
+                {
+                    if (ScanCoversEveryComponent())
+                        _streaming = true;
+                    else
+                        _usePlanes = true; // baseline scans that each carry part of the frame
+                }
+
+                if (_usePlanes)
+                    EnsurePlanes();
+
+                if (_streaming)
+                {
+                    _streamedScan = true;
+                    EnsureStrips();
+                    StreamScan(ref sink);
+                }
+                else
+                {
+                    ParseEntropyCodedData();
+                }
+
                 if (_marker == 0xff)
                     _marker = SkipJunkAtEnd();
 
@@ -1216,13 +1985,30 @@ internal ref struct JpegCore
                 // after the header phase; mirror that (note: progressive data
                 // that never reaches Finish() stays a zeroed plane).
                 if (!ProcessMarker(m))
-                    return;
+                    return true;
                 m = GetMarker();
             }
         }
 
         if (_progressive)
-            Finish();
+            Finish(ref sink);
+
+        return true;
+    }
+
+    /// <summary>Progressive only: dequantize the accumulated coefficients and IDCT every block.</summary>
+    private void Finish<TSink>(ref TSink sink)
+        where TSink : IJpegRowSink, allows ref struct
+    {
+        if (_usePlanes)
+        {
+            EnsurePlanes();
+            FinishWholePlanes();
+        }
+        else
+        {
+            FinishStreamed(ref sink);
+        }
     }
 
     // ============================== helpers ==============================

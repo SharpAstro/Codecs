@@ -49,6 +49,121 @@ directly and demands byte equality — including at the clamp rails, at `short` 
 int32 intermediates overflow (both must overflow the *same* way), and with a non-trivial
 offset/stride, which is where the SIMD row pass's scatter-by-stride would show an indexing slip.
 
+**Decode runs through strips, not planes** (issue #28). stb IDCTs every block into whole-image
+component planes and only then upsamples; `JpegCore` now IDCTs one *unit* (an MCU row of an interleaved
+scan, a block row of a single-component one) into a per-component strip of `unit rows + 2`, assembles every
+output row that completes, hands it to an `IJpegRowSink` (`JpegDestinationSink` for `DecodeTo`,
+`JpegAllocatingSink` for `Decode`) and moves on. Sample memory is a function of the image's *width* and
+sampling, not its height; progressive keeps its coefficients whole (every scan is needed) and streams the
+IDCT from them in `Finish`. `JpegCore.Run` owns the lifetime. Things that are not obvious from the code:
+
+- **The row assembly is stb's, verbatim.** The `YStep`/`Line0`/`Line1` state machine is kept; `Line0`/`Line1`
+  are now plane *row indices* and the strip maps them to offsets. A row is emitted when the deepest plane row
+  it reads (`Line1`, or `Line0` for a near-only kernel on the upper half) is below the component's `Avail`. The
+  strip slides up to `Line0` before each unit. Two rows of margin are exact, not slack: a frame whose
+  components need different far rows (Magick's CMYK is YCCK with 2×2 Y and K over 1×1 chroma) retains two.
+  `BeginUnit` throws rather than overrun, and margin 1 trips it on 4:2:0, 4:4:0, the mixed layouts and CMYK.
+- **The reference for the strip engine is the old engine, kept.** `JpegDecoder.DecodeWithStats(forceWholePlanes:
+  true)` runs whole planes, which is the pre-strip pipeline, and `JpegStripDecodeTests` demands byte equality
+  with it on 8 sampling layouts (mixed kernels and vertical factors up to 4 included), odd sizes, every scale,
+  baseline and progressive, grey, CMYK, RGB-marked, hand-built restart streams, truncations and corrupted RSTn.
+  The golden digests cannot see the salvage paths (scan ends early, no scan, bad marker): leaving out the
+  zeroing of the unfinished unit passes every golden digest and fails exactly two of these tests.
+- **When it cannot stream it keeps whole planes, allocated at exact size** (a rent rounds a 33,660,000-byte
+  plane up to 64 MiB): baseline whose first scan does not carry every component, and the
+  **restart**. A baseline stream with a *second* scan, or with an Adobe/JFIF marker *after* the scan (stb
+  converts with the colour state at the end of the stream; the streamed rows used the state at the start of the
+  scan), is decoded again with whole planes. So an `IJpegRowSink` must accept **rows from 0 again**, each
+  overwriting the last; a sink that accumulates across rows resets on row 0. Not valid files, but today's
+  decoder decodes them one specific way and the restart keeps it.
+- **`DecodeTo` is checked against the frame header, then written as it decodes.** The size check moved from
+  after the decode to before it. A stream that turns out corrupt part-way leaves the rows before the failure
+  in the caller's buffer, where it used to leave it untouched.
+- `JpegDecodeStats.PeakPlaneBytes` counts the strip/plane arrays held (rented length, so pool rounding is
+  in it); line buffers and progressive coefficients are not. `Run` returns it; the public API discards it.
+  `EntropyUnits` / `TransformedUnits` count MCU rows entropy-decoded and IDCT'd; the region cost tests read them.
+
+**`DecodeRegionTo` is the same engine narrowed, not a second one** (issue #28 ask 1). `SetRegion` leaves every
+full-decode default (`_unitStart/_unitEnd`, `_cropX/_cropW`, `_outEnd`, each component's `WinA/WinN/BlkLo/BlkHi`) at its
+whole-image value, so there is one `EmitRow` and one `StreamScan`. What is not obvious:
+
+- **Rows are seeded in closed form.** The `YStep/YPos/Line0/Line1` loop has no data dependence, so `SeedRows` jumps it
+  to the region's first row; the units the first and last row read (`PlaneRowsRead`) give the margin for V2/Hv2's far
+  row with no special case. A kernel that reads only the near row (H2, generic) does not pull the unit above in.
+- **Columns run the resample kernels unchanged over a window**, widened one sample each side for H2/Hv2 and clipped to
+  the row, then crop. The kernels treat the first/last sample they are given as the image edge, so the window's interior
+  edge spoils exactly the margin that is cropped away. Note stb's *right* edge is not the mirror of its left
+  (`3*in[w-2] + in[w-1]`), so an "interior-span variant" of the arithmetic would have to reproduce that; running the
+  real kernel avoids copying it. A region's strips hold only those block columns (`Stride`/`ColBase`).
+- **Restart skip-ahead counts markers, and trusts neither their numbers nor the interval sizes.** It requires RST0..7 in
+  sequence and falls back to the top of the scan otherwise (a deleted marker shifts every later one, and only the
+  sequence check sees it). It cannot check that each skipped interval really holds DRI MCUs; a stream whose intervals do
+  not is corrupt in a way only decoding them would show. The region also never reads past its last unit, so a second
+  scan or an Adobe/JFIF marker *after* the scan (both already restart the full decode) goes unseen unless the region
+  reaches the end of the scan. Documented on `DecodeRegionTo`; both are invalid files.
+- **Mutation-checked** (deliberate bugs, one at a time): no horizontal margin (31 tests fail), no far-row margin (35),
+  RST numbers unchecked (the damaged-marker test), the partial-unit clear ignoring `ColBase` (the two salvage tests,
+  the only ones that reach it), and the skip-ahead disabled (exactly the two cost tests: the pixels are still right,
+  so nothing else can see it).
+
+**`DecodeFittedTo` is a sink, not a third engine** (issue #28 ask 2). `JpegFittedSink` is an `IJpegRowSink` that
+box-filters the rows `JpegCore` hands it, so everything above (strips, region, restarts, whole-plane fallback) applies to
+it unchanged, and the full-resolution RGBA never exists: the engine converts a row into the sink's one scratch row, the
+sink adds it into the sums of its target row, and writes the target row when that box's last source row arrives. Held:
+one source row, `targetWidth * 4` sums, `targetWidth + 1` column bounds; allocated after a warm-up, about 21 KB
+whatever the height (measured: byte-identical at 1300 and 2600 rows). What is not obvious:
+
+- **The filter is the viewer's `RgbaBoxDownsample.Shrink`, line for line, and that is a claim about partitions.** Shrink
+  writes the box as `[dx*w/newW, min(w, max(lower+1, (dx+1)*w/newW)))`. With `newW <= w` the `max`/`min` never fire (the
+  upper bound is the next box's lower bound), so the boxes tile the source and one pass over the rows equals "convert
+  everything, then filter". With `newW > w` they would overlap, so a larger target is an `ArgumentException`, not an
+  approximation. The test file transcribes Shrink (with its `int` sums) and demands byte equality, not "within 1".
+- **The sums are `long`, Shrink's are `int`.** Shrink wraps for a box over 2^31/255 (about 8.4 M pixels): a 5100x6600
+  scan fitted to 1x1 is 33.7 M. Everything Shrink computes without overflow is identical; where it wraps this gives the
+  mean. `ABoxOfMoreThanEightMillionPixels_IsTheMean_NotAWrappedSum` is the only test that sees `int` sums (the mutation
+  that wraps them fails that and nothing else), so keep it.
+- **A region's rows are the image's row numbers.** The sink is told the image's size in `Begin` but its source is the
+  region's, and its first row is `region.Y`, so a restart "from row 0" is "from the first row" there. The start-over on
+  the first row is defensive (a restart delivers every row first, so the sums are already empty); only
+  `TheSink_BeginsOverWhenTheRowsComeAgainFromTheFirst`, which abandons an attempt part-way, can see it.
+- **No `ThrowIfTooLarge`.** The destination sinks refuse a raster over `int.MaxValue` bytes; this one never holds one, so
+  a source of any size the frame allows can be fitted. The destination check is the target's size.
+- **The cost is the region's.** The same `PlanRows`/restart skip-ahead apply, so a fitted decode of a region of a
+  row-restart scan entropy-decodes about that region's MCU rows (`AFittedDecodeOfARegion_CostsWhatTheRegionCosts`).
+- **Mutation-checked** (deliberate bugs, one at a time, all caught): no `+ n/2` rounding (140 tests fail), column bounds
+  rounded up (140), row bounds rounded up (140), region rows not offset by `region.Y` (71), a full-height RGBA allocated
+  in `Begin` (the two allocation tests, with 20.8 MB against the 260 KB bound), `int`-wrapping sums (the overflow test
+  alone) and no start-over on the first row (the sink restart test alone).
+
+**Measured on the issue's scan shape** (3.27; `JpegDecodeScanBenchmarks`, 5100x6600 baseline 4:4:4, DRI = 638, built in
+`GlobalSetup` through Magick.NET because `JpegEncoder` writes no restart markers; the setup throws unless the stream really is
+SOF0, 1x1 x3 and DRI 638, since a silently missing DRI would turn every case into plain baseline). Full 333.8 ms; region of the
+middle third 111.1 ms (**0.33**; 275 of 825 MCU rows, a third of the RGBA); fitted 3165x4096 526.9 ms; fitted region 151.8 ms;
+decode-then-shrink 432.8 ms and 178 MiB per call. Things the next person would trip over:
+
+- **The fitted decode is a memory win and, since the sink's perf review, a time win.** The figures above are the first cut
+  (527 ms against 433 ms for decode-then-shrink). The cost was `JpegFittedSink`'s per-channel 64-bit division in `WriteTargetRow`
+  and its scalar adds in `Accumulate`. It now sums each source row into per-column `uint` sums in `Vector128<uint>` lanes
+  (`AddRow`) and divides by a reciprocal multiply-high (`WriteTargetRowNarrow`; Lemire fastdiv, `d == 1` the identity). In one sitting:
+  fitted 3165x4096 396.5 ms against 516.0 ms for the old sink (-23%) and 431.1 ms for decode-then-shrink; fitted middle third
+  134.9 against 172.6 ms (-22%); fitted 510x660 344.9 against 361.8 ms (-5%, the thumbnail ratio has little to add). Three things to keep:
+  - **The 32-bit sums are exact only up to a box of 16,777,215 pixels** (`MaxNarrowBox`, 2^24 - 1: 255 x that is below 2^32). Above it
+    the sink takes the old `long` path (`Accumulate`/`WriteTargetRow`), which is also the reference: `forceWideSums` on
+    `DecodeFittedToWithStats` and the sink's constructor selects it. `TheWideAndTheNarrowPath_AgreeWithTheReferenceAndEachOther`
+    and `ABoxJustInsideTheNarrowPathsRange_IsTheMean` pin both and the boundary; the 5100x6600 -> 1x1 test stays on the wide path.
+  - **The A/B is `forceWideSums`**, kept as a parameter and not a static, with the three `*Wide` cases in `JpegDecodeScanBenchmarks`.
+  - **A BenchmarkDotNet run is `--job short`** (3 iterations) here, so single cases swing by 10-30% between sittings (the same
+    whole-image fit read 452 and 396 ms). Only compare cases from one run.
+- **BenchmarkDotNet's `Allocated` cannot show strip memory**: strips are pooled, so after the first iteration a decode allocates
+  next to nothing. `dotnet run -c Release --project benchmarks/SharpAstro.Codecs.Benchmarks -- --jpeg-scan-report` prints
+  `PeakPlaneBytes`, MCU rows entropy-decoded and IDCT'd and the byte-equality check against Decode plus a box filter, through
+  `InternalsVisibleTo` from `SharpAstro.Jpeg` to the benchmarks project. Strips are 0.19 MiB in every case against 3 x 64 MiB before.
+- **The benchmark JPEG is 7.6 MiB, the issue's were 1.1-1.6 MB** (noise on every channel), so entropy decoding is a bigger share
+  of a full decode here than on a real scan. The ratios that matter (a third of the rows, a third of the bytes) do not depend on that.
+- **`Magick.NET` is referenced by the benchmarks project** with the NU1901-NU1904 audit warnings silenced (it only encodes a
+  self-generated raster here). The `--filter` still matches the namespace and type, so `*JpegDecode*` runs both the small cases
+  and the 33.7 MP ones; they are separate classes so the small ones do not pay for that setup.
+
 `SharpAstro.Jpeg` also ships a **second, structurally unrelated decoder**: `LosslessJpeg`
 (ITU-T T.81 Annex H, SOF3) — Huffman-coded sample-difference predictors 1–7, no quantisation,
 **up to 16-bit precision**, DRI/RSTn restarts, point transform. It shares no code with
@@ -128,8 +243,16 @@ colour-convert kernel was written, reasoned to be an improvement, and measured a
 - **`YCbCrToRgbaRow` is store-bound, not compute-bound.** Writing 4 bytes/pixel is ~6.2 ms of a
   ~7.7 ms kernel; all the fixed-point colour math is the other ~1.4 ms. So the ceiling for
   vectorizing it is ~1.5% of decode, and the best attempt (`Vector128` + a real shuffle-based
-  interleaved store) captured about a third of that. `JpegResample` is the same shape, worse —
-  one `(3*a+b+2)>>2` per output byte.
+  interleaved store) captured about a third of that. `JpegResample` was assumed to be the same
+  shape, worse — one `(3*a+b+2)>>2` per output byte — and **was measured to be the opposite** (issue #28's
+  perf review): it writes one byte plane with contiguous vector stores (H2/Hv2 interleave even and odd outputs in-lane as `even | odd<<8`), not a 4-byte-per-pixel store. `RowSimd` (V2/H2/Hv2 in 16-bit
+  `Vector128` lanes, the stb sums fit exactly; edges and tail scalar; `RowScalar` is the stb transliteration and
+  the reference) took a 4:2:0 2048x1536 `DecodeTo` from 24.7 to 21.7 ms (**-12%**; a noisier second run
+  41.9 -> 30.6 ms), where an isolated row loop predicts about 10x. `JpegResampleEquivalenceTests` drives both
+  forms (widths 1-100 through two vector bodies and the tail, 16-bit lane limits, row offsets inside a larger
+  plane, short destination and plane still throw). The A/B was a temporary static switch, removed: only
+  `JpegUpsampleBenchmarks`' per-row pairs and a whole-decode case remain. Not tried: the grey, RGB-marked and
+  CMYK interleave loops in `JpegCore.EmitRow`, which are store-bound like `YCbCrToRgbaRow` and serve rare inputs.
 - **`Vector<T>` has no portable interleaved store.** Extracting lanes to scratch and then running
   the same per-pixel byte loop adds the vector work *on top of* the scalar work instead of
   replacing it. Where an interleaved store is needed, `Vector128.Shuffle` (pshufb / tbl) is the
