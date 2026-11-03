@@ -70,6 +70,58 @@ public class WebpAnimationDecodeBenchmarks
     public WebpAnimation DecodeAnimation() => WebpDecoder.DecodeAnimation(_source);
 }
 
+/// <summary>
+/// A real-world animation rather than a generated one: Google's gallery sample 1.webp (300x225, 100 frames, a full
+/// first frame then mostly partial rectangles alpha-blended over the previous one). Fetched, not committed -- run
+/// fetch-webp-external.sh first. Without it the params source is empty and this class contributes no benchmarks,
+/// so a plain clone still runs the rest of the suite.
+/// </summary>
+[MemoryDiagnoser]
+public class WebpExternalAnimationBenchmarks
+{
+    // The fetch script pins the file by SHA-256, so its frame count is fixed; Setup checks it, because
+    // OperationsPerInvoke must be a constant and a different file would silently report the wrong per-frame time.
+    private const int GalleryFrameCount = 100;
+
+    public static IEnumerable<string> AvailableFixtures() =>
+        WebpBenchmarkInputs.Exists(WebpBenchmarkInputs.GalleryAnimation) ? [WebpBenchmarkInputs.GalleryAnimation] : [];
+
+    [ParamsSource(nameof(AvailableFixtures))]
+    public string Fixture { get; set; } = string.Empty;
+
+    private byte[] _source = [];
+    private byte[] _canvas = [];
+    private WebpAnimationDecoder _decoder = null!;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _source = WebpBenchmarkInputs.Read(Fixture);
+        _decoder = new WebpAnimationDecoder(_source);
+        if (_decoder.FrameCount != GalleryFrameCount)
+        {
+            throw new InvalidOperationException(
+                $"{Fixture} has {_decoder.FrameCount} frames; the per-frame figure assumes {GalleryFrameCount}.");
+        }
+
+        _canvas = new byte[checked(_decoder.CanvasWidth * _decoder.CanvasHeight * 4)];
+    }
+
+    /// <summary>One canvas, frames composited in place -- what a player does. Reported per frame.</summary>
+    [Benchmark(OperationsPerInvoke = GalleryFrameCount, Description = "stream, per frame")]
+    public void StreamPerFrame()
+    {
+        _decoder.Reset();
+        while (_decoder.TryDecodeNextFrame(_canvas, out _))
+        {
+        }
+    }
+
+    /// <summary>Every frame materialised as its own full-canvas array.</summary>
+    [Benchmark(Description = "DecodeAnimation, whole file")]
+    public WebpAnimation DecodeAnimation() => WebpDecoder.DecodeAnimation(_source);
+}
+
 internal static class WebpBenchmarkInputs
 {
     public const string LossyOpaque = "lossy-opaque-1080p.webp";
@@ -77,14 +129,23 @@ internal static class WebpBenchmarkInputs
     public const string Lossless = "lossless-1080p.webp";
     public const string Animation = "animated-10x640.webp";
 
-    public static byte[] Read(string fileName) => File.ReadAllBytes(FindPath(fileName));
+    // Fetched by fetch-webp-external.sh into webp-inputs/external/ -- third-party, so never committed.
+    public const string GalleryAnimation = "external/gallery-anim-1.webp";
 
-    private static string FindPath(string fileName)
+    public static byte[] Read(string fileName) =>
+        File.ReadAllBytes(TryFindPath(fileName) ?? throw new FileNotFoundException(
+            $"Benchmark input '{fileName}' was not found. Run " +
+            "benchmarks/SharpAstro.Codecs.Benchmarks/generate-webp-inputs.sh first."));
+
+    public static bool Exists(string fileName) => TryFindPath(fileName) is not null;
+
+    private static string? TryFindPath(string fileName)
     {
         string? configuredDirectory = Environment.GetEnvironmentVariable("WEBP_BENCHMARK_INPUT_DIR");
         if (!string.IsNullOrWhiteSpace(configuredDirectory))
         {
-            return Path.Combine(configuredDirectory, fileName);
+            string configured = Path.Combine(configuredDirectory, fileName);
+            return File.Exists(configured) ? configured : null;
         }
 
         string projectRelativeDirectory = Path.Combine(
@@ -108,9 +169,7 @@ internal static class WebpBenchmarkInputs
             }
         }
 
-        throw new FileNotFoundException(
-            $"Benchmark input '{fileName}' was not found. Run " +
-            "benchmarks/SharpAstro.Codecs.Benchmarks/generate-webp-inputs.sh first.");
+        return null;
     }
 }
 

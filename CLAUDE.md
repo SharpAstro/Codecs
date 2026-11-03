@@ -285,6 +285,20 @@ platform's usual shared-library names (`libwebp.so.7`, Homebrew's
 `DecodeAnimation` only. `--profile-webp-lossy` runs a single-thread decode loop
 for CPU sampling.
 
+`WebpExternalAnimationBenchmarks` adds a real-world animation (Google's gallery
+`1.webp`: 300x225, 100 frames, mostly partial frames alpha-blended over the
+previous one), measured both streamed per frame through `WebpAnimationDecoder`
+and as a whole `DecodeAnimation`. It is third-party with no stated licence and
+380 KB, so it is **fetched, not committed**:
+`bash benchmarks/SharpAstro.Codecs.Benchmarks/fetch-webp-external.sh` downloads
+it into the git-ignored `webp-inputs/external/` and checks a pinned SHA-256.
+Without it the class contributes no benchmarks.
+
+**BenchmarkDotNet fails while pilot flights exist** ("Found more than one
+matching project file for SharpAstro.Codecs.Benchmarks"): it locates its project
+by name under the repo root and also finds the copies in `.claude/worktrees/*`.
+Pass `--inProcess`, or run from a checkout with no worktrees beneath it.
+
 Package versions are **centrally managed** in `Directory.Packages.props` — add a
 `<PackageVersion>` there and reference it without a version in the `.csproj`. All packages
 ship in lockstep (shared Major.Minor + CI run-number patch). Project conventions: `net10.0`,

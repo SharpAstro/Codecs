@@ -262,3 +262,5 @@ __pycache__/
 
 # BenchmarkDotNet run output (reports + the generated per-benchmark projects).
 BenchmarkDotNet.Artifacts/
+# Real-world WebP benchmark inputs fetched by fetch-webp-external.sh (third-party, not committed)
+benchmarks/SharpAstro.Codecs.Benchmarks/webp-inputs/external/
