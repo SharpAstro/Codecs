@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Radiance` / `.Pnm` / `.Tga`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Radiance` / `.Pnm` / `.Tga` / `.Bmp`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -13,6 +13,33 @@ This file was created at 3.10 by migrating the note trail out of the two comment
 it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose above a variable that no
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
+
+## 3.30
+
+**New package `SharpAstro.Bmp`: BMP read and write, registered with the facade** (issue #53, stb_image parity). BMP was one
+of the stb-only formats the family lost when `SharpAstro.StbImage` was removed; it is back, written from the Microsoft
+DIB header documentation rather than ported, and checked pixel by pixel against ImageMagick.
+
+- **`BmpDecoder`** reads 12/16/40/52/56/64/108/124-byte headers; 1/4/8-bit indexed, 16-bit (5-5-5 or any `BI_BITFIELDS`
+  masks), 24 and 32-bit pixels; `BI_RGB`, `BI_RLE8`, `BI_RLE4`, `BI_BITFIELDS` and `BI_ALPHABITFIELDS`; bottom-up and
+  top-down rows; a V5 embedded ICC profile (reported, never applied). Output is 8-bit RGB, or RGBA when the file has
+  alpha. Offsets, palette size and pixel data are checked against the file, a header declaring more than 2^28 pixels is
+  refused before allocating, and `BI_JPEG`, `BI_PNG`, `BI_CMYK*`, OS/2 Huffman 1D and RLE24 throw `NotSupportedException`
+  by name.
+- **Mask channels** of 8 bits or fewer are expanded by bit replication, as stb_image does (a 5-bit 24 reads as 198, a full
+  channel of any width as 255); wider ones round to nearest from their top 16 bits, which is ImageMagick's arithmetic. Every
+  8-bit and wider channel equals ImageMagick exactly. Below 8 bits ImageMagick departs from replication on a few values (5-bit
+  3 and 7, eight values of a 6-bit green) and only shifts other narrow channels (4-bit 15 is 240, 1-bit alpha 1 is 128); the
+  tests pin each of those value by value, over every 16-bit pixel word, instead of allowing a tolerance.
+- **`BmpEncoder`** (`EncodeRgb24`, `EncodeRgba32`, each with an optional input stride) writes 24-bit BGR with a 40-byte
+  `BITMAPINFOHEADER`, and 32-bit BGRA with a 108-byte V4 header whose `BI_BITFIELDS` masks include `0xFF000000` for alpha,
+  so alpha survives in readers that honour the masks. Rows are bottom-up and padded to four bytes. Width, height, stride
+  and input length are validated before anything is allocated. ImageMagick reads the output back sample for sample, alpha
+  included, at odd widths too, and `BmpDecoder` round-trips it exactly.
+- **Facade:** `BmpImageDecoder : IImageDecoder` is registered in `ImageCodecs`. It sniffs `BM` plus a DIB header size this
+  decoder knows and the zeroed reserved words (two letters alone are too weak a magic), and answers `TryReadInfo`,
+  `TryDecode` (RGB8 or RGBA8, ICC passed through) and `TryDecodeIntoRgba8` (opaque images get alpha 255). Refused or
+  malformed files answer false rather than throw.
 
 ## 3.29
 

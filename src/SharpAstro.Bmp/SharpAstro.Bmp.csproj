@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsAotCompatible>true</IsAotCompatible>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>SharpAstro.Bmp</PackageId>
+    <Product>SharpAstro.Bmp</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>Pure C# BMP (Windows and OS/2 DIB) image decoder and encoder for .NET.</Description>
+    <PackageTags>bmp image codec decoder encoder dib rle icc aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\UNLICENSE" Pack="true" PackagePath="\" Link="UNLICENSE" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+</Project>
