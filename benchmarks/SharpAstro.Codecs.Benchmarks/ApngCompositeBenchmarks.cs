@@ -62,6 +62,40 @@ public class ApngCompositeBenchmarks
     }
 }
 
+/// <summary>
+/// The vector OVER against the scalar one, whole streaming decodes of the same file (<c>PngCompositor.ForceScalar</c> is
+/// the switch), so the number is the decode's and not a kernel's in isolation. Each parameter combination runs in its own
+/// process, so the static flag cannot leak between rows.
+/// </summary>
+[MemoryDiagnoser]
+[SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 2, iterationCount: 8)]
+public class ApngOverKernelBenchmarks
+{
+    [Params(ApngBenchmarkInputs.LargeOverMixed, ApngBenchmarkInputs.LargeOverPartial)]
+    public string Fixture { get; set; } = string.Empty;
+
+    [Params(true, false)]
+    public bool ForceScalar { get; set; }
+
+    private byte[] _png = [];
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _png = ApngBenchmarkInputs.Build(Fixture);
+        PngCompositor.ForceScalar = ForceScalar;
+    }
+
+    [Benchmark(Description = "EnumerateFrames (stream)")]
+    public long Stream()
+    {
+        long sum = 0;
+        foreach (var frame in PngReader.EnumerateFrames(_png))
+            sum += frame.Rgba[^1] + frame.Rgba[frame.Rgba.Length / 2];
+        return sum;
+    }
+}
+
 /// <summary>Builds animated PNGs out of <see cref="PngWriter"/>'s frames: each frame's IDAT payload becomes an <c>fdAT</c>.</summary>
 internal static class ApngBenchmarkInputs
 {
