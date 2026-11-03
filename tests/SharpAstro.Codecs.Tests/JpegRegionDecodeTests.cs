@@ -31,7 +31,7 @@ public sealed class JpegRegionDecodeTests
 
     // ------------------------------------------------------------ fixtures
 
-    private enum Kind
+    internal enum Kind
     {
         Baseline,        // no restart markers: entropy decoding has to run from the top
         RestartRow,      // DRI = one MCU row, as the issue's scans have
@@ -42,7 +42,7 @@ public sealed class JpegRegionDecodeTests
         WholePlanes,     // baseline, forced onto the whole-plane engine: only the assembly is cropped
     }
 
-    private static readonly string?[] Layouts =
+    internal static readonly string?[] Layouts =
     [
         "1x1,1x1,1x1", // 4:4:4
         "2x1,1x1,1x1", // 4:2:2: H2, no far row
@@ -60,7 +60,7 @@ public sealed class JpegRegionDecodeTests
         from kind in Enum.GetValues<Kind>()
         select new object[] { layout ?? "grey", kind };
 
-    private static string? LayoutOf(string name) => name == "grey" ? null : name;
+    internal static string? LayoutOf(string name) => name == "grey" ? null : name;
 
     private static readonly (int W, int H)[] Sizes = [(37, 23), (67, 70), (130, 7), (7, 130), (33, 33), (1, 1), (16, 16)];
 
@@ -116,7 +116,7 @@ public sealed class JpegRegionDecodeTests
     /// restart-interval define is the only thing that makes a DRI, and a regeneration (a different native library) that
     /// silently stopped honouring it would turn every restart case into a plain-baseline one that still passes.
     /// </summary>
-    private static byte[] Build(int w, int h, string? sampling, Kind kind)
+    internal static byte[] Build(int w, int h, string? sampling, Kind kind)
     {
         var progressive = kind is Kind.Progressive or Kind.ProgressiveRestart;
 
@@ -169,7 +169,7 @@ public sealed class JpegRegionDecodeTests
     /// full-height bands, plus <paramref name="budget"/> others. Every rectangle when there are at most
     /// <paramref name="exhaustiveUpTo"/> of them, which is always the case for the smallest images and scales.
     /// </summary>
-    private static IEnumerable<JpegRegion> Regions(int w, int h, int budget, int exhaustiveUpTo = 400)
+    internal static IEnumerable<JpegRegion> Regions(int w, int h, int budget, int exhaustiveUpTo = 400)
     {
         var small = (long)w * (w + 1) / 2 * h * (h + 1) / 2 <= exhaustiveUpTo;
         var xs = Axis(w, small);

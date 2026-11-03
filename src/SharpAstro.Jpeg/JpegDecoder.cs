@@ -105,6 +105,78 @@ public static class JpegDecoder
     }
 
     /// <summary>
+    /// Decodes at <paramref name="scale"/> (optionally only <paramref name="region"/> of the result) and box-filters
+    /// to <paramref name="targetWidth"/> × <paramref name="targetHeight"/> <i>inside the decoder's row loop</i>, into a
+    /// caller-supplied RGBA buffer of that size, tightly packed. Neither the full-resolution RGBA nor an intermediate of
+    /// the source's height ever exists: each row is converted once into one row of scratch, added into the target row
+    /// it belongs to, and discarded. Memory is the decoder's few MCU rows of samples (the width of the source, not its
+    /// height) plus one source row and one row of sums. For a viewer that shows a scan far smaller than it is, this
+    /// is <c>Decode</c> followed by a box filter without the multi-hundred-megabyte middle.
+    ///
+    /// <para><b>The filter is integer-exact and is the Drawboard viewer's <c>RgbaBoxDownsample</c> (its
+    /// <c>Shrink</c>), not something near it.</b> Target column <c>dx</c> averages source columns
+    /// <c>[dx*w/newW, (dx+1)*w/newW)</c> and target row <c>dy</c> source rows <c>[dy*h/newH, (dy+1)*h/newH)</c> (integer
+    /// division, <c>w</c> × <c>h</c> the source size), as <c>(sum + n/2) / n</c> over R, G, B and A alike, <c>n</c> being
+    /// the number of pixels in the box. The output is therefore byte for byte what <see cref="Decode"/> (or
+    /// <see cref="DecodeRegionTo"/> when a region is given) followed by that filter gives, at every scale, for every
+    /// stream type and at every ratio, non-integer ones included: it is not within one of it. The one place it
+    /// differs is where the viewer's filter is not defined: that sums in <c>int</c>, which wraps for a box of more than
+    /// 2^31/255 source pixels (about 8.4 million, as when a 5100×6600 scan is fitted to 1×1); the sums here are
+    /// <c>long</c> and give the true mean.</para>
+    ///
+    /// <para>The source is the <paramref name="region"/> if one is given (in output pixels at <paramref name="scale"/>, as
+    /// for <see cref="DecodeRegionTo"/>, with the same cost: with restart markers only the region's MCU rows are
+    /// entropy-decoded), else the whole image at that scale. The target size is the caller's: the caller decides how
+    /// far to shrink, this only does it. It must be at least 1 and no larger than the source in either dimension; a
+    /// larger target would have to invent pixels, and is refused rather than approximated.</para>
+    /// </summary>
+    /// <param name="data">The JPEG stream.</param>
+    /// <param name="targetWidth">Width of the result, 1 up to the width of the source (the region's, if given).</param>
+    /// <param name="targetHeight">Height of the result, 1 up to the height of the source (the region's, if given).</param>
+    /// <param name="rgbaDestination">Receives <c>targetWidth * targetHeight * 4</c> bytes; nothing past that is written.</param>
+    /// <param name="scale">The decode scale, applied before the filter.</param>
+    /// <param name="region">The part of the scaled image to fit, or null for all of it.</param>
+    /// <returns>The size written: <c>(targetWidth, targetHeight)</c>.</returns>
+    /// <exception cref="InvalidDataException">The stream is not a decodable JPEG.</exception>
+    /// <exception cref="ArgumentException">A target dimension is below 1 or larger than the source, the region is empty or
+    /// not entirely inside the image at this scale, or the destination is too small. Raised from the frame header,
+    /// before any entropy data is read.</exception>
+    public static (int Width, int Height) DecodeFittedTo(ReadOnlySpan<byte> data, int targetWidth, int targetHeight, Span<byte> rgbaDestination, JpegScale scale = JpegScale.Full, JpegRegion? region = null)
+    {
+        ValidateTarget(targetWidth, targetHeight);
+        var sink = new JpegFittedSink(rgbaDestination, targetWidth, targetHeight, region);
+        try
+        {
+            JpegCore.Run(data, ValidateScale(scale), ref sink, region: region);
+        }
+        finally
+        {
+            sink.Release();
+        }
+
+        return (targetWidth, targetHeight);
+    }
+
+    /// <summary>
+    /// <see cref="DecodeFittedTo"/> that also reports what the decode held and which engine ran it, as
+    /// <see cref="DecodeWithStats"/> does for a full decode. <paramref name="forceWholePlanes"/> runs the whole-plane
+    /// engine, whose rows the sink must accept from the first again after a restart.
+    /// </summary>
+    internal static JpegDecodeStats DecodeFittedToWithStats(ReadOnlySpan<byte> data, int targetWidth, int targetHeight, Span<byte> rgbaDestination, JpegScale scale = JpegScale.Full, JpegRegion? region = null, bool forceWholePlanes = false)
+    {
+        ValidateTarget(targetWidth, targetHeight);
+        var sink = new JpegFittedSink(rgbaDestination, targetWidth, targetHeight, region);
+        try
+        {
+            return JpegCore.Run(data, ValidateScale(scale), ref sink, forceWholePlanes, region);
+        }
+        finally
+        {
+            sink.Release();
+        }
+    }
+
+    /// <summary>
     /// <see cref="DecodeRegionTo"/> that also reports what the decode held and which engine ran it, as
     /// <see cref="DecodeWithStats"/> does for a full decode. Tests read the region's cost through this.
     /// </summary>
@@ -125,6 +197,14 @@ public static class JpegDecoder
         var stats = JpegCore.Run(data, ValidateScale(scale), ref sink, forceWholePlanes);
         image = new JpegImage(sink.Width, sink.Height, sink.Pixels);
         return stats;
+    }
+
+    private static void ValidateTarget(int targetWidth, int targetHeight)
+    {
+        if (targetWidth < 1)
+            throw new ArgumentException($"The target width must be at least 1, got {targetWidth}.", nameof(targetWidth));
+        if (targetHeight < 1)
+            throw new ArgumentException($"The target height must be at least 1, got {targetHeight}.", nameof(targetHeight));
     }
 
     private static int ValidateScale(JpegScale scale)
