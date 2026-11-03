@@ -19,6 +19,13 @@ public readonly record struct WebpInfo(
 internal static class WebpLimits
 {
     public const long MaximumPixels = 1L << 26;
+
+    /// <summary>
+    /// What the lossless encoder's match finder may allocate on top of the pixels (the copy list,
+    /// the chain, the hash heads). A plan that needs more shrinks its window, and failing that does
+    /// without backward references; see <c>Vp8LEncoderPlan</c>.
+    /// </summary>
+    public const long MaximumEncoderWorkingBytes = 1L << 30;
 }
 
 /// <summary>A decoded WebP image in tightly packed, non-premultiplied RGBA8.</summary>

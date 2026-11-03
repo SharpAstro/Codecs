@@ -17,7 +17,22 @@ internal static class WebpLosslessEncoderCorpus
     public static IEnumerable<object[]> Names() =>
         Build().Select(static image => new object[] { image.Name });
 
+    /// <summary>Every corpus image at every effort 0 to 9.</summary>
+    public static IEnumerable<object[]> NamesByEffort() =>
+        Build().SelectMany(static image => Enumerable.Range(0, 10).Select(effort => new object[] { image.Name, effort }));
+
     public static Image Get(string name) => Build().Single(image => image.Name == name);
+
+    public static int[] ToArgb(byte[] rgba)
+    {
+        int[] argb = new int[rgba.Length / 4];
+        for (int i = 0; i < argb.Length; i++)
+        {
+            argb[i] = (rgba[i * 4 + 3] << 24) | (rgba[i * 4] << 16) | (rgba[i * 4 + 1] << 8) | rgba[i * 4 + 2];
+        }
+
+        return argb;
+    }
 
     public static IEnumerable<Image> Build()
     {
@@ -37,6 +52,79 @@ internal static class WebpLosslessEncoderCorpus
         yield return new("uniform-bytes", 256, 64, UniformBytes(256, 64));
         yield return new("wide-strip", 4096, 1, PhotoLike(4096, 1));
         yield return new("tall-strip", 1, 4096, PhotoLike(1, 4096));
+        yield return new("tiled-pattern", 192, 128, Tiled(192, 128, 24, 20));
+        yield return new("long-repeat", 200, 100, LongRepeat(200, 100));
+        yield return new("far-repeat", 512, 300, FarRepeat(512, 300));
+    }
+
+    // A 24x20 tile of eight noisy colours repeated across the image: the period is unrelated to
+    // the width, so the repeats are at distances (24, one row up, ...) a plane code cannot all name.
+    private static byte[] Tiled(int w, int h, int tileW, int tileH)
+    {
+        uint s = 0xabcdef1u;
+        byte[][] tile = new byte[tileW * tileH][];
+        for (int i = 0; i < tile.Length; i++)
+        {
+            byte level = (byte)(Next(ref s) % 8 * 32);
+            tile[i] = [level, (byte)(255 - level), (byte)(level / 2 + 7), 255];
+        }
+
+        byte[] px = new byte[w * h * 4];
+        for (int y = 0; y < h; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                tile[(y % tileH) * tileW + (x % tileW)].CopyTo(px, (y * w + x) * 4);
+            }
+        }
+
+        return px;
+    }
+
+    // 20000 pixels from a period-5 colour sequence: runs far longer than the 4096 a copy can carry.
+    private static byte[] LongRepeat(int w, int h)
+    {
+        byte[] px = new byte[w * h * 4];
+        for (int p = 0; p < w * h; p++)
+        {
+            int k = p % 5;
+            px[p * 4] = (byte)(k * 50);
+            px[p * 4 + 1] = (byte)(255 - k * 40);
+            px[p * 4 + 2] = (byte)(k * k * 9);
+            px[p * 4 + 3] = 255;
+        }
+
+        return px;
+    }
+
+    // Noise in rows 0-99, a gradient in 100-199, then rows 0-99 again at 200-299: the copy is
+    // 200 rows back, a distance (102400 at width 512) whose prefix code has many extra bits.
+    private static byte[] FarRepeat(int w, int h)
+    {
+        uint s = 0x5eed5u;
+        byte[] px = new byte[w * h * 4];
+        for (int y = 0; y < 100; y++)
+        {
+            for (int x = 0; x < w * 4; x++)
+            {
+                px[y * w * 4 + x] = x % 4 == 3 ? (byte)255 : (byte)Next(ref s);
+            }
+        }
+
+        for (int y = 100; y < 200; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                int i = (y * w + x) * 4;
+                px[i] = (byte)(x / 2);
+                px[i + 1] = (byte)y;
+                px[i + 2] = 40;
+                px[i + 3] = 255;
+            }
+        }
+
+        Array.Copy(px, 0, px, 200 * w * 4, 100 * w * 4);
+        return px;
     }
 
     private static uint Next(ref uint state)
@@ -806,12 +894,11 @@ public sealed class WebpLosslessEncoderRefusalTests
     [Theory]
     [InlineData(0)]
     [InlineData(9)]
-    public void EveryEffortInRangeIsAcceptedAndGivesTheSameFileForNow(int effort)
+    public void EveryEffortInRangeIsAccepted(int effort)
     {
         byte[] pixels = [1, 2, 3, 4];
-        Assert.Equal(
-            WebpEncoder.EncodeLossless(pixels, 1, 1),
-            WebpEncoder.EncodeLossless(pixels, 1, 1, options: new WebpEncodeOptions { Effort = effort }));
+        byte[] file = WebpEncoder.EncodeLossless(pixels, 1, 1, options: new WebpEncodeOptions { Effort = effort });
+        Assert.True(pixels.AsSpan().SequenceEqual(WebpDecoder.Decode(file).Rgba));
     }
 }
 
@@ -831,6 +918,48 @@ public sealed class WebpLosslessEncoderOracleTests
         Assert.Equal(image.Width, w);
         Assert.Equal(image.Height, h);
         Assert.True(image.Rgba.AsSpan().SequenceEqual(pixels), Describe(image.Rgba, pixels));
+    }
+
+    public static IEnumerable<object[]> NamesByEffort() => WebpLosslessEncoderCorpus.NamesByEffort();
+
+    [Theory]
+    [MemberData(nameof(NamesByEffort))]
+    public void DwebpDecodesOurFileAtEveryEffortToTheSourcePixels(string name, int effort)
+    {
+        string dwebp = WebpOracle.RequireDwebp();
+        var image = WebpLosslessEncoderCorpus.Get(name);
+        byte[] file = WebpEncoder.EncodeLossless(
+            image.Rgba, image.Width, image.Height, options: new WebpEncodeOptions { Effort = effort });
+
+        (int w, int h, byte[] pixels) = RunDwebpPam(dwebp, file);
+        Assert.Equal(image.Width, w);
+        Assert.Equal(image.Height, h);
+        Assert.True(image.Rgba.AsSpan().SequenceEqual(pixels), Describe(image.Rgba, pixels));
+    }
+
+    [Theory]
+    [InlineData("tiled-pattern")]
+    [InlineData("palette-16")]
+    [InlineData("far-repeat")]
+    [InlineData("flat-ui")]
+    public void DwebpReadsEveryCacheSizeWithAndWithoutCopies(string name)
+    {
+        string dwebp = WebpOracle.RequireDwebp();
+        var image = WebpLosslessEncoderCorpus.Get(name);
+        int[] argb = WebpLosslessEncoderCorpus.ToArgb(image.Rgba);
+        var plan = Vp8LEncoderPlan.Create((long)image.Width * image.Height, 9, WebpLimits.MaximumEncoderWorkingBytes);
+        for (int cacheBits = 0; cacheBits <= 11; cacheBits++)
+        {
+            foreach (bool copies in new[] { false, true })
+            {
+                byte[] vp8l = Vp8LEncoder.EncodeCandidate(argb, image.Width, image.Height, false, plan, cacheBits, copies);
+                byte[] file = WebpWriter.Write(vp8l, image.Width, image.Height, false, null, null, null);
+                (_, _, byte[] pixels) = RunDwebpPam(dwebp, file);
+                Assert.True(
+                    image.Rgba.AsSpan().SequenceEqual(pixels),
+                    $"cache {cacheBits}, copies {copies}: {Describe(image.Rgba, pixels)}");
+            }
+        }
     }
 
     [Fact]

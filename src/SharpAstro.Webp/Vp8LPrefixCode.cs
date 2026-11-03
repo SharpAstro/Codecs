@@ -61,6 +61,26 @@ internal sealed class Vp8LPrefixCode
         return new Vp8LPrefixCode(size, lengths, codes, used);
     }
 
+    /// <summary>The bits the symbols of <paramref name="histogram"/> cost with this code (extra bits not included).</summary>
+    public long DataBits(ReadOnlySpan<int> histogram)
+    {
+        long bits = 0;
+        for (int i = 0; i < histogram.Length; i++)
+        {
+            bits += (long)histogram[i] * _emitBits[i];
+        }
+
+        return bits;
+    }
+
+    /// <summary>The bits <see cref="WriteHeader"/> writes.</summary>
+    public long HeaderBits()
+    {
+        var scratch = new Vp8LBitWriter(64);
+        WriteHeader(scratch);
+        return scratch.BitCount;
+    }
+
     /// <summary>Writes one occurrence of <paramref name="symbol"/>.</summary>
     public void WriteSymbol(Vp8LBitWriter writer, int symbol) => writer.WriteBits(_codes[symbol], _emitBits[symbol]);
 

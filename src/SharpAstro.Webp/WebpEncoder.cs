@@ -17,15 +17,17 @@ public sealed class WebpEncodeOptions
     public byte[]? Xmp { get; init; }
 
     /// <summary>
-    /// How hard the encoder tries, 0 (fastest) to 9 (smallest output). Accepted so callers can
-    /// start passing it; the literal-only encoder has nothing to trade yet and ignores it.
+    /// How hard the encoder tries, 0 (fastest) to 9 (smallest output). 0 writes literal-only
+    /// prefix codes. From 1 up it searches for LZ77 backward references (a wider window and deeper
+    /// hash chains as the effort rises, lazy matching from 4) and from 2 up it also tries colour
+    /// caches (a few sizes, then all of 1 to 11 bits from 7) and keeps whichever costs fewest bits.
     /// </summary>
     public int Effort { get; init; } = 6;
 }
 
 /// <summary>
-/// A WebP encoder. Lossless output only so far: VP8L with literal-only prefix codes (no transforms,
-/// no backward references, no colour cache), which is valid for every decoder but not yet small.
+/// A WebP encoder. Lossless output only so far: VP8L with LZ77 backward references and a colour
+/// cache chosen per image, but no transforms (predictor, colour, subtract-green, palette) yet.
 /// </summary>
 public static class WebpEncoder
 {
@@ -173,7 +175,7 @@ public static class WebpEncoder
             }
         }
 
-        byte[] vp8l = Vp8LEncoder.EncodeLiteral(argb, width, height, alphaIsUsed);
+        byte[] vp8l = Vp8LEncoder.Encode(argb, width, height, alphaIsUsed, effort);
         return WebpWriter.Write(
             vp8l,
             width,
