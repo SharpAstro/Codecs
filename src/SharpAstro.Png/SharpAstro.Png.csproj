@@ -54,4 +54,10 @@
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- PngHdr (the PQ / HLG / SDR transfer maths behind the float projection) is internal;
+         the codec test project pins its spec points directly. -->
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
 </Project>
