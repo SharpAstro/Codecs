@@ -8,6 +8,7 @@ using SharpAstro.Jpeg2000;
 using SharpAstro.Jxl;
 using SharpAstro.Jxr;
 using SharpAstro.Png;
+using SharpAstro.Tga;
 using SharpAstro.Tiff;
 using SharpAstro.Webp;
 
@@ -19,7 +20,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2 and JPEG 2000. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP and TGA. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -51,6 +52,13 @@ namespace SharpAstro.Codecs;
 /// WebP is decoded by <see cref="WebpImageDecoder"/>: lossy (VP8), lossless (VP8L)
 /// and, for an animation, its first composited frame. It returns RGB8 or RGBA8
 /// according to the container's alpha declaration.
+/// </para>
+/// <para>
+/// TGA is the one format recognised by its <b>end</b> rather than its start. A TGA has no magic number, so a
+/// header guess would claim arbitrary bytes; <see cref="TgaImageDecoder"/> instead requires the TGA 2.0
+/// footer (<c>TRUEVISION-XFILE.\0</c>, the last 18 bytes) and a header <c>TgaReader</c> accepts. It is
+/// registered last, and a footerless (TGA 1.0) file is not recognised here: decode it with
+/// <c>TgaReader.Decode</c> directly. Opaque TGAs decode as RGB8, ones with alpha as RGBA8.
 /// </para>
 /// <para>
 /// A gain-map ("Ultra HDR") JPEG is recognised too: <see cref="TryDecode"/> +
@@ -97,6 +105,9 @@ public static class ImageCodecs
         Register<Jbig2ImageDecoder>(),
         Register<Jpeg2000ImageDecoder>(),
         Register<WebpImageDecoder>(),
+        // Last on purpose: TGA is sniffed by its trailing footer, not a leading magic number, so it
+        // can only ever claim a stream that no leading-signature codec above already took.
+        Register<TgaImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>

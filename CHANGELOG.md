@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Tga`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -13,6 +13,31 @@ This file was created at 3.10 by migrating the note trail out of the two comment
 it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose above a variable that no
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
+
+## 3.29
+
+**New package `SharpAstro.Tga`: Truevision TGA read and write, and the facade recognises it by its TGA 2.0 footer** (issue #54,
+the first step of stb_image parity: the stb port removed earlier took TGA with it).
+
+- **Reader (`TgaReader`).** Image types 1/2/3 and their RLE forms 9/10/11; 8/15/16/24/32-bit pixels; 8/15/16/24/32-bit
+  colour-map entries; alpha from 32-bit pixels or the descriptor's attribute bits; both vertical origins and the right-to-left
+  bit; image ID skipped; output tightly packed top-down RGBA8. Every pixel is compared against Magick.NET's read of the same
+  file. Refused with `InvalidDataException` rather than clamped: truncation, an RLE packet running past the end of the image, an
+  RLE stream ending early, unknown types and depths, out-of-map colour indices and more than 2^26 declared pixels (checked
+  before anything is allocated).
+- **Writer (`TgaWriter`).** 24-bit and 32-bit true colour, raw (type 2) or RLE (type 10), either origin, always followed by the
+  TGA 2.0 footer. Read back exactly by Magick.NET and by our reader.
+- **Facade: footer only, never a header guess.** `TgaImageDecoder` is registered last in `ImageCodecs`. A TGA has no magic
+  number, so its header cannot be told from arbitrary bytes. The adapter claims a stream only when the last 18 bytes are
+  `TRUEVISION-XFILE.\0` **and** the header parses as a TGA the reader accepts. A TGA 1.0 file has no footer, so the facade does not
+  recognise it (Magick.NET writes such files); it still decodes through `TgaReader.Decode`, and appending the 26-byte footer makes
+  it a file the facade takes. A footered but corrupt file is claimed and then declined: the `Try` methods return false, never throw.
+  Opaque TGAs decode as RGB8, those with alpha as RGBA8.
+- `SharpAstro.Codecs` now references `SharpAstro.Tga`, so TGA is in its description and tags. 3.28 was already on nuget.org, so this
+  ships as 3.29.
+
+Tests: `TgaFacadeTests` (footered files through `TryDecode` / `TryReadInfo` / `TryDecodeIntoRgba8` equal `TgaReader`; footerless
+files and random bytes are not recognised; corrupt footered files return false), alongside the reader, writer and refusal tests.
 
 ## 3.28
 
