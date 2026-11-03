@@ -67,10 +67,12 @@ height delay_num delay_den dispose_op blend_op canvas_sha256 idat_sha256`
 
 ### Caveat: Pillow's OVER is not the spec formula
 
-`apng-blend-over-partial-alpha.png` is composited by Pillow's `alpha_composite` (integer arithmetic
-with its own rounding). The APNG spec gives its own formula for partial alpha and the two can differ
-by a unit in the last place on some pixels, so for that **one** fixture `canvas_sha256` is Pillow's
-answer, not necessarily the spec's. It is therefore checked separately (against the spec formula
-with a stated tolerance) when compositing lands. The other ten files either composite only where
-alpha is 0 or 255, where every sensible formula agrees exactly, or (the indexed one, whose tRNS has
-a half-transparent entry) use blend_op SOURCE, which copies.
+`apng-blend-over-partial-alpha.png` is composited by Pillow with `blend_op` OVER. Measured (when the reader's
+compositor landed): for every frame after the first, Pillow does not apply the specification's alpha-over but
+`Image.paste` with the frame as its own mask, a lerp of **every band, alpha included**, by the frame's alpha
+(`DIV255(bg * (255 - a) + fg * a)`). Where the canvas is opaque that is exactly the spec's formula, so the other ten
+files (alpha only 0 or 255, or the indexed one, which uses SOURCE) agree with any sensible reading. Where the canvas
+is itself partly transparent it is not: this file's frames 1-3 differ from the spec's canvases in 264, 571 and 667
+of 1536 pixels, by up to 64, 91 and 91 in alpha (and 48 in a colour channel). So for that **one** file
+`canvas_sha256` is Pillow's answer, not the spec's; `PngApngTests` reproduces those digests with a model of Pillow's
+paste, checks the reader against the spec formula, and pins the difference.

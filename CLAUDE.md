@@ -711,6 +711,31 @@ that rule, while `anim_dump` 1.6.0 emits this fixture's frame uncomposited.
 The fixture is excluded from that oracle comparison and remains covered by
 compositing and seek-versus-sequential tests.
 
+## APNG (animated PNG) — spec-derived, Pillow as the independent reference
+
+`SharpAstro.Png` composites APNG frames (`PngReader.EnumerateFrames` streams one shared canvas;
+`DecodeFrames` materialises them, refusing canvas x frames above `DefaultMaximumAnimationPixels`, 2^28,
+before it allocates). It is written from the **prose of the APNG specification and the PNG spec's alpha
+channel processing**, not from any reader's source. The fixtures under `Fixtures/apng` are written by **Pillow**
+(an independent encoder, `make-fixtures.py` re-reads its own output to check each case covers what its name
+says), and `apng-reference.tsv` holds SHA-256 digests of **Pillow's composited canvases**, which every frame of
+every fixture must match. Two rules that are easy to get wrong: a first frame with `dispose_op` PREVIOUS is treated as
+BACKGROUND, and a frame's disposal is applied at the start of the *next* frame, never after the last.
+
+**Pillow's OVER is not the spec's.** For frames after the first it pastes the frame with itself as the mask,
+a lerp of *every* band including alpha, so over a partly transparent canvas the alpha stays 50% where the spec
+gives 75%. The two agree wherever the canvas is opaque (all fixtures but one). `PngCompositor.Over` implements
+the spec's formula in exact integers (round to nearest, halves up); `PngApngTests` checks it against a plain
+floating-point transcription for every pair of alphas, reproduces Pillow's digests with a model of Pillow's own
+paste, and pins how far apart the two are on `apng-blend-over-partial-alpha.png` (up to 91 of 255 in alpha). Do not
+"fix" the reader to match Pillow there.
+
+Refused rather than guessed: a malformed animation (bad sequence numbers, a frame outside the canvas, a missing
+frame, a first frame that does not cover the canvas when the IDAT is that frame) throws `InvalidDataException` from
+`Decode`, not a silent fall-back to the default image. `Decode` and the `SharpAstro.Codecs` facade return the default
+(`IDAT`) image unchanged. There is no 16-bit APNG fixture (Pillow cannot write one); 16-bit frames go through the same
+high-byte mapping as any 16-bit PNG.
+
 ## Oracle harnesses (all codecs)
 
 There are multiple oracle mechanisms, with different acquisition stories. All of them

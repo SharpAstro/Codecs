@@ -55,8 +55,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The tests drive the per-frame APNG decode directly (PngReader.DecodeFrameSamples),
-         which is internal until frame compositing gives it a public entry point. -->
+    <!-- The tests drive the per-frame APNG decode (PngReader.DecodeFrameSamples) and the
+         OVER pixel operation (PngCompositor.Over) directly; both are internal, the public
+         entry points being PngReader.EnumerateFrames / DecodeFrames. -->
     <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
   </ItemGroup>
 

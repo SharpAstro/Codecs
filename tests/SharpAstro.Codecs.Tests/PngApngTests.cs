@@ -371,6 +371,322 @@ public sealed class PngApngTests
         PngReader.DecodeFrameSamples(bytes, img, 2).Length.ShouldBe(img.Animation!.Frames[2].Width * img.Animation.Frames[2].Height * 4);
     }
 
+    // ---------------------------------------------------------------- compositing
+
+    private const string PartialAlphaFile = "apng-blend-over-partial-alpha.png";
+
+    /// <summary>
+    /// Every frame of every fixture, composited by <see cref="PngReader.EnumerateFrames"/>, against the SHA-256 of the
+    /// canvas Pillow composited. The partial-alpha OVER file is the one place Pillow's rounding may differ from the
+    /// specification's formula; it has its own test below, which measures the difference.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(FixtureNames))]
+    public void EveryFrame_MatchesPillowsCanvas(string file)
+    {
+        var rows = RowsFor(file);
+        var frames = PngReader.EnumerateFrames(Bytes(file)).Select(f => (f.Index, Sha: Sha(f.Rgba), f.DelayNumerator, f.DelayDenominator)).ToList();
+
+        frames.Count.ShouldBe(rows.Count);
+        for (var i = 0; i < rows.Count; i++)
+        {
+            frames[i].Index.ShouldBe(i);
+            (frames[i].DelayNumerator, frames[i].DelayDenominator).ShouldBe((rows[i].DelayNum, rows[i].DelayDen), $"{file} frame {i}");
+            if (file == PartialAlphaFile)
+                continue;
+            frames[i].Sha.ShouldBe(rows[i].CanvasSha, $"{file} frame {i}");
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(FixtureNames))]
+    public void DecodeFrames_GivesTheSameCanvasesAsTheStreamingEnumerator_EachItsOwn(string file)
+    {
+        var bytes = Bytes(file);
+        var streamed = PngReader.EnumerateFrames(bytes).Select(f => (byte[])f.Rgba.Clone()).ToList();
+
+        var sequence = PngReader.DecodeFrames(bytes);
+
+        var img = PngReader.Decode(bytes);
+        (sequence.CanvasWidth, sequence.CanvasHeight, sequence.PlayCount).ShouldBe((img.Width, img.Height, img.Animation!.PlayCount));
+        sequence.Frames.Count.ShouldBe(streamed.Count);
+        for (var i = 0; i < streamed.Count; i++)
+        {
+            sequence.Frames[i].Rgba.ShouldBe(streamed[i], $"{file} frame {i}");
+            sequence.Frames[i].Index.ShouldBe(i);
+            sequence.Frames[i].DelayNumerator.ShouldBe(img.Animation.Frames[i].DelayNumerator);
+        }
+        sequence.Frames.Select(f => f.Rgba).Distinct().Count().ShouldBe(sequence.Frames.Count); // no two share a buffer
+    }
+
+    /// <summary>The enumerator keeps one working canvas and says so: every yielded frame is that array, rewritten in place.</summary>
+    [Fact]
+    public void EnumerateFrames_ReusesOneCanvas()
+    {
+        var canvases = PngReader.EnumerateFrames(Bytes(Base)).Select(f => f.Rgba).ToList();
+
+        canvases.Count.ShouldBe(4);
+        canvases.Distinct().Count().ShouldBe(1);
+        // a second enumeration starts again from a transparent canvas, with its own working canvas
+        var second = PngReader.EnumerateFrames(Bytes(Base)).First().Rgba;
+        second.ShouldNotBeSameAs(canvases[0]);
+    }
+
+    [Fact]
+    public void DefaultImageFile_YieldsOnlyTheAnimationFrames_NotTheIdat()
+    {
+        var rows = RowsFor(DefaultImageFile);
+        var bytes = Bytes(DefaultImageFile);
+
+        var frames = PngReader.DecodeFrames(bytes).Frames;
+
+        frames.Count.ShouldBe(4);                       // the cover is not one of them
+        PngReader.Decode(bytes).Animation!.FrameCount.ShouldBe(4);
+        Sha(frames[0].Rgba).ShouldBe(rows[0].CanvasSha);
+        Sha(frames[0].Rgba).ShouldNotBe(rows[0].IdatSha);
+        frames.Any(f => Sha(f.Rgba) == rows[0].IdatSha).ShouldBeFalse();
+        // and the still-image paths still show the cover
+        Sha(PngReader.Decode(bytes).ToRgba8()).ShouldBe(rows[0].IdatSha);
+        PngImageDecoder.TryDecodeRgba8(bytes, out var rgba, out _, out _).ShouldBeTrue();
+        Sha(rgba!).ShouldBe(rows[0].IdatSha);
+    }
+
+    [Fact]
+    public void ZeroDelayDenominator_ReadsAsHundred_OnTheYieldedFrames()
+    {
+        var chunks = Parse(Bytes(Base));
+        var fcTl = Nth(chunks, "fcTL", 1).Data;
+        BinaryPrimitives.WriteUInt16BigEndian(fcTl.AsSpan(20), 5);
+        BinaryPrimitives.WriteUInt16BigEndian(fcTl.AsSpan(22), 0);
+
+        var frames = PngReader.DecodeFrames(Build(chunks)).Frames;
+
+        (frames[1].DelayNumerator, frames[1].DelayDenominator).ShouldBe(((ushort)5, (ushort)0)); // as stored
+        frames[1].DelaySeconds.ShouldBe(0.05, 1e-12);
+        frames[0].DelaySeconds.ShouldBe(0.1, 1e-12);
+    }
+
+    /// <summary>
+    /// The specification: a first frame whose dispose_op is PREVIOUS is treated as BACKGROUND. With frame 0 clearing its
+    /// rectangle after itself, what shows outside frame 1's rectangle is transparent; with NONE it is frame 0's pixels.
+    /// </summary>
+    [Fact]
+    public void FirstFrameDisposePrevious_IsTreatedAsBackground()
+    {
+        byte[] SecondCanvas(PngDisposeOp op)
+        {
+            var chunks = Parse(Bytes(Base));
+            Nth(chunks, "fcTL", 0).Data[24] = (byte)op;
+            return (byte[])PngReader.DecodeFrames(Build(chunks)).Frames[1].Rgba.Clone();
+        }
+
+        var previous = SecondCanvas(PngDisposeOp.Previous);
+        previous.ShouldBe(SecondCanvas(PngDisposeOp.Background));
+        previous.ShouldNotBe(SecondCanvas(PngDisposeOp.None));
+        previous.Count(b => b != 0).ShouldBeLessThan(1500 * 4); // only frame 1's 24x14 patch is left
+    }
+
+    [Fact]
+    public void StillPng_YieldsItsOneFrame()
+    {
+        var rgb = new byte[7 * 5 * 3];
+        new Random(11).NextBytes(rgb);
+        var png = PngWriter.EncodeRgb8(rgb, 7, 5);
+
+        var sequence = PngReader.DecodeFrames(png);
+
+        sequence.Frames.Count.ShouldBe(1);
+        sequence.Frames[0].Rgba.ShouldBe(PngReader.Decode(png).ToRgba8());
+        PngReader.EnumerateFrames(png).Count().ShouldBe(1);
+    }
+
+    /// <summary>
+    /// The specification's OVER, transcribed as plainly as it is written (floating point, fractions of 1), against the
+    /// integer one in the reader, over every pair of alphas and a spread of colours. The reader rounds the exact
+    /// rational to nearest, halves up, and the alpha is exact; so a double can only disagree on a colour channel whose
+    /// exact value is a half, where it lands a hair either side. Every disagreement is checked to be exactly that: one
+    /// unit, on an exact half.
+    /// </summary>
+    [Fact]
+    public void Over_MatchesTheSpecificationsFormula_ForEveryPairOfAlphas()
+    {
+        var colors = new[] { 0, 1, 17, 100, 128, 200, 254, 255 };
+        var checkedPixels = 0;
+        var ties = 0;
+        var target = new byte[4];
+        for (var af = 0; af < 256; af++)
+            for (var ab = 0; ab < 256; ab++)
+                foreach (var cf in colors)
+                    foreach (var cb in colors)
+                    {
+                        byte[] source = [(byte)cf, (byte)(255 - cf), (byte)((cf + cb) / 2), (byte)af];
+                        byte[] background = [(byte)cb, (byte)(255 - cb), (byte)((cf * 3 + cb) / 4), (byte)ab];
+                        background.CopyTo(target, 0);
+                        PngCompositor.Over(source, target);
+                        checkedPixels++;
+
+                        var expected = SpecOver(source, background);
+                        target[3].ShouldBe(expected[3], $"alpha of {af} over {ab}");
+                        for (var c = 0; c < 3; c++)
+                        {
+                            if (target[c] == expected[c])
+                                continue;
+                            // the exact value is (af*255*cf + (255-af)*ab*cb) / (af*255 + ab*(255-af)); a tie is an odd multiple of 1/2
+                            long numerator = af * 255L * source[c] + (255 - af) * (long)ab * background[c];
+                            long denominator = af * 255L + ab * (255L - af);
+                            (2 * numerator % denominator).ShouldBe(0, $"channel {c}, alpha {af} over {ab}: not a tie");
+                            (2 * numerator / denominator % 2).ShouldBe(1);
+                            Math.Abs(target[c] - expected[c]).ShouldBe(1);
+                            ties++;
+                        }
+                    }
+        checkedPixels.ShouldBe(256 * 256 * 64);
+        ties.ShouldBeLessThan(checkedPixels / 1000); // a rounding detail, not a different formula
+    }
+
+    private static byte[] SpecOver(byte[] fg, byte[] bg)
+    {
+        double afr = fg[3] / 255.0, abr = bg[3] / 255.0;
+        var outAlpha = afr + abr * (1 - afr);
+        var result = new byte[4];
+        for (var c = 0; c < 3; c++)
+            result[c] = outAlpha == 0 ? (byte)0 : (byte)Math.Floor((afr * fg[c] + (1 - afr) * abr * bg[c]) / outAlpha + 0.5);
+        result[3] = (byte)Math.Floor(outAlpha * 255 + 0.5);
+        return result;
+    }
+
+    /// <summary>
+    /// What Pillow's APNG loader does for blend_op OVER, found by measurement: not the specification's alpha-over but
+    /// <c>Image.paste</c> with the frame as its own mask, a lerp of <em>every</em> band, alpha included, by the frame's
+    /// alpha (<c>DIV255(bg * (255 - a) + fg * a)</c>), applied to every frame but the first (which is shown as it is).
+    /// Where the canvas is opaque it is the spec's formula exactly; where the canvas is itself partly transparent it
+    /// is not (an alpha of 50% over 50% stays 50% instead of becoming 75%, and the colours are weighted by the wrong
+    /// alphas).
+    /// </summary>
+    private static byte[] PillowOver(byte[] fg, byte[] bg, bool firstFrame)
+    {
+        if (firstFrame)
+            return fg;
+        static byte Div255(int a) { var t = a + 128; return (byte)(((t >> 8) + t) >> 8); }
+        var result = new byte[4];
+        for (var c = 0; c < 4; c++)
+            result[c] = Div255(bg[c] * (255 - fg[3]) + fg[c] * fg[3]);
+        return result;
+    }
+
+    /// <summary>
+    /// The partial-alpha fixture, composited by the specification's formula (a straight loop here, over the frames'
+    /// own RGBA8 pixels, sharing nothing with the reader's compositor but the sample expansion): the reader's frames
+    /// are exactly those. Pillow's canvases are not, and the difference is measured and pinned: Pillow's own OVER (see
+    /// <see cref="PillowOver"/>) reproduces its digests in <c>apng-reference.tsv</c> for every frame, so the
+    /// difference is the formula and nothing else, and the figures below are how far apart the two answers are.
+    /// </summary>
+    [Fact]
+    public void PartialAlphaOver_MatchesTheSpecFormulaExactly_AndPillowsDifferenceIsMeasured()
+    {
+        var bytes = Bytes(PartialAlphaFile);
+        var img = PngReader.Decode(bytes);
+        var rows = RowsFor(PartialAlphaFile);
+        var ours = PngReader.DecodeFrames(bytes).Frames;
+        var spec = new byte[img.Width * img.Height * 4];
+        var pillow = new byte[img.Width * img.Height * 4];
+
+        var partialOverPixels = 0;
+        var differing = new List<int>();
+        var largest = new List<int>();
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var frame = img.Animation!.Frames[i];
+            frame.BlendOp.ShouldBe(PngBlendOp.Over);
+            frame.DisposeOp.ShouldBe(PngDisposeOp.None);
+            var rgba = (img with { Width = frame.Width, Height = frame.Height, Pixels = PngReader.DecodeFrameSamples(bytes, img, i) }).ToRgba8();
+            for (var y = 0; y < frame.Height; y++)
+                for (var x = 0; x < frame.Width; x++)
+                {
+                    var from = (y * frame.Width + x) * 4;
+                    var to = ((frame.YOffset + y) * img.Width + frame.XOffset + x) * 4;
+                    var fg = rgba[from..(from + 4)];
+                    if (fg[3] is > 0 and < 255 && spec[to + 3] != 0)
+                        partialOverPixels++;
+                    SpecOver(fg, spec[to..(to + 4)]).CopyTo(spec, to);
+                    PillowOver(fg, pillow[to..(to + 4)], i == 0).CopyTo(pillow, to);
+                }
+
+            ours[i].Rgba.ShouldBe(spec, $"frame {i}: the reader against the specification's formula");
+            Sha(pillow).ShouldBe(rows[i].CanvasSha, $"frame {i}: the Pillow model against Pillow");
+            differing.Add(Enumerable.Range(0, spec.Length / 4).Count(p => !spec.AsSpan(p * 4, 4).SequenceEqual(pillow.AsSpan(p * 4, 4))));
+            largest.Add(Enumerable.Range(0, spec.Length).Max(k => Math.Abs(spec[k] - pillow[k])));
+        }
+        partialOverPixels.ShouldBeGreaterThan(100); // the fixture does exercise partial alpha over something
+
+        // measured: the first frame is the same, then Pillow's alpha-over-alpha is off by up to 91 of 255 in alpha
+        differing.ShouldBe(new[] { 0, 264, 571, 667 });
+        largest.ShouldBe(new[] { 0, 64, 91, 91 });
+    }
+
+    // ---------------------------------------------------------------- the animation limit
+
+    [Fact]
+    public void DecodeFrames_RefusesMoreThanTheLimit_AtTheBoundary()
+    {
+        var bytes = Bytes(Base);   // 48x32, 4 frames
+        const long total = 48 * 32 * 4;
+
+        PngReader.DecodeFrames(bytes, total).Frames.Count.ShouldBe(4);
+        var thrown = Should.Throw<InvalidDataException>(() => PngReader.DecodeFrames(bytes, total - 1));
+        thrown.Message.ShouldContain("EnumerateFrames");
+        Should.Throw<ArgumentOutOfRangeException>(() => PngReader.DecodeFrames(bytes, 0));
+        // streaming has no such limit
+        PngReader.EnumerateFrames(bytes).Count().ShouldBe(4);
+    }
+
+    /// <summary>
+    /// A small file that declares many frames of a big canvas: 65 one-pixel frames of a 2048×2048 canvas is 2^28 + 2^22
+    /// pixels, which the default limit refuses. The refusal comes before any canvas or frame exists (it allocates less
+    /// than one RGBA canvas, 16 MiB, where the IDAT's own samples are 4 MiB), while the streaming enumerator walks the
+    /// same file one canvas at a time.
+    /// </summary>
+    [Fact]
+    public void ManyFramesOfABigCanvas_AreRefusedByTheDefaultLimit_BeforeAllocating_ButCanBeStreamed()
+    {
+        const int side = 2048, frames = 65;
+        var cover = Parse(PngWriter.EncodeGray8(new byte[side * side], side, side));
+        var pixel = Parse(PngWriter.EncodeGray8(new byte[1], 1, 1)).Single(c => c.Type == "IDAT").Data;
+        var chunks = new List<Chunk>
+        {
+            cover.Single(c => c.Type == "IHDR"),
+            new("acTL", new byte[8]),
+        };
+        BinaryPrimitives.WriteUInt32BigEndian(chunks[1].Data, frames);
+        chunks.AddRange(cover.Where(c => c.Type == "IDAT"));
+        for (var i = 0; i < frames; i++)
+        {
+            var control = new byte[26];
+            BinaryPrimitives.WriteUInt32BigEndian(control.AsSpan(4), 1);   // width
+            BinaryPrimitives.WriteUInt32BigEndian(control.AsSpan(8), 1);   // height
+            BinaryPrimitives.WriteUInt16BigEndian(control.AsSpan(20), 1);  // delay 1/1
+            BinaryPrimitives.WriteUInt16BigEndian(control.AsSpan(22), 1);
+            chunks.Add(new Chunk("fcTL", control));
+            chunks.Add(FdAt(pixel));
+        }
+        chunks.Add(new Chunk("IEND", []));
+        Renumber(chunks);
+        var bytes = Build(chunks);
+        bytes.Length.ShouldBeLessThan(20_000);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var thrown = Should.Throw<InvalidDataException>(() => PngReader.DecodeFrames(bytes));
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        thrown.Message.ShouldContain(PngReader.DefaultMaximumAnimationPixels.ToString("N0"));
+        allocated.ShouldBeLessThan(side * side * 4);
+        PngReader.TryDecode(bytes, out var image).ShouldBeTrue();
+        image!.Animation!.FrameCount.ShouldBe(frames);
+
+        var firstTwo = PngReader.EnumerateFrames(bytes).Take(2).Select(f => f.Index).ToList();
+        firstTwo.ShouldBe(new[] { 0, 1 });
+    }
+
     // ---------------------------------------------------------------- malformed animations
 
     private static void SetFcTl(List<Chunk> chunks, int frame, int offset, uint value) =>

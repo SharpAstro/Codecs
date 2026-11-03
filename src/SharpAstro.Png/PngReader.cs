@@ -26,8 +26,12 @@ namespace SharpAstro.Png;
 /// <see cref="PngImage.Animation"/> reports the frame count, play count, whether the <c>IDAT</c> image is the first
 /// frame, and every frame's rectangle, delay, dispose and blend operation. Each frame's sub-image can be inflated and
 /// unfiltered through the same path as the <c>IDAT</c> image (<see cref="PngImage.Pixels"/> stays the <c>IDAT</c>
-/// image, which is what an APNG-unaware reader shows). Compositing the frames onto a canvas is not done yet; it is
-/// the next step.</para>
+/// image, which is what an APNG-unaware reader shows). <see cref="EnumerateFrames"/> and
+/// <see cref="DecodeFrames(ReadOnlySpan{byte})"/> composite the frames onto the full canvas (rectangle offset,
+/// <c>dispose_op</c> none/background/previous, <c>blend_op</c> source/over, delay as <c>delay_num</c>/<c>delay_den</c>)
+/// and give RGBA8; <see cref="Decode"/> and <see cref="PngImageDecoder"/> still return the default image only. The
+/// animation support is derived from the APNG specification's prose, and is checked against Pillow's encoder and
+/// compositor (see <c>Fixtures/apng/README.md</c>).</para>
 /// </remarks>
 public static class PngReader
 {
@@ -398,6 +402,102 @@ public static class PngReader
             Clli = clli,
             Animation = animation,
         };
+    }
+
+    /// <summary>
+    /// The default ceiling on the total pixels <see cref="DecodeFrames(ReadOnlySpan{byte})"/> may materialise:
+    /// canvas width × height × frame count, 2^28 (the same figure SharpAstro.Webp uses). That admits, say, 128 frames
+    /// of 1080p, which hold 1 GiB of RGBA8 between them, and the working canvas comes on top. A caller with a tighter
+    /// budget passes a smaller limit to <see cref="DecodeFrames(ReadOnlySpan{byte}, long)"/>, or streams with
+    /// <see cref="EnumerateFrames"/>, which never holds more than one canvas.
+    /// </summary>
+    public const long DefaultMaximumAnimationPixels = 1L << 28;
+
+    /// <summary>
+    /// Decode every frame of an animated PNG to its full composited canvas, one at a time, through one working canvas.
+    /// A PNG without an <c>acTL</c> yields one frame, its image, with a delay of 0.
+    /// </summary>
+    /// <remarks>
+    /// <para>The yielded <see cref="PngFrame.Rgba"/> is that working canvas, so it is only valid until the enumerator is
+    /// advanced: copy it to keep a frame. Nothing is materialised beyond the canvas, one frame's samples and the saved
+    /// rectangle of a <see cref="PngDisposeOp.Previous"/> frame, so this is the way to handle animations
+    /// <see cref="DecodeFrames(ReadOnlySpan{byte})"/> refuses. Each call to <c>GetEnumerator</c> starts over from a
+    /// transparent canvas.</para>
+    /// <para>The file is parsed and its animation chunks validated when this method is called (see <see cref="Decode"/>);
+    /// a frame's own data is inflated as the enumerator reaches it, so a corrupt frame throws
+    /// <see cref="InvalidDataException"/> from <c>MoveNext</c>. Compositing follows the APNG specification: see
+    /// <see cref="PngCompositor"/>'s remarks for the dispose and blend rules; delays are
+    /// <see cref="PngFrame.DelayNumerator"/> over <see cref="PngFrame.DelayDenominator"/>, a denominator of 0 meaning 100.</para>
+    /// </remarks>
+    /// <param name="data">The PNG file. It is read for as long as the sequence is enumerated, so it must not be changed meanwhile.</param>
+    /// <exception cref="InvalidDataException">The stream is not a PNG, is corrupt, or declares a malformed animation.</exception>
+    /// <exception cref="NotSupportedException">The file uses a feature this reader does not cover yet (Adam7 interlace).</exception>
+    public static IEnumerable<PngFrame> EnumerateFrames(ReadOnlyMemory<byte> data) =>
+        EnumerateDecoded(data, Decode(data.Span));
+
+    private static IEnumerable<PngFrame> EnumerateDecoded(ReadOnlyMemory<byte> data, PngImage image)
+    {
+        if (image.Animation is null)
+            return [new PngFrame(0, image.ToRgba8(), 0, 1)];
+        // Checked here, before the iterator, so a canvas too big to hold throws at the call and not at MoveNext.
+        if ((long)image.Width * image.Height * 4 > int.MaxValue)
+            throw new InvalidDataException($"A {image.Width}×{image.Height} canvas does not fit a byte array as RGBA8");
+        return Composite(data, image);
+    }
+
+    private static IEnumerable<PngFrame> Composite(ReadOnlyMemory<byte> data, PngImage image)
+    {
+        var compositor = new PngCompositor(data, image);
+        for (var i = 0; i < compositor.FrameCount; i++)
+        {
+            compositor.Draw(i);
+            var control = image.Animation!.Frames[i];
+            yield return new PngFrame(i, compositor.Canvas, control.DelayNumerator, control.DelayDenominator);
+        }
+    }
+
+    /// <summary><see cref="DecodeFrames(ReadOnlySpan{byte}, long)"/> with <see cref="DefaultMaximumAnimationPixels"/> as the limit.</summary>
+    /// <param name="data">A still or animated PNG file.</param>
+    /// <exception cref="InvalidDataException">The data is malformed, or canvas × frame count exceeds <see cref="DefaultMaximumAnimationPixels"/>.</exception>
+    public static PngFrameSequence DecodeFrames(ReadOnlySpan<byte> data) =>
+        DecodeFrames(data, DefaultMaximumAnimationPixels);
+
+    /// <summary>
+    /// Decode every frame of an animated PNG to its own full composited canvas, RGBA8, each frame owning its pixels.
+    /// A PNG without an <c>acTL</c> gives one frame. Refuses an animation whose canvas × frame count is above
+    /// <paramref name="maximumTotalPixels"/> before any canvas or frame is allocated.
+    /// </summary>
+    /// <remarks>
+    /// The check runs once the file's chunks have been parsed and validated, so it sees the frame count the file really
+    /// has (a count has to match the number of <c>fcTL</c> chunks, which bounds it by the input's length), and it comes
+    /// before the working canvas, any frame's samples or any returned canvas exists. The <c>IDAT</c> image that
+    /// <see cref="Decode"/> inflates is the one allocation made first, as for any PNG. The decoder's working canvas
+    /// comes on top of the returned frames.
+    /// </remarks>
+    /// <param name="data">A still or animated PNG file.</param>
+    /// <param name="maximumTotalPixels">The most pixels all the returned frames may hold together.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maximumTotalPixels"/> is not positive.</exception>
+    /// <exception cref="InvalidDataException">The data is malformed, or canvas × frame count exceeds <paramref name="maximumTotalPixels"/>.</exception>
+    /// <exception cref="NotSupportedException">The file uses a feature this reader does not cover yet (Adam7 interlace).</exception>
+    public static PngFrameSequence DecodeFrames(ReadOnlySpan<byte> data, long maximumTotalPixels)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumTotalPixels);
+        var image = Decode(data);
+        var frameCount = Math.Max(image.Animation?.Frames.Count ?? 1, 1);
+
+        // Every returned frame is a full-canvas copy, so memory is canvas × frames. Width and height are each below
+        // 2^31, so the canvas fits a long; dividing instead of multiplying keeps the product from wrapping.
+        var canvasPixels = (long)image.Width * image.Height;
+        if (canvasPixels > maximumTotalPixels / frameCount)
+            throw new InvalidDataException(
+                $"PNG: the animation would materialise {(double)canvasPixels * frameCount:N0} pixels " +
+                $"({frameCount:N0} frames of {image.Width}x{image.Height}), above the limit of {maximumTotalPixels:N0}. " +
+                "Use EnumerateFrames to stream it.");
+
+        var frames = new List<PngFrame>(frameCount);
+        foreach (var frame in EnumerateDecoded(data.ToArray(), image))
+            frames.Add(frame with { Rgba = (byte[])frame.Rgba.Clone() });
+        return new PngFrameSequence(image.Width, image.Height, image.Animation?.PlayCount ?? 1, frames.AsReadOnly());
     }
 
     /// <summary>
