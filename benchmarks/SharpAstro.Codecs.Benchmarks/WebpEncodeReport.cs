@@ -15,7 +15,7 @@ namespace SharpAstro.Codecs.Benchmarks;
 /// <c>cwebp</c> is given <c>-exact</c>: ours keeps the colour under fully transparent pixels, so
 /// without it cwebp would be allowed to throw that colour away and the sizes would not be of the
 /// same thing. <c>--efforts=0,3,6,9</c> restricts the efforts; <c>--only=name[,name]</c> restricts
-/// the images; <c>--no-corpus</c> and <c>--no-1080p</c> drop a group.
+/// the images; <c>--no-corpus</c> and <c>--no-1080p</c> drop a group; <c>--out=path</c> also writes the two tables to a file.
 /// </para>
 /// <para>
 /// <c>cwebp</c> and <c>dwebp</c> are local executables; temporary files go to the system
@@ -31,6 +31,7 @@ internal static class WebpEncodeReport
         int[] efforts = Enumerable.Range(0, 10).ToArray();
         string[]? only = null;
         bool corpus = true, big = true;
+        string? outPath = null;
         foreach (string arg in args.Skip(1))
         {
             if (arg.StartsWith("--efforts=", StringComparison.Ordinal))
@@ -40,6 +41,10 @@ internal static class WebpEncodeReport
             else if (arg.StartsWith("--only=", StringComparison.Ordinal))
             {
                 only = arg["--only=".Length..].Split(',');
+            }
+            else if (arg.StartsWith("--out=", StringComparison.Ordinal))
+            {
+                outPath = arg["--out=".Length..];
             }
             else if (arg == "--no-corpus")
             {
@@ -150,6 +155,17 @@ internal static class WebpEncodeReport
         Console.WriteLine();
         Print(["image", .. effortHeaders, "cwebp default", "cwebp -z 9"], timeTable);
         Console.WriteLine();
+        if (outPath is not null)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("### File size in bytes (ratio to `cwebp -lossless` at its default)").AppendLine();
+            sb.Append(Table(["image", "size", .. effortHeaders, "cwebp default", "cwebp -z 9"], sizeTable)).AppendLine();
+            sb.AppendLine("### Encode wall time in ms (one run each, one sitting)").AppendLine();
+            sb.Append(Table(["image", .. effortHeaders, "cwebp default", "cwebp -z 9"], timeTable));
+            sb.AppendLine().AppendLine(failures == 0 ? "every output decodes exactly" : $"{failures} CHECK(S) FAILED");
+            File.WriteAllText(outPath, sb.ToString());
+        }
+
         Console.WriteLine(failures == 0
             ? "every output decodes exactly (our decoder" + (dwebp is null ? "" : " and dwebp") + ")"
             : $"{failures} CHECK(S) FAILED");
@@ -161,7 +177,9 @@ internal static class WebpEncodeReport
 
     private static string Time(double? ms) => ms is null ? "-" : ms.Value >= 1000 ? $"{ms.Value / 1000:0.0} s" : $"{ms.Value:0} ms";
 
-    private static void Print(string[] header, List<string[]> rows)
+    private static void Print(string[] header, List<string[]> rows) => Console.Write(Table(header, rows));
+
+    private static string Table(string[] header, List<string[]> rows)
     {
         var sb = new StringBuilder();
         sb.AppendLine("| " + string.Join(" | ", header) + " |");
@@ -171,7 +189,7 @@ internal static class WebpEncodeReport
             sb.AppendLine("| " + string.Join(" | ", row) + " |");
         }
 
-        Console.Write(sb);
+        return sb.ToString();
     }
 
     // The decode check: our decoder, and dwebp (as PAM, so alpha is compared too), must both give
