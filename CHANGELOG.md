@@ -14,6 +14,155 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.28
+
+**`SharpAstro.Png`'s APNG compositing allocates a fraction of what it did, and is 6-16% faster.** No API change. The
+flight that added `PngReader.EnumerateFrames` / `DecodeFrames` shipped no entry of its own, so this block carries its notes
+(it was first written under a 3.25 heading, before Adam7, the float projection and the JPEG region decode took 3.25 to 3.27).
+It ships with 3.28. An Adam7 interlaced APNG de-interlaces each frame as the IHDR says
+(`PngImage.SourceInterlaceMethod`), through the same reused-buffer path.
+
+Measured with BenchmarkDotNet (`ApngCompositeBenchmarks`, `MemoryDiagnoser`, whole decodes through the public API), old and
+new code run back to back in one sitting. Eight 1080p frames (a canvas is 7.9 MB of RGBA8), sixty 320x180 sprite frames
+on a 640x360 canvas (0.9 MB):
+
+| Fixture | Stream, before | Stream, after | Materialise, before | Materialise, after |
+|---|---|---|---|---|
+| 1080p x8, OVER, mixed alpha | 361.7 ms, 134.5 MB | **308.3 ms, 23.7 MB** | 374.1 ms, 227.0 MB | 322.6 ms, 87.0 MB |
+| 1080p x8, OVER, half partial alpha | 446.4 ms, 134.5 MB | **374.6 ms, 23.7 MB** | 476.5 ms, 235.8 MB | 385.5 ms, 87.0 MB |
+| 1080p x8, SOURCE, RGBA8 | 342.4 ms, 134.5 MB | **304.9 ms, 23.7 MB** | 343.0 ms, 227.0 MB | 320.3 ms, 87.0 MB |
+| 1080p x8, SOURCE, RGB8 | 432.8 ms (noisy), 118.7 MB | **297.8 ms, 19.8 MB** | 329.9 ms, 206.5 MB | 302.3 ms, 83.1 MB |
+| 60 sprite frames, OVER, dispose cycling | 111.1 ms, 28.9 MB | **104.4 ms, 2.2 MB** | 119.3 ms, 88.2 MB | 106.5 ms, 55.0 MB |
+
+What was done, and what each part is worth:
+
+- **Buffers are reused, not allocated per frame.** The old compositor inflated each frame into a fresh sample array and expanded
+  it to a second fresh RGBA8 array, per frame (two frame-sized arrays, zeroed, on the large-object heap, hence the Gen2
+  collections in every row of the old table). Now one grow-only samples buffer is inflated into
+  (`DecodeFrameSamplesInto`), the PREVIOUS snapshot and the row scratch are grow-only too, the unfilter's zero row is
+  rented, and `DecodeFrames` drives the compositor from the caller's span instead of copying the input first. Streaming now
+  holds the canvas, one samples buffer, the IDAT image `Decode` already produced and a snapshot when a frame disposes to
+  PREVIOUS: 23.7 MB for 1080p (three 7.9 MB buffers: canvas, IDAT image, samples) against 134.5 MB, no Gen0/1/2 collection
+  recorded, and the 60-frame sprite case is 2.2 MB, which is its four fixed buffers and nothing per frame that the
+  allocator rounds up to a measurable figure (the inflater's own managed objects are the only per-frame allocation left).
+  `DecodeFrames` costs its frames (canvas x count, exactly what the limit charges) plus the streaming footprint: 60 frames of
+  0.88 MB is 55.0 MB where it was 88.2 MB.
+- **RGBA8 frames are blended where they lie.** No expanded copy: the inflated samples are the pixels. Other colour types go
+  through `PngImage.ExpandRowToRgba8`, one row at a time with the colour type decided once per row rather than once per pixel.
+- **OVER over an opaque canvas takes an exact shortcut.** With the canvas alpha at 255 the rational formula reduces to
+  `(af*cf + (255-af)*cb + 127) / 255` with the alpha staying 255, so the three divisions by the variable alpha numerator
+  become divisions by a constant. `PngApngKernelTests` checks it against the general formula for all 255 x 256 x 256 inputs.
+- **A `Vector128` OVER (no arch-specific intrinsics, scalar fallback kept) wins, modestly, and stays.** Four pixels at a
+  time: a whole group of opaque source pixels is a copy, a whole group of transparent ones over a canvas with no
+  transparent pixel is a no-op, a group over four opaque canvas pixels is blended in 16-bit lanes with an exact division by 255
+  (`(t + 1 + (t >> 8)) >> 8`, exact for every t the blend produces), and any other group falls back to the scalar per-pixel
+  code. Same file, same sitting, vector against `ForceScalar`: mixed alpha 321.5 -> 307.9 ms (-4.2%), half partial alpha
+  410.8 -> 385.4 ms (-6.2%; its error bar overlaps, so read it as about 5%). A small win because a frame's time is
+  almost entirely inflate and unfilter (see below); it stays because it is exactly equal to the scalar path and costs 60 lines.
+  Over with partial alpha costs about 70 ms more than SOURCE for eight 1080p frames, down from about 104 ms.
+- **Checked and left alone:** the SOURCE copy, the BACKGROUND clear and the PREVIOUS snapshot/restore are `Span.CopyTo` / `Clear`
+  per row, already memmove; a vector loop cannot beat them. With SOURCE at 305 ms for eight frames, about 38 ms a frame,
+  almost all of it is inflate plus unfilter, the part of `PngReader` that the still-image decode shares, not the compositing.
+  The RGB, grey and palette expansion to RGBA8 (`ExpandRowToRgba8`) was checked the same way and left scalar: SOURCE RGB8 at 297.8 ms
+  against RGBA8 at 304.9 ms for eight 1080p frames shows the expansion is negligible next to inflate.
+  `PngPredictor`'s filters were not touched here: Up could be vectorized, but Sub, Average and Paeth are sequential, so it would
+  be a still-image decode change with a smaller reach than its effort, and it is not measured.
+
+Tests: `PngApngKernelTests` pins the vector OVER byte-equal to the scalar one (every alpha x colour on an opaque canvas, random rows
+of every four-pixel-group class and tail length, random multi-frame animations with every dispose and blend op), runs every Pillow
+fixture frame through both paths against the reference digests, checks `ExpandRowToRgba8` against a per-pixel reading of its mapping,
+bounds steady-state streaming allocation below a third of a frame per frame, and keeps `DecodeFrames`' limit honoured.
+
+## 3.27
+
+**`SharpAstro.Jpeg` decodes a region, and decodes straight to a target size** (issue #28), and the decoder no longer
+holds whole component planes to do either. A 5100x6600 scan used to cost three 64 MiB planes before its first pixel was
+converted; every decode now holds about 0.19 MiB of sample memory, whatever the height.
+
+- **`JpegDecoder.DecodeRegionTo(data, JpegRegion region, rgbaDestination, scale)`** decodes one rectangle of the output
+  (in pixels at `scale`) into `region.Width * region.Height * 4` bytes. With restart markers (DRI) it entropy-decodes only
+  the restart intervals holding the region's MCU rows; without them it decodes from the top of the scan to the region's
+  last MCU row and stops; progressive reads every scan but transforms only the region.
+- **`JpegDecoder.DecodeFittedTo(data, targetWidth, targetHeight, rgbaDestination, scale, region)`** box-filters to the
+  target size inside the row loop, so the full-resolution RGBA never exists. A target larger than the source is an
+  `ArgumentException`, not an approximation. With `region` it fits just that rectangle.
+- **Exactness.** Both are byte for byte what `Decode` gives (cropped, or box-filtered), at every scale, not "within 1".
+  The region is the same engine narrowed (`SetRegion`), not a second one; the fitted decode is a row sink on that engine.
+  The filter is the Drawboard viewer's `RgbaBoxDownsample.Shrink`, line for line, with `long` sums where Shrink's are
+  `int` (Shrink wraps for a box of more than about 8.4 million pixels, e.g. this scan fitted to 1x1).
+- **How it was tested.** `JpegStripDecodeTests` demands byte equality with the retained whole-plane engine on 8 sampling
+  layouts, odd sizes, every scale, baseline and progressive, grey, CMYK, hand-built restart streams, truncations and corrupted
+  RSTn. `JpegRegionDecodeTests` compares every region against the crop of a full decode, and checks the cost through
+  `JpegDecodeStats` (MCU rows entropy-decoded and transformed). `JpegFittedDecodeTests` transcribes `Shrink` and demands
+  byte equality at integer and non-integer ratios, with a region, and bounds the allocation. The golden digests still pass
+  unchanged. Deliberate bugs, one at a time, were all caught (see CLAUDE.md for the list).
+- **Strip pipeline.** `JpegCore` IDCTs one MCU row (a block row for single-component scans) into per-component strips,
+  assembles output rows and hands them to a sink. Plane rents no longer double: `ArrayPool` rounds a 33,660,000-byte plane up to
+  64 MiB, so three planes held 192 MiB; strips are 0.19 MiB. Whole planes remain only where a stream cannot be streamed
+  (a baseline first scan without every component, a second scan, or an Adobe/JFIF marker after the scan), allocated at exact size.
+- **A caveat on `DecodeTo`.** The size check now runs against the frame header before the decode, and rows are written as
+  they decode, so a stream that turns out corrupt part-way leaves the rows before the failure in the caller's buffer.
+
+**Measured** on the issue's own shape: a 5100x6600 baseline 4:4:4 scan with DRI = 638 (one MCU row), 7.6 MiB (built in the
+benchmark's setup from gradients plus noise by libjpeg through Magick.NET; the issue's real scans were 1.1-1.6 MB, so the
+entropy-decode share is larger here). BenchmarkDotNet, one run, all cases in one sitting, Snapdragon X (arm64), .NET 10.0.12:
+
+| Case | Mean | vs full | Allocated per call | Destination |
+|---|--:|--:|--:|--:|
+| `DecodeTo`, whole image | 333.8 ms | 1.00 | 52.6 KB | 128.4 MiB |
+| `DecodeRegionTo`, middle third of the height | 111.1 ms | **0.33** | 33.4 KB | 42.8 MiB |
+| `DecodeFittedTo`, whole image to 3165x4096 | 526.9 ms | 1.58 | 260.7 KB | 49.5 MiB |
+| `DecodeFittedTo`, middle third to 3165x1365 | 151.8 ms | 0.45 | 80.6 KB | 16.5 MiB |
+| `Decode` + box filter to 3165x4096 (the path it replaces) | 432.8 ms | 1.30 | 182,283 KB | 177.9 MiB |
+
+- **The region costs one third.** Entropy-decoded and transformed MCU rows are 275 of 825, exactly one third, and its RGBA is
+  exactly one third of the full one (42.8 of 128.4 MiB). The time ratio is 0.33 in BenchmarkDotNet; a separate
+  five-run report (`--jpeg-scan-report`) on a busy machine read 0.34 to 0.44, so use the BenchmarkDotNet figure.
+- **Sample memory is 0.19 MiB in every case** (`JpegDecodeStats.PeakPlaneBytes`), against 3 x 64 MiB = 192 MiB before.
+  BenchmarkDotNet's `Allocated` column cannot show that: strips come from `ArrayPool`, so after the first iteration a decode
+  "allocates" almost nothing however much it holds. Read the table's `Allocated` for the replaced path, which genuinely
+  allocates 178 MiB per call (the full RGBA plus the target), and the strip figure for the rest.
+- **The first cut of the fitted decode saved memory, not time.** Fitting the whole image took 527 ms against 433 ms for
+  decode-then-shrink, 22% *slower*, and slower than a plain full decode. The performance review below fixed that: it is now
+  faster than decode-then-shrink as well. What it removes is the 178 MiB per call: 49.5 MiB of destination is all that is held,
+  in place of 128.4 MiB of RGBA plus the target. Fitting a region saves time too, because the cost is the region's.
+- Byte equality, checked in the benchmark's report: `DecodeFittedTo` equals `Decode` followed by the box filter, byte for byte.
+
+**Performance review** (same release, after the table above; BenchmarkDotNet `--job short`, so three iterations a case and
+a large run-to-run spread on this machine: only same-sitting pairs are compared). It looked at every row loop of the strip
+pipeline, `DecodeRegionTo` and the fitted decode for vectorization and for avoidable allocation, and kept two changes:
+
+- **The fitted sink sums in 32-bit vector lanes and divides by multiply-high.** `JpegFittedSink` kept `long` sums per channel
+  and did a 64-bit division per output channel. It now adds each source row into per-column `uint` sums with `Vector128<uint>`
+  (portable, scalar fallback kept) and divides by a reciprocal multiply (Lemire fastdiv, with `d == 1` as the identity). That is
+  exact only while a box sum fits 32 bits, so a box of more than 16,777,215 pixels takes the old 64-bit path; `forceWideSums`
+  selects it for tests and for the A/B. Output is byte-identical (`JpegFittedDecodeTests`, 151 cases, now run on both paths and
+  with a box just inside the narrow path's range). One sitting, 5100x6600 DRI = 638 scan, new sink against the old one:
+
+  | Case | New sink | Old sink |
+  |---|--:|--:|
+  | Fitted whole image to 3165x4096 | 396.5 ms | 516.0 ms (**-23%**) |
+  | Fitted middle third to 3165x1365 | 134.9 ms | 172.6 ms (**-22%**) |
+  | Fitted whole image to 510x660 | 344.9 ms | 361.8 ms (-5%) |
+
+  In the same sitting a full `DecodeTo` was 325.9 ms, `DecodeRegionTo` of the middle third 112.3 ms (0.34), and decode-then-shrink
+  431.1 ms. The sink's overhead on a plain decode fell from about 190 ms to about 71 ms, and **the fitted decode (396.5 ms) now
+  beats decode-then-shrink (431.1 ms) on time as well as memory.**
+- **The chroma upsamplers V2, H2 and Hv2 have a `Vector128` form** (`JpegResample.RowSimd`; the stb transliteration stays as
+  `RowScalar`, and is the whole of `Row` where there is no Vector128 hardware). They compute in 16-bit lanes, which the stb sums
+  fit exactly (Hv2's `3*t + t' + 8` peaks at 4088), with the two edge samples and the tail done by the scalar formulas. One sitting,
+  4:2:0 2048x1536 `DecodeTo`, scalar against vector upsample: **24.7 -> 21.7 ms (0.88)**; a second, much noisier 12-iteration run
+  read 41.9 -> 30.6 ms (0.75). The direction agreed both times; trust the first for size. Per row of 2550 samples, 2000 rows,
+  in isolation (which over-predicts): V2 3.53 -> 0.35 ms, H2 6.5 -> 0.61 ms, Hv2 6.1 -> 1.3 ms. `JpegResampleEquivalenceTests` pins the
+  vector kernels byte-equal to the scalar ones at every width from 1 to 100 and at image widths, at the 16-bit lanes' limits, at non-zero
+  row offsets inside a larger plane, and checks the bounds checks still throw.
+- **Not vectorized, and why.** `YCbCrToRgbaRow` already has a measured rejection (store-bound; see CLAUDE.md). The grey, RGB-marked
+  and CMYK interleave loops are the same shape (four byte stores a pixel, almost no arithmetic) and serve rare inputs, so no vector
+  version was tried; they allocate nothing.
+- **Memory, checked.** Strips are rented once per decode and reused (about 21 KB allocated per call, whatever the height); there is no full-height intermediate anywhere in the strip pipeline,
+  `DecodeRegionTo` or the fitted decode. The peak sample memory on the issue's shape is 0.19 MiB against 3 x 64 MiB for
+  whole planes. The narrow sink holds `sourceWidth * 4` `uint` column sums in place of the `long` accumulator.
+
 ## 3.26
 
 **`SharpAstro.Png` decodes cICP PQ and HLG files to linear-light floats.** `PngImageDecoder.TryDecodeRgbaFloat` is the HDR
@@ -105,65 +254,6 @@ and H.273.
   Nothing vector ships, so there is no second kernel for a test to pin to the scalar one. The shipped path is the table, and
   `PngFloatFillEquivalenceTests` pins it bit-for-bit to `FillReference` for every colour type, depth, range and transfer
   (both sides of the table break-even, indexed, and the conformance files).
-
-### APNG compositing: memory and speed
-
-**`SharpAstro.Png`'s APNG compositing allocates a fraction of what it did, and is 6-16% faster.** No API change. The
-flight that added `PngReader.EnumerateFrames` / `DecodeFrames` shipped no entry of its own, so this block carries its notes
-(it was first written under a 3.25 heading, before Adam7 and the float projection took 3.25 and 3.26); the version number is
-not touched here, so it ships with 3.26. An Adam7 interlaced APNG de-interlaces each frame as the IHDR says
-(`PngImage.SourceInterlaceMethod`), through the same reused-buffer path.
-
-Measured with BenchmarkDotNet (`ApngCompositeBenchmarks`, `MemoryDiagnoser`, whole decodes through the public API), old and
-new code run back to back in one sitting. Eight 1080p frames (a canvas is 7.9 MB of RGBA8), sixty 320x180 sprite frames
-on a 640x360 canvas (0.9 MB):
-
-| Fixture | Stream, before | Stream, after | Materialise, before | Materialise, after |
-|---|---|---|---|---|
-| 1080p x8, OVER, mixed alpha | 361.7 ms, 134.5 MB | **308.3 ms, 23.7 MB** | 374.1 ms, 227.0 MB | 322.6 ms, 87.0 MB |
-| 1080p x8, OVER, half partial alpha | 446.4 ms, 134.5 MB | **374.6 ms, 23.7 MB** | 476.5 ms, 235.8 MB | 385.5 ms, 87.0 MB |
-| 1080p x8, SOURCE, RGBA8 | 342.4 ms, 134.5 MB | **304.9 ms, 23.7 MB** | 343.0 ms, 227.0 MB | 320.3 ms, 87.0 MB |
-| 1080p x8, SOURCE, RGB8 | 432.8 ms (noisy), 118.7 MB | **297.8 ms, 19.8 MB** | 329.9 ms, 206.5 MB | 302.3 ms, 83.1 MB |
-| 60 sprite frames, OVER, dispose cycling | 111.1 ms, 28.9 MB | **104.4 ms, 2.2 MB** | 119.3 ms, 88.2 MB | 106.5 ms, 55.0 MB |
-
-What was done, and what each part is worth:
-
-- **Buffers are reused, not allocated per frame.** The old compositor inflated each frame into a fresh sample array and expanded
-  it to a second fresh RGBA8 array, per frame (two frame-sized arrays, zeroed, on the large-object heap, hence the Gen2
-  collections in every row of the old table). Now one grow-only samples buffer is inflated into
-  (`DecodeFrameSamplesInto`), the PREVIOUS snapshot and the row scratch are grow-only too, the unfilter's zero row is
-  rented, and `DecodeFrames` drives the compositor from the caller's span instead of copying the input first. Streaming now
-  holds the canvas, one samples buffer, the IDAT image `Decode` already produced and a snapshot when a frame disposes to
-  PREVIOUS: 23.7 MB for 1080p (three 7.9 MB buffers: canvas, IDAT image, samples) against 134.5 MB, no Gen0/1/2 collection
-  recorded, and the 60-frame sprite case is 2.2 MB, which is its four fixed buffers and nothing per frame that the
-  allocator rounds up to a measurable figure (the inflater's own managed objects are the only per-frame allocation left).
-  `DecodeFrames` costs its frames (canvas x count, exactly what the limit charges) plus the streaming footprint: 60 frames of
-  0.88 MB is 55.0 MB where it was 88.2 MB.
-- **RGBA8 frames are blended where they lie.** No expanded copy: the inflated samples are the pixels. Other colour types go
-  through `PngImage.ExpandRowToRgba8`, one row at a time with the colour type decided once per row rather than once per pixel.
-- **OVER over an opaque canvas takes an exact shortcut.** With the canvas alpha at 255 the rational formula reduces to
-  `(af*cf + (255-af)*cb + 127) / 255` with the alpha staying 255, so the three divisions by the variable alpha numerator
-  become divisions by a constant. `PngApngKernelTests` checks it against the general formula for all 255 x 256 x 256 inputs.
-- **A `Vector128` OVER (no arch-specific intrinsics, scalar fallback kept) wins, modestly, and stays.** Four pixels at a
-  time: a whole group of opaque source pixels is a copy, a whole group of transparent ones over a canvas with no
-  transparent pixel is a no-op, a group over four opaque canvas pixels is blended in 16-bit lanes with an exact division by 255
-  (`(t + 1 + (t >> 8)) >> 8`, exact for every t the blend produces), and any other group falls back to the scalar per-pixel
-  code. Same file, same sitting, vector against `ForceScalar`: mixed alpha 321.5 -> 307.9 ms (-4.2%), half partial alpha
-  410.8 -> 385.4 ms (-6.2%; its error bar overlaps, so read it as about 5%). A small win because a frame's time is
-  almost entirely inflate and unfilter (see below); it stays because it is exactly equal to the scalar path and costs 60 lines.
-  Over with partial alpha costs about 70 ms more than SOURCE for eight 1080p frames, down from about 104 ms.
-- **Checked and left alone:** the SOURCE copy, the BACKGROUND clear and the PREVIOUS snapshot/restore are `Span.CopyTo` / `Clear`
-  per row, already memmove; a vector loop cannot beat them. With SOURCE at 305 ms for eight frames, about 38 ms a frame,
-  almost all of it is inflate plus unfilter, the part of `PngReader` that the still-image decode shares, not the compositing.
-  The RGB, grey and palette expansion to RGBA8 (`ExpandRowToRgba8`) was checked the same way and left scalar: SOURCE RGB8 at 297.8 ms
-  against RGBA8 at 304.9 ms for eight 1080p frames shows the expansion is negligible next to inflate.
-  `PngPredictor`'s filters were not touched here: Up could be vectorized, but Sub, Average and Paeth are sequential, so it would
-  be a still-image decode change with a smaller reach than its effort, and it is not measured.
-
-Tests: `PngApngKernelTests` pins the vector OVER byte-equal to the scalar one (every alpha x colour on an opaque canvas, random rows
-of every four-pixel-group class and tail length, random multi-frame animations with every dispose and blend op), runs every Pillow
-fixture frame through both paths against the reference digests, checks `ExpandRowToRgba8` against a per-pixel reading of its mapping,
-bounds steady-state streaming allocation below a third of a frame per frame, and keeps `DecodeFrames`' limit honoured.
 
 ## 3.25
 

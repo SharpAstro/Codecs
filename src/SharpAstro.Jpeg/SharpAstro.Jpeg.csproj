@@ -11,7 +11,7 @@
     <PackageId>SharpAstro.Jpeg</PackageId>
     <Product>SharpAstro.Jpeg</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed JPEG (ITU-T T.81 / ISO 10918) codec for .NET. Decoder: baseline sequential + progressive DCT, restart intervals, 4:4:4 / 4:2:2 / 4:2:0 / arbitrary chroma subsampling, grayscale, YCbCr, RGB-marked, and Adobe CMYK / YCCK (APP14) streams, plus scaled decode at 1/2, 1/4, 1/8 resolution via reduced inverse DCT — a 33-megapixel source can decode straight to a thumbnail-sized raster without the full-resolution intermediate ever existing. Encoder (3.6): baseline sequential DCT, 4:4:4 / 4:2:0, quality 1..100 — a faithful port of the stb_image_write JPEG writer, byte-for-byte identical to that reference; metadata write (3.22): JpegEncodeOptions.Exif embeds an EXIF blob and JpegEncodeOptions.Xmp an XMP packet (CreatorTool, description, custom-namespace properties) as APP1 segments, built as escaped string templates with no XmlSerializer or DTD, so still AOT-clean. Decode-to-caller-buffer API with ArrayPool-backed internals; JpegSegmentScanner surfaces APPn metadata segments. Full-scale decode is byte-exact against the StbImageSharp (stb_image) reference decoder. AOT-compatible.</Description>
+    <Description>Pure-managed JPEG (ITU-T T.81 / ISO 10918) codec for .NET. Decoder: baseline sequential + progressive DCT, restart intervals, 4:4:4 / 4:2:2 / 4:2:0 / arbitrary chroma subsampling, grayscale, YCbCr, RGB-marked, and Adobe CMYK / YCCK (APP14) streams, plus scaled decode at 1/2, 1/4, 1/8 resolution via reduced inverse DCT — a 33-megapixel source can decode straight to a thumbnail-sized raster without the full-resolution intermediate ever existing. Region and fitted decode (3.25): DecodeRegionTo decodes one rectangle of the output, skipping ahead over restart intervals so a one-third-height region costs a third of a full decode, and DecodeFittedTo box-filters straight to a target size inside the row loop, byte-exact against decode-then-box-filter; both run on a strip pipeline that holds a few MCU rows of samples (the width of the image, not its height) instead of whole component planes. Encoder (3.6): baseline sequential DCT, 4:4:4 / 4:2:0, quality 1..100 — a faithful port of the stb_image_write JPEG writer, byte-for-byte identical to that reference; metadata write (3.22): JpegEncodeOptions.Exif embeds an EXIF blob and JpegEncodeOptions.Xmp an XMP packet (CreatorTool, description, custom-namespace properties) as APP1 segments, built as escaped string templates with no XmlSerializer or DTD, so still AOT-clean. Decode-to-caller-buffer API with ArrayPool-backed internals; JpegSegmentScanner surfaces APPn metadata segments. Full-scale decode is byte-exact against the StbImageSharp (stb_image) reference decoder. AOT-compatible.</Description>
     <PackageTags>jpeg jpg image codec decoder encoder scaled idct thumbnail aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -36,6 +36,11 @@
     <!-- JpegIdctEquivalenceTests drives Idct8x8Scalar / Idct8x8Simd against each other
          directly; the golden digests only cover whichever path this machine dispatches to. -->
     <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+    <!-- The benchmark project's jpeg-scan-report mode reads JpegDecodeStats (strip bytes, MCU rows
+         entropy-decoded and transformed) for the region and fitted decodes. BenchmarkDotNet's
+         MemoryDiagnoser cannot see those: strips are rented from ArrayPool, so after the first
+         iteration a decode "allocates" nothing however many bytes it holds. -->
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Benchmarks" />
   </ItemGroup>
 
 </Project>
