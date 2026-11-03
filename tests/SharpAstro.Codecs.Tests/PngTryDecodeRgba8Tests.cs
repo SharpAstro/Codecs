@@ -70,22 +70,46 @@ public sealed class PngTryDecodeRgba8Tests
     }
 
     [Fact]
-    public void Adam7_IsFalseRatherThanThrowing()
+    public void Adam7_DecodesThroughEveryEntryPointAsTheNonInterlacedFileDoes()
     {
-        // PngReader.Decode throws NotSupportedException for Adam7. TryDecodeIntoRgba8 used to let
-        // that escape; every Try entry point now goes through PngReader.TryDecode.
-        var rgb = new byte[16 * 16 * 3];
+        // Adam7 used to be refused: Decode threw NotSupportedException and every Try entry point said false.
+        // All four now succeed and agree with the non-interlaced encoding of the same raster.
+        const int w = 16, h = 16;
+        var rgb = new byte[w * h * 3];
         new Random(7).NextBytes(rgb);
         using var img = new MagickImage();
-        img.ReadPixels(rgb, new PixelReadSettings(16, 16, StorageType.Char, "RGB"));
+        img.ReadPixels(rgb, new PixelReadSettings(w, h, StorageType.Char, "RGB"));
+        // 256 pixels of random colour would otherwise be written as a palette (at most 256 colours): force RGB.
+        img.Settings.SetDefine(MagickFormat.Png, "color-type", "2");
         img.Settings.Interlace = Interlace.Png;
         var png = img.ToByteArray(MagickFormat.Png);
+        img.Settings.Interlace = Interlace.NoInterlace;
+        var plain = img.ToByteArray(MagickFormat.Png);
+        // IHDR's depth, colour type and interlace method, so this is an 8-bit RGB Adam7 file and the other is not.
+        (png[24], png[25], png[28], plain[28]).ShouldBe(((byte)8, (byte)2, (byte)1, (byte)0));
 
-        Should.Throw<NotSupportedException>(() => PngReader.Decode(png));
-        PngReader.TryDecode(png, out var decoded).ShouldBeFalse();
-        decoded.ShouldBeNull();
-        PngImageDecoder.TryDecodeRgba8(png, out _, out _, out _).ShouldBeFalse();
-        PngImageDecoder.TryDecodeIntoRgba8(png, new byte[16 * 16 * 4]).ShouldBeFalse();
+        PngImageDecoder.TryDecodeRgba8(plain, out var expectedRgba, out _, out _).ShouldBeTrue();
+        var expected = PngReader.Decode(plain);
+
+        var decoded = PngReader.Decode(png);
+        (decoded.Width, decoded.Height, decoded.BitDepth, decoded.ColorType).ShouldBe((w, h, 8, 2));
+        decoded.Pixels.ShouldBe(expected.Pixels);
+
+        PngReader.TryDecode(png, out var tried).ShouldBeTrue();
+        tried.ShouldNotBeNull().Pixels.ShouldBe(expected.Pixels);
+
+        PngImageDecoder.TryDecodeRgba8(png, out var rgba, out var width, out var height).ShouldBeTrue();
+        (width, height).ShouldBe((w, h));
+        rgba.ShouldBe(expectedRgba);
+
+        var into = new byte[w * h * 4];
+        PngImageDecoder.TryDecodeIntoRgba8(png, into).ShouldBeTrue();
+        into.ShouldBe(expectedRgba);
+        // And the pixels are the ones that went in, not merely the same as another decode of them.
+        for (var p = 0; p < w * h; p++)
+        {
+            (into[p * 4], into[p * 4 + 1], into[p * 4 + 2], into[p * 4 + 3]).ShouldBe((rgb[p * 3], rgb[p * 3 + 1], rgb[p * 3 + 2], (byte)255));
+        }
     }
 
     [Fact]

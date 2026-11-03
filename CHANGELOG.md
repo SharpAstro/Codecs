@@ -14,11 +14,105 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
-## 3.25
+## 3.26
+
+**`SharpAstro.Png` decodes cICP PQ and HLG files to linear-light floats.** `PngImageDecoder.TryDecodeRgbaFloat` is the HDR
+projection the 8-bit paths refuse to make: it starts from `PngReader.TryDecode` (so PQ and HLG are accepted, not refused)
+and returns a fresh `float[]` of `width * height * 4` linear-light RGBA the caller owns, plus the `ColorEncoding` and the
+`mDCv` / `cLLI` metadata. The transfer maths is the internal `PngHdr` helper, written from ST 2084, BT.2100, IEC 61966-2-1
+and H.273.
+
+- **Signature.** `TryDecodeRgbaFloat(data, out rgba, out width, out height, out encoding)`, and an overload with
+  `out MdcvChunk? mdcv, out ClliChunk? clli` after `encoding` (the reader's own chunk types, carried as they are).
+- **Which curve.** A `cICP` chunk is authoritative, narrow range (`VideoFullRangeFlag = 0`) included: codes expand per
+  H.273 section 8.3 (16..235 at 8 bits, 4096..60160 at 16). Without one, `gAMA` 1.0 reads as linear and everything else
+  (untagged, `sRGB`, other `gAMA`) as sRGB, the same assumption `IDecodedImage.ColorEncoding` makes. Supported transfers:
+  PQ (16), HLG (18), sRGB (13), the BT.709 family (1, 6, 14, 15) and Linear (8).
+- **Scale.** PQ and HLG: `1.0` is the 203 cd/m2 HDR reference white of BT.2408. PQ light is absolute (code 1.0 is 10 000
+  cd/m2, so 49.26 here); HLG goes through the BT.2100 OOTF for the nominal 1000 cd/m2 display (system gamma 1.2, luminance
+  from the cICP primaries), so a 75 % HLG signal is 1.0 and a 100 % one is 4.93. SDR transfers and Linear: `1.0` is SDR
+  white, nothing rescaled to 203. Signals are clamped to [0, 1] before a curve (narrow-range footroom and headroom), except
+  Linear, which passes through. Alpha is the file's straight 0..1 alpha, `1.0` when absent, and is never ranged or curved.
+- **The returned `ColorEncoding`.** The file's primaries (cICP, else BT.709), `Transfer = Linear`, `FullRange = true` (the
+  range is already expanded) and `Float = DisplayReferred`: `1.0` is the reference / SDR white and HDR highlights lie above
+  it. A Linear-tagged file lands on `DisplayReferred` too, because its full-scale code is 1.0 (the 8-bit display path treats
+  it the same way); a caller who knows it is an astro master may re-interpret it.
+- **Every colour type and depth the reader reads.** Grey (replicated into R = G = B), grey+alpha, RGB, RGBA, indexed (the
+  palette and its `tRNS` alpha linearised once as a table), 8 and 16 bit, and the 1/2/4-bit depths through the reader's
+  unpacking to 8 bits.
+- **Refused (false, never guessed).** Whatever `PngReader.TryDecode` refuses (not a PNG, corrupt, an unknown interlace method; an Adam7 file decodes since 3.25); a transfer outside
+  the list above (BT.470 gammas, SMPTE 240M, the log curves, xvYCC, BT.1361, ST 428, unspecified); a cICP whose matrix
+  coefficients are not Identity (PNG carries RGB); a narrow-range grey image under 8 bits (H.273's range equations start at
+  8); an indexed pixel past the palette; and a float raster too big for an array.
+- **A PNG-specific method, not a facade member (decision).** `IImageDecoder` has no float projection today, and widening a
+  static-abstract interface breaks every codec that implements it, so this lives on `PngImageDecoder` beside
+  `TryDecodeRgba8`. The facade still reaches the integer code values and the colour signalling through `TryDecode`. The
+  `TryDecodeIntoRgba8` / `TryDecodeRgba8` remarks now point PQ / HLG callers at the new method; those two still refuse PQ
+  and HLG, unchanged. Folding a float projection into the facade is a separate, interface-level decision.
+- **Checked against.** An independent double-precision reference in the test, from the standards: every sample of every
+  PQ and HLG fixture in `Fixtures/Cicp` (full and narrow range) within 1e-4 relative, BT.2111 / BT.2408 patches against
+  their nominal levels (PQ 58 % grey is about 203 cd/m2, HLG 75 % grey 203, HLG 38 % grey 26, PQ 100 % 10 000 cd/m2, HLG
+  100 % 1000 cd/m2), and each SDR fixture against its own `TryDecodeRgba8` output linearised, within 8-bit quantisation.
+- **Speed and memory, measured (BenchmarkDotNet 0.15.8, `[MemoryDiagnoser]`, .NET 10.0.12 arm64, Snapdragon X Elite,
+  1920x1080, medians of 6, one sitting; `benchmarks/SharpAstro.Codecs.Benchmarks/PngHdr*.cs`).** The float projection is a
+  table lookup per colour sample, built with the reference's own arithmetic, so it is bit-identical to the scalar reference
+  (`PngFloatFillEquivalenceTests`) rather than within a tolerance. What it costs above the shared inflate + unfilter:
+
+  | 1080p | `PngReader.TryDecode` alone | fill, scalar reference | fill, shipped | whole `TryDecodeRgbaFloat` |
+  |---|---|---|---|---|
+  | PQ RGB16 | 87.7 ms | 151.4 ms | **5.8 ms** (26x) | 94.1 ms (+7 %) |
+  | PQ RGB16 narrow range | same | 146.8 ms | 6.2 ms (24x) | n/a |
+  | PQ RGBA16 | same | 158.3 ms | 5.6 ms (28x) | n/a |
+  | HLG RGB16 | same | 45.5 ms | 16.3 ms (2.8x) | 105.6 ms (+20 %) |
+  | sRGB RGBA8 | n/a | 79.9 ms | 3.1 ms (26x) | 56.3 ms |
+
+  The whole-decode numbers add up (87.7 + 5.8 = 93.6 against 94.1 measured; 87.7 + 16.3 = 104.0 against 105.6), so the
+  allocation and the large-object GCs it triggers cost about 0.5-1.5 ms. HLG is the slow one because its OOTF couples the
+  three channels (one `pow` per pixel, about 5 ns) on top of a scene-light table. Narrow range is free per pixel: the
+  expansion is folded into the table build.
+- **Allocation check: exactly one raster plus the reader's pixels, nothing per pixel or per row.** 1080p PQ RGB16
+  allocates 43.52 MB (BenchmarkDotNet's MB, 2^20 bytes) = 31.64 MB (the 33 177 600-byte `float[]`) + 11.88 MB (the reader's decoded samples, the same 11.88 MB
+  `TryDecode` alone allocates); sRGB RGBA8 39.56 MB, likewise. At 4K UHD (3840x2160) it is 174.05 MB = 126.56 MB `float[]`
+  + 47.48 MB pixels. The fill itself allocates 0 B for HLG, RGBA16 and sRGB; the 2-4 KB shown for PQ RGB16 is the 256 KiB
+  pooled 16-bit table's first rent spread over 64/128 measured calls (262 144 B / 4096 B = 64), not something that grows
+  with the image. 8-bit tables are `stackalloc`. Only the scalar reference (tiny images, and the tests' oracle) allocates a
+  row scratch, 34.6 KB once per call. The 4K *timings* are not quoted: with four iterations and a 127 MiB array landing on
+  the large-object heap, the run's standard deviation was larger than its mean.
+- **In-place and strip conversion are not possible here, and that is measured rather than assumed.** The projection is
+  2.7x larger than the pixels it reads (16 B per pixel out, 6 B in for RGB16), so it cannot overwrite the reader's buffer;
+  and `PngReader` inflates and unfilters the whole image into one `Pixels` array before anything can be projected, so a
+  strip pipeline would first need a streaming reader. The one avoidable cost is the large-object `float[]` itself (about
+  0.7 Gen2 collections per 1080p decode, small here because the array holds no references): a caller-supplied destination
+  overload would let a caller reuse it, a separate API decision that is not made here.
+- **Vector candidates tried and dropped (all portable `Vector128`, all in `PngHdrCandidates`).**
+  - *PQ curve in float over `Vector128`* (exp/log, four samples per step): 6.3 ms per 2^20 samples against 24.2 ms for the
+    scalar double curve (3.8x), but a 65 536-entry table is **0.86 ms** (28x, 7x faster than the vector curve) and exact,
+    where the vector form is 1.1e-4 off in relative terms. The table wins and stays. The only place a vector curve could
+    still go is the table *build* (about 1.5 ms, 65 536 scalar evaluations at about 23 ns), and it would give up the
+    bit-identical table for about 1 ms of a 94 ms decode.
+  - *HLG OOTF gain four pixels at a time*: 17.9 ms against 16.3 ms for the shipped scalar `pow` per pixel (the same-sitting
+    A/B in the candidate class read 0.86 +/- 0.14 against a noisy 21.3 ms baseline, so it is no better than noise), and 5.6e-7
+    off the reference. Its ceiling is small even if the staging were free: a vector `pow` costs about 3.2 ns per lane in the
+    curve benchmark against about 5 ns scalar here, so at most about 4 ms of a 105 ms HLG decode, for a path that is no
+    longer bit-identical. Dropped.
+  - *One `Vector128` store per pixel for the RGB16 table fill*: 4.97 ms against 5.62 ms, bit-identical, but the 0.65 ms is
+    inside the shipped path's own error (+/- 1.8 ms) and is 0.7 % of a 94 ms decode, which no end-to-end run could see. The
+    fill is a table-load and store stream, the same shape as the YCbCr row in `CLAUDE.md`. Dropped.
+  - *Narrow-range expansion and the RGBA16 alpha division* have no candidate: narrow range is in the table build (6.2 ms
+    against 5.8 ms full range, within noise), and RGBA16's per-sample `/ 65535f` costs nothing measurable (5.6 ms against
+    5.8 ms for RGB16 with no alpha at all).
+
+  Nothing vector ships, so there is no second kernel for a test to pin to the scalar one. The shipped path is the table, and
+  `PngFloatFillEquivalenceTests` pins it bit-for-bit to `FillReference` for every colour type, depth, range and transfer
+  (both sides of the table break-even, indexed, and the conformance files).
+
+### APNG compositing: memory and speed
 
 **`SharpAstro.Png`'s APNG compositing allocates a fraction of what it did, and is 6-16% faster.** No API change. The
-flight that added `PngReader.EnumerateFrames` / `DecodeFrames` shipped no entry of its own (this file stopped at 3.23, and
-`Directory.Build.props` still says 3.24), so this section carries its notes; the version number is not touched here.
+flight that added `PngReader.EnumerateFrames` / `DecodeFrames` shipped no entry of its own, so this block carries its notes
+(it was first written under a 3.25 heading, before Adam7 and the float projection took 3.25 and 3.26); the version number is
+not touched here, so it ships with 3.26. An Adam7 interlaced APNG de-interlaces each frame as the IHDR says
+(`PngImage.SourceInterlaceMethod`), through the same reused-buffer path.
 
 Measured with BenchmarkDotNet (`ApngCompositeBenchmarks`, `MemoryDiagnoser`, whole decodes through the public API), old and
 new code run back to back in one sitting. Eight 1080p frames (a canvas is 7.9 MB of RGBA8), sixty 320x180 sprite frames
@@ -68,6 +162,23 @@ Tests: `PngApngKernelTests` pins the vector OVER byte-equal to the scalar one (e
 of every four-pixel-group class and tail length, random multi-frame animations with every dispose and blend op), runs every Pillow
 fixture frame through both paths against the reference digests, checks `ExpandRowToRgba8` against a per-pixel reading of its mapping,
 bounds steady-state streaming allocation below a third of a frame per frame, and keeps `DecodeFrames`' limit honoured.
+
+## 3.25
+
+**`SharpAstro.Png` decodes Adam7 interlaced images.** `PngReader.Decode` (and so `TryDecode`, `PngImageDecoder.TryDecodeRgba8`
+and `TryDecodeIntoRgba8`) used to refuse `InterlaceMethod = 1` with `NotSupportedException`, and the `Try` entry points said
+false. An interlaced file now decodes into exactly the row-major `PngImage.Pixels` its non-interlaced encoding gives, for every
+colour type and depth the reader covers (8/16-bit types 0/2/4/6, 1/2/4/8-bit grey and indexed).
+
+- The seven passes are read in order from the one inflated stream. Each pass is a small image of its own: its rows are filtered
+  against the row above them **in the same pass** (all zero for a pass's first row), padded to a whole byte, and their pixels
+  scattered straight to where they belong in the result.
+- A pass with no pixels (width under 5 has no pass 2, height under 5 no pass 3, and so on down to a 1x1 image, which has only
+  pass 1) is not in the stream at all, not even a filter byte, and none is expected.
+- The exact-length check stays: a stream a row short or a byte long is `InvalidDataException`, as for a non-interlaced file.
+- An `InterlaceMethod` other than 0 or 1 is now `InvalidDataException` (a corrupt header), no longer `NotSupportedException`.
+- The non-interlaced path is untouched. Tested against Magick.NET's `Interlace.Png` and `Interlace.NoInterlace` encodings of the
+  same random raster at every colour type and depth, at sizes that leave passes empty (`PngAdam7Tests`).
 
 ## 3.23
 

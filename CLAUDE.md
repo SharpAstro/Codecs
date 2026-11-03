@@ -730,8 +730,8 @@ floating-point transcription for every pair of alphas, reproduces Pillow's diges
 paste, and pins how far apart the two are on `apng-blend-over-partial-alpha.png` (up to 91 of 255 in alpha). Do not
 "fix" the reader to match Pillow there.
 
-**Speed and memory, measured** (`benchmarks/.../ApngCompositeBenchmarks.cs`, `ApngOverKernelBenchmarks`; table in the 3.25
-CHANGELOG entry). The compositor keeps one grow-only samples buffer, snapshot and row scratch for the whole animation and
+**Speed and memory, measured** (`benchmarks/.../ApngCompositeBenchmarks.cs`, `ApngOverKernelBenchmarks`; table in the 3.26
+CHANGELOG entry (APNG block)). The compositor keeps one grow-only samples buffer, snapshot and row scratch for the whole animation and
 inflates into them (`DecodeFrameSamplesInto`), so streaming 8 frames of 1080p went 134.5 MB -> 23.7 MB (canvas, IDAT image, samples)
 and 362 -> 308 ms; a frame's time is otherwise inflate plus unfilter, which the compositing code does not touch. The OVER blend has
 two kernels, `OverRowScalar` (the reference, per pixel through `Over`) and `OverRowVector` (`Vector128`, four pixels a group: copy /
@@ -747,6 +747,31 @@ frame, a first frame that does not cover the canvas when the IDAT is that frame)
 `Decode`, not a silent fall-back to the default image. `Decode` and the `SharpAstro.Codecs` facade return the default
 (`IDAT`) image unchanged. There is no 16-bit APNG fixture (Pillow cannot write one); 16-bit frames go through the same
 high-byte mapping as any 16-bit PNG.
+
+## PNG cICP float projection — a table beat every vector form tried
+
+`PngImageDecoder.TryDecodeRgbaFloat` (PQ / HLG / sRGB to linear-light RGBA floats) fills its raster from
+`PngFloatFill`. Each colour sample is a lookup in a 256- or 65536-entry table that `PngHdr` builds with the
+**reference's own arithmetic**, so the shipped fill is **bit-identical** to `FillReference` (the scalar spec the tests
+and tiny images use) and there is no second kernel to keep equal; `PngFloatFillEquivalenceTests` is the guard. The
+flight's numbers are in the `3.26` CHANGELOG entry; the ones worth keeping in mind when touching it:
+
+- **Measured at 1080p** (arm64, BenchmarkDotNet, same sitting): the table fill is **26x** the scalar reference on PQ
+  (151.4 → 5.8 ms), 28x on PQ RGBA16, 26x on sRGB RGBA8, and 2.8x on HLG (45.5 → 16.3 ms; its per-pixel OOTF `pow`
+  couples the channels, so it cannot be a pure table). Above the shared inflate + unfilter (87.7 ms) a whole PQ decode
+  costs +7 %, HLG +20 %. Allocation is one `float[]` plus the reader's pixels and nothing per pixel or per row.
+- **Three `Vector128` candidates were measured and dropped**, kept in `benchmarks/.../PngHdrCandidateBenchmarks.cs` so
+  the numbers can be reproduced. A float `Vector128` PQ curve is 3.8x the scalar *double* curve but **7x slower than the
+  table** and 1.1e-4 off; a vector HLG gain (`Ys^0.2` four pixels at a time) measured 17.9 ms against the shipped 16.3 ms
+  and is 5.6e-7 off; a one-`Vector128`-store-per-pixel RGB16 fill is exact but 0.65 ms (0.7 % of a decode) inside the
+  shipped path's own noise. The fill is a table-load and store stream, the same store-bound shape as the YCbCr row
+  above, so the ceiling for vectorising it is small, and the table already took the 26x.
+- **Narrow range is free per pixel** (the expansion lives in the table build) and RGBA16's alpha division costs nothing
+  measurable, so neither has a candidate. In-place and strip conversion are not available: the float raster is 2.7x the
+  decoded pixels and `PngReader` decodes the whole image first.
+- **If you change this, A/B against the shipped table path on the whole `TryDecodeRgbaFloat` as well as the fill.** The
+  `PngHdrFloat4kBenchmarks` *timings* are too noisy to decide anything (the 127 MiB array lands on the large-object
+  heap); its allocated-bytes column is what it is for.
 
 ## Oracle harnesses (all codecs)
 
