@@ -14,6 +14,47 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.25
+
+**`SharpAstro.Png` decodes cICP PQ and HLG files to linear-light floats.** `PngImageDecoder.TryDecodeRgbaFloat` is the HDR
+projection the 8-bit paths refuse to make: it starts from `PngReader.TryDecode` (so PQ and HLG are accepted, not refused)
+and returns a fresh `float[]` of `width * height * 4` linear-light RGBA the caller owns, plus the `ColorEncoding` and the
+`mDCv` / `cLLI` metadata. The transfer maths is the internal `PngHdr` helper, written from ST 2084, BT.2100, IEC 61966-2-1
+and H.273.
+
+- **Signature.** `TryDecodeRgbaFloat(data, out rgba, out width, out height, out encoding)`, and an overload with
+  `out MdcvChunk? mdcv, out ClliChunk? clli` after `encoding` (the reader's own chunk types, carried as they are).
+- **Which curve.** A `cICP` chunk is authoritative, narrow range (`VideoFullRangeFlag = 0`) included: codes expand per
+  H.273 section 8.3 (16..235 at 8 bits, 4096..60160 at 16). Without one, `gAMA` 1.0 reads as linear and everything else
+  (untagged, `sRGB`, other `gAMA`) as sRGB, the same assumption `IDecodedImage.ColorEncoding` makes. Supported transfers:
+  PQ (16), HLG (18), sRGB (13), the BT.709 family (1, 6, 14, 15) and Linear (8).
+- **Scale.** PQ and HLG: `1.0` is the 203 cd/m2 HDR reference white of BT.2408. PQ light is absolute (code 1.0 is 10 000
+  cd/m2, so 49.26 here); HLG goes through the BT.2100 OOTF for the nominal 1000 cd/m2 display (system gamma 1.2, luminance
+  from the cICP primaries), so a 75 % HLG signal is 1.0 and a 100 % one is 4.93. SDR transfers and Linear: `1.0` is SDR
+  white, nothing rescaled to 203. Signals are clamped to [0, 1] before a curve (narrow-range footroom and headroom), except
+  Linear, which passes through. Alpha is the file's straight 0..1 alpha, `1.0` when absent, and is never ranged or curved.
+- **The returned `ColorEncoding`.** The file's primaries (cICP, else BT.709), `Transfer = Linear`, `FullRange = true` (the
+  range is already expanded) and `Float = DisplayReferred`: `1.0` is the reference / SDR white and HDR highlights lie above
+  it. A Linear-tagged file lands on `DisplayReferred` too, because its full-scale code is 1.0 (the 8-bit display path treats
+  it the same way); a caller who knows it is an astro master may re-interpret it.
+- **Every colour type and depth the reader reads.** Grey (replicated into R = G = B), grey+alpha, RGB, RGBA, indexed (the
+  palette and its `tRNS` alpha linearised once as a table), 8 and 16 bit, and the 1/2/4-bit depths through the reader's
+  unpacking to 8 bits.
+- **Refused (false, never guessed).** Whatever `PngReader.TryDecode` refuses (not a PNG, corrupt, Adam7); a transfer outside
+  the list above (BT.470 gammas, SMPTE 240M, the log curves, xvYCC, BT.1361, ST 428, unspecified); a cICP whose matrix
+  coefficients are not Identity (PNG carries RGB); a narrow-range grey image under 8 bits (H.273's range equations start at
+  8); an indexed pixel past the palette; and a float raster too big for an array.
+- **A PNG-specific method, not a facade member (decision).** `IImageDecoder` has no float projection today, and widening a
+  static-abstract interface breaks every codec that implements it, so this lives on `PngImageDecoder` beside
+  `TryDecodeRgba8`. The facade still reaches the integer code values and the colour signalling through `TryDecode`. The
+  `TryDecodeIntoRgba8` / `TryDecodeRgba8` remarks now point PQ / HLG callers at the new method; those two still refuse PQ
+  and HLG, unchanged. Folding a float projection into the facade is a separate, interface-level decision.
+- **Checked against.** An independent double-precision reference in the test, from the standards: every sample of every
+  PQ and HLG fixture in `Fixtures/Cicp` (full and narrow range) within 1e-4 relative, BT.2111 / BT.2408 patches against
+  their nominal levels (PQ 58 % grey is about 203 cd/m2, HLG 75 % grey 203, HLG 38 % grey 26, PQ 100 % 10 000 cd/m2, HLG
+  100 % 1000 cd/m2), and each SDR fixture against its own `TryDecodeRgba8` output linearised, within 8-bit quantisation.
+  A 1080p 16-bit RGB decode takes 70-150 ms.
+
 ## 3.23
 
 **`SharpAstro.Png` decodes 1-, 2- and 4-bit greyscale and indexed images.** They are the sub-byte depths PNG allows
