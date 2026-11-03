@@ -9,7 +9,7 @@
     <PackageId>SharpAstro.Tga</PackageId>
     <Product>SharpAstro.Tga</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure C# Truevision TGA 2.0 image reader for .NET: colour-mapped, true-colour and greyscale, raw and RLE.</Description>
+    <Description>Pure C# Truevision TGA 2.0 image reader and true-colour writer for .NET: reads colour-mapped, true-colour and greyscale, raw and RLE; writes 24/32-bit, raw and RLE.</Description>
     <PackageTags>tga targa image codec decoder rle aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

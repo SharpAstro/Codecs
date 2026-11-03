@@ -1,7 +1,7 @@
 # SharpAstro.Tga
 
 Pure-managed Truevision TGA 2.0 reading for .NET 10, written from the Truevision TGA File Format
-Specification. There is no encoder.
+Specification, plus a writer for 24-bit and 32-bit true colour (see "Writing" below).
 
 Supported: colour-mapped, true-colour and greyscale images (types 1, 2, 3), raw or run-length
 coded (types 9, 10, 11); 8, 15, 16, 24 and 32-bit pixels; 8, 15, 16, 24 and 32-bit colour-map
@@ -29,3 +29,16 @@ not define it and ImageMagick reads it differently from stb_image.
 
 Every pixel the reader produces is compared byte for byte against ImageMagick's read of the same
 file in the test suite.
+
+## Writing
+
+```csharp
+byte[] tga = TgaWriter.EncodeRgba8(rgba, width, height, new TgaWriteOptions { Rle = true });
+byte[] tga24 = TgaWriter.EncodeRgb8(rgb, width, height);
+```
+
+24-bit (`EncodeRgb8`) and 32-bit (`EncodeRgba8`, 8 attribute bits) true colour, raw (type 2) or
+run-length coded (type 10), top-left origin by default (`TopOrigin = false` for bottom-left). Every
+file ends with the TGA 2.0 footer (`TRUEVISION-XFILE.` and a zero byte). RLE packets never cross a
+scanline, as the specification asks. A wrong buffer length or a dimension outside 1..65535 is an
+`ArgumentException`.
