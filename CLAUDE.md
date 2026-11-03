@@ -135,6 +135,26 @@ whatever the height (measured: byte-identical at 1300 and 2600 rows). What is no
   in `Begin` (the two allocation tests, with 20.8 MB against the 260 KB bound), `int`-wrapping sums (the overflow test
   alone) and no start-over on the first row (the sink restart test alone).
 
+**Measured on the issue's scan shape** (3.25; `JpegDecodeScanBenchmarks`, 5100x6600 baseline 4:4:4, DRI = 638, built in
+`GlobalSetup` through Magick.NET because `JpegEncoder` writes no restart markers; the setup throws unless the stream really is
+SOF0, 1x1 x3 and DRI 638, since a silently missing DRI would turn every case into plain baseline). Full 333.8 ms; region of the
+middle third 111.1 ms (**0.33**; 275 of 825 MCU rows, a third of the RGBA); fitted 3165x4096 526.9 ms; fitted region 151.8 ms;
+decode-then-shrink 432.8 ms and 178 MiB per call. Things the next person would trip over:
+
+- **The fitted decode is a memory win and not a time win.** It is slower than decode-then-shrink on the whole image (the run-to-run
+  spread on this machine is large enough that a five-run report once had them the other way round by 10%, so trust BenchmarkDotNet).
+  The likely cost is `JpegFittedSink`'s per-channel 64-bit division in `WriteTargetRow` and its scalar adds in `Accumulate`;
+  not profiled. Faster than decode-then-shrink is open.
+- **BenchmarkDotNet's `Allocated` cannot show strip memory**: strips are pooled, so after the first iteration a decode allocates
+  next to nothing. `dotnet run -c Release --project benchmarks/SharpAstro.Codecs.Benchmarks -- --jpeg-scan-report` prints
+  `PeakPlaneBytes`, MCU rows entropy-decoded and IDCT'd and the byte-equality check against Decode plus a box filter, through
+  `InternalsVisibleTo` from `SharpAstro.Jpeg` to the benchmarks project. Strips are 0.19 MiB in every case against 3 x 64 MiB before.
+- **The benchmark JPEG is 7.6 MiB, the issue's were 1.1-1.6 MB** (noise on every channel), so entropy decoding is a bigger share
+  of a full decode here than on a real scan. The ratios that matter (a third of the rows, a third of the bytes) do not depend on that.
+- **`Magick.NET` is referenced by the benchmarks project** with the NU1901-NU1904 audit warnings silenced (it only encodes a
+  self-generated raster here). The `--filter` still matches the namespace and type, so `*JpegDecode*` runs both the small cases
+  and the 33.7 MP ones; they are separate classes so the small ones do not pay for that setup.
+
 `SharpAstro.Jpeg` also ships a **second, structurally unrelated decoder**: `LosslessJpeg`
 (ITU-T T.81 Annex H, SOF3) — Huffman-coded sample-difference predictors 1–7, no quantisation,
 **up to 16-bit precision**, DRI/RSTn restarts, point transform. It shares no code with

@@ -14,6 +14,66 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.25
+
+(There is no 3.24 section: 3.24 is the TIFF release, commit `c61e31b`.)
+
+**`SharpAstro.Jpeg` decodes a region, and decodes straight to a target size** (issue #28), and the decoder no longer
+holds whole component planes to do either. A 5100x6600 scan used to cost three 64 MiB planes before its first pixel was
+converted; every decode now holds about 0.19 MiB of sample memory, whatever the height.
+
+- **`JpegDecoder.DecodeRegionTo(data, JpegRegion region, rgbaDestination, scale)`** decodes one rectangle of the output
+  (in pixels at `scale`) into `region.Width * region.Height * 4` bytes. With restart markers (DRI) it entropy-decodes only
+  the restart intervals holding the region's MCU rows; without them it decodes from the top of the scan to the region's
+  last MCU row and stops; progressive reads every scan but transforms only the region.
+- **`JpegDecoder.DecodeFittedTo(data, targetWidth, targetHeight, rgbaDestination, scale, region)`** box-filters to the
+  target size inside the row loop, so the full-resolution RGBA never exists. A target larger than the source is an
+  `ArgumentException`, not an approximation. With `region` it fits just that rectangle.
+- **Exactness.** Both are byte for byte what `Decode` gives (cropped, or box-filtered), at every scale, not "within 1".
+  The region is the same engine narrowed (`SetRegion`), not a second one; the fitted decode is a row sink on that engine.
+  The filter is the Drawboard viewer's `RgbaBoxDownsample.Shrink`, line for line, with `long` sums where Shrink's are
+  `int` (Shrink wraps for a box of more than about 8.4 million pixels, e.g. this scan fitted to 1x1).
+- **How it was tested.** `JpegStripDecodeTests` demands byte equality with the retained whole-plane engine on 8 sampling
+  layouts, odd sizes, every scale, baseline and progressive, grey, CMYK, hand-built restart streams, truncations and corrupted
+  RSTn. `JpegRegionDecodeTests` compares every region against the crop of a full decode, and checks the cost through
+  `JpegDecodeStats` (MCU rows entropy-decoded and transformed). `JpegFittedDecodeTests` transcribes `Shrink` and demands
+  byte equality at integer and non-integer ratios, with a region, and bounds the allocation. The golden digests still pass
+  unchanged. Deliberate bugs, one at a time, were all caught (see CLAUDE.md for the list).
+- **Strip pipeline.** `JpegCore` IDCTs one MCU row (a block row for single-component scans) into per-component strips,
+  assembles output rows and hands them to a sink. Plane rents no longer double: `ArrayPool` rounds a 33,660,000-byte plane up to
+  64 MiB, so three planes held 192 MiB; strips are 0.19 MiB. Whole planes remain only where a stream cannot be streamed
+  (a baseline first scan without every component, a second scan, or an Adobe/JFIF marker after the scan), allocated at exact size.
+- **A caveat on `DecodeTo`.** The size check now runs against the frame header before the decode, and rows are written as
+  they decode, so a stream that turns out corrupt part-way leaves the rows before the failure in the caller's buffer.
+
+**Measured** on the issue's own shape: a 5100x6600 baseline 4:4:4 scan with DRI = 638 (one MCU row), 7.6 MiB (built in the
+benchmark's setup from gradients plus noise by libjpeg through Magick.NET; the issue's real scans were 1.1-1.6 MB, so the
+entropy-decode share is larger here). BenchmarkDotNet, one run, all cases in one sitting, Snapdragon X (arm64), .NET 10.0.12:
+
+| Case | Mean | vs full | Allocated per call | Destination |
+|---|--:|--:|--:|--:|
+| `DecodeTo`, whole image | 333.8 ms | 1.00 | 52.6 KB | 128.4 MiB |
+| `DecodeRegionTo`, middle third of the height | 111.1 ms | **0.33** | 33.4 KB | 42.8 MiB |
+| `DecodeFittedTo`, whole image to 3165x4096 | 526.9 ms | 1.58 | 260.7 KB | 49.5 MiB |
+| `DecodeFittedTo`, middle third to 3165x1365 | 151.8 ms | 0.45 | 80.6 KB | 16.5 MiB |
+| `Decode` + box filter to 3165x4096 (the path it replaces) | 432.8 ms | 1.30 | 182,283 KB | 177.9 MiB |
+
+- **The region costs one third.** Entropy-decoded and transformed MCU rows are 275 of 825, exactly one third, and its RGBA is
+  exactly one third of the full one (42.8 of 128.4 MiB). The time ratio is 0.33 in BenchmarkDotNet; a separate
+  five-run report (`--jpeg-scan-report`) on a busy machine read 0.34 to 0.44, so use the BenchmarkDotNet figure.
+- **Sample memory is 0.19 MiB in every case** (`JpegDecodeStats.PeakPlaneBytes`), against 3 x 64 MiB = 192 MiB before.
+  BenchmarkDotNet's `Allocated` column cannot show that: strips come from `ArrayPool`, so after the first iteration a decode
+  "allocates" almost nothing however much it holds. Read the table's `Allocated` for the replaced path, which genuinely
+  allocates 178 MiB per call (the full RGBA plus the target), and the strip figure for the rest.
+- **The fitted decode saves memory, not time.** Fitting the whole image took 527 ms against 433 ms for decode-then-shrink, 22% *slower*,
+  and slower than a plain full decode (probably the filter's scalar adds in the row loop and a 64-bit division per output
+  channel at the end of each target row where the viewer's filter divides in 32 bits; not profiled). The five-run report, run on
+  a noisier machine, put the two within 10% of each other the other way round (524 against 578 ms), so call it a wash
+  and not a win. What it removes is the 178 MiB per call: 49.5 MiB of destination is all that is held, in place of 128.4 MiB
+  of RGBA plus the target. Fitting a region is where time is saved too, because the cost is the region's (0.45 of the whole-image
+  fit). A fitted decode that is faster than decode-then-shrink is a follow-up.
+- Byte equality, checked in the benchmark's report: `DecodeFittedTo` equals `Decode` followed by the box filter, byte for byte.
+
 ## 3.23
 
 **`SharpAstro.Png` decodes 1-, 2- and 4-bit greyscale and indexed images.** They are the sub-byte depths PNG allows
