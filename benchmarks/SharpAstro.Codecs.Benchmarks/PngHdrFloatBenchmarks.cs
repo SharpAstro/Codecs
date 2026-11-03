@@ -57,6 +57,21 @@ internal static class PngHdrInputs
         PngWriter.EncodeRgb16(Rgb16(w, h), w, h, new PngWriteOptions { Cicp = CicpChunk.Bt2020Hlg });
 
     public static byte[] SrgbRgba8(int w, int h) => PngWriter.Encode(Rgba8(w, h), w, h);
+
+    // PQ with a 16-bit alpha channel: the one case that divides per sample (no 65536-entry alpha table).
+    public static byte[] PqRgba16(int w, int h)
+    {
+        var rgb = Rgb16(w, h);
+        var rgba = new ushort[w * h * 4];
+        for (var i = 0; i < w * h; i++)
+        {
+            rgba[i * 4] = rgb[i * 3];
+            rgba[i * 4 + 1] = rgb[i * 3 + 1];
+            rgba[i * 4 + 2] = rgb[i * 3 + 2];
+            rgba[i * 4 + 3] = (ushort)(65535 - i % 60000);
+        }
+        return PngWriter.EncodeRgba16(rgba, w, h, new PngWriteOptions { Cicp = CicpChunk.Hdr10Pq });
+    }
 }
 
 /// <summary>
@@ -155,8 +170,8 @@ public class PngHdrFloat4kBenchmarks
 [SimpleJob(RunStrategy.Throughput, launchCount: 1, warmupCount: 2, iterationCount: 6)]
 public class PngHdrFillBenchmarks
 {
-    private PngImage _pq16 = null!, _pq16Narrow = null!, _hlg16 = null!, _srgb8 = null!;
-    private ColorEncoding _pq16Enc = null!, _pq16NarrowEnc = null!, _hlg16Enc = null!, _srgb8Enc = null!;
+    private PngImage _pq16 = null!, _pq16Narrow = null!, _hlg16 = null!, _srgb8 = null!, _pqA16 = null!;
+    private ColorEncoding _pq16Enc = null!, _pq16NarrowEnc = null!, _hlg16Enc = null!, _srgb8Enc = null!, _pqA16Enc = null!;
     private float[] _dst = [];
 
     [GlobalSetup]
@@ -166,6 +181,7 @@ public class PngHdrFillBenchmarks
         (_pq16Narrow, _pq16NarrowEnc) = Load(PngHdrInputs.PqRgb16(PngHdrInputs.Width, PngHdrInputs.Height, fullRange: false));
         (_hlg16, _hlg16Enc) = Load(PngHdrInputs.HlgRgb16(PngHdrInputs.Width, PngHdrInputs.Height));
         (_srgb8, _srgb8Enc) = Load(PngHdrInputs.SrgbRgba8(PngHdrInputs.Width, PngHdrInputs.Height));
+        (_pqA16, _pqA16Enc) = Load(PngHdrInputs.PqRgba16(PngHdrInputs.Width, PngHdrInputs.Height));
         _dst = new float[PngHdrInputs.Width * PngHdrInputs.Height * 4];
     }
 
@@ -195,6 +211,12 @@ public class PngHdrFillBenchmarks
 
     [Benchmark(Description = "sRGB RGBA8 reference")]
     public float[] Srgb8Reference() { PngFloatFill.FillReference(_srgb8, _srgb8Enc, _dst); return _dst; }
+
+    [Benchmark(Description = "PQ RGBA16 reference")]
+    public float[] PqA16Reference() { PngFloatFill.FillReference(_pqA16, _pqA16Enc, _dst); return _dst; }
+
+    [Benchmark(Description = "PQ RGBA16 shipped")]
+    public float[] PqA16Shipped() { PngFloatFill.Fill(_pqA16, _pqA16Enc, _dst); return _dst; }
 
     [Benchmark(Description = "sRGB RGBA8 shipped")]
     public float[] Srgb8Shipped() { PngFloatFill.Fill(_srgb8, _srgb8Enc, _dst); return _dst; }
