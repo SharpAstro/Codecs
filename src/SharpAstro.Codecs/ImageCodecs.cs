@@ -8,6 +8,7 @@ using SharpAstro.Jpeg2000;
 using SharpAstro.Jxl;
 using SharpAstro.Jxr;
 using SharpAstro.Png;
+using SharpAstro.Pnm;
 using SharpAstro.Tiff;
 using SharpAstro.Webp;
 
@@ -19,7 +20,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2 and JPEG 2000. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP and Netpbm. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -51,6 +52,12 @@ namespace SharpAstro.Codecs;
 /// WebP is decoded by <see cref="WebpImageDecoder"/>: lossy (VP8), lossless (VP8L)
 /// and, for an animation, its first composited frame. It returns RGB8 or RGBA8
 /// according to the container's alpha declaration.
+/// </para>
+/// <para>
+/// Netpbm (<c>P1</c>..<c>P7</c>: PBM, PGM, PPM and PAM, plain and raw) is decoded by
+/// <see cref="PnmImageDecoder"/> to grey, grey+alpha, RGB or RGBA, UInt8 when the file's maxval
+/// is at most 255 and UInt16 above, with samples scaled to fill the format. It is sniffed by
+/// <c>P</c>, a digit 1-7 and a whitespace byte.
 /// </para>
 /// <para>
 /// A gain-map ("Ultra HDR") JPEG is recognised too: <see cref="TryDecode"/> +
@@ -97,6 +104,8 @@ public static class ImageCodecs
         Register<Jbig2ImageDecoder>(),
         Register<Jpeg2000ImageDecoder>(),
         Register<WebpImageDecoder>(),
+        // Netpbm's "P1".."P7" + whitespace collides with no other signature here.
+        Register<PnmImageDecoder>(),
     ];
 
     private static Entry Register<T>() where T : IImageDecoder =>
