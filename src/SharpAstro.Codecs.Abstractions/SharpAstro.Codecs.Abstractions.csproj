@@ -53,6 +53,11 @@
          qualifying, only by extern alias. -->
     <InternalsVisibleTo Include="SharpAstro.Jbig2" />
     <InternalsVisibleTo Include="SharpAstro.Jpeg2000" />
+    <!-- Lzw is shared the same way: TIFF 6.0 LZW, GIF's LZW and PDF's /LZWDecode
+         differ only in bit order, early change and root size, so SharpAstro.Tiff
+         and SharpAstro.Gif read one decoder here instead of carrying two. -->
+    <InternalsVisibleTo Include="SharpAstro.Tiff" />
+    <InternalsVisibleTo Include="SharpAstro.Gif" />
   </ItemGroup>
 
 </Project>

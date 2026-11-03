@@ -22,6 +22,7 @@ package instead of cherry-picking codecs.
 | **PNM / PAM** | ✅ | ✅ | Netpbm P1–P7 read; writes P5/P6 and P7 (grey, RGB, ± alpha) at 8 and 16 bit |
 | **WebP** | ✅ | — | VP8 lossy, VP8L lossless, ALPH, animation + seek, ICC/EXIF/XMP metadata |
 | **BMP** | ✅ | ✅ | Windows + OS/2 DIB, 1–32 bpp, RLE4/RLE8, bit-field masks, V5 ICC; writes 24-bit BGR and 32-bit BGRA with alpha |
+| **GIF** | ✅ (stills + animation frames) | — | GIF87a/GIF89a, global/local palettes, interlace, transparency, disposal; composited full-canvas frames; LZW shared with TIFF |
 | **TGA** | ✅ | ✅ | types 1/2/3 + RLE 9/10/11, 8–32-bit; writes 24/32-bit raw or RLE. The facade recognises it **only by the TGA 2.0 footer** (`TRUEVISION-XFILE.`): TGA has no magic number, so footerless files decode via `SharpAstro.Tga.TgaReader` directly |
 | **EXIF** | ✅ | — | metadata only, from JPEG / TIFF / PNG |
 
@@ -33,19 +34,24 @@ The facade decodes WebP still images and frame 0 of animated WebP. Use
 `SharpAstro.Webp.WebpDecoder.DecodeAnimation` or `WebpAnimationDecoder` to access animation frames
 and seek through the timeline.
 
+Likewise the facade returns frame 0 of a GIF. `SharpAstro.Gif.GifDecoder.DecodeAnimation` returns every
+frame as a full-canvas RGBA8 copy (disposal applied, raw 1/100 s delays, loop count), and
+`GifAnimationDecoder` streams them through one canvas. GIF is decode-only, by design.
+
 All packages target `net10.0`, are `IsAotCompatible`, ship SourceLink debugging, and publish in
 lockstep (shared Major.Minor + CI run-number patch).
 
 ## NuGet
 
 ```
-# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, Radiance .hdr, Netpbm, BMP, TGA with footer, .jb2):
+# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, GIF, Radiance .hdr, Netpbm, BMP, TGA with footer, .jb2):
 dotnet add package SharpAstro.Codecs
 
 # ...or reference just the format(s) you need:
 dotnet add package SharpAstro.Png
 dotnet add package SharpAstro.Jxr
 dotnet add package SharpAstro.Webp
+dotnet add package SharpAstro.Gif
 ```
 
 ## Usage

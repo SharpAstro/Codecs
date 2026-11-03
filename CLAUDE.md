@@ -11,7 +11,7 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Exif`,
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Exif`,
   `Color.Icc`, `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered
   *ahead of* the plain JPEG decoder).
 
@@ -959,6 +959,38 @@ must decode to ImageMagick's, decoded-to-decoded bit-exact. Things that are not 
   pixels than it has bytes, so input size is no bound (the same lesson as the JBIG2 and JPEG 2000 sections).
 - **The facade adapter is float-tier only**: `TryDecodeIntoRgba8` is always false, like EXR.
 
+## GIF codec — spec-derived, Magick.NET as the oracle, decode only
+
+`SharpAstro.Gif` reads GIF87a/GIF89a: a still (`Decode`/`DecodeTo`, frame 0 on the logical screen, which is what the facade
+returns), every frame materialised (`DecodeAnimation`) or streamed through one canvas (`GifAnimationDecoder`). There is no
+encoder and a GIF encoder is not to be proposed unless asked. It is written from the GIF89a specification, and where that is open
+the answer is **what Magick.NET's `Coalesce()` does**, found by probing, because the tests compare every frame with it byte for byte
+(`GifStillTests`, `GifAnimationTests`; Magick is already a test reference, so no install and no skip). Structure:
+`GifContainer` (blocks parsed once to `GifInfo` plus file offsets; a file that ends early keeps its frames and says so, only "no
+usable header or no image" throws) → `GifPixels` (palette, LZW, interlace, drawing one frame) → `GifCompositor` (disposal, one canvas).
+
+- **LZW is the shared decoder in `SharpAstro.Codecs.Abstractions`** (`Lzw.Decode(LzwFormat.Gif(minCodeSize), ...)`), the same one
+  TIFF uses, parameterised by bit order (GIF is LSB-first, TIFF MSB-first), early change (GIF: none, TIFF: yes) and root size
+  (min code size 2-8; clear = 2^root, EOI = clear + 1). TIFF's behaviour did not change.
+- **What Magick's policy is, and why it is matched rather than "fixed"** (all observed with hand-built files; the numbers are
+  in the tests): the canvas before frame 0 is the global table's background-index colour (clamped to the table), opaque, or alpha 0
+  with the same RGB when frame 0 has a transparent index, white with no global table. Frame 0 is *copied* (a transparent index keeps
+  its RGB, alpha 0); later frames are drawn *over*: opaque replaces, transparent leaves an opaque pixel alone and turns an already
+  alpha-0 pixel into 0,0,0,0. Disposal 2 sets the rectangle's alpha to 0 and **keeps its RGB**; disposal 3 restores the rectangle's earlier
+  content and on frame 0 that is the initial canvas, not "background"; 4-7 behave as 0. Nothing here is a browser's rule (browsers
+  ignore the background colour; `GifInfo` reports the index and the policy is the caller's). The RGB of an alpha-0 pixel is thus quirky
+  but deterministic, and matching it exactly is what lets the oracle be a byte comparison.
+- **Delays are raw** (1/100 s, 0 stays 0); the browser "0 or 1 means 10 ms/100 ms" clamp is the caller's.
+- **Limits are charged up front**, as for WebP and APNG: a screen over 2^26 pixels is refused while the 4 header bytes are read;
+  `DecodeAnimation` refuses screen × frames above `DefaultMaximumAnimationPixels` (2^28) or a caller's limit from the parsed
+  frame headers, before any canvas exists (a 1x1 frame costs ~15 bytes, so a few hundred bytes can declare 10 GiB). The streaming
+  decoder holds one canvas, a grow-only index scratch and a snapshot of one rectangle, only for a frame with disposal 3;
+  `GifAnimationTests.Streaming_HoldsOneCanvas_WhereMaterialisingHoldsOnePerFrame` measures it.
+- **Truncation:** a frame whose data the file or its LZW stream cut short is drawn partly, flagged (`GifAnimationFrame.IsTruncated`,
+  `GifAnimation.IsTruncated`), and the frames before it are exactly what a whole file gives. The unreached pixels keep the canvas.
+- **Known unmatched:** an index past its colour table (Magick refuses the file; here it is opaque black) and a missing colour table
+  (all black) have no meaningful oracle beyond "Magick reads no-table files as black", see `GifStillTests`.
+
 ## TGA — spec-derived, Magick.NET as the two-way oracle, facade by footer only
 
 `SharpAstro.Tga` reads (`TgaReader`, types 1/2/3 and RLE 9/10/11) and writes (`TgaWriter`, 24/32-bit raw or RLE, always with the
@@ -1022,6 +1054,7 @@ refuses to accept that silence.
 | JBIG2 **MMR** | Magick.NET (libtiff, CCITT Group 4) | Just a NuGet reference. `Group4Tiff` has libtiff encode the raster as Group 4 and unwraps the codestream — T.6 is exactly what T.88 §6.2.6 carries. Nothing to install, nothing to skip. |
 | TIFF **tiled write** | Magick.NET (libtiff) | Just a NuGet reference. `TiffWriterTiledOracleTests` has libtiff read back what `TiffWriter` emits in `TiffLayout.Tiled`. Nothing to install, nothing to skip. Kept as an oracle even though `TiffReader` reads tiles now: writer and reader agree about tile order by construction, so a round trip cannot see a consistent transpose. |
 | TIFF **tiled read** | Magick.NET (libtiff) | The same reference, run the other way: `TiffTiledReadTests` has libtiff WRITE the tiled file (`tile-geometry` + `predictor` defines) and reads it back with `TiffReader`. **The predictor is why it must be a foreign encoder** -- `TiffWriter` emits none, so nothing we write exercises Predictor 2, and inverting it at image width rather than TILE width decodes with no error into a picture that is right in its first tile column and drifts across the rest. That sabotage fails exactly the two libtiff cases and nothing else in the suite. |
+| GIF **decode** | Magick.NET (`Coalesce()`) | Just a NuGet reference. ImageMagick writes the animations (and `GifBuilder` hand-builds what it will not write); every frame must equal the coalesced frame byte for byte, alpha-0 RGB included. Nothing to install, nothing to skip. |
 | JBIG2 **decode** | committed jbig2enc fixtures + spec vectors | No external dependency, nothing to skip — `Fixtures/jbig2/*.jb2` (real jbig2enc output) plus the T.88 Annex H.2 MQ vector and one-hot template tests. Regenerate the fixtures with `Oracle/jbig2/make-fixtures.sh` (needs jbig2enc). |
 | JPEG 2000 **decode** | committed OpenJPEG fixtures | No external dependency, nothing to skip. A lossless 5/3 codestream reproduces its source raster **exactly**, so `Fixtures/jpeg2000/<name>.pgm` (or `.ppm`) is the expected output for `<name>.j2k` (or `.jp2`) — byte equality, no tolerance, no subprocess. Regenerate with `Oracle/jpeg2000/make-fixtures.sh`, which verifies each pair lossless before it will commit it. The lossy fixtures in `Fixtures/jpeg2000-lossy/` have no committed expected output and are compared against `opj_decompress` at run time: exactly for `lossy53-*`, within the measured tolerance for `lossy97-*`. |
 | JPEG 2000 **conformance** | `opj_decompress` / `opj_compress` (OpenJPEG, BSD-2 — **binary only**) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpeg2000/fetch.sh` — **downloads** the pinned v2.5.4 release build (verified by SHA-256) into `dist/`, git-ignored. The only oracle here that is not compiled from source: OpenJPEG wants CMake, and upstream ships official builds for both platforms that matter, so this dev box and CI run the *same bytes* rather than merely the same source. **CI fetches it.** |

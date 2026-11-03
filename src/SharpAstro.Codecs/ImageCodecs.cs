@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Bmp;
 using SharpAstro.Exr;
+using SharpAstro.Gif;
 using SharpAstro.Jbig2;
 using SharpAstro.Jpeg;
 using SharpAstro.Jpeg2000;
@@ -23,7 +24,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP, Radiance RGBE, Netpbm, BMP and TGA. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP, GIF, Radiance RGBE, Netpbm, BMP and TGA. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -64,6 +65,10 @@ namespace SharpAstro.Codecs;
 /// BMP is decoded by <see cref="BmpImageDecoder"/>: Windows and OS/2 DIBs at 1 to 32 bits, RLE4/RLE8 and
 /// bit-field masks, as RGB8 or, when the file has alpha, RGBA8, with a V5 ICC profile passed through.
 /// <c>BI_PNG</c>, <c>BI_JPEG</c> and <c>BI_CMYK</c> files answer false.
+/// GIF (<c>GIF87a</c> / <c>GIF89a</c>) is decoded by <see cref="GifImageDecoder"/>: the first frame
+/// composited onto the logical screen, always as 8-bit RGBA (transparent pixels have alpha 0). A
+/// truncated file decodes what is there; <c>GifDecoder</c> reports that and the animation structure,
+/// and <c>GifDecoder.DecodeAnimation</c> / <c>GifAnimationDecoder</c> give every composited frame.
 /// </para>
 /// <para>
 /// Netpbm (<c>P1</c>..<c>P7</c>: PBM, PGM, PPM and PAM, plain and raw) is decoded by
@@ -126,6 +131,7 @@ public static class ImageCodecs
         // BMP's signature is two letters, so BmpImageDecoder.CanDecode also checks the DIB header size and
         // the zeroed reserved words; it collides with nothing above.
         Register<BmpImageDecoder>(),
+        Register<GifImageDecoder>(),
         // '#?RADIANCE' / '#?RGBE' collides with no binary signature above.
         Register<RadianceImageDecoder>(),
         // Netpbm's "P1".."P7" + whitespace collides with no other signature here.
