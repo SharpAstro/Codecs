@@ -423,3 +423,73 @@ internal static class JpegScanReport
             $"{name,-40} {ms[ms.Length / 2],10:F0} {allocated / 1048576.0,9:F2} MiB {s.PeakPlaneBytes / 1048576.0,7:F2} MiB {destinationBytes / 1048576.0,7:F1} MiB {s.EntropyUnits,8} {s.TransformedUnits,6}");
     }
 }
+
+/// <summary>
+/// The chroma upsamplers' <c>Vector128</c> form against the scalar kernel, in one run. The end-to-end pair is the
+/// decision (a 4:2:0 decode is the Hv2 kernel on both chroma planes, every row); the per-row pairs say which kernel
+/// is worth what in isolation, which over-predicts (see CLAUDE.md, "An isolated kernel measurement over-predicts").
+/// </summary>
+[MemoryDiagnoser]
+public class JpegUpsampleBenchmarks
+{
+    private byte[] _jpeg420 = [];
+    private byte[] _rgba = [];
+    private byte[] _plane = [];
+    private byte[] _dst = [];
+
+    /// <summary>A 5100-wide image's 4:2:0 chroma row.</summary>
+    private const int RowWidth = 2550;
+    private const int RowsPerCall = 2000;
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        const int w = 2048;
+        const int h = 1536;
+        var rgb = new byte[w * h * 3];
+        var rnd = new Random(7);
+        for (var y = 0; y < h; y++)
+            for (var x = 0; x < w; x++)
+            {
+                var i = (y * w + x) * 3;
+                rgb[i + 0] = (byte)Math.Clamp(x * 255 / (w - 1) + rnd.Next(-8, 9), 0, 255);
+                rgb[i + 1] = (byte)Math.Clamp(y * 255 / (h - 1) + rnd.Next(-8, 9), 0, 255);
+                rgb[i + 2] = (byte)Math.Clamp(128 + 90 * Math.Sin(x * 0.01) * Math.Cos(y * 0.013) + rnd.Next(-8, 9), 0, 255);
+            }
+
+        _jpeg420 = JpegEncoder.Encode(rgb, w, h, 3, new JpegEncodeOptions { Quality = 90, Subsampling = JpegSubsampling.Chroma420 });
+        _rgba = new byte[w * h * 4];
+        _plane = new byte[RowWidth * 2];
+        rnd.NextBytes(_plane);
+        _dst = new byte[RowWidth * 2];
+    }
+
+    [Benchmark(Baseline = true, Description = "4:2:0 DecodeTo, scalar upsample")]
+    public (int, int) DecodeScalar()
+    {
+        JpegResample.ForceScalar = true;
+        try { return JpegDecoder.DecodeTo(_jpeg420, _rgba); }
+        finally { JpegResample.ForceScalar = false; }
+    }
+
+    [Benchmark(Description = "4:2:0 DecodeTo, Vector128 upsample")]
+    public (int, int) DecodeVector()
+    {
+        JpegResample.ForceScalar = false;
+        return JpegDecoder.DecodeTo(_jpeg420, _rgba);
+    }
+
+    private void Rows(bool simd, int kind)
+    {
+        for (var r = 0; r < RowsPerCall; r++)
+            if (simd) JpegResample.RowSimd(kind, _dst, _plane, 0, RowWidth, RowWidth, 2);
+            else JpegResample.RowScalar(kind, _dst, _plane, 0, RowWidth, RowWidth, 2);
+    }
+
+    [Benchmark(Description = "rows V2, scalar")] public void V2Scalar() => Rows(false, JpegResample.V2);
+    [Benchmark(Description = "rows V2, Vector128")] public void V2Vector() => Rows(true, JpegResample.V2);
+    [Benchmark(Description = "rows H2, scalar")] public void H2Scalar() => Rows(false, JpegResample.H2);
+    [Benchmark(Description = "rows H2, Vector128")] public void H2Vector() => Rows(true, JpegResample.H2);
+    [Benchmark(Description = "rows Hv2, scalar")] public void Hv2Scalar() => Rows(false, JpegResample.Hv2);
+    [Benchmark(Description = "rows Hv2, Vector128")] public void Hv2Vector() => Rows(true, JpegResample.Hv2);
+}
