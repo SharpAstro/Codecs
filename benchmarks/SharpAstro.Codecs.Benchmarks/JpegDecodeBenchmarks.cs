@@ -22,6 +22,12 @@ public class JpegDecodeBenchmarks
     private byte[] _jpeg420 = [];
     private byte[] _jpeg444 = [];
     private byte[] _rgba = [];
+    private byte[] _half = [];
+    private byte[] _thumb = [];
+    private byte[] _crop = [];
+
+    /// <summary>The middle band of a 2048×1536 frame, an MCU-row-aligned third of its height.</summary>
+    private static readonly JpegRegion Band = new(256, 512, 1536, 512);
 
     /// <summary>
     /// 2048×1536. Content is smooth gradients plus low-amplitude noise: a flat
@@ -49,6 +55,9 @@ public class JpegDecodeBenchmarks
         _jpeg420 = JpegEncoder.Encode(rgb, w, h, 3, new JpegEncodeOptions { Quality = 90, Subsampling = JpegSubsampling.Chroma420 });
         _jpeg444 = JpegEncoder.Encode(rgb, w, h, 3, new JpegEncodeOptions { Quality = 95, Subsampling = JpegSubsampling.Chroma444 });
         _rgba = new byte[w * h * 4];
+        _half = new byte[1024 * 768 * 4];
+        _thumb = new byte[256 * 192 * 4];
+        _crop = new byte[Band.Width * Band.Height * 4];
     }
 
     [Benchmark(Baseline = true, Description = "4:2:0 full scale")]
@@ -64,6 +73,30 @@ public class JpegDecodeBenchmarks
     /// </summary>
     [Benchmark(Description = "4:2:0 eighth scale")]
     public (int, int) Decode420Eighth() => JpegDecoder.DecodeTo(_jpeg420, _rgba, JpegScale.Eighth);
+
+    /// <summary>
+    /// Region and fitted decode on the small 4:2:0 frame, where the chroma upsampler (the Hv2 kernel) is on the path
+    /// the 4:4:4 scan never takes. The whole-plane cases are the pre-strip engine, kept as the reference
+    /// (<c>forceWholePlanes</c>), so each pair is the strip pipeline against what it replaced.
+    /// </summary>
+    [Benchmark(Description = "4:2:0 region, strips")]
+    public (int, int) Region420() => JpegDecoder.DecodeRegionTo(_jpeg420, Band, _crop);
+
+    [Benchmark(Description = "4:2:0 region, whole planes")]
+    public long Region420WholePlanes() => JpegDecoder.DecodeRegionToWithStats(_jpeg420, Band, _crop, JpegScale.Full, forceWholePlanes: true).PeakPlaneBytes;
+
+    [Benchmark(Description = "4:2:0 fitted to 1024x768, strips")]
+    public (int, int) Fitted420Half() => JpegDecoder.DecodeFittedTo(_jpeg420, 1024, 768, _half);
+
+    [Benchmark(Description = "4:2:0 fitted to 1024x768, whole planes")]
+    public long Fitted420HalfWholePlanes() => JpegDecoder.DecodeFittedToWithStats(_jpeg420, 1024, 768, _half, forceWholePlanes: true).PeakPlaneBytes;
+
+    /// <summary>An 8× shrink at full scale: boxes 8 pixels wide, the shape of a thumbnail, where the filter's per-pixel adds dominate.</summary>
+    [Benchmark(Description = "4:2:0 fitted to 256x192 (8x boxes)")]
+    public (int, int) Fitted420Thumb() => JpegDecoder.DecodeFittedTo(_jpeg420, 256, 192, _thumb);
+
+    [Benchmark(Description = "4:4:4 fitted to 1024x768")]
+    public (int, int) Fitted444Half() => JpegDecoder.DecodeFittedTo(_jpeg444, 1024, 768, _half);
 }
 
 /// <summary>
@@ -90,11 +123,17 @@ public class JpegDecodeScanBenchmarks
     private byte[] _band = [];
     private byte[] _fitted = [];
     private byte[] _bandFitted = [];
+    private byte[] _thumb = [];
+
+    /// <summary>A tenth of the scan's size (510×660): boxes about ten pixels wide, which is what a thumbnail asks of the filter.</summary>
+    private const int ThumbWidth = 510;
+    private const int ThumbHeight = 660;
 
     [GlobalSetup]
     public void Setup()
     {
         _jpeg = JpegIssueScan.Build();
+        _thumb = new byte[ThumbWidth * ThumbHeight * 4];
         _full = new byte[JpegIssueScan.Width * JpegIssueScan.Height * 4];
         _band = new byte[JpegIssueScan.Band.Width * JpegIssueScan.Band.Height * 4];
         _fitted = new byte[JpegIssueScan.FitWidth * JpegIssueScan.FitHeight * 4];
@@ -113,6 +152,26 @@ public class JpegDecodeScanBenchmarks
     [Benchmark(Description = "scan: DecodeFittedTo, middle third to 3165x1365")]
     public (int, int) RegionFitted() => JpegDecoder.DecodeFittedTo(
         _jpeg, JpegIssueScan.FitWidth, JpegIssueScan.BandFitHeight, _bandFitted, JpegScale.Full, JpegIssueScan.Band);
+
+    [Benchmark(Description = "scan: DecodeFittedTo, whole image to 510x660 (10x boxes)")]
+    public (int, int) FittedThumb() => JpegDecoder.DecodeFittedTo(_jpeg, ThumbWidth, ThumbHeight, _thumb);
+
+    /// <summary>
+    /// The strip pipeline against the engine it replaced: <c>forceWholePlanes</c> runs the pre-strip path (three
+    /// 33.7 MB planes per call, a fresh <c>new byte[]</c> each, so Gen2/LOH traffic that the pooled strips do not have).
+    /// The destination is the same, so a pair differs only in the engine.
+    /// </summary>
+    [Benchmark(Description = "scan: whole image, whole planes (pre-strip engine)")]
+    public long FullWholePlanes() => JpegDecoder.DecodeRegionToWithStats(
+        _jpeg, new JpegRegion(0, 0, JpegIssueScan.Width, JpegIssueScan.Height), _full, JpegScale.Full, forceWholePlanes: true).PeakPlaneBytes;
+
+    [Benchmark(Description = "scan: middle third, whole planes (pre-strip engine)")]
+    public long RegionWholePlanes() => JpegDecoder.DecodeRegionToWithStats(
+        _jpeg, JpegIssueScan.Band, _band, JpegScale.Full, forceWholePlanes: true).PeakPlaneBytes;
+
+    [Benchmark(Description = "scan: fitted to 3165x4096, whole planes (pre-strip engine)")]
+    public long FittedWholePlanes() => JpegDecoder.DecodeFittedToWithStats(
+        _jpeg, JpegIssueScan.FitWidth, JpegIssueScan.FitHeight, _fitted, forceWholePlanes: true).PeakPlaneBytes;
 
     /// <summary>
     /// The path <c>DecodeFittedTo</c> replaces, measured in the same run so the two are an A/B and not two numbers from
