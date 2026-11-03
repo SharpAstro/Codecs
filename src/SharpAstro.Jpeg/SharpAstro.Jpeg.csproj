@@ -36,6 +36,11 @@
     <!-- JpegIdctEquivalenceTests drives Idct8x8Scalar / Idct8x8Simd against each other
          directly; the golden digests only cover whichever path this machine dispatches to. -->
     <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+    <!-- The benchmark project's jpeg-scan-report mode reads JpegDecodeStats (strip bytes, MCU rows
+         entropy-decoded and transformed) for the region and fitted decodes. BenchmarkDotNet's
+         MemoryDiagnoser cannot see those: strips are rented from ArrayPool, so after the first
+         iteration a decode "allocates" nothing however many bytes it holds. -->
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Benchmarks" />
   </ItemGroup>
 
 </Project>
