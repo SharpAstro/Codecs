@@ -35,6 +35,7 @@ DIB header documentation rather than ported, and checked pixel by pixel against 
   decoder knows and the zeroed reserved words (two letters alone are too weak a magic), and answers `TryReadInfo`,
   `TryDecode` (RGB8 or RGBA8, ICC passed through) and `TryDecodeIntoRgba8` (opaque images get alpha 255). Refused or
   malformed files answer false rather than throw.
+
 ## 3.29
 
 **New package `SharpAstro.Tga`: Truevision TGA read and write, and the facade recognises it by its TGA 2.0 footer** (issue #54,
