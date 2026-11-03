@@ -54,4 +54,13 @@
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- PngHdr (the PQ / HLG / SDR transfer maths behind the float projection) and PngFloatFill
+         (its pixel loops, scalar reference beside the fast path) are internal; the codec test
+         project pins them directly, and the benchmark project times the two against each other
+         on an already-decoded image so that inflate is not in the number. -->
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Benchmarks" />
+  </ItemGroup>
+
 </Project>
