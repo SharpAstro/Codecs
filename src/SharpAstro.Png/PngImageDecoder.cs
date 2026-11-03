@@ -108,8 +108,7 @@ public sealed class PngImageDecoder : IImageDecoder
     /// nothing else references, so a caller can adopt it (DIR.Lib's <c>RgbaImage(width, height, pixels)</c>)
     /// rather than copy it.
     /// </summary>
-    /// <remarks>False for a stream this reader rejects (Adam7 interlace, a corrupt
-    /// file) and, like <see cref="TryDecodeIntoRgba8"/>, for cICP PQ/HLG-tagged files; those
+    /// <remarks>False for a stream this reader rejects (a corrupt file, an unknown interlace method) and, like <see cref="TryDecodeIntoRgba8"/>, for cICP PQ/HLG-tagged files; those
     /// decode through <see cref="TryDecodeRgbaFloat(ReadOnlySpan{byte}, out float[], out int, out int, out ColorEncoding)"/>.</remarks>
     public static bool TryDecodeRgba8(ReadOnlySpan<byte> data, [NotNullWhen(true)] out byte[]? rgba, out int width, out int height)
     {
@@ -168,7 +167,7 @@ public sealed class PngImageDecoder : IImageDecoder
     /// </para>
     /// <para>
     /// <b>Returns false</b> for a stream <see cref="PngReader.TryDecode"/> rejects (not a PNG, corrupt,
-    /// Adam7); for a transfer this projection cannot linearise - anything but PQ (16), HLG (18), sRGB (13),
+    /// an unknown interlace method); for a transfer this projection cannot linearise - anything but PQ (16), HLG (18), sRGB (13),
     /// the BT.709 family (1, 6, 14, 15) and Linear (8), so BT.470 gammas, SMPTE 240M, the log curves and
     /// <see cref="TransferFunction.Unspecified"/> are refused rather than guessed; for a cICP chunk whose
     /// matrix coefficients are not <see cref="MatrixCoefficients.Identity"/> (PNG carries RGB, so samples

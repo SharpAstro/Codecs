@@ -814,17 +814,25 @@ public sealed class PngTryDecodeRgbaFloatTests
     }
 
     [Fact]
-    public void Adam7_IsFalseRatherThanThrowing()
+    public void Adam7_DecodesToTheSameFloatsAsTheNonInterlacedFile()
     {
+        // The reader de-interlaces since 3.25, so the float projection no longer refuses an Adam7 file:
+        // it must read exactly what the non-interlaced encoding of the same raster gives.
         var rgb = new byte[16 * 16 * 3];
         new Random(7).NextBytes(rgb);
-        using var img = new MagickImage();
-        img.ReadPixels(rgb, new PixelReadSettings(16, 16, StorageType.Char, "RGB"));
-        img.Settings.Interlace = Interlace.Png;
-        var png = img.ToByteArray(MagickFormat.Png);
+        byte[] Encode(Interlace interlace)
+        {
+            using var img = new MagickImage();
+            img.ReadPixels(rgb, new PixelReadSettings(16, 16, StorageType.Char, "RGB"));
+            img.Settings.Interlace = interlace;
+            return img.ToByteArray(MagickFormat.Png);
+        }
 
-        PngImageDecoder.TryDecodeRgbaFloat(png, out var rgba, out _, out _, out _).ShouldBeFalse();
-        rgba.ShouldBeNull();
+        PngImageDecoder.TryDecodeRgbaFloat(Encode(Interlace.NoInterlace), out var plain, out var pw, out var ph, out _).ShouldBeTrue();
+        PngImageDecoder.TryDecodeRgbaFloat(Encode(Interlace.Png), out var adam7, out var aw, out var ah, out _).ShouldBeTrue();
+
+        (aw, ah).ShouldBe((pw, ph));
+        adam7.ShouldBe(plain);
     }
 
     // ---- a minimal PNG builder (the writer has no grey+alpha, indexed or sub-byte output) ---------

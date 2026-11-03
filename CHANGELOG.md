@@ -14,7 +14,7 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
-## 3.25
+## 3.26
 
 **`SharpAstro.Png` decodes cICP PQ and HLG files to linear-light floats.** `PngImageDecoder.TryDecodeRgbaFloat` is the HDR
 projection the 8-bit paths refuse to make: it starts from `PngReader.TryDecode` (so PQ and HLG are accepted, not refused)
@@ -40,7 +40,7 @@ and H.273.
 - **Every colour type and depth the reader reads.** Grey (replicated into R = G = B), grey+alpha, RGB, RGBA, indexed (the
   palette and its `tRNS` alpha linearised once as a table), 8 and 16 bit, and the 1/2/4-bit depths through the reader's
   unpacking to 8 bits.
-- **Refused (false, never guessed).** Whatever `PngReader.TryDecode` refuses (not a PNG, corrupt, Adam7); a transfer outside
+- **Refused (false, never guessed).** Whatever `PngReader.TryDecode` refuses (not a PNG, corrupt, an unknown interlace method; an Adam7 file decodes since 3.25); a transfer outside
   the list above (BT.470 gammas, SMPTE 240M, the log curves, xvYCC, BT.1361, ST 428, unspecified); a cICP whose matrix
   coefficients are not Identity (PNG carries RGB); a narrow-range grey image under 8 bits (H.273's range equations start at
   8); an indexed pixel past the palette; and a float raster too big for an array.
@@ -54,6 +54,23 @@ and H.273.
   their nominal levels (PQ 58 % grey is about 203 cd/m2, HLG 75 % grey 203, HLG 38 % grey 26, PQ 100 % 10 000 cd/m2, HLG
   100 % 1000 cd/m2), and each SDR fixture against its own `TryDecodeRgba8` output linearised, within 8-bit quantisation.
   A 1080p 16-bit RGB decode takes 70-150 ms.
+
+## 3.25
+
+**`SharpAstro.Png` decodes Adam7 interlaced images.** `PngReader.Decode` (and so `TryDecode`, `PngImageDecoder.TryDecodeRgba8`
+and `TryDecodeIntoRgba8`) used to refuse `InterlaceMethod = 1` with `NotSupportedException`, and the `Try` entry points said
+false. An interlaced file now decodes into exactly the row-major `PngImage.Pixels` its non-interlaced encoding gives, for every
+colour type and depth the reader covers (8/16-bit types 0/2/4/6, 1/2/4/8-bit grey and indexed).
+
+- The seven passes are read in order from the one inflated stream. Each pass is a small image of its own: its rows are filtered
+  against the row above them **in the same pass** (all zero for a pass's first row), padded to a whole byte, and their pixels
+  scattered straight to where they belong in the result.
+- A pass with no pixels (width under 5 has no pass 2, height under 5 no pass 3, and so on down to a 1x1 image, which has only
+  pass 1) is not in the stream at all, not even a filter byte, and none is expected.
+- The exact-length check stays: a stream a row short or a byte long is `InvalidDataException`, as for a non-interlaced file.
+- An `InterlaceMethod` other than 0 or 1 is now `InvalidDataException` (a corrupt header), no longer `NotSupportedException`.
+- The non-interlaced path is untouched. Tested against Magick.NET's `Interlace.Png` and `Interlace.NoInterlace` encodings of the
+  same random raster at every colour type and depth, at sizes that leave passes empty (`PngAdam7Tests`).
 
 ## 3.23
 
