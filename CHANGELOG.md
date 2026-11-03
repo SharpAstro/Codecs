@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Tga`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Radiance` / `.Pnm` / `.Tga` / `.Bmp`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -14,8 +14,78 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.30
+
+**New package `SharpAstro.Bmp`: BMP read and write, registered with the facade** (issue #53, stb_image parity). BMP was one
+of the stb-only formats the family lost when `SharpAstro.StbImage` was removed; it is back, written from the Microsoft
+DIB header documentation rather than ported, and checked pixel by pixel against ImageMagick.
+
+- **`BmpDecoder`** reads 12/16/40/52/56/64/108/124-byte headers; 1/4/8-bit indexed, 16-bit (5-5-5 or any `BI_BITFIELDS`
+  masks), 24 and 32-bit pixels; `BI_RGB`, `BI_RLE8`, `BI_RLE4`, `BI_BITFIELDS` and `BI_ALPHABITFIELDS`; bottom-up and
+  top-down rows; a V5 embedded ICC profile (reported, never applied). Output is 8-bit RGB, or RGBA when the file has
+  alpha. Offsets, palette size and pixel data are checked against the file, a header declaring more than 2^28 pixels is
+  refused before allocating, and `BI_JPEG`, `BI_PNG`, `BI_CMYK*`, OS/2 Huffman 1D and RLE24 throw `NotSupportedException`
+  by name.
+- **Mask channels** of 8 bits or fewer are expanded by bit replication, as stb_image does (a 5-bit 24 reads as 198, a full
+  channel of any width as 255); wider ones round to nearest from their top 16 bits, which is ImageMagick's arithmetic. Every
+  8-bit and wider channel equals ImageMagick exactly. Below 8 bits ImageMagick departs from replication on a few values (5-bit
+  3 and 7, eight values of a 6-bit green) and only shifts other narrow channels (4-bit 15 is 240, 1-bit alpha 1 is 128); the
+  tests pin each of those value by value, over every 16-bit pixel word, instead of allowing a tolerance.
+- **`BmpEncoder`** (`EncodeRgb24`, `EncodeRgba32`, each with an optional input stride) writes 24-bit BGR with a 40-byte
+  `BITMAPINFOHEADER`, and 32-bit BGRA with a 108-byte V4 header whose `BI_BITFIELDS` masks include `0xFF000000` for alpha,
+  so alpha survives in readers that honour the masks. Rows are bottom-up and padded to four bytes. Width, height, stride
+  and input length are validated before anything is allocated. ImageMagick reads the output back sample for sample, alpha
+  included, at odd widths too, and `BmpDecoder` round-trips it exactly.
+- **Facade:** `BmpImageDecoder : IImageDecoder` is registered in `ImageCodecs`. It sniffs `BM` plus a DIB header size this
+  decoder knows and the zeroed reserved words (two letters alone are too weak a magic), and answers `TryReadInfo`,
+  `TryDecode` (RGB8 or RGBA8, ICC passed through) and `TryDecodeIntoRgba8` (opaque images get alpha 255). Refused or
+  malformed files answer false rather than throw.
+
 ## 3.29
 
+**`SharpAstro.Radiance`: Radiance RGBE (`.hdr` / `.pic`) read and write to scene-linear float, registered with the facade.**
+New package, the answer to Codecs #56 (stb_image HDR parity; `SharpAstro.StbImage` was removed in an earlier release and took
+its HDR path with it).
+
+- **`RadianceFile.Read` / `Write` / `ReadInfo`.** Magic `#?RADIANCE` or `#?RGBE`; `FORMAT=32-bit_rle_rgbe` and
+  `32-bit_rle_xyze`; `EXPOSURE=` lines multiplied and *reported* (`RadianceImage.Exposure`), never applied; new-style RLE, old
+  flat and old RLE scanlines on read; new-style RLE on write (flat below width 8 and above 32767). `ReadInfo` parses the header
+  only and allocates no pixels. Anything else is refused by name with `InvalidDataException`: another `FORMAT`, an orientation
+  other than `-Y h +X w`, a run or literal overflowing its scanline, a width that disagrees with the scanline's own, truncation,
+  a repeat with no previous pixel. The pixel ceiling (2^28 by default, a parameter) is charged from the header before anything
+  is allocated, because an RLE scanline can describe far more pixels than it has bytes.
+- **Value convention, measured not assumed.** `mantissa * 2^(e - 136)`, no `+ 0.5` (Radiance's own `colr_color` adds one;
+  ImageMagick and stb_image do not), exponent byte 0 is black. Decoding is exact in `float`, so it is lossless with respect to
+  the RGBE bytes. Validated **value-exact in both directions against Magick.NET** with no skips: ImageMagick-written files
+  decode to the same floats here, and files written here decode to the same floats in ImageMagick.
+- **`RadianceImageDecoder` in the facade.** `ImageCodecs.TryDecode` gives `Float32` x 3 with `Transfer = Linear` and
+  `Float = SceneReferred`. An XYZE file is tagged `ColorPrimaries.SMPTE428` (CIE XYZ) and is not converted, so its samples are
+  never mistaken for RGB. `TryDecodeIntoRgba8` is always false (projecting scene-referred float to 8 bits is the consumer's
+  tone/stretch policy, as for EXR). `TryReadInfo` reads the header only. The adapter refuses a picture over 2^26 pixels, tighter
+  than `RadianceFile.Read`, because the facade's raster is a byte array with a copy of the floats; call `RadianceFile.Read`
+  directly for larger ones.
+- **Mutation-checked**, one deliberate bug at a time, all caught: exponent bias `e - 135`, no new-RLE run overflow check, old-RLE
+  shift `+= 4`, no shift reset after a plain pixel, old-RLE shift wrapping mod 32, writer rounding instead of truncating, a
+  zero-exponent pixel not advancing the output index.
+
+
+**New package `SharpAstro.Pnm`: Netpbm (PBM / PGM / PPM / PAM) read and write.** Additive. Written from the Netpbm format
+documents and validated against Magick.NET in both directions (stb_image parity: PNM and PAM were the common formats the
+family could not read).
+
+- **`PnmReader.Read` / `ReadHeader`** reads every magic `P1`-`P7`, plain and raw, `maxval` 1..65535 (two bytes, big-endian,
+  above 255), `#` comments wherever whitespace is allowed, and PAM `BLACKANDWHITE` / `GRAYSCALE` / `RGB` and their `_ALPHA`
+  forms, as the file's native samples. A sample above `maxval`, a truncated raster or an out-of-range header throws
+  `InvalidDataException`; a declared size over 2^28 samples is refused before anything is allocated.
+- **The facade reads it** (`ImageCodecs.TryDecode`, sniffed by `P1`-`P7` plus whitespace), scaling samples to fill UInt8 or
+  UInt16 with ImageMagick's rounding. Where ImageMagick departs from the Netpbm documents (raw `maxval` 128..254 and
+  32768..65534 read unscaled, a 1-bit grey+alpha PAM's alpha inverted) the documents win, and the tests say so.
+- **`PnmWriter.Encode` / `Write`** (to `byte[]` or a `Stream`, from `byte` or `ushort` samples) writes raw `P5` / `P6` and `P7`
+  PAM for grey, grey + alpha, RGB and RGB + alpha, at any `maxval` 1..65535, with Netpbm's own header layout. Alpha images are
+  always PAM. Samples are native values, never scaled; a short buffer, an unwritable tuple type, a `maxval` out of range or a
+  sample above it throws `ArgumentException`.
+- **Validated by two readers**: Magick.NET reads our `maxval` 255 and 65535 output to the source pixels exactly for every
+  writer variant, and `PnmReader` round-trips them (and odd maxvals such as 1, 15, 1023, 32768) exactly.
 **New package `SharpAstro.Tga`: Truevision TGA read and write, and the facade recognises it by its TGA 2.0 footer** (issue #54,
 the first step of stb_image parity: the stb port removed earlier took TGA with it).
 
