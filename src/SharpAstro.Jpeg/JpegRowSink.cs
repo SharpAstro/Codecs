@@ -31,7 +31,13 @@ internal interface IJpegRowSink
 /// <param name="WholePlanes">True when the final pass kept whole-image planes (baseline with several scans,
 /// or a restart), false when it streamed through strips.</param>
 /// <param name="Restarted">True when a streaming attempt had to be abandoned and the stream decoded again.</param>
-internal readonly record struct JpegDecodeStats(long PeakPlaneBytes, bool WholePlanes, bool Restarted);
+/// <param name="EntropyUnits">Units (MCU rows of an interleaved scan, block rows of a single-component one) the
+/// baseline streaming scan entropy-decoded, a part-decoded unit counting once. The engines that decode every
+/// scan whole (progressive, the whole-plane fallback) report the frame's unit count.</param>
+/// <param name="TransformedUnits">Units that went through IDCT and row assembly. A region decode of a stream
+/// without restart markers entropy-decodes the units above the region and skips these for them.</param>
+internal readonly record struct JpegDecodeStats(
+    long PeakPlaneBytes, bool WholePlanes, bool Restarted, int EntropyUnits = 0, int TransformedUnits = 0);
 
 /// <summary>Writes rows into a caller-supplied RGBA buffer, tightly packed.</summary>
 internal ref struct JpegDestinationSink : IJpegRowSink
@@ -65,6 +71,46 @@ internal ref struct JpegDestinationSink : IJpegRowSink
     }
 
     public Span<byte> RowBuffer(int row) => _destination.Slice(row * _stride, _stride);
+
+    public void RowDone(int row)
+    {
+    }
+}
+
+/// <summary>
+/// Writes the rows of one region into a caller-supplied RGBA buffer, tightly packed at
+/// <c>region.Width * 4</c> bytes per row. The engine assembles only the region's columns, so
+/// <see cref="RowBuffer"/> hands out exactly that width; the rows it asks for are the image's own row numbers.
+/// </summary>
+internal ref struct JpegRegionSink : IJpegRowSink
+{
+    private readonly Span<byte> _destination;
+    private readonly JpegRegion _region;
+
+    public JpegRegionSink(Span<byte> destination, JpegRegion region)
+    {
+        _destination = destination;
+        _region = region;
+    }
+
+    public void Begin(int width, int height)
+    {
+        // The engine has already checked the region against the image; this is the destination's check, before any
+        // row is decoded. The region is inside a frame of at most 2^24 pixels a side, so the product fits a long.
+        var required = (long)_region.Width * _region.Height * 4;
+        if (_destination.Length < required)
+        {
+            throw new ArgumentException(
+                $"Destination needs {required} bytes for the {_region.Width}×{_region.Height} RGBA region, got {_destination.Length}.",
+                "rgbaDestination");
+        }
+    }
+
+    public Span<byte> RowBuffer(int row)
+    {
+        var stride = _region.Width * 4;
+        return _destination.Slice((row - _region.Y) * stride, stride);
+    }
 
     public void RowDone(int row)
     {

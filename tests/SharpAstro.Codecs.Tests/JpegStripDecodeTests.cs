@@ -26,7 +26,7 @@ public sealed class JpegStripDecodeTests
 
     // ------------------------------------------------------------ inputs
 
-    private static byte[] Pattern(int w, int h)
+    internal static byte[] Pattern(int w, int h)
     {
         // Gradients, a checker and LCG noise: dense AC, sharp chroma edges, deterministic.
         var rgb = new byte[w * h * 3];
@@ -135,7 +135,7 @@ public sealed class JpegStripDecodeTests
     }
 
     /// <summary>Offset of the first SOS marker, found by walking the header segments.</summary>
-    private static int FirstSos(byte[] j)
+    internal static int FirstSos(byte[] j)
     {
         var pos = 2;
         while (pos + 4 <= j.Length)
@@ -156,9 +156,9 @@ public sealed class JpegStripDecodeTests
         return j.Length - 2;
     }
 
-    private static byte[] Concat(params byte[][] parts) => parts.SelectMany(p => p).ToArray();
+    internal static byte[] Concat(params byte[][] parts) => parts.SelectMany(p => p).ToArray();
 
-    private static byte[] Slice(byte[] j, int from, int to) => j[from..to];
+    internal static byte[] Slice(byte[] j, int from, int to) => j[from..to];
 
     /// <summary>The header with every APP0 (JFIF) segment removed, so colour is decided by the Adobe marker alone.</summary>
     private static byte[] HeaderWithoutJfif(byte[] j)
@@ -458,7 +458,7 @@ public sealed class JpegStripDecodeTests
     }
 
     /// <summary>Offsets of every RSTn marker in a stream built by <see cref="BuildDcOnlyJpeg"/>, whose entropy data stuffs every 0xFF.</summary>
-    private static List<int> RstOffsets(byte[] j)
+    internal static List<int> RstOffsets(byte[] j)
     {
         var offsets = new List<int>();
         for (var i = FirstSos(j); i + 1 < j.Length; i++)
@@ -735,7 +735,7 @@ public sealed class JpegStripDecodeTests
     /// both signs and differ per component and block, so a neighbouring block, row or component read in place of
     /// the right one changes pixels. Quantisation is 4 (every block is flat at <c>128 + level/2</c>).
     /// </summary>
-    private static byte[] BuildDcOnlyJpeg(int width, int height, (int H, int V)[] comps, bool separateScans = false, int restartInterval = 0)
+    internal static byte[] BuildDcOnlyJpeg(int width, int height, (int H, int V)[] comps, bool separateScans = false, int restartInterval = 0)
     {
         var o = new List<byte>();
 

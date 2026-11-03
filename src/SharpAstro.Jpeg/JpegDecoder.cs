@@ -62,6 +62,59 @@ public static class JpegDecoder
     }
 
     /// <summary>
+    /// Decodes one rectangle of the image into a caller-supplied RGBA buffer, tightly packed at
+    /// <c>region.Width * 4</c> bytes per row, and returns the region's size. For a viewer that shows part of a large
+    /// scan this is the entry point that does not pay for the rest of it.
+    ///
+    /// <para><b>Exactness.</b> The bytes are the same crop of <see cref="Decode"/>'s output at the same
+    /// <paramref name="scale"/>, byte for byte, for every region and every scale, including regions whose edges fall
+    /// inside an MCU or inside the neighbourhood a chroma upsampler blends (the decoder reads the extra rows and
+    /// columns it needs and crops them away). <paramref name="region"/> is in output pixels at <paramref name="scale"/>:
+    /// at <see cref="JpegScale.Half"/> it indexes the half-size image, whose size
+    /// <see cref="JpegInfo.ScaledSize"/> gives.</para>
+    ///
+    /// <para><b>Cost</b> scales with the region, as far as the stream's structure allows. Sample memory is the
+    /// region's width and the MCU row, never the image's.</para>
+    /// <list type="bullet">
+    /// <item><b>Baseline with restart markers (DRI):</b> entropy decoding starts at the restart interval holding the
+    /// region's first MCU row and stops after its last, found by counting the RSTn markers (which must be in sequence,
+    /// else the decode starts from the top, as without them). IDCT and colour conversion cover only the region.</item>
+    /// <item><b>Baseline without them:</b> entropy decoding runs from the top of the scan through the region's last MCU
+    /// row, then stops; rows above the region are decoded but not transformed or assembled.</item>
+    /// <item><b>Progressive:</b> every scan is entropy-decoded (each one refines the whole image), but the IDCT and
+    /// assembly cover only the region. The coefficients are held whole, as for <see cref="Decode"/>.</item>
+    /// <item><b>Baseline with a scan per component:</b> decoded whole, then cropped.</item>
+    /// </list>
+    /// <para>Entropy data outside what the region needs is not read, so damage there is not reported, where
+    /// <see cref="Decode"/> would throw or salvage it. Data after the last needed MCU row is not read at all, which includes
+    /// any marker that follows the scan.</para>
+    /// </summary>
+    /// <param name="data">The JPEG stream.</param>
+    /// <param name="region">The pixels wanted, in output pixels at <paramref name="scale"/>.</param>
+    /// <param name="rgbaDestination">Receives <c>region.Width * region.Height * 4</c> bytes; nothing past that is written.</param>
+    /// <param name="scale">The decode scale; <paramref name="region"/> is in its coordinates.</param>
+    /// <returns>The region's size: <c>(region.Width, region.Height)</c>.</returns>
+    /// <exception cref="InvalidDataException">The stream is not a decodable JPEG.</exception>
+    /// <exception cref="ArgumentException">The region is empty, or not entirely inside the image at this scale, or the
+    /// destination is too small. Raised from the frame header, before any entropy data is read.</exception>
+    public static (int Width, int Height) DecodeRegionTo(ReadOnlySpan<byte> data, JpegRegion region, Span<byte> rgbaDestination, JpegScale scale = JpegScale.Full)
+    {
+        var sink = new JpegRegionSink(rgbaDestination, region);
+        JpegCore.Run(data, ValidateScale(scale), ref sink, region: region);
+        return (region.Width, region.Height);
+    }
+
+    /// <summary>
+    /// <see cref="DecodeRegionTo"/> that also reports what the decode held and which engine ran it, as
+    /// <see cref="DecodeWithStats"/> does for a full decode. Tests read the region's cost through this.
+    /// </summary>
+    internal static JpegDecodeStats DecodeRegionToWithStats(ReadOnlySpan<byte> data, JpegRegion region, Span<byte> rgbaDestination, JpegScale scale = JpegScale.Full, bool forceWholePlanes = false)
+    {
+        var sink = new JpegRegionSink(rgbaDestination, region);
+        return JpegCore.Run(data, ValidateScale(scale), ref sink, forceWholePlanes, region);
+    }
+
+    /// <summary>
     /// <see cref="Decode"/> that also reports what the decode held and which engine ran it. Tests read the
     /// strip bound through this. <paramref name="forceWholePlanes"/> runs the whole-plane engine (stb's
     /// pipeline before strips) as the reference the strip pipeline must match byte for byte.
