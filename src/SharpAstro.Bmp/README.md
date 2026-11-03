@@ -38,12 +38,15 @@ The facade (`SharpAstro.Codecs`) registers `BmpImageDecoder`, so `ImageCodecs.Tr
 | Layout | bottom-up and top-down (negative height), rows padded to four bytes |
 | Colour | a V5 embedded ICC profile is reported on `BmpInfo.IccProfile` and never applied |
 
-Colour masks of any width are scaled to 8 bits linearly, rounding to nearest (`(v * 255 + max / 2) / max`), so a
-full channel is always 255 whatever its width. 8-bit channels and everything indexed, 24-bit, 32-bit 8-8-8-8 and
-RLE decode to exactly ImageMagick's pixels. 16-bit pixels agree with ImageMagick to within one level (5- and
-6-bit channels: ImageMagick lands one step off the rounded value on some inputs); narrower channels and odd
-mask layouts differ more, because ImageMagick shifts them instead of scaling (a 4-bit 15 reads as 240, a 1-bit
-alpha of 1 as 128). Those are ImageMagick's quirks and are not copied.
+A colour mask of 8 bits or fewer is expanded to 8 bits by bit replication, as stb_image does: the value goes in the
+top bits and its own top bits repeat below it, so a 5-bit 24 (`11000`) reads as 198 (`11000110`) and a full channel
+of any width is 255. A mask wider than 8 bits is rounded to nearest from its top 16 bits (`(x + 128) / 257`, `x` the
+value left-aligned in 16 bits), which is ImageMagick's arithmetic there. Everything indexed, 24-bit, every 8-bit
+and every wider channel, and RLE decode to exactly ImageMagick's pixels. Below 8 bits ImageMagick has its own rules,
+and they are not copied: it replicates 5-bit channels except 3 and 7 (25 and 58, not 24 and 57), replicates a 6-bit
+green channel except on eight values, and only shifts every other narrow channel (a 4-bit 15 reads as 240, a 1-bit
+alpha of 1 as 128, a 6-bit red as `v << 2`), and in 32-bit pixels it replicates nothing. The tests pin each of these
+value by value; on a 5-5-5 or 5-6-5 file our pixels and ImageMagick's differ by one level on exactly those values.
 
 The output has an alpha channel when the file has one: a non-zero alpha mask under `BI_BITFIELDS`, or a 32-bit
 `BI_RGB` file with a 40-byte-class header, whose fourth byte is alpha. If that byte is zero in every pixel the

@@ -76,43 +76,103 @@ public sealed class BmpDecoderTests
     }
 
     /// <summary>
-    /// Decodes with us and with Magick and demands the same size, channels and every sample, within
-    /// <paramref name="tolerance"/> (0 = exact, which is the rule; see <see cref="ShouldEqualReferenceAndMagick"/>
-    /// for the one family of files where ImageMagick's own expansion is not the linear one).
+    /// Decodes with us and with Magick and demands the same size, channels and every sample, exactly (see
+    /// <see cref="ShouldEqualReferenceAndMagick"/> for masked channels narrower than 8 bits, where ImageMagick's
+    /// own expansion has quirks that are pinned rather than copied).
     /// </summary>
-    private static BmpImage ShouldEqualMagick(byte[] file, string what, int tolerance = 0)
+    private static BmpImage ShouldEqualMagick(byte[] file, string what)
     {
         var ours = BmpDecoder.Decode(file);
         var (w, h, ch, px) = MagickRead(file);
         ours.Width.ShouldBe(w, what);
         ours.Height.ShouldBe(h, what);
         ours.Channels.ShouldBe(ch, what);
-        ShouldMatch(px, ch, ours, what, tolerance);
+        ShouldMatch(px, ch, ours, what);
         BmpDecoder.ReadInfo(file).Width.ShouldBe(w, what);
         return ours;
     }
 
     /// <summary>
-    /// 16- and 32-bit masked pixels. Our scaling is the linear one, <c>(v * 255 + max / 2) / max</c>: that is
-    /// checked EXACTLY against a plain re-implementation reading the raw words out of the file, and against
-    /// ImageMagick within <paramref name="magickTolerance"/>. ImageMagick's own expansion is not linear: for
-    /// 5- and 6-bit channels it lands one step off the rounded value on some inputs (a 5-bit 24 reads as 198,
-    /// not 197), for 4-bit and narrower channels it shifts (4-bit 15 reads as 240) and a 1-bit alpha of 1 reads
-    /// as 128. Those are ImageMagick's quirks, not the format's, so they are bounded here rather than copied.
+    /// 16- and 32-bit masked pixels, all EXACT. Ours must equal <see cref="OurExpansion"/> (stb_image's bit
+    /// replication up to 8 bits, ImageMagick's rounding above) applied to the raw words read out of the file,
+    /// and ImageMagick's read must equal <see cref="MagickExpansion"/> applied to the same words. Where the two
+    /// expansions agree, which is every 8-bit and every wider channel and all but a pinned handful of 5- and
+    /// 6-bit values, that makes ours and ImageMagick's pixels identical; where they do not, the difference is
+    /// spelled out value by value in <see cref="MagickExpansion"/> rather than allowed by a tolerance.
     /// </summary>
-    private static BmpImage ShouldEqualReferenceAndMagick(byte[] file, uint[] masks, string what, int magickTolerance)
+    private static BmpImage ShouldEqualReferenceAndMagick(byte[] file, uint[] masks, string what)
     {
         var ours = BmpDecoder.Decode(file);
-        ShouldMatch(ReferenceMasked(file, masks), ours.Channels, ours, what + " (reference)");
+        ShouldMatch(ReferenceMasked(file, masks, OurExpansion), ours.Channels, ours, what + " (reference)");
         var (w, h, ch, px) = MagickRead(file);
         ours.Width.ShouldBe(w, what);
         ours.Height.ShouldBe(h, what);
         ours.Channels.ShouldBe(ch, what);
-        ShouldMatch(px, ch, ours, what + " (ImageMagick)", magickTolerance);
+        var magickModel = ReferenceMasked(file, masks, MagickExpansion);
+        px.Length.ShouldBe(magickModel.Length, what);
+        for (int i = 0; i < px.Length; i++)
+        {
+            if (px[i] != magickModel[i])
+            {
+                int pixel = i / ch;
+                Assert.Fail($"{what} (ImageMagick's own read): pixel ({pixel % w}, {pixel / w}) channel {i % ch}: " +
+                            $"MagickExpansion says {magickModel[i]}, ImageMagick read {px[i]}");
+            }
+        }
         return ours;
     }
 
-    private static byte[] ReferenceMasked(byte[] file, uint[] masks)
+    /// <summary>
+    /// What we do with an <paramref name="bits"/>-bit channel value, written independently of the decoder:
+    /// bit replication up to 8 bits (stb_image's <c>stbi__shiftsigned</c>), so a 5-bit 24 is 198 and a full
+    /// channel of any width is 255; above 8 bits, round to nearest from the value left-aligned in 16 bits.
+    /// </summary>
+    private static int OurExpansion(uint v, int bits, int bpp, int channel)
+    {
+        if (bits <= 8)
+        {
+            // Spell the replication out bit by bit: output bit 7-i is value bit (bits-1 - i % bits).
+            int r = 0;
+            for (int i = 0; i < 8; i++)
+                r |= (int)((v >> (bits - 1 - i % bits)) & 1) << (7 - i);
+            return r;
+        }
+        uint x = bits <= 16 ? v << (16 - bits) : v >> (bits - 16);
+        return (int)Math.Round(x / 257.0, MidpointRounding.AwayFromZero);
+    }
+
+    /// <summary>
+    /// ImageMagick's own expansion, measured value by value (Magick.NET Q16-HDRI). It agrees with
+    /// <see cref="OurExpansion"/> on every 8-bit channel and every channel wider than 8 bits. Below 8 bits:
+    /// <list type="bullet">
+    /// <item>16-bit pixels, 5-bit channels: bit replication except 3 → 25 and 7 → 58 (replication gives 24, 57).</item>
+    /// <item>16-bit pixels, a 6-bit GREEN channel: replication except the eight values below. A 6-bit red or blue
+    /// is not replicated, only shifted.</item>
+    /// <item>16-bit pixels, any other width: shifted, not replicated (a 4-bit 15 is 240, a 1-bit alpha of 1 is 128).</item>
+    /// <item>32-bit pixels: no replication at all; the value left-aligned in 16 bits and rounded (a 2-bit 3 is 191).</item>
+    /// </list>
+    /// These are ImageMagick's and are not copied; each is pinned here so the oracle cannot drift unseen.
+    /// </summary>
+    private static int MagickExpansion(uint v, int bits, int bpp, int channel)
+    {
+        if (bits == 8) return (int)v;
+        if (bpp == 16 && bits < 8)
+        {
+            if (bits == 5)
+                return v switch { 3 => 25, 7 => 58, _ => OurExpansion(v, 5, bpp, channel) };
+            if (bits == 6 && channel == 1)
+                return v switch
+                {
+                    9 => 37, 11 => 45, 12 => 49, 13 => 53, 14 => 57, 15 => 61, 25 => 102, 27 => 110,
+                    _ => OurExpansion(v, 6, bpp, channel),
+                };
+            return (int)(v << (8 - bits));
+        }
+        uint x = bits <= 16 ? v << (16 - bits) : v >> (bits - 16);
+        return (int)Math.Round(x / 257.0, MidpointRounding.AwayFromZero);
+    }
+
+    private static byte[] ReferenceMasked(byte[] file, uint[] masks, Func<uint, int, int, int, int> expand)
     {
         int offBits = (int)BitConverter.ToUInt32(file, 10);
         int w = BitConverter.ToInt32(file, 18), hRaw = BitConverter.ToInt32(file, 22);
@@ -133,8 +193,9 @@ public sealed class BmpDecoderTests
                     uint m = masks[c];
                     int shift = 0;
                     while (((m >> shift) & 1) == 0) shift++;
-                    ulong max = m >> shift;
-                    result[(y * w + x) * ch + c] = (byte)((((px & m) >> shift) * 255 + max / 2) / max);
+                    uint max = m >> shift;
+                    int bits = 32 - System.Numerics.BitOperations.LeadingZeroCount(max);
+                    result[(y * w + x) * ch + c] = (byte)expand((uint)((px & m) >> shift), bits, bpp, c);
                 }
             }
         }
@@ -153,8 +214,6 @@ public sealed class BmpDecoderTests
         return [BitConverter.ToUInt32(file, at), BitConverter.ToUInt32(file, at + 4), BitConverter.ToUInt32(file, at + 8), alpha];
     }
 
-    private static int NarrowestMaskBits(uint[] masks) =>
-        masks.Where(m => m != 0).Min(m => System.Numerics.BitOperations.PopCount(m));
 
     // ------------------------------------------------------------ written by ImageMagick
 
@@ -334,7 +393,7 @@ public sealed class BmpDecoderTests
         info.BitsPerPixel.ShouldBe(16);
         info.Compression.ShouldBe(BmpCompression.Bitfields);
         info.Channels.ShouldBe(3);
-        ShouldEqualReferenceAndMagick(file, ReadMasks(file), $"V5 {subtype}", magickTolerance: 1);
+        ShouldEqualReferenceAndMagick(file, ReadMasks(file), $"V5 {subtype}");
     }
 
     [Theory]
@@ -354,7 +413,7 @@ public sealed class BmpDecoderTests
         info.BitsPerPixel.ShouldBe(16);
         info.Channels.ShouldBe(4);
         var masks = ReadMasks(file);
-        ShouldEqualReferenceAndMagick(file, masks, $"V5 {subtype}", (256 >> NarrowestMaskBits(masks)) + 1);
+        ShouldEqualReferenceAndMagick(file, masks, $"V5 {subtype}");
     }
 
     [Theory]
@@ -504,7 +563,7 @@ public sealed class BmpDecoderTests
                 (x, y) => (uint)(((x * 7 + y) & 31) << 10 | ((x * 3 + y * 5) & 31) << 5 | ((x + y * 11) & 31) | ((x + y) % 4 == 0 ? 0x8000 : 0))),
         }.Build();
         BmpDecoder.ReadInfo(file).Channels.ShouldBe(3);
-        ShouldEqualReferenceAndMagick(file, [0x7C00, 0x03E0, 0x001F, 0], $"16-bit BI_RGB, header {headerSize}", magickTolerance: 1);
+        ShouldEqualReferenceAndMagick(file, [0x7C00, 0x03E0, 0x001F, 0], $"16-bit BI_RGB, header {headerSize}");
     }
 
     public static TheoryData<string, int, uint[], int> MaskLayouts => new()
@@ -548,7 +607,81 @@ public sealed class BmpDecoderTests
             }.Build();
             var info = BmpDecoder.ReadInfo(file);
             info.Channels.ShouldBe(masks[3] != 0 ? 4 : 3, name);
-            ShouldEqualReferenceAndMagick(file, masks, $"{name}, width {w}", (256 >> NarrowestMaskBits(masks)) + 1);
+            ShouldEqualReferenceAndMagick(file, masks, $"{name}, width {w}");
+        }
+    }
+
+    /// <summary>A 256x256 16-bit BI_BITFIELDS file holding every one of the 65536 pixel words once.</summary>
+    private static byte[] EveryWord16(uint[] masks) => new BmpDib
+    {
+        HeaderSize = 124, Width = 256, Height = 256, BitsPerPixel = 16, Compression = 3, Masks = masks,
+        Pixels = BmpDib.PackRows(256, 256, 16, false, (x, y) => (uint)(y * 256 + x)),
+    }.Build();
+
+    [Theory]
+    [InlineData("555", new uint[] { 0x7C00, 0x03E0, 0x001F, 0 })]
+    [InlineData("565", new uint[] { 0xF800, 0x07E0, 0x001F, 0 })]
+    [InlineData("BGR 565", new uint[] { 0x001F, 0x07E0, 0xF800, 0 })]
+    [InlineData("1555", new uint[] { 0x7C00, 0x03E0, 0x001F, 0x8000 })]
+    [InlineData("4444", new uint[] { 0x0F00, 0x00F0, 0x000F, 0xF000 })]
+    public void Sixteen_EveryPixelWord_IsExact(string name, uint[] masks) =>
+        ShouldEqualReferenceAndMagick(EveryWord16(masks), masks, $"every word, {name}");
+
+    /// <summary>
+    /// The 5-6-5 and 5-5-5 cases stated the other way round from <see cref="MagickExpansion"/>: over every 5- and
+    /// 6-bit value our pixels are ImageMagick's, tolerance 0, except on exactly these values, where ImageMagick
+    /// departs from bit replication (and so from stb_image) by one level.
+    /// </summary>
+    [Theory]
+    [InlineData("555", new uint[] { 0x7C00, 0x03E0, 0x001F, 0 })]
+    [InlineData("565", new uint[] { 0xF800, 0x07E0, 0x001F, 0 })]
+    public void Sixteen_555And565_EqualImageMagick_ButForAPinnedHandful(string name, uint[] masks)
+    {
+        uint[] fiveBitExceptions = [3, 7];
+        uint[] greenSixBitExceptions = [9, 11, 12, 13, 14, 15, 25, 27];
+        var file = EveryWord16(masks);
+        var ours = BmpDecoder.Decode(file);
+        var (_, _, ch, px) = MagickRead(file);
+        ch.ShouldBe(3);
+        int differing = 0;
+        for (int i = 0; i < px.Length; i++)
+        {
+            int c = i % 3;
+            int pixel = i / 3;
+            // Bottom-up file: image row y holds the words y * 256 .. y * 256 + 255 as PackRows laid them out.
+            uint word = (uint)pixel;
+            uint m = masks[c];
+            uint v = (word & m) >> System.Numerics.BitOperations.TrailingZeroCount(m);
+            bool excepted = System.Numerics.BitOperations.PopCount(m) == 6
+                ? greenSixBitExceptions.Contains(v)
+                : fiveBitExceptions.Contains(v);
+            if (excepted)
+            {
+                Math.Abs(ours.Pixels[i] - px[i]).ShouldBe(1, $"{name}: {v} in channel {c} is a pinned exception");
+                differing++;
+            }
+            else if (ours.Pixels[i] != px[i])
+            {
+                Assert.Fail($"{name}: word 0x{word:X4} channel {c} (value {v}): ImageMagick {px[i]}, decoded {ours.Pixels[i]}");
+            }
+        }
+        differing.ShouldBeGreaterThan(0);
+    }
+
+    [Fact]
+    public void FullChannel_Is255_AtEveryMaskWidth()
+    {
+        for (int bits = 1; bits <= 24; bits++)
+        {
+            uint red = ((1u << bits) - 1) << 8;
+            var file = new BmpDib
+            {
+                Width = 2, Height = 1, BitsPerPixel = 32, Compression = 3, Masks = [red, 0, 0xFF, 0],
+                Pixels = BmpDib.PackRows(2, 1, 32, false, (x, _) => x == 0 ? red : 0),
+            }.Build();
+            var px = BmpDecoder.Decode(file).Pixels;
+            px[0].ShouldBe((byte)255, $"{bits}-bit full red");
+            px[3].ShouldBe((byte)0, $"{bits}-bit zero red");
         }
     }
 

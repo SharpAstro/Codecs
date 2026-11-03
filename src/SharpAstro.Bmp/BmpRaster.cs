@@ -124,12 +124,17 @@ internal static class BmpRaster
             rgba[i] = 255;
     }
 
-    /// <summary>One colour channel of a masked 16/32-bit pixel, scaled to 8 bits by rounding to nearest.</summary>
+    /// <summary>
+    /// One colour channel of a masked 16/32-bit pixel, expanded to 8 bits. A channel of 8 bits or fewer is
+    /// expanded by bit replication, as stb_image does (a 5-bit 24 is 11000 110 = 198, a 4-bit 15 is 255, a
+    /// 1-bit 1 is 255). A wider one is rounded to nearest from its top 16 bits, <c>(x + 128) / 257</c> with
+    /// <c>x</c> the value left-aligned in 16 bits, which is ImageMagick's arithmetic for those channels.
+    /// </summary>
     private readonly struct MaskChannel
     {
         private readonly uint _mask;
         private readonly int _shift;
-        private readonly uint _max;
+        private readonly int _bits;
         private readonly byte[]? _lut;
 
         public MaskChannel(uint mask)
@@ -138,18 +143,20 @@ internal static class BmpRaster
             if (mask == 0)
             {
                 _shift = 0;
-                _max = 0;
+                _bits = 0;
                 _lut = null;
                 return;
             }
             _shift = System.Numerics.BitOperations.TrailingZeroCount(mask);
-            _max = mask >> _shift;
-            if (_max <= 0xFFFF)
+            uint max = mask >> _shift;
+            // The width is the extent of the mask; a mask with holes (invalid) still maps 0..max monotonically.
+            _bits = 32 - System.Numerics.BitOperations.LeadingZeroCount(max);
+            if (max <= 0xFFFF)
             {
-                // Up to 16 bits a table is cheaper than the division and covers every 5/6-bit layout.
-                var lut = new byte[_max + 1];
-                for (uint v = 0; v <= _max; v++)
-                    lut[v] = ScaleValue(v, _max);
+                // Up to 16 bits a table is cheaper than the arithmetic and covers every 5/6-bit layout.
+                var lut = new byte[max + 1];
+                for (uint v = 0; v <= max; v++)
+                    lut[v] = Expand(v, _bits);
                 _lut = lut;
             }
             else
@@ -162,10 +169,22 @@ internal static class BmpRaster
         {
             if (_mask == 0) return 0;
             uint v = (pixel & _mask) >> _shift;
-            return _lut is not null ? _lut[v] : ScaleValue(v, _max);
+            return _lut is not null ? _lut[v] : Expand(v, _bits);
         }
 
-        private static byte ScaleValue(uint v, uint max) =>
-            (byte)(((ulong)v * 255 + max / 2) / max);
+        /// <summary>An <paramref name="bits"/>-bit value as 8 bits; see the type's summary for the two rules.</summary>
+        internal static byte Expand(uint v, int bits)
+        {
+            if (bits <= 8)
+            {
+                // Bit replication: the value in the top bits, then its own top bits repeated below it.
+                uint r = v << (8 - bits);
+                for (int have = bits; have < 8; have *= 2)
+                    r |= r >> have;
+                return (byte)r;
+            }
+            uint x = bits <= 16 ? v << (16 - bits) : v >> (bits - 16);
+            return (byte)((x + 128) / 257);
+        }
     }
 }

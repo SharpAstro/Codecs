@@ -914,6 +914,33 @@ TGA 2.0 footer) Truevision TGA, written from the Truevision TGA File Format Spec
   an image. The same goes for an RLE stream ending early, truncation, out-of-map indices and more than 2^26 declared pixels. Refusing is
   deliberate: loud failure for data the decoder would otherwise get wrong.
 
+## BMP — spec-derived from the DIB headers, Magick.NET as the oracle, stb_image's mask expansion
+
+`SharpAstro.Bmp` reads (`BmpDecoder`: OS/2 core and 2.x, 40/52/56/108/124-byte headers, 1-32 bpp, RLE4/RLE8, bit-field masks,
+V5 ICC reported) and writes (`BmpEncoder`: 24-bit BGR with a 40-byte header, 32-bit BGRA with a V4 header and an `0xFF000000`
+alpha mask) BMP, written from Microsoft's header documentation, not from stb_image's source. Things that are not obvious:
+
+- **Mask channels of 8 bits or fewer are bit-replicated, as stb_image does; wider ones round from their top 16 bits, as
+  ImageMagick does.** So every 8-bit and wider channel equals ImageMagick exactly, and a full channel is 255 at any width.
+  ImageMagick's own narrow-channel rules were measured value by value and are NOT copied: 5-bit replicated except 3 -> 25 and
+  7 -> 58, a 6-bit *green* replicated except eight values (a 6-bit red or blue is only shifted), every other narrow channel in
+  a 16-bit pixel shifted (4-bit 15 -> 240, 1-bit alpha 1 -> 128), and nothing replicated in 32-bit pixels. `MagickExpansion` in
+  `BmpDecoderTests` pins each of those, and the masked tests compare both readers EXACTLY, ours against `OurExpansion` and
+  Magick's against `MagickExpansion`, over every 16-bit pixel word for 555/565/1555/4444. There is no tolerance anywhere: an
+  earlier cut scaled linearly (`(v*255 + max/2) / max`) and hid a one-level disagreement with both stb and Magick behind one.
+- **A 32-bit `BI_RGB` file whose fourth byte is zero in every pixel is opaque** (X8R8G8B8 writers leave it zero; stb_image and
+  ImageMagick agree). Any non-zero byte makes the whole fourth byte alpha.
+- **ImageMagick's `BMP3` with `bmp:subtype` RGB555/RGB565 is malformed:** it says `BI_BITFIELDS` but writes no mask words, so the
+  pixels start where the masks should be (ImageMagick misreads its own file). It is refused, and
+  `Bmp3_16Bit_FromImageMagick_IsMalformed_AndRefused` keeps that from being "fixed" by guessing.
+- **ImageMagick's RLE8 writer encodes each row's padding bytes as pixels**, so a run may overshoot the width into the row's
+  4-byte padding; the overshoot is dropped and anything past the padded row is an error. One pixel wide, ImageMagick misreads its
+  own RLE file, so there the source raster alone is the oracle.
+- **The facade sniff also requires the reserved words at offset 6 to be zero**, deliberately: `BM` alone is a weak magic. stb_image
+  does not check them, so such a file still decodes through `BmpDecoder.Decode`, just not through `ImageCodecs`.
+- **RLE is the residual amplification:** a few bytes of RLE can declare a large image (up to the 2^28-pixel ceiling, 768 MiB of
+  RGB). That is documented in the package README rather than limited further.
+
 ## Oracle harnesses (all codecs)
 
 There are multiple oracle mechanisms, with different acquisition stories. All of them

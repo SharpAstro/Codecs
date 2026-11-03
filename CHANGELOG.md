@@ -26,6 +26,11 @@ DIB header documentation rather than ported, and checked pixel by pixel against 
   alpha. Offsets, palette size and pixel data are checked against the file, a header declaring more than 2^28 pixels is
   refused before allocating, and `BI_JPEG`, `BI_PNG`, `BI_CMYK*`, OS/2 Huffman 1D and RLE24 throw `NotSupportedException`
   by name.
+- **Mask channels** of 8 bits or fewer are expanded by bit replication, as stb_image does (a 5-bit 24 reads as 198, a full
+  channel of any width as 255); wider ones round to nearest from their top 16 bits, which is ImageMagick's arithmetic. Every
+  8-bit and wider channel equals ImageMagick exactly. Below 8 bits ImageMagick departs from replication on a few values (5-bit
+  3 and 7, eight values of a 6-bit green) and only shifts other narrow channels (4-bit 15 is 240, 1-bit alpha 1 is 128); the
+  tests pin each of those value by value, over every 16-bit pixel word, instead of allowing a tolerance.
 - **`BmpEncoder`** (`EncodeRgb24`, `EncodeRgba32`, each with an optional input stride) writes 24-bit BGR with a 40-byte
   `BITMAPINFOHEADER`, and 32-bit BGRA with a 108-byte V4 header whose `BI_BITFIELDS` masks include `0xFF000000` for alpha,
   so alpha survives in readers that honour the masks. Rows are bottom-up and padded to four bytes. Width, height, stride
