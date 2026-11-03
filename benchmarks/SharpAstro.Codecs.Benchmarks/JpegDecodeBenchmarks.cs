@@ -157,7 +157,7 @@ public class JpegDecodeScanBenchmarks
     public (int, int) FittedThumb() => JpegDecoder.DecodeFittedTo(_jpeg, ThumbWidth, ThumbHeight, _thumb);
 
     /// <summary>
-    /// The fitted sink's 64-bit path (what it was before 3.25's vector sums, kept as the reference and as the fallback
+    /// The fitted sink's 64-bit path (what it was before 3.27's vector sums, kept as the reference and as the fallback
     /// for a box over 2^24 pixels), measured beside the 32-bit lane path it is paired with above, in the same run.
     /// </summary>
     [Benchmark(Description = "scan: fitted to 3165x4096, 64-bit sums (old sink)")]

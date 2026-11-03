@@ -18,10 +18,10 @@ namespace SharpAstro.Png;
 ///   <item>Every bit depth PNG allows: 8 and 16 per sample, and 1, 2 and 4 for greyscale and
 ///   indexed, whose samples are unpacked to one byte each (see <see cref="PngImage.BitDepth"/>).</item>
 ///   <item>Color types 0 (Gray), 2 (RGB), 3 (Indexed, PLTE + tRNS), 4 (Gray + Alpha), 6 (RGBA).</item>
-///   <item>Non-interlaced only (<c>InterlaceMethod = 0</c>).</item>
+///   <item>Both interlace methods: none (<c>InterlaceMethod = 0</c>) and Adam7 (<c>1</c>). An Adam7 image is
+///   de-interlaced into the same row-major <see cref="PngImage.Pixels"/> its non-interlaced encoding gives.</item>
 /// </list>
-/// <para>Adam7 interlacing is deferred to a follow-up. APNG and PNG-3 HDR
-/// chunks (<c>cICP</c> / <c>mDCv</c> / <c>cLLI</c>) will layer on top of
+/// <para>APNG and PNG-3 HDR chunks (<c>cICP</c> / <c>mDCv</c> / <c>cLLI</c>) layer on top of
 /// this decoder.</para>
 /// </remarks>
 public static class PngReader
@@ -42,8 +42,8 @@ public static class PngReader
     public const int MaxInflatedIccProfileBytes = 16 * 1024 * 1024;
 
     /// <summary>
-    /// <see cref="Decode"/> without the exceptions: false for a stream that is not a PNG, is corrupt,
-    /// or uses a feature this reader does not cover yet (Adam7 interlace). It makes no
+    /// <see cref="Decode"/> without the exceptions: false for a stream that is not a PNG, is corrupt
+    /// (a truncated or overlong IDAT stream included), or uses a feature this reader does not cover. It makes no
     /// judgement about the colour signalling, so it is the shared first step of every projection — the
     /// RGBA8 display ones in <see cref="PngImageDecoder"/>, which refuse cICP PQ/HLG, and a float one
     /// that would decode those.
@@ -140,8 +140,9 @@ public static class PngReader
                     throw new InvalidDataException($"Unsupported compression method {compressionMethod} (PNG only defines 0)");
                 if (filterMethod != 0)
                     throw new InvalidDataException($"Unsupported filter method {filterMethod} (PNG only defines 0)");
-                if (interlaceMethod != 0)
-                    throw new NotSupportedException("Adam7 interlacing not yet supported (InterlaceMethod=1)");
+                // 0 = none, 1 = Adam7; PNG defines nothing else, so any other value is a corrupt header.
+                if (interlaceMethod is not (0 or 1))
+                    throw new InvalidDataException($"Unsupported interlace method {interlaceMethod} (PNG only defines 0 and 1)");
                 ValidateColorTypeAndBitDepth(colorType.Value, bitDepth.Value);
             }
             else if (typeBytes.SequenceEqual("IDAT"u8))
@@ -246,7 +247,7 @@ public static class PngReader
 
         // The IDAT chunks are one zlib stream — the spec lets a producer split IDATs anywhere, even
         // mid-deflate-token — inflated straight into the samples a row at a time.
-        var pixels = InflateAndUnfilter(data, idatChunks, width.Value, height!.Value, bitDepth!.Value, colorType!.Value);
+        var pixels = InflateAndUnfilter(data, idatChunks, width.Value, height!.Value, bitDepth!.Value, colorType!.Value, interlaceMethod!.Value);
 
         return new PngImage
         {
@@ -313,8 +314,12 @@ public static class PngReader
     /// into a new array: the image's bytes three or four times over before the samples existed.</para>
     /// </summary>
     private static unsafe byte[] InflateAndUnfilter(ReadOnlySpan<byte> data, List<(int Offset, int Length)> idat,
-        int width, int height, int bitDepth, int colorType)
+        int width, int height, int bitDepth, int colorType, int interlaceMethod)
     {
+        if (interlaceMethod == 1)
+        {
+            return InflateAndUnfilterAdam7(data, idat, width, height, bitDepth, colorType);
+        }
         if (bitDepth < 8)
         {
             return InflateAndUnfilterSubByte(data, idat, width, height, bitDepth, colorType);
@@ -407,9 +412,125 @@ public static class PngReader
         return pixels;
     }
 
-    private static InvalidDataException LengthMismatch(long inflated, long expected, int width, int height, int bytesPerPixel) =>
+    /// <summary>
+    /// The seven Adam7 passes (PNG §8.2) as (first column, first row, column step, row step): pass n holds
+    /// the pixels at <c>x = X0 + i × Dx</c>, <c>y = Y0 + j × Dy</c> of the full image, stored as a small
+    /// image of its own — its own filter bytes, rows padded to a whole byte, each row unfiltered against the
+    /// row above it in the same pass.
+    /// </summary>
+    private static readonly (int X0, int Y0, int Dx, int Dy)[] Adam7Passes =
+    [
+        (0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2),
+    ];
+
+    /// <summary>How many of <paramref name="size"/> pixels a pass picks, starting at <paramref name="start"/> and stepping by <paramref name="step"/>; 0 when it starts past the end.</summary>
+    private static int AdamPassExtent(int size, int start, int step) => size > start ? (size - start + step - 1) / step : 0;
+
+    /// <summary>
+    /// <see cref="InflateAndUnfilter"/> and <see cref="InflateAndUnfilterSubByte"/> for an Adam7 interlaced image, any
+    /// colour type and depth, with the same result: the samples in the row-major order of the whole image, 16-bit samples
+    /// big-endian, and a 1-, 2- or 4-bit sample unpacked to one byte (an index as it is, a grey level scaled to 0-255).
+    /// <para>The inflated stream is still read once, front to back: the passes follow each other in order, so each of its
+    /// rows is inflated, unfiltered against the previous row of its own pass (all zero for a pass's first row) and
+    /// scattered straight to where its pixels belong. A pass with no pixels (an image narrower than 5 columns has no pass 2,
+    /// one shorter than 5 rows no pass 3) is not in the stream at all, filter bytes included.</para>
+    /// </summary>
+    private static unsafe byte[] InflateAndUnfilterAdam7(ReadOnlySpan<byte> data, List<(int Offset, int Length)> idat,
+        int width, int height, int bitDepth, int colorType)
+    {
+        var bitsPerPixel = SamplesPerPixel(colorType) * bitDepth;
+        // The filters' step: whole bytes per pixel, and one byte under 8 bits (PNG §9.2).
+        var filterStep = Math.Max(1, bitsPerPixel / 8);
+        var subByte = bitDepth < 8;
+        // A sub-byte sample is unpacked to a byte of its own; anything wider keeps its bytes as they are.
+        var outBytes = subByte ? 1 : filterStep;
+        var max = (1 << bitDepth) - 1;
+        var gray = colorType == 0;
+
+        long expected = 0;
+        foreach (var (x0, y0, dx, dy) in Adam7Passes)
+        {
+            var passWidth = AdamPassExtent(width, x0, dx);
+            var passHeight = AdamPassExtent(height, y0, dy);
+            if (passWidth == 0 || passHeight == 0)
+            {
+                continue;
+            }
+            expected = checked(expected + (((long)passWidth * bitsPerPixel + 7) / 8 + 1) * passHeight);
+        }
+
+        var pixels = new byte[checked((long)width * height * outBytes)];
+        // The last pass holds every column, so its rows are the longest.
+        var maxPackedBytes = checked((int)(((long)width * bitsPerPixel + 7) / 8));
+        var row = new byte[maxPackedBytes];
+        var above = new byte[maxPackedBytes];
+
+        fixed (byte* pinned = data)
+        {
+            using var z = new ZLibStream(new IdatStream(pinned, idat), CompressionMode.Decompress);
+            Span<byte> filterType = stackalloc byte[1];
+            long inflated = 0, expectedSoFar = 0;
+            foreach (var (x0, y0, dx, dy) in Adam7Passes)
+            {
+                var passWidth = AdamPassExtent(width, x0, dx);
+                var passHeight = AdamPassExtent(height, y0, dy);
+                if (passWidth == 0 || passHeight == 0)
+                {
+                    continue;
+                }
+
+                var packedBytes = (int)(((long)passWidth * bitsPerPixel + 7) / 8);
+                // A pass is an image of its own: its first row has no row above it, whatever the last pass left here.
+                above.AsSpan(0, packedBytes).Clear();
+                for (var j = 0; j < passHeight; j++)
+                {
+                    var current = row.AsSpan(0, packedBytes);
+                    inflated += ReadFully(z, filterType);
+                    inflated += ReadFully(z, current);
+                    expectedSoFar += packedBytes + 1;
+                    if (inflated != expectedSoFar)
+                        throw LengthMismatch(inflated, expected, width, height, filterStep, adam7: true);
+                    PngPredictor.UnfilterRow(filterType[0], current, above.AsSpan(0, packedBytes), filterStep);
+
+                    var output = pixels.AsSpan(checked((y0 + j * dy) * width * outBytes), width * outBytes);
+                    if (subByte)
+                    {
+                        for (var i = 0; i < passWidth; i++)
+                        {
+                            var bit = i * bitDepth;
+                            var sample = (row[bit >> 3] >> (8 - bitDepth - (bit & 7))) & max;
+                            output[x0 + i * dx] = (byte)(gray ? sample * 255 / max : sample);
+                        }
+                    }
+                    else
+                    {
+                        for (var i = 0; i < passWidth; i++)
+                        {
+                            var source = i * outBytes;
+                            var target = (x0 + i * dx) * outBytes;
+                            for (var k = 0; k < outBytes; k++)
+                            {
+                                output[target + k] = row[source + k];
+                            }
+                        }
+                    }
+                    (row, above) = (above, row);
+                }
+            }
+
+            // A byte past the last pass is as much a mismatch as a row short.
+            if (z.Read(filterType) != 0)
+                throw LengthMismatch(expected + 1, expected, width, height, filterStep, adam7: true);
+        }
+
+        return pixels;
+    }
+
+    private static InvalidDataException LengthMismatch(long inflated, long expected, int width, int height, int bytesPerPixel, bool adam7 = false) =>
         new((inflated > expected ? $"Inflated stream runs past the expected {expected} bytes " : $"Inflated stream length {inflated} doesn't match expected {expected} ") +
-            $"({width}×{height} × {bytesPerPixel} bytes-per-pixel + 1 filter byte per row)");
+            (adam7
+                ? $"({width}×{height} Adam7 image, 7 passes × {bytesPerPixel} bytes-per-pixel + 1 filter byte per row)"
+                : $"({width}×{height} × {bytesPerPixel} bytes-per-pixel + 1 filter byte per row)"));
 
     /// <summary>Reads until <paramref name="buffer"/> is full or the stream ends; the count read.</summary>
     private static int ReadFully(Stream stream, Span<byte> buffer)

@@ -135,7 +135,7 @@ whatever the height (measured: byte-identical at 1300 and 2600 rows). What is no
   in `Begin` (the two allocation tests, with 20.8 MB against the 260 KB bound), `int`-wrapping sums (the overflow test
   alone) and no start-over on the first row (the sink restart test alone).
 
-**Measured on the issue's scan shape** (3.25; `JpegDecodeScanBenchmarks`, 5100x6600 baseline 4:4:4, DRI = 638, built in
+**Measured on the issue's scan shape** (3.27; `JpegDecodeScanBenchmarks`, 5100x6600 baseline 4:4:4, DRI = 638, built in
 `GlobalSetup` through Magick.NET because `JpegEncoder` writes no restart markers; the setup throws unless the stream really is
 SOF0, 1x1 x3 and DRI 638, since a silently missing DRI would turn every case into plain baseline). Full 333.8 ms; region of the
 middle third 111.1 ms (**0.33**; 275 of 825 MCU rows, a third of the RGBA); fitted 3165x4096 526.9 ms; fitted region 151.8 ms;
@@ -833,6 +833,31 @@ The frame's RFC 9649 blend flag requires alpha blending; this decoder follows
 that rule, while `anim_dump` 1.6.0 emits this fixture's frame uncomposited.
 The fixture is excluded from that oracle comparison and remains covered by
 compositing and seek-versus-sequential tests.
+
+## PNG cICP float projection — a table beat every vector form tried
+
+`PngImageDecoder.TryDecodeRgbaFloat` (PQ / HLG / sRGB to linear-light RGBA floats) fills its raster from
+`PngFloatFill`. Each colour sample is a lookup in a 256- or 65536-entry table that `PngHdr` builds with the
+**reference's own arithmetic**, so the shipped fill is **bit-identical** to `FillReference` (the scalar spec the tests
+and tiny images use) and there is no second kernel to keep equal; `PngFloatFillEquivalenceTests` is the guard. The
+flight's numbers are in the `3.26` CHANGELOG entry; the ones worth keeping in mind when touching it:
+
+- **Measured at 1080p** (arm64, BenchmarkDotNet, same sitting): the table fill is **26x** the scalar reference on PQ
+  (151.4 → 5.8 ms), 28x on PQ RGBA16, 26x on sRGB RGBA8, and 2.8x on HLG (45.5 → 16.3 ms; its per-pixel OOTF `pow`
+  couples the channels, so it cannot be a pure table). Above the shared inflate + unfilter (87.7 ms) a whole PQ decode
+  costs +7 %, HLG +20 %. Allocation is one `float[]` plus the reader's pixels and nothing per pixel or per row.
+- **Three `Vector128` candidates were measured and dropped**, kept in `benchmarks/.../PngHdrCandidateBenchmarks.cs` so
+  the numbers can be reproduced. A float `Vector128` PQ curve is 3.8x the scalar *double* curve but **7x slower than the
+  table** and 1.1e-4 off; a vector HLG gain (`Ys^0.2` four pixels at a time) measured 17.9 ms against the shipped 16.3 ms
+  and is 5.6e-7 off; a one-`Vector128`-store-per-pixel RGB16 fill is exact but 0.65 ms (0.7 % of a decode) inside the
+  shipped path's own noise. The fill is a table-load and store stream, the same store-bound shape as the YCbCr row
+  above, so the ceiling for vectorising it is small, and the table already took the 26x.
+- **Narrow range is free per pixel** (the expansion lives in the table build) and RGBA16's alpha division costs nothing
+  measurable, so neither has a candidate. In-place and strip conversion are not available: the float raster is 2.7x the
+  decoded pixels and `PngReader` decodes the whole image first.
+- **If you change this, A/B against the shipped table path on the whole `TryDecodeRgbaFloat` as well as the fill.** The
+  `PngHdrFloat4kBenchmarks` *timings* are too noisy to decide anything (the 127 MiB array lands on the large-object
+  heap); its allocated-bytes column is what it is for.
 
 ## Oracle harnesses (all codecs)
 
