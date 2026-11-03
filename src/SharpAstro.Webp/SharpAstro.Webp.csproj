@@ -9,8 +9,11 @@
     <PackageId>SharpAstro.Webp</PackageId>
     <Product>SharpAstro.Webp</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure C# WebP still and animated image decoder for .NET.</Description>
-    <PackageTags>webp image codec decoder lossy lossless vp8 vp8l alpha animation aot</PackageTags>
+    <!-- Provenance: the decoder and the lossless encoder are spec-derived from the prose and tables of RFC 6386
+         (VP8, prose and tables only) and RFC 9649 (VP8L). No libwebp, libvpx or RFC 6386 section 20 source was read or
+         transcribed; cwebp and dwebp are used only as black-box test oracles. -->
+    <Description>Pure C# WebP still and animated image decoder, and lossless (VP8L) encoder, for .NET. Spec-derived from RFC 9649 and RFC 6386 prose; no libwebp source used.</Description>
+    <PackageTags>webp image codec decoder encoder lossy lossless vp8 vp8l alpha animation aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>

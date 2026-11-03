@@ -20,11 +20,23 @@ internal static class WebpOracle
 {
     private const string HowToGet =
         "Install the `webp` package (apt-get install webp), put the libwebp release binaries on PATH, " +
-        "or set DWEBP / ANIM_DUMP; anim_dump can also be built with " +
+        "or set DWEBP / CWEBP / ANIM_DUMP; dwebp and cwebp can be fetched with " +
+        "`bash tests/SharpAstro.Codecs.Tests/Oracle/webp/fetch.sh`, and anim_dump built with " +
         "`bash tests/SharpAstro.Codecs.Tests/Oracle/webp/build.sh`.";
 
     private static readonly Lazy<(string? Path, string Reason)> DwebpTool = new(() => Resolve("DWEBP", "dwebp"));
     private static readonly Lazy<(string? Path, string Reason)> AnimDumpTool = new(() => Resolve("ANIM_DUMP", "anim_dump"));
+    private static readonly Lazy<(string? Path, string Reason)> CwebpTool = new(() => Resolve("CWEBP", "cwebp"));
+
+    /// <summary>The resolved <c>cwebp</c>, or null.</summary>
+    public static string? Cwebp => CwebpTool.Value.Path;
+
+    /// <summary>Returns <c>cwebp</c>; skips, or fails under <c>REQUIRE_ORACLES</c>, when it is missing.</summary>
+    public static string RequireCwebp()
+    {
+        OracleGate.RequireOrSkip(Cwebp is not null, "cwebp", CwebpTool.Value.Reason);
+        return Cwebp!;
+    }
 
     /// <summary>The resolved <c>dwebp</c>, or null.</summary>
     public static string? Dwebp => DwebpTool.Value.Path;
