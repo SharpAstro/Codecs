@@ -85,10 +85,12 @@ public static class PngReader
     /// frame count that is not the number of <c>fcTL</c> chunks; a frame with no data; a first frame that does not
     /// cover the canvas when the <c>IDAT</c> is that frame) the decode throws <see cref="InvalidDataException"/> and
     /// <see cref="TryDecode"/> answers false. A still-image caller does not get the default image in that case,
-    /// deliberately: a reader that cannot tell that frames were dropped would show half of a file whose own metadata
-    /// contradicts itself, which is how corrupt files go unnoticed; and the check costs only files that declare an
-    /// animation. <c>fcTL</c> and <c>fdAT</c> chunks with no <c>acTL</c> do not declare one, and are skipped as unknown
-    /// ancillary chunks always were.</para>
+    /// deliberately. The file's own animation metadata contradicts itself, so there is nothing to say which part to
+    /// believe, and a silent fallback would hide the corruption from every caller that only ever asks for a still.
+    /// The price is that a file with broken animation chunks, whose <c>IDAT</c> image used to decode, now fails; it is
+    /// paid only by files that declare an animation with an <c>acTL</c>. <c>fcTL</c> and <c>fdAT</c> chunks with no
+    /// <c>acTL</c> do not declare one, and are skipped as unknown ancillary chunks always were. A caller that wants the
+    /// picture whatever the animation says can remove the <c>acTL</c> chunk and decode again.</para>
     /// </remarks>
     /// <exception cref="InvalidDataException">The stream is not a PNG, is corrupt, or declares an animation that is malformed.</exception>
     public static PngImage Decode(ReadOnlySpan<byte> data)
