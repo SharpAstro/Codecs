@@ -730,6 +730,18 @@ floating-point transcription for every pair of alphas, reproduces Pillow's diges
 paste, and pins how far apart the two are on `apng-blend-over-partial-alpha.png` (up to 91 of 255 in alpha). Do not
 "fix" the reader to match Pillow there.
 
+**Speed and memory, measured** (`benchmarks/.../ApngCompositeBenchmarks.cs`, `ApngOverKernelBenchmarks`; table in the 3.25
+CHANGELOG entry). The compositor keeps one grow-only samples buffer, snapshot and row scratch for the whole animation and
+inflates into them (`DecodeFrameSamplesInto`), so streaming 8 frames of 1080p went 134.5 MB -> 23.7 MB (canvas, IDAT image, samples)
+and 362 -> 308 ms; a frame's time is otherwise inflate plus unfilter, which the compositing code does not touch. The OVER blend has
+two kernels, `OverRowScalar` (the reference, per pixel through `Over`) and `OverRowVector` (`Vector128`, four pixels a group: copy /
+no-op / exact 16-bit blend over an opaque canvas / scalar fallback). The vector one is the Idct8x8Simd arrangement again: byte-equal
+to the scalar by construction and by test (`PngApngKernelTests`, with `PngCompositor.ForceScalar` to drive either), kept because it
+measured -4% to -6% end to end on 1080p OVER, no more, since the blend is a small share of a frame. Do not expect more from
+vectorizing the SOURCE copy, BACKGROUND clear or PREVIOUS snapshot: those are already `Span.CopyTo`/`Clear`. The exact opaque-canvas
+form `(af*cf + (255-af)*cb + 127)/255` and `(t + 1 + (t>>8))>>8 == t/255` for t <= 65152 are what make the vector path exact; both are
+tested exhaustively.
+
 Refused rather than guessed: a malformed animation (bad sequence numbers, a frame outside the canvas, a missing
 frame, a first frame that does not cover the canvas when the IDAT is that frame) throws `InvalidDataException` from
 `Decode`, not a silent fall-back to the default image. `Decode` and the `SharpAstro.Codecs` facade return the default

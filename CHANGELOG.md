@@ -14,6 +14,61 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.25
+
+**`SharpAstro.Png`'s APNG compositing allocates a fraction of what it did, and is 6-16% faster.** No API change. The
+flight that added `PngReader.EnumerateFrames` / `DecodeFrames` shipped no entry of its own (this file stopped at 3.23, and
+`Directory.Build.props` still says 3.24), so this section carries its notes; the version number is not touched here.
+
+Measured with BenchmarkDotNet (`ApngCompositeBenchmarks`, `MemoryDiagnoser`, whole decodes through the public API), old and
+new code run back to back in one sitting. Eight 1080p frames (a canvas is 7.9 MB of RGBA8), sixty 320x180 sprite frames
+on a 640x360 canvas (0.9 MB):
+
+| Fixture | Stream, before | Stream, after | Materialise, before | Materialise, after |
+|---|---|---|---|---|
+| 1080p x8, OVER, mixed alpha | 361.7 ms, 134.5 MB | **308.3 ms, 23.7 MB** | 374.1 ms, 227.0 MB | 322.6 ms, 87.0 MB |
+| 1080p x8, OVER, half partial alpha | 446.4 ms, 134.5 MB | **374.6 ms, 23.7 MB** | 476.5 ms, 235.8 MB | 385.5 ms, 87.0 MB |
+| 1080p x8, SOURCE, RGBA8 | 342.4 ms, 134.5 MB | **304.9 ms, 23.7 MB** | 343.0 ms, 227.0 MB | 320.3 ms, 87.0 MB |
+| 1080p x8, SOURCE, RGB8 | 432.8 ms (noisy), 118.7 MB | **297.8 ms, 19.8 MB** | 329.9 ms, 206.5 MB | 302.3 ms, 83.1 MB |
+| 60 sprite frames, OVER, dispose cycling | 111.1 ms, 28.9 MB | **104.4 ms, 2.2 MB** | 119.3 ms, 88.2 MB | 106.5 ms, 55.0 MB |
+
+What was done, and what each part is worth:
+
+- **Buffers are reused, not allocated per frame.** The old compositor inflated each frame into a fresh sample array and expanded
+  it to a second fresh RGBA8 array, per frame (two frame-sized arrays, zeroed, on the large-object heap, hence the Gen2
+  collections in every row of the old table). Now one grow-only samples buffer is inflated into
+  (`DecodeFrameSamplesInto`), the PREVIOUS snapshot and the row scratch are grow-only too, the unfilter's zero row is
+  rented, and `DecodeFrames` drives the compositor from the caller's span instead of copying the input first. Streaming now
+  holds the canvas, one samples buffer, the IDAT image `Decode` already produced and a snapshot when a frame disposes to
+  PREVIOUS: 23.7 MB for 1080p (three 7.9 MB buffers: canvas, IDAT image, samples) against 134.5 MB, no Gen0/1/2 collection
+  recorded, and the 60-frame sprite case is 2.2 MB, which is its four fixed buffers and nothing per frame that the
+  allocator rounds up to a measurable figure (the inflater's own managed objects are the only per-frame allocation left).
+  `DecodeFrames` costs its frames (canvas x count, exactly what the limit charges) plus the streaming footprint: 60 frames of
+  0.88 MB is 55.0 MB where it was 88.2 MB.
+- **RGBA8 frames are blended where they lie.** No expanded copy: the inflated samples are the pixels. Other colour types go
+  through `PngImage.ExpandRowToRgba8`, one row at a time with the colour type decided once per row rather than once per pixel.
+- **OVER over an opaque canvas takes an exact shortcut.** With the canvas alpha at 255 the rational formula reduces to
+  `(af*cf + (255-af)*cb + 127) / 255` with the alpha staying 255, so the three divisions by the variable alpha numerator
+  become divisions by a constant. `PngApngKernelTests` checks it against the general formula for all 255 x 256 x 256 inputs.
+- **A `Vector128` OVER (no arch-specific intrinsics, scalar fallback kept) wins, modestly, and stays.** Four pixels at a
+  time: a whole group of opaque source pixels is a copy, a whole group of transparent ones over a canvas with no
+  transparent pixel is a no-op, a group over four opaque canvas pixels is blended in 16-bit lanes with an exact division by 255
+  (`(t + 1 + (t >> 8)) >> 8`, exact for every t the blend produces), and any other group falls back to the scalar per-pixel
+  code. Same file, same sitting, vector against `ForceScalar`: mixed alpha 321.5 -> 307.9 ms (-4.2%), half partial alpha
+  410.8 -> 385.4 ms (-6.2%; its error bar overlaps, so read it as about 5%). A small win because a frame's time is
+  almost entirely inflate and unfilter (see below); it stays because it is exactly equal to the scalar path and costs 60 lines.
+  Over with partial alpha costs about 70 ms more than SOURCE for eight 1080p frames, down from about 104 ms.
+- **Checked and left alone:** the SOURCE copy, the BACKGROUND clear and the PREVIOUS snapshot/restore are `Span.CopyTo` / `Clear`
+  per row, already memmove; a vector loop cannot beat them. With SOURCE at 305 ms for eight frames, about 38 ms a frame,
+  almost all of it is inflate plus unfilter, the part of `PngReader` that the still-image decode shares, not the compositing.
+  `PngPredictor`'s filters were not touched here: Up could be vectorized, but Sub, Average and Paeth are sequential, so it would
+  be a still-image decode change with a smaller reach than its effort, and it is not measured.
+
+Tests: `PngApngKernelTests` pins the vector OVER byte-equal to the scalar one (every alpha x colour on an opaque canvas, random rows
+of every four-pixel-group class and tail length, random multi-frame animations with every dispose and blend op), runs every Pillow
+fixture frame through both paths against the reference digests, checks `ExpandRowToRgba8` against a per-pixel reading of its mapping,
+bounds steady-state streaming allocation below a third of a frame per frame, and keeps `DecodeFrames`' limit honoured.
+
 ## 3.23
 
 **`SharpAstro.Png` decodes 1-, 2- and 4-bit greyscale and indexed images.** They are the sub-byte depths PNG allows
