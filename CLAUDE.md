@@ -49,6 +49,39 @@ directly and demands byte equality — including at the clamp rails, at `short` 
 int32 intermediates overflow (both must overflow the *same* way), and with a non-trivial
 offset/stride, which is where the SIMD row pass's scatter-by-stride would show an indexing slip.
 
+**Decode runs through strips, not planes** (issue #28). stb IDCTs every block into whole-image
+component planes and only then upsamples; `JpegCore` now IDCTs one *unit* (an MCU row of an interleaved
+scan, a block row of a single-component one) into a per-component strip of `unit rows + 2`, assembles every
+output row that completes, hands it to an `IJpegRowSink` (`JpegDestinationSink` for `DecodeTo`,
+`JpegAllocatingSink` for `Decode`) and moves on. Sample memory is a function of the image's *width* and
+sampling, not its height; progressive keeps its coefficients whole (every scan is needed) and streams the
+IDCT from them in `Finish`. `JpegCore.Run` owns the lifetime. Things that are not obvious from the code:
+
+- **The row assembly is stb's, verbatim.** The `YStep`/`Line0`/`Line1` state machine is kept; `Line0`/`Line1`
+  are now plane *row indices* and the strip maps them to offsets. A row is emitted when the deepest plane row
+  it reads (`Line1`, or `Line0` for a near-only kernel on the upper half) is below the component's `Avail`. The
+  strip slides up to `Line0` before each unit. Two rows of margin are exact, not slack: a frame whose
+  components need different far rows (Magick's CMYK is YCCK with 2×2 Y and K over 1×1 chroma) retains two.
+  `BeginUnit` throws rather than overrun, and margin 1 trips it on 4:2:0, 4:4:0, the mixed layouts and CMYK.
+- **The reference for the strip engine is the old engine, kept.** `JpegDecoder.DecodeWithStats(forceWholePlanes:
+  true)` runs whole planes, which is the pre-strip pipeline, and `JpegStripDecodeTests` demands byte equality
+  with it on 8 sampling layouts (mixed kernels and vertical factors up to 4 included), odd sizes, every scale,
+  baseline and progressive, grey, CMYK, RGB-marked, hand-built restart streams, truncations and corrupted RSTn.
+  The golden digests cannot see the salvage paths (scan ends early, no scan, bad marker): leaving out the
+  zeroing of the unfinished unit passes every golden digest and fails exactly two of these tests.
+- **When it cannot stream it keeps whole planes, allocated at exact size** (a rent rounds a 33,660,000-byte
+  plane up to 64 MiB): baseline whose first scan does not carry every component, and the
+  **restart**. A baseline stream with a *second* scan, or with an Adobe/JFIF marker *after* the scan (stb
+  converts with the colour state at the end of the stream; the streamed rows used the state at the start of the
+  scan), is decoded again with whole planes. So an `IJpegRowSink` must accept **rows from 0 again**, each
+  overwriting the last; a sink that accumulates across rows resets on row 0. Not valid files, but today's
+  decoder decodes them one specific way and the restart keeps it.
+- **`DecodeTo` is checked against the frame header, then written as it decodes.** The size check moved from
+  after the decode to before it. A stream that turns out corrupt part-way leaves the rows before the failure
+  in the caller's buffer, where it used to leave it untouched.
+- `JpegDecodeStats.PeakPlaneBytes` counts the strip/plane arrays held (rented length, so pool rounding is
+  in it); line buffers and progressive coefficients are not. `Run` returns it; the public API discards it.
+
 `SharpAstro.Jpeg` also ships a **second, structurally unrelated decoder**: `LosslessJpeg`
 (ITU-T T.81 Annex H, SOF3) — Huffman-coded sample-difference predictors 1–7, no quantisation,
 **up to 16-bit precision**, DRI/RSTn restarts, point transform. It shares no code with
