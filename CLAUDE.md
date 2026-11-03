@@ -842,7 +842,7 @@ compositing and seek-versus-sequential tests.
 
 `WebpEncoder.EncodeLossless` / `EncodeLosslessRgb` / `EncodeLosslessGray` write VP8L. **Provenance:** spec-derived from RFC 9649
 alone, same line as the decoder: no libwebp, libvpx or RFC 6386 §20 source was read, and `cwebp` / `dwebp` 1.6.0 are black-box oracles
-(`Oracle/webp/fetch.sh` puts them in `Oracle/webp/bin`; `WebpOracle` resolves `CWEBP` / `DWEBP`, then `bin`, then PATH). `cwebp` is run
+(`Oracle/webp/fetch.sh` puts them in `Oracle/webp/bin`; `WebpOracle` resolves `DWEBP` / `ANIM_DUMP`, then `bin`, then PATH; only the encode report in the benchmarks project looks up `cwebp`, from `CWEBP`, then `bin`, then PATH). `cwebp` is run
 with `-lossless -exact`, because our output keeps the colour under transparent pixels. The rungs, each a superset of the last and each
 decided **by exact cost** (the real bit count of the candidate, not an estimate):
 

@@ -20,7 +20,7 @@ internal static class WebpOracle
 {
     private const string HowToGet =
         "Install the `webp` package (apt-get install webp), put the libwebp release binaries on PATH, " +
-        "or set DWEBP / CWEBP / ANIM_DUMP; dwebp and cwebp can be fetched with " +
+        "or set DWEBP / ANIM_DUMP; dwebp and cwebp can be fetched with " +
         "`bash tests/SharpAstro.Codecs.Tests/Oracle/webp/fetch.sh`, and anim_dump built with " +
         "`bash tests/SharpAstro.Codecs.Tests/Oracle/webp/build.sh`.";
 
