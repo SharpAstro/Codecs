@@ -910,6 +910,24 @@ must decode to ImageMagick's, decoded-to-decoded bit-exact. Things that are not 
   pixels than it has bytes, so input size is no bound (the same lesson as the JBIG2 and JPEG 2000 sections).
 - **The facade adapter is float-tier only**: `TryDecodeIntoRgba8` is always false, like EXR.
 
+## TGA — spec-derived, Magick.NET as the two-way oracle, facade by footer only
+
+`SharpAstro.Tga` reads (`TgaReader`, types 1/2/3 and RLE 9/10/11) and writes (`TgaWriter`, 24/32-bit raw or RLE, always with the
+TGA 2.0 footer) Truevision TGA, written from the Truevision TGA File Format Specification 2.0. Things that are not obvious:
+
+- **A TGA has no magic number, so the facade recognises it by its footer only.** `TgaImageDecoder.CanDecode` needs the last 18
+  bytes to be `TRUEVISION-XFILE.\0` **and** a header `TgaReader` accepts; it never guesses from the header, which would claim
+  arbitrary bytes (zeros, noise). It relies on the facade passing the whole stream (`SignatureLength` is the smallest accepted
+  file, 18 + 26, not a prefix length) and is registered **last**. A footerless TGA 1.0 file is not recognised by the facade but
+  still decodes through `TgaReader.Decode`; Magick.NET writes footerless files, so the tests append the footer to them.
+  A footered but corrupt file is claimed, then declined: the `Try` methods return false and never throw.
+- **Magick.NET is the oracle in both directions.** Every pixel `TgaReader` produces is compared byte for byte with Magick.NET's read
+  of the same file (hand-built, Magick-written and writer-written), and `TgaWriter`'s output is read back by Magick.NET. Magick.NET
+  needs `MagickFormat.Tga` stated, because there is no magic number to sniff.
+- **An RLE packet running past the end of the image is refused** (`InvalidDataException`), where Magick.NET clips the run and returns
+  an image. The same goes for an RLE stream ending early, truncation, out-of-map indices and more than 2^26 declared pixels. Refusing is
+  deliberate: loud failure for data the decoder would otherwise get wrong.
+
 ## Oracle harnesses (all codecs)
 
 There are multiple oracle mechanisms, with different acquisition stories. All of them

@@ -20,6 +20,7 @@ package instead of cherry-picking codecs.
 | **JPEG XL** | ✅ | ✅ | clean-room; lossless Modular + lossy VarDCT |
 | **JBIG2** | ✅ | — | bilevel, for PDF's `/JBIG2Decode`. Every region type T.88 defines, on the arithmetic path |
 | **WebP** | ✅ | — | VP8 lossy, VP8L lossless, ALPH, animation + seek, ICC/EXIF/XMP metadata |
+| **TGA** | ✅ | ✅ | types 1/2/3 + RLE 9/10/11, 8–32-bit; writes 24/32-bit raw or RLE. The facade recognises it **only by the TGA 2.0 footer** (`TRUEVISION-XFILE.`): TGA has no magic number, so footerless files decode via `SharpAstro.Tga.TgaReader` directly |
 | **EXIF** | ✅ | — | metadata only, from JPEG / TIFF / PNG |
 
 See **[CODECS.md](CODECS.md)** for the full per-package matrix, what each codec does and does not
@@ -36,7 +37,7 @@ lockstep (shared Major.Minor + CI run-number patch).
 ## NuGet
 
 ```
-# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, Radiance .hdr, .jb2):
+# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, Radiance .hdr, TGA with footer, .jb2):
 dotnet add package SharpAstro.Codecs
 
 # ...or reference just the format(s) you need:
