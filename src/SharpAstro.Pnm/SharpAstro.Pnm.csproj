@@ -8,7 +8,7 @@
     <PackageId>SharpAstro.Pnm</PackageId>
     <Product>SharpAstro.Pnm</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure C# Netpbm (PBM/PGM/PPM/PAM, P1-P7) image reader for .NET.</Description>
+    <Description>Pure C# Netpbm (PBM/PGM/PPM/PAM, P1-P7) image reader and writer for .NET.</Description>
     <PackageTags>pnm pbm pgm ppm pam netpbm image codec decoder aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

@@ -18,6 +18,7 @@ package instead of cherry-picking codecs.
 | **OpenEXR** | ✅ | ✅ | scanline, HALF/FLOAT/UINT, NONE/RLE/ZIP/ZIPS/PIZ |
 | **JPEG XL** | ✅ | ✅ | clean-room; lossless Modular + lossy VarDCT |
 | **JBIG2** | ✅ | — | bilevel, for PDF's `/JBIG2Decode`. Every region type T.88 defines, on the arithmetic path |
+| **PNM / PAM** | ✅ | ✅ | Netpbm P1–P7 read; writes P5/P6 and P7 (grey, RGB, ± alpha) at 8 and 16 bit |
 | **WebP** | ✅ | — | VP8 lossy, VP8L lossless, ALPH, animation + seek, ICC/EXIF/XMP metadata |
 | **EXIF** | ✅ | — | metadata only, from JPEG / TIFF / PNG |
 
@@ -35,7 +36,7 @@ lockstep (shared Major.Minor + CI run-number patch).
 ## NuGet
 
 ```
-# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, .jb2):
+# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, Netpbm, .jb2):
 dotnet add package SharpAstro.Codecs
 
 # ...or reference just the format(s) you need:
