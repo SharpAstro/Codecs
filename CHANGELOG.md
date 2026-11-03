@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Tga` / `.Bmp`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Pnm` / `.Tga` / `.Bmp`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -43,6 +43,23 @@ DIB header documentation rather than ported, and checked pixel by pixel against 
 
 ## 3.29
 
+**New package `SharpAstro.Pnm`: Netpbm (PBM / PGM / PPM / PAM) read and write.** Additive. Written from the Netpbm format
+documents and validated against Magick.NET in both directions (stb_image parity: PNM and PAM were the common formats the
+family could not read).
+
+- **`PnmReader.Read` / `ReadHeader`** reads every magic `P1`-`P7`, plain and raw, `maxval` 1..65535 (two bytes, big-endian,
+  above 255), `#` comments wherever whitespace is allowed, and PAM `BLACKANDWHITE` / `GRAYSCALE` / `RGB` and their `_ALPHA`
+  forms, as the file's native samples. A sample above `maxval`, a truncated raster or an out-of-range header throws
+  `InvalidDataException`; a declared size over 2^28 samples is refused before anything is allocated.
+- **The facade reads it** (`ImageCodecs.TryDecode`, sniffed by `P1`-`P7` plus whitespace), scaling samples to fill UInt8 or
+  UInt16 with ImageMagick's rounding. Where ImageMagick departs from the Netpbm documents (raw `maxval` 128..254 and
+  32768..65534 read unscaled, a 1-bit grey+alpha PAM's alpha inverted) the documents win, and the tests say so.
+- **`PnmWriter.Encode` / `Write`** (to `byte[]` or a `Stream`, from `byte` or `ushort` samples) writes raw `P5` / `P6` and `P7`
+  PAM for grey, grey + alpha, RGB and RGB + alpha, at any `maxval` 1..65535, with Netpbm's own header layout. Alpha images are
+  always PAM. Samples are native values, never scaled; a short buffer, an unwritable tuple type, a `maxval` out of range or a
+  sample above it throws `ArgumentException`.
+- **Validated by two readers**: Magick.NET reads our `maxval` 255 and 65535 output to the source pixels exactly for every
+  writer variant, and `PnmReader` round-trips them (and odd maxvals such as 1, 15, 1023, 32768) exactly.
 **New package `SharpAstro.Tga`: Truevision TGA read and write, and the facade recognises it by its TGA 2.0 footer** (issue #54,
 the first step of stb_image parity: the stb port removed earlier took TGA with it).
 

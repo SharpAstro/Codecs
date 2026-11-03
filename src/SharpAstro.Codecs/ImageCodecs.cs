@@ -9,6 +9,7 @@ using SharpAstro.Jpeg2000;
 using SharpAstro.Jxl;
 using SharpAstro.Jxr;
 using SharpAstro.Png;
+using SharpAstro.Pnm;
 using SharpAstro.Tga;
 using SharpAstro.Tiff;
 using SharpAstro.Webp;
@@ -21,7 +22,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP, BMP and TGA. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP, Netpbm, BMP and TGA. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -58,6 +59,12 @@ namespace SharpAstro.Codecs;
 /// BMP is decoded by <see cref="BmpImageDecoder"/>: Windows and OS/2 DIBs at 1 to 32 bits, RLE4/RLE8 and
 /// bit-field masks, as RGB8 or, when the file has alpha, RGBA8, with a V5 ICC profile passed through.
 /// <c>BI_PNG</c>, <c>BI_JPEG</c> and <c>BI_CMYK</c> files answer false.
+/// </para>
+/// <para>
+/// Netpbm (<c>P1</c>..<c>P7</c>: PBM, PGM, PPM and PAM, plain and raw) is decoded by
+/// <see cref="PnmImageDecoder"/> to grey, grey+alpha, RGB or RGBA, UInt8 when the file's maxval
+/// is at most 255 and UInt16 above, with samples scaled to fill the format. It is sniffed by
+/// <c>P</c>, a digit 1-7 and a whitespace byte.
 /// </para>
 /// <para>
 /// TGA is the one format recognised by its <b>end</b> rather than its start. A TGA has no magic number, so a
@@ -114,6 +121,8 @@ public static class ImageCodecs
         // BMP's signature is two letters, so BmpImageDecoder.CanDecode also checks the DIB header size and
         // the zeroed reserved words; it collides with nothing above.
         Register<BmpImageDecoder>(),
+        // Netpbm's "P1".."P7" + whitespace collides with no other signature here.
+        Register<PnmImageDecoder>(),
         // Last on purpose: TGA is sniffed by its trailing footer, not a leading magic number, so it
         // can only ever claim a stream that no leading-signature codec above already took.
         Register<TgaImageDecoder>(),
