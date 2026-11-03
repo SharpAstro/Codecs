@@ -266,8 +266,8 @@ internal static class WebpEncodeReport
         return (process.ExitCode, (stdout + stderr).Trim());
     }
 
-    // The same lookup WebpOracle (in the test project) does: an explicit variable, then
-    // Oracle/webp/bin up the directory tree, then PATH.
+    // The lookup WebpOracle (in the test project) does for dwebp: an explicit variable, then
+    // Oracle/webp/bin up the directory tree, then PATH. The test project has no cwebp lookup.
     private static string? ResolveTool(string variable, string tool)
     {
         string executable = OperatingSystem.IsWindows() ? tool + ".exe" : tool;

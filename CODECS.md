@@ -84,10 +84,14 @@ decoded exactly by our decoder and by `dwebp`). Bytes, with the ratio to cwebp's
 | lossless-palette-16 | 1,102 (7.35) | 124 (0.83) | 116 (0.77) | 120 (0.80) | 150 | 128 (0.85) |
 | lossless-exact-alpha | 2,606 (5.45) | 192 (0.40) | 160 (0.33) | 160 (0.33) | 478 | 478 |
 | noise-64x48-vp8-partitions2 | 8,758 (3.27) | 2,626 (0.98) | 2,616 (0.98) | 2,616 (0.98) | 2,676 | 2,676 |
+| lossless-near60 (17x17) | 1,022 (1.08) | 1,022 (1.08) | 1,022 (1.08) | 1,022 (1.08) | 946 | 946 (1.00) |
+| lossless-palette-200 (40x17) | 2,146 (26.83) | 84 (1.05) | 84 (1.05) | 80 (1.00) | 80 | 80 (1.00) |
+| lossy-alpha-q50 (33x19) | 2,306 (1.19) | 1,912 (0.99) | 1,902 (0.99) | 1,900 (0.98) | 1,930 | 1,972 (1.02) |
+| gradient-16x16 | 900 (2.57) | 396 (1.13) | 352 (1.01) | 352 (1.01) | 350 | 392 (1.12) |
+| odd-33x19-libvpx | 2,016 (1.29) | 1,576 (1.01) | 1,456 (0.93) | 1,436 (0.92) | 1,562 | 1,570 (1.01) |
 
-The other five corpus images (`lossless-near60`, `lossless-palette-200`, `lossy-alpha-q50`, `gradient-16x16`,
-`odd-33x19-libvpx`) are in the commit message and the report: between 0.93 and 1.08 of cwebp's default at
-effort 6, and the 17x17 `lossless-near60` is 1,022 against 946 bytes at every effort.
+At effort 6 the five small images added at the end are between 0.93 and 1.08 of cwebp's default; the 17x17
+`lossless-near60` is 1,022 against 946 bytes at every effort.
 
 Read as: **effort 6 is within 1.0-1.1x of cwebp's default on photographic content and beats it on
 screenshot-like and palette images** (0.84 and 0.77); effort 9 is within 1% of `cwebp -z 9` on the photo

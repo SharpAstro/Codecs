@@ -29,5 +29,6 @@ Nothing else from the archive is kept or run; it then runs each tool's
 files the decoder must read, and its output is what the encoder's file sizes are
 compared against. `dwebp` is the oracle for what the encoder writes, decoded to
 PAM so all four channels can be compared. Both are black boxes -- libwebp's
-source is never read. `WebpOracle` resolves `cwebp` from `CWEBP`, then `bin/`,
-then `PATH` (`RequireCwebp()` is its `OracleGate` entry point).
+source is never read. The encode report (`benchmarks/SharpAstro.Codecs.Benchmarks`,
+`WebpEncodeReport`) resolves `cwebp` from `CWEBP`, then `bin/`, then `PATH`; the
+test project does not call `cwebp`.

@@ -43,7 +43,7 @@ reader's number; this release takes 3.32 so the two do not collide.) The encoder
   | lossy-opaque-1080p | 2,054,058 (7.50) | 304,750 (1.11) | 285,248 (1.04) | 282,188 (1.03) | 274,018 | 273,488 |
   | lossy-alpha-1080p | 2,054,058 (7.49) | 316,544 (1.15) | 295,830 (1.08) | 283,060 (1.03) | 274,182 | 273,062 |
 
-  The ten corpus images (16x16 to 320x240) are in `CODECS.md`; at effort 6 they are 0.33-1.08 of `cwebp`'s default (`lossless-palette-16`
+  The fifteen corpus images (16x16 to 1080p) are all in `CODECS.md`, at efforts 0, 3, 6 and 9; at effort 6 the small ones are 0.33-1.08 of `cwebp`'s default (`lossless-palette-16`
   0.77 and `lossless-exact-alpha` 0.33, the 17x17 `lossless-near60` 1.08). Encode time, 1080p (BenchmarkDotNet steady state / the report's cold
   single run / `cwebp` default / `cwebp -z 9`):
 
@@ -53,7 +53,7 @@ reader's number; this release takes 3.32 so the two do not collide.) The encoder
   | screenshot | 28.5 ms / 43 ms | 0.82 s / 1.4 s | 4.82 s / 10.7 s | 30.6 s / 41.1 s | 0.61 s | 12.5 s |
   | lossless-1080p | 44.5 ms / 51 ms | 0.92 s / 1.3 s | 6.37 s / 8.5 s | 13.4 s / 22.7 s | 0.75 s | 4.2 s |
 
-  Effort 6 is 1.0-1.1x `cwebp`'s default size on photographic content and smaller on screenshots and palette images, at 6-13x
+  Effort 6 is 1.0-1.1x `cwebp`'s default size on photographic content (1.13 on `lossless-1080p`, where size is not monotone in effort) and smaller on screenshots and palette images, at 6-13x
   its time. Effort 9 is within 1% of `cwebp -z 9` on the photo. Size is not monotone in effort (the photo is 1.39 at effort 3,
   1.29 at 4, 1.02 at 5). BenchmarkDotNet's `Error` at effort 6+ is wider than the gap between neighbouring efforts, so read those
   rows to a factor of about 1.5; the report's first images pay JIT.
