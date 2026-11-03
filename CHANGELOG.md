@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Pnm` / `.Tga`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Radiance` / `.Pnm` / `.Tga`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -15,6 +15,32 @@ longer holds the number) and the header comment in `Directory.Build.props`. Entr
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
 ## 3.29
+
+**`SharpAstro.Radiance`: Radiance RGBE (`.hdr` / `.pic`) read and write to scene-linear float, registered with the facade.**
+New package, the answer to Codecs #56 (stb_image HDR parity; `SharpAstro.StbImage` was removed in an earlier release and took
+its HDR path with it).
+
+- **`RadianceFile.Read` / `Write` / `ReadInfo`.** Magic `#?RADIANCE` or `#?RGBE`; `FORMAT=32-bit_rle_rgbe` and
+  `32-bit_rle_xyze`; `EXPOSURE=` lines multiplied and *reported* (`RadianceImage.Exposure`), never applied; new-style RLE, old
+  flat and old RLE scanlines on read; new-style RLE on write (flat below width 8 and above 32767). `ReadInfo` parses the header
+  only and allocates no pixels. Anything else is refused by name with `InvalidDataException`: another `FORMAT`, an orientation
+  other than `-Y h +X w`, a run or literal overflowing its scanline, a width that disagrees with the scanline's own, truncation,
+  a repeat with no previous pixel. The pixel ceiling (2^28 by default, a parameter) is charged from the header before anything
+  is allocated, because an RLE scanline can describe far more pixels than it has bytes.
+- **Value convention, measured not assumed.** `mantissa * 2^(e - 136)`, no `+ 0.5` (Radiance's own `colr_color` adds one;
+  ImageMagick and stb_image do not), exponent byte 0 is black. Decoding is exact in `float`, so it is lossless with respect to
+  the RGBE bytes. Validated **value-exact in both directions against Magick.NET** with no skips: ImageMagick-written files
+  decode to the same floats here, and files written here decode to the same floats in ImageMagick.
+- **`RadianceImageDecoder` in the facade.** `ImageCodecs.TryDecode` gives `Float32` x 3 with `Transfer = Linear` and
+  `Float = SceneReferred`. An XYZE file is tagged `ColorPrimaries.SMPTE428` (CIE XYZ) and is not converted, so its samples are
+  never mistaken for RGB. `TryDecodeIntoRgba8` is always false (projecting scene-referred float to 8 bits is the consumer's
+  tone/stretch policy, as for EXR). `TryReadInfo` reads the header only. The adapter refuses a picture over 2^26 pixels, tighter
+  than `RadianceFile.Read`, because the facade's raster is a byte array with a copy of the floats; call `RadianceFile.Read`
+  directly for larger ones.
+- **Mutation-checked**, one deliberate bug at a time, all caught: exponent bias `e - 135`, no new-RLE run overflow check, old-RLE
+  shift `+= 4`, no shift reset after a plain pixel, old-RLE shift wrapping mod 32, writer rounding instead of truncating, a
+  zero-exponent pixel not advancing the output index.
+
 
 **New package `SharpAstro.Pnm`: Netpbm (PBM / PGM / PPM / PAM) read and write.** Additive. Written from the Netpbm format
 documents and validated against Magick.NET in both directions (stb_image parity: PNM and PAM were the common formats the

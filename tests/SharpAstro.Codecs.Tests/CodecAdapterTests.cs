@@ -1,8 +1,10 @@
 using System;
+using System.Text;
 using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Exr;
 using SharpAstro.Jxl;
 using SharpAstro.Jxr;
+using SharpAstro.Radiance;
 using Shouldly;
 using Xunit;
 
@@ -173,6 +175,85 @@ public sealed class CodecAdapterTests
         f[2].ShouldBe(0.5f);
         f[3].ShouldBe(1f); // synthesized alpha
         f[4].ShouldBe(0.75f);
+    }
+
+    // ------------------------------------------------------------ Radiance
+
+    /// <summary>A 2x1 flat-coded Radiance file: pixel 0 is (1, 0.5, 0.25) (mantissas 128/64/32, exponent 129), pixel 1 is black.</summary>
+    private static byte[] RadianceFlat(string format = "32-bit_rle_rgbe", string magic = "#?RADIANCE")
+    {
+        var head = Encoding.Latin1.GetBytes($"{magic}\nFORMAT={format}\n\n-Y 1 +X 2\n");
+        byte[] body = [128, 64, 32, 129, 0, 0, 0, 0];
+        return [.. head, .. body];
+    }
+
+    [Fact]
+    public void Radiance_rgb_decodes_to_scene_linear_float_and_refuses_rgba8()
+    {
+        var hdr = RadianceFlat();
+
+        RadianceImageDecoder.CanDecode(hdr).ShouldBeTrue();
+        RadianceImageDecoder.TryDecode(hdr, out var img).ShouldBeTrue();
+        img.ShouldNotBeNull();
+        (img.Width, img.Height, img.Channels, img.SampleFormat).ShouldBe((2, 1, 3, SampleFormat.Float32));
+        img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Linear);
+        img.ColorEncoding.Float.ShouldBe(FloatSemantics.SceneReferred);
+        img.ColorEncoding.Primaries.ShouldBe(ColorPrimaries.BT709);
+
+        var f = img.ToFloats(); // RGBA, alpha synthesized
+        f[..4].ToArray().ShouldBe([1f, 0.5f, 0.25f, 1f]);
+        f[4..8].ToArray().ShouldBe([0f, 0f, 0f, 1f]);
+
+        RadianceImageDecoder.TryDecodeIntoRgba8(hdr, new byte[8]).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Radiance_xyze_is_tagged_cie_xyz_not_rgb()
+    {
+        var hdr = RadianceFlat("32-bit_rle_xyze");
+
+        RadianceImageDecoder.TryDecode(hdr, out var img).ShouldBeTrue();
+        img.ShouldNotBeNull();
+        img.ColorEncoding.Primaries.ShouldBe(ColorPrimaries.SMPTE428);
+        img.ColorEncoding.Transfer.ShouldBe(TransferFunction.Linear);
+        img.ColorEncoding.Float.ShouldBe(FloatSemantics.SceneReferred);
+        img.ToFloats()[..3].ToArray().ShouldBe([1f, 0.5f, 0.25f]); // X, Y, Z, unconverted
+    }
+
+    [Fact]
+    public void Radiance_both_magics_sniff_and_other_input_does_not()
+    {
+        RadianceImageDecoder.CanDecode(RadianceFlat(magic: "#?RADIANCE")).ShouldBeTrue();
+        RadianceImageDecoder.CanDecode(RadianceFlat(magic: "#?RGBE")).ShouldBeTrue();
+        RadianceImageDecoder.CanDecode("#?RADIANCEX\n"u8).ShouldBeFalse();
+        RadianceImageDecoder.CanDecode("#?RADIANCE"u8).ShouldBeFalse(); // no terminator yet
+        RadianceImageDecoder.CanDecode("#?RGB"u8).ShouldBeFalse();
+        RadianceImageDecoder.CanDecode([0x76, 0x2F, 0x31, 0x01]).ShouldBeFalse(); // EXR
+        RadianceImageDecoder.SignatureLength.ShouldBe(11);
+    }
+
+    [Fact]
+    public void Radiance_TryReadInfo_reads_the_header_only()
+    {
+        // A header with no body at all still answers TryReadInfo (nothing is decoded); TryDecode needs the scanlines.
+        var head = Encoding.Latin1.GetBytes("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 3 +X 5\n");
+        RadianceImageDecoder.TryReadInfo(head, out var info).ShouldBeTrue();
+        info.ShouldBe(new ImageInfo(5, 3, 3, SampleFormat.Float32));
+        RadianceImageDecoder.TryDecode(head, out _).ShouldBeFalse(); // truncated body
+
+        // The adapter's pixel ceiling is checked from the header, before any allocation.
+        var huge = Encoding.Latin1.GetBytes("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 100000 +X 100000\n");
+        RadianceImageDecoder.TryReadInfo(huge, out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Radiance_refuses_what_the_reader_refuses_without_throwing()
+    {
+        RadianceImageDecoder.TryDecode(Encoding.Latin1.GetBytes("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n+Y 1 +X 1\n\0\0\0\0"), out var img).ShouldBeFalse();
+        img.ShouldBeNull();
+        RadianceImageDecoder.TryDecode(RadianceFlat()[..^3], out img).ShouldBeFalse(); // truncated
+        RadianceImageDecoder.TryDecode(RadianceFlat("32-bit_rle_cmyk"), out img).ShouldBeFalse();
+        RadianceImageDecoder.TryDecode("#?RADIANCE\n"u8, out img).ShouldBeFalse();
     }
 
     // ----------------------------------------------------------------- JXL
