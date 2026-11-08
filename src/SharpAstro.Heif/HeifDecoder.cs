@@ -1,0 +1,409 @@
+using SharpAstro.Codecs.Abstractions;
+using SharpAstro.Heif.Hevc;
+
+namespace SharpAstro.Heif;
+
+/// <summary>
+/// A decoded HEIF image as full-range R'G'B' code values at its own bit depth: what the file's samples
+/// are after the YCbCr conversion, before any transfer function is undone. <see cref="ToLinearRgbaFloat"/>
+/// is the HDR projection for display.
+/// </summary>
+public sealed class HeifRgbImage
+{
+    internal HeifRgbImage(int width, int height, int bitDepth, ushort[] samples, ColorEncoding encoding, byte[]? icc)
+    {
+        Width = width;
+        Height = height;
+        BitDepth = bitDepth;
+        Samples = samples;
+        ColorEncoding = encoding;
+        IccProfile = icc;
+    }
+
+    public int Width { get; }
+    public int Height { get; }
+
+    /// <summary>Bits per sample of <see cref="Samples"/> (8 to 12): the coded image's luma bit depth.</summary>
+    public int BitDepth { get; }
+
+    /// <summary>R, G, B per pixel, row-major, top-down, codes 0 .. 2^<see cref="BitDepth"/> - 1 (full range).</summary>
+    public ushort[] Samples { get; }
+
+    /// <summary>
+    /// The primaries and transfer the samples are in (from the file's <c>nclx</c>, else the HEVC VUI);
+    /// always <see cref="ColorEncoding.FullRange"/>, since a narrow-range image is expanded by the conversion.
+    /// </summary>
+    public ColorEncoding ColorEncoding { get; }
+
+    /// <summary>The image's ICC profile when the file carries one (<c>colr</c> of type <c>prof</c> or <c>rICC</c>).</summary>
+    public byte[]? IccProfile { get; }
+
+    /// <summary>
+    /// Linear-light RGBA floats (alpha 1), on the scale <c>PngImageDecoder.TryDecodeRgbaFloat</c> uses:
+    /// for PQ and HLG <c>1.0 = 203 cd/m²</c> (BT.2408 reference white), for the SDR transfers
+    /// <c>1.0 = SDR white</c>. The primaries are reported in <paramref name="encoding"/>, not converted.
+    /// </summary>
+    /// <exception cref="NotSupportedException">The transfer has no linearisation here (see <c>HdrTransfer.IsSupportedTransfer</c>).</exception>
+    public float[] ToLinearRgbaFloat(out ColorEncoding encoding)
+    {
+        var transfer = ColorEncoding.Transfer;
+        if (!HdrTransfer.IsSupportedTransfer(transfer))
+            throw new NotSupportedException($"Transfer characteristics {(int)transfer} ({transfer}) has no float linearisation.");
+
+        var pixels = Width * Height;
+        var output = new float[(long)pixels * 4];
+        var codes = 1 << BitDepth;
+        if (transfer == TransferFunction.Hlg)
+        {
+            // The HLG OOTF couples a pixel's channels through its luminance.
+            var scene = new float[codes];
+            HdrTransfer.BuildHlgSceneLightTable(BitDepth, fullRange: true, scene);
+            var weights = LumaWeights.For(ColorEncoding.Primaries);
+            for (var p = 0; p < pixels; p++)
+            {
+                HdrTransfer.HlgSceneToLinear(scene[Samples[3 * p]], scene[Samples[3 * p + 1]], scene[Samples[3 * p + 2]], weights,
+                    out output[4 * p], out output[4 * p + 1], out output[4 * p + 2]);
+                output[4 * p + 3] = 1f;
+            }
+        }
+        else
+        {
+            var table = new float[codes];
+            HdrTransfer.BuildLinearTable(transfer, ColorEncoding.Primaries, BitDepth, fullRange: true, table);
+            for (var p = 0; p < pixels; p++)
+            {
+                output[4 * p] = table[Samples[3 * p]];
+                output[4 * p + 1] = table[Samples[3 * p + 1]];
+                output[4 * p + 2] = table[Samples[3 * p + 2]];
+                output[4 * p + 3] = 1f;
+            }
+        }
+
+        encoding = new ColorEncoding
+        {
+            Primaries = ColorEncoding.Primaries,
+            Transfer = TransferFunction.Linear,
+            FullRange = true,
+            Float = FloatSemantics.DisplayReferred,
+        };
+        return output;
+    }
+}
+
+/// <summary>
+/// Decodes a HEIF image (rung 3 of <c>roadmap/heif.md</c>): the HEVC pictures (rung 2), cropped to the
+/// sizes the file declares, a grid's tiles composed, converted from YCbCr to R'G'B' and then cropped,
+/// rotated and mirrored for display. Clean-room from ISO/IEC 23008-12 and ITU-T H.273.
+/// <para>
+/// <b>The YCbCr conversion is H.273's, and where libheif agrees it agrees exactly.</b> Chroma is upsampled by
+/// repeating each sample (no filter), and each pixel follows H.273's equations in double precision, in code
+/// units, rounded half up to the image's own bit depth. Measured against libheif (through Magick.NET): for
+/// full-range 4:2:2, the Canon format, every sample matches (all 5.3 million of the 1632x1088 CR3 preview,
+/// the whole 32-Mpixel R7 grid, and x265 pictures at 8, 10 and 12 bits under BT.601, BT.709 and BT.2020);
+/// a bilinear upsampling differed by up to 479 codes there and truncation in half the samples. libheif
+/// differs by a code or two for narrow range (on 25-60 % of samples) and for 4:2:0 at 8 bits (about 1 %),
+/// where it evidently uses integer shortcuts of its own; this decoder keeps the spec's arithmetic there,
+/// and the tests hold those cases to a measured tolerance, apart from the exact ones.
+/// </para>
+/// </summary>
+public static class HeifDecoder
+{
+    /// <summary>
+    /// Decodes <paramref name="item"/> (the primary item when null) of the HEIF file in <paramref name="file"/>.
+    /// Pass one of <see cref="HeifFile.ThumbnailsOf"/> to decode a preview instead of the full image.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The file or its HEVC data is malformed.</exception>
+    /// <exception cref="NotSupportedException">The image uses something this decoder does not handle (named in the message).</exception>
+    public static HeifRgbImage Decode(ReadOnlySpan<byte> file, HeifItem? item = null)
+    {
+        var heif = HeifReader.Read(file);
+        var image = item is null ? heif.DescribePrimary(file) : heif.Describe(file, item);
+        if (image.Item.Type == "grid")
+        {
+            foreach (var tileId in image.Grid!.TileItemIds)
+                RefuseUnknownEssentials(heif.GetItem(tileId)!);
+        }
+        RefuseUnknownEssentials(image.Item);
+
+        var width = (int)image.Width;
+        var height = (int)image.Height;
+        var depth = image.Coding.BitDepthLuma;
+        var canvas = new ushort[(long)width * height * 3];
+        Colour? colour = null;
+
+        if (image.Grid is { } grid)
+        {
+            var tileWidth = (int)image.TileWidth;
+            var tileHeight = (int)image.TileHeight;
+            for (var t = 0; t < grid.TileItemIds.Count; t++)
+            {
+                var tile = heif.GetItem(grid.TileItemIds[t])!;
+                int x0 = t % grid.Columns * tileWidth, y0 = t / grid.Columns * tileHeight;
+                if (x0 >= width || y0 >= height) continue; // a tile wholly outside the output size
+                var picture = HevcDecoder.Decode(heif.Describe(file, tile).Coding, heif.ReadItemData(file, tile));
+                colour ??= Colour.For(image, picture);
+                Convert(picture, colour, tileWidth, tileHeight, canvas, width, height, x0, y0);
+            }
+        }
+        else
+        {
+            var picture = HevcDecoder.Decode(image.Coding, heif.ReadItemData(file, image.Item));
+            colour = Colour.For(image, picture);
+            Convert(picture, colour, width, height, canvas, width, height, 0, 0);
+        }
+
+        // Transformative properties, in the order the item lists them. 23008-12 requires clap, irot, imir in
+        // that order, and for a conforming file this is that order; a file that lists them otherwise gets what
+        // libheif does with it, which is to follow the file. They are applied to the R'G'B' result. libheif
+        // applies them to the Y'CbCr planes instead, and measurably differs in three places: rotating a 4:2:2
+        // image (its chroma becomes vertically subsampled, and libheif upsamples that with a filter, up to 117
+        // codes away from replicating it as the unrotated image is); converting with the stream's VUI rather
+        // than the file's nclx whenever it rotates; and rounding a clean aperture whose edge falls on a half
+        // pixel the other way when a rotation follows it.
+        foreach (var association in image.Item.Properties)
+        {
+            switch (association.Property)
+            {
+                case HeifCleanAperture clap:
+                    (canvas, width, height) = Transforms.Crop(canvas, width, height, clap);
+                    break;
+                case HeifRotation { Degrees: not 0 } rotation:
+                    (canvas, width, height) = Transforms.Rotate(canvas, width, height, rotation.Degrees);
+                    break;
+                case HeifMirror mirror:
+                    Transforms.Mirror(canvas, width, height, mirror.Axis);
+                    break;
+            }
+        }
+
+        return new HeifRgbImage(width, height, depth, canvas, colour!.Encoding, image.Icc?.Profile);
+    }
+
+    /// <summary>An essential property this reader does not understand means the image cannot be shown right (23008-12 6.5.1).</summary>
+    private static void RefuseUnknownEssentials(HeifItem item)
+    {
+        foreach (var association in item.Properties)
+            if (association.Essential && association.Property is HeifUnknownProperty unknown)
+                throw new NotSupportedException($"{item} has an essential '{unknown.BoxType}' property this decoder does not apply.");
+    }
+
+    /// <summary>
+    /// One coded picture into the canvas at (<paramref name="x0"/>, <paramref name="y0"/>): the conformance
+    /// window first, then the <paramref name="usedWidth"/> x <paramref name="usedHeight"/> the file declares
+    /// for it (Canon codes 320x320 for a 320x214 thumbnail and says so only in <c>ispe</c>), clipped to the canvas.
+    /// </summary>
+    internal static void Convert(HevcPicture picture, Colour colour, int usedWidth, int usedHeight,
+        ushort[] canvas, int canvasWidth, int canvasHeight, int x0, int y0)
+    {
+        var window = picture.ConformanceWindow;
+        var codedWidth = picture.Width - window.Left - window.Right;
+        var codedHeight = picture.Height - window.Top - window.Bottom;
+        if (usedWidth > codedWidth || usedHeight > codedHeight)
+            throw new InvalidDataException($"The image declares {usedWidth}x{usedHeight}, but its HEVC picture is {codedWidth}x{codedHeight}.");
+        if (picture.BitDepthLuma != colour.BitDepth)
+            throw new InvalidDataException("A grid's tiles are coded at different bit depths.");
+
+        var (log2W, log2H) = picture.ChromaFormatIdc switch { 1 => (1, 1), 2 => (1, 0), _ => (0, 0) };
+        var w = Math.Min(usedWidth, canvasWidth - x0);
+        var h = Math.Min(usedHeight, canvasHeight - y0);
+        var max = (1 << colour.BitDepth) - 1;
+        for (var y = 0; y < h; y++)
+        {
+            var ly = y + window.Top;
+            var lumaRow = ly * picture.Width + window.Left;
+            var chromaRow = (ly >> log2H) * picture.ChromaWidth;
+            var output = ((long)(y0 + y) * canvasWidth + x0) * 3;
+            for (var x = 0; x < w; x++)
+            {
+                var cx = (x + window.Left) >> log2W;
+                colour.ToRgb(picture.Luma[lumaRow + x], picture.Cb![chromaRow + cx], picture.Cr![chromaRow + cx], max,
+                    out canvas[output], out canvas[output + 1], out canvas[output + 2]);
+                output += 3;
+            }
+        }
+    }
+
+    /// <summary>How the samples become R'G'B': the H.273 matrix and range, and what the result is in.</summary>
+    internal sealed class Colour
+    {
+        public required int BitDepth { get; init; }
+        public required ColorEncoding Encoding { get; init; }
+        public required bool Identity { get; init; }
+        public required bool FullRange { get; init; }
+        public required double Kr { get; init; }
+        public required double Kb { get; init; }
+
+        /// <summary>
+        /// From the <c>nclx</c> property; without one, from the HEVC VUI; without either, BT.709 primaries,
+        /// the sRGB transfer and the BT.601 matrix at full range.
+        /// </summary>
+        public static Colour For(HeifImage image, HevcPicture picture)
+        {
+            ColorPrimaries primaries;
+            TransferFunction transfer;
+            MatrixCoefficients matrix;
+            bool fullRange;
+            if (image.Nclx is { } nclx)
+            {
+                (primaries, transfer, matrix, fullRange) = (nclx.Primaries, nclx.Transfer, nclx.Matrix, nclx.FullRange);
+            }
+            else if (picture.VideoSignal is { } vui)
+            {
+                primaries = (ColorPrimaries)(vui.Primaries ?? (int)ColorPrimaries.BT709);
+                transfer = (TransferFunction)(vui.Transfer ?? (int)TransferFunction.Srgb);
+                matrix = (MatrixCoefficients)(vui.Matrix ?? (int)MatrixCoefficients.BT470BG);
+                fullRange = vui.FullRange;
+            }
+            else
+            {
+                (primaries, transfer, matrix, fullRange) = (ColorPrimaries.BT709, TransferFunction.Srgb, MatrixCoefficients.BT470BG, true);
+            }
+            return Create(picture.BitDepthLuma, picture.ChromaFormatIdc, primaries, transfer, matrix, fullRange);
+        }
+
+        internal static Colour Create(int bitDepth, int chromaFormatIdc, ColorPrimaries primaries, TransferFunction transfer,
+            MatrixCoefficients matrix, bool fullRange)
+        {
+            var (kr, kb, identity) = matrix switch
+            {
+                MatrixCoefficients.Identity => (0.0, 0.0, true),
+                MatrixCoefficients.BT709 => (0.2126, 0.0722, false),
+                MatrixCoefficients.Fcc => (0.30, 0.11, false),
+                MatrixCoefficients.BT470BG or MatrixCoefficients.SMPTE170M or MatrixCoefficients.Unspecified => (0.299, 0.114, false),
+                MatrixCoefficients.SMPTE240M => (0.212, 0.087, false),
+                MatrixCoefficients.BT2020NCL => (0.2627, 0.0593, false),
+                _ => throw new NotSupportedException($"Matrix coefficients {(int)matrix} ({matrix}) are not converted (only the non-constant-luminance matrices and identity are)."),
+            };
+            if (identity && chromaFormatIdc != 3)
+                throw new InvalidDataException("The identity matrix (GBR) needs 4:4:4 samples.");
+
+            return new Colour
+            {
+                BitDepth = bitDepth,
+                Encoding = new ColorEncoding { Primaries = primaries, Transfer = transfer, FullRange = true },
+                Identity = identity,
+                FullRange = fullRange,
+                Kr = kr,
+                Kb = kb,
+            };
+        }
+
+        /// <summary>
+        /// H.273 8.3 in code units at the image's bit depth: Y and the zero-centred chroma (the narrow-range
+        /// equations first expand them to full range), the matrix inverted, and each result rounded half up.
+        /// Computing in code units rather than on [0, 1] signals matters: dividing by 2^n - 1 and multiplying
+        /// back costs exact agreement with libheif on some samples, which code units keep (measured, see the class remarks).
+        /// </summary>
+        public void ToRgb(int y, int cb, int cr, int max, out ushort r, out ushort g, out ushort b)
+        {
+            if (Identity)
+            {
+                // GBR: Y is G, Cb is B, Cr is R, as coded.
+                (r, g, b) = ((ushort)Math.Min(cr, max), (ushort)Math.Min(y, max), (ushort)Math.Min(cb, max));
+                return;
+            }
+
+            double ey, ecb, ecr;
+            if (FullRange)
+            {
+                var mid = 1 << (BitDepth - 1);
+                (ey, ecb, ecr) = (y, cb - mid, cr - mid);
+            }
+            else
+            {
+                var shift = BitDepth - 8;
+                ey = (y - (16 << shift)) * (double)max / (219 << shift);
+                ecb = (cb - (128 << shift)) * (double)max / (224 << shift);
+                ecr = (cr - (128 << shift)) * (double)max / (224 << shift);
+            }
+
+            var er = ey + 2 * (1 - Kr) * ecr;
+            var eb = ey + 2 * (1 - Kb) * ecb;
+            var eg = (ey - Kr * er - Kb * eb) / (1 - Kr - Kb);
+            r = Code(er, max);
+            g = Code(eg, max);
+            b = Code(eb, max);
+        }
+
+        private static ushort Code(double value, int max) => (ushort)Math.Clamp(Math.Floor(value + 0.5), 0, max);
+    }
+}
+
+/// <summary>The transformative properties (23008-12 6.5.10-6.5.12) on an interleaved RGB canvas.</summary>
+internal static class Transforms
+{
+    /// <summary>
+    /// <c>clap</c> (14496-12 12.1.4): a window of the given size centred on the image centre plus the offsets.
+    /// The left edge is <c>(width - 1) / 2 + horizOff - (cleanWidth - 1) / 2</c>, rounded to a whole pixel.
+    /// </summary>
+    public static (ushort[] Canvas, int Width, int Height) Crop(ushort[] canvas, int width, int height, HeifCleanAperture clap)
+    {
+        if (clap.WidthD == 0 || clap.HeightD == 0 || clap.HorizontalOffsetD == 0 || clap.VerticalOffsetD == 0)
+            throw new InvalidDataException("'clap' has a zero denominator.");
+        var cleanWidth = (double)clap.WidthN / clap.WidthD;
+        var cleanHeight = (double)clap.HeightN / clap.HeightD;
+        var left = (width - 1) / 2.0 + (double)clap.HorizontalOffsetN / clap.HorizontalOffsetD - (cleanWidth - 1) / 2.0;
+        var top = (height - 1) / 2.0 + (double)clap.VerticalOffsetN / clap.VerticalOffsetD - (cleanHeight - 1) / 2.0;
+        int x0 = (int)Math.Round(left), y0 = (int)Math.Round(top);
+        int w = (int)Math.Round(cleanWidth), h = (int)Math.Round(cleanHeight);
+        if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0 || x0 + w > width || y0 + h > height)
+            throw new InvalidDataException($"'clap' selects {w}x{h} at ({x0}, {y0}), outside the {width}x{height} image.");
+
+        var cropped = new ushort[(long)w * h * 3];
+        for (var y = 0; y < h; y++)
+            canvas.AsSpan((int)(((long)(y0 + y) * width + x0) * 3), w * 3).CopyTo(cropped.AsSpan(y * w * 3));
+        return (cropped, w, h);
+    }
+
+    /// <summary><c>irot</c>: <paramref name="degrees"/> ANTICLOCKWISE.</summary>
+    public static (ushort[] Canvas, int Width, int Height) Rotate(ushort[] canvas, int width, int height, int degrees)
+    {
+        if (degrees == 180)
+        {
+            var pixels = width * height;
+            for (int i = 0, j = pixels - 1; i < j; i++, j--)
+                for (var c = 0; c < 3; c++)
+                    (canvas[3 * i + c], canvas[3 * j + c]) = (canvas[3 * j + c], canvas[3 * i + c]);
+            return (canvas, width, height);
+        }
+
+        var rotated = new ushort[canvas.Length];
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                // 90 anticlockwise: (x, y) -> (y, width - 1 - x) in a height x width image; 270 is the other way.
+                var (nx, ny) = degrees == 90 ? (y, width - 1 - x) : (height - 1 - y, x);
+                var from = 3 * (y * width + x);
+                var to = 3 * (ny * height + nx);
+                rotated[to] = canvas[from];
+                rotated[to + 1] = canvas[from + 1];
+                rotated[to + 2] = canvas[from + 2];
+            }
+        }
+        return (rotated, height, width);
+    }
+
+    /// <summary><c>imir</c>: <see cref="HeifMirrorAxis.Horizontal"/> (1) swaps left and right, <see cref="HeifMirrorAxis.Vertical"/> (0) top and bottom.</summary>
+    public static void Mirror(ushort[] canvas, int width, int height, HeifMirrorAxis axis)
+    {
+        if (axis == HeifMirrorAxis.Horizontal)
+        {
+            for (var y = 0; y < height; y++)
+                for (int l = 0, r = width - 1; l < r; l++, r--)
+                    for (var c = 0; c < 3; c++)
+                        (canvas[3 * (y * width + l) + c], canvas[3 * (y * width + r) + c]) = (canvas[3 * (y * width + r) + c], canvas[3 * (y * width + l) + c]);
+        }
+        else
+        {
+            var row = width * 3;
+            var scratch = new ushort[row];
+            for (int t = 0, b = height - 1; t < b; t++, b--)
+            {
+                canvas.AsSpan(t * row, row).CopyTo(scratch);
+                canvas.AsSpan(b * row, row).CopyTo(canvas.AsSpan(t * row, row));
+                scratch.CopyTo(canvas.AsSpan(b * row, row));
+            }
+        }
+    }
+}

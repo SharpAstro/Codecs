@@ -16,7 +16,7 @@ internal static class PngFloatFill
     /// <summary>
     /// Fills <paramref name="dst"/> (<c>width * height * 4</c> floats) with the image's linear-light RGBA.
     /// Bit-identical to <see cref="FillReference"/>: every colour sample is a lookup in a table that
-    /// <see cref="PngHdr"/> built with the reference's own arithmetic (see <see cref="PngHdr.BuildLinearTable"/>),
+    /// <see cref="HdrTransfer"/> built with the reference's own arithmetic (see <see cref="HdrTransfer.BuildLinearTable"/>),
     /// so there is no per-sample curve and no scratch row. HLG RGB keeps its per-pixel OOTF, which couples
     /// the channels, on top of a scene-light table.
     /// </summary>
@@ -60,9 +60,9 @@ internal static class PngFloatFill
             }
 
             if (hlgRgb)
-                PngHdr.BuildHlgSceneLightTable(bitDepth, source.FullRange, table);
+                HdrTransfer.BuildHlgSceneLightTable(bitDepth, source.FullRange, table);
             else
-                PngHdr.BuildLinearTable(source.Transfer, source.Primaries, bitDepth, source.FullRange, table);
+                HdrTransfer.BuildLinearTable(source.Transfer, source.Primaries, bitDepth, source.FullRange, table);
 
             var weights = LumaWeights.For(source.Primaries);
             if (sixteen)
@@ -165,7 +165,7 @@ internal static class PngFloatFill
                 {
                     int s = x * spp;
                     ref float d = ref Unsafe.Add(ref o, x * 4);
-                    PngHdr.HlgSceneToLinear(
+                    HdrTransfer.HlgSceneToLinear(
                         Unsafe.Add(ref t, TSample.Code(ref p, s)),
                         Unsafe.Add(ref t, TSample.Code(ref p, s + 1)),
                         Unsafe.Add(ref t, TSample.Code(ref p, s + 2)),
@@ -188,8 +188,8 @@ internal static class PngFloatFill
 
         int entries = palette.Length / 3;
         var linear = new float[entries * 3];
-        PngHdr.ExpandCodes(palette.AsSpan(0, entries * 3), source.FullRange, linear);
-        PngHdr.ToLinear(source.Transfer, source.Primaries, linear, 3, 3);
+        HdrTransfer.ExpandCodes(palette.AsSpan(0, entries * 3), source.FullRange, linear);
+        HdrTransfer.ToLinear(source.Transfer, source.Primaries, linear, 3, 3);
 
         var paletteAlpha = png.PaletteAlpha;
         var rgba = new float[entries * 4];
@@ -222,7 +222,7 @@ internal static class PngFloatFill
     // Fills dst (width * height * 4 floats) with the image's linear-light RGBA, one row at a time so the
     // working set beyond dst is a couple of rows. Per row: gather the colour codes (alpha goes straight to
     // dst, since it is not light and must not meet the range expansion or the curve), expand them to
-    // signals, linearise them, scatter. Everything numeric is PngHdr's.
+    // signals, linearise them, scatter. Everything numeric is HdrTransfer's.
     internal static void FillReference(PngImage png, ColorEncoding source, float[] dst)
     {
         int w = png.Width, h = png.Height;
@@ -260,8 +260,8 @@ internal static class PngFloatFill
                 dst[outBase + x * 4 + 3] = hasAlpha ? ReadSample(row, x * spp + colorChannels, sixteen) / alphaMax : 1f;
             }
 
-            PngHdr.ExpandCodes(codes, sixteen ? 16 : 8, fullRange, signal);
-            PngHdr.ToLinear(source.Transfer, source.Primaries, signal, colorChannels, colorChannels);
+            HdrTransfer.ExpandCodes(codes, sixteen ? 16 : 8, fullRange, signal);
+            HdrTransfer.ToLinear(source.Transfer, source.Primaries, signal, colorChannels, colorChannels);
 
             for (int x = 0; x < w; x++)
             {
@@ -290,8 +290,8 @@ internal static class PngFloatFill
 
         int entries = palette.Length / 3;
         var table = new float[entries * 3];
-        PngHdr.ExpandCodes(palette.AsSpan(0, entries * 3), source.FullRange, table);
-        PngHdr.ToLinear(source.Transfer, source.Primaries, table, 3, 3);
+        HdrTransfer.ExpandCodes(palette.AsSpan(0, entries * 3), source.FullRange, table);
+        HdrTransfer.ToLinear(source.Transfer, source.Primaries, table, 3, 3);
 
         var paletteAlpha = png.PaletteAlpha;
         var pixels = png.Pixels;

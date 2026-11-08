@@ -1,6 +1,6 @@
 using SharpAstro.Codecs.Abstractions;
 
-namespace SharpAstro.Png;
+namespace SharpAstro.Codecs.Abstractions;
 
 /// <summary>
 /// Y (luminance) weights of an RGB primaries set: <c>Y = R * wR + G * wG + B * wB</c> on linear
@@ -39,8 +39,8 @@ internal readonly record struct LumaWeights(float R, float G, float B)
 }
 
 /// <summary>
-/// The transfer-function and range maths that projecting a cICP-tagged PNG onto floats needs,
-/// written from the formulas in SMPTE ST 2084, ITU-R BT.2100, IEC 61966-2-1 and ITU-T H.273 (no
+/// The transfer-function and range maths that projecting an HDR- or SDR-tagged raster onto linear floats
+/// needs (PNG's cICP, HEIF's nclx), written from the formulas in SMPTE ST 2084, ITU-R BT.2100, IEC 61966-2-1 and ITU-T H.273 (no
 /// third-party source was consulted or transcribed).
 /// <para>
 /// <b>Output scale.</b> <see cref="ToLinear"/> and everything built on it produce linear light
@@ -69,7 +69,7 @@ internal readonly record struct LumaWeights(float R, float G, float B)
 /// return float so that exact anchor points (PQ 1.0 = 10 000 cd/m²) stay exact.
 /// </para>
 /// </summary>
-internal static class PngHdr
+internal static class HdrTransfer
 {
     /// <summary>
     /// ITU-R BT.2408 HDR reference white, in cd/m². The divisor that turns absolute PQ light, or

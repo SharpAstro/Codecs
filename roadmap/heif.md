@@ -1,7 +1,7 @@
 # Roadmap: HEIF / HEVC stills (`SharpAstro.Heif`)
 
-> **Status: written 2026-11-08; rungs 1 (container) and 2 (HEVC intra decode) landed on
-> `heif/external-fixtures`.** Issue #66. The
+> **Status: written 2026-11-08; rungs 1 (container), 2 (HEVC intra decode) and 3 (composition, colour,
+> HDR float output, facade) landed on `heif/external-fixtures`.** Issue #66. The
 > consumer is FC.SDK: the viewer cannot preview the `.HIF` files a Canon R6 writes with HDR PQ on,
 > and the camera's own thumbnail for such a capture is HEVC too, so there is no JPEG to fall back on.
 
@@ -141,29 +141,54 @@ only with WPP (refused), so the Canon pictures cover slices; with identical scal
 `scaling_list_pred_matrix_id_delta` ffmpeg refuses as out of range, so the list file makes every matrix
 distinct; and it reads the list file in one pass, in HM's order (size outermost, then intra/inter).
 
-### Rung 3: composition, HDR output and the facade
+### Rung 3: composition, HDR output and the facade (done)
 
-From planes to an image: the conformance window and the crop to `ispe` (Canon codes 320x320 for
-320x214), the grid's tiles onto one canvas cropped to its output size, then `irot` / `imir` / `clap`.
-Then chroma upsampled to 4:4:4 and YCbCr to R'G'B' by the `nclx` matrix (BT.2020 non-constant
-luminance, full range, on the Canon files).
+`HeifDecoder.Decode(file, item = null)` gives a `HeifRgbImage`: full-range R'G'B' codes at the image's
+own bit depth, with the file's primaries and transfer. Each coded picture is cropped by its conformance
+window and then to the size the file declares (Canon codes 320x320 for 320x214 and says so only in
+`ispe`); a grid's tiles are placed row by row and cropped to the output size; then `clap`, `irot` and
+`imir` are applied in the order the item lists them (23008-12 requires clap, irot, imir; libheif follows
+the file, so this does too). An essential property this reader does not know is refused. Pass an item from
+`HeifFile.ThumbnailsOf` to decode a preview without touching the full image.
 
-**Output is HDR, not tone-mapped.** The PQ signal goes through the facade's float tier, the one
-`PngImageDecoder.TryDecodeRgbaFloat` already defines: linear light with **1.0 = 203 cd/m²** (BT.2408
-reference white), BT.2020 primaries reported rather than converted. SdlVulkan.Renderer has shown HDR
-present through an scRGB swapchain (`tools/HdrProbe`; `R16G16B16A16_SFLOAT`, 1.0 = 80 nits), so a
-viewer multiplies by 203/80, converts BT.2020 to BT.709 primaries (scRGB keeps out-of-gamut colour as
-negative values) and uploads; an SDR fallback is the viewer's tone map, with the display's SDR white and
-headroom from SDL. The PQ curve and its table come from `PngHdr`, moved somewhere both packages can use
-rather than copied. `TryDecode` (UInt16, 10 bits scaled to fill) and `TryReadInfo` register with the
-facade; `TryDecodeIntoRgba8` stays false for PQ until a tone-map policy exists, as for the other HDR paths.
+**The YCbCr conversion was fitted to libheif, and it is H.273's.** Nearest-neighbour chroma (each sample
+repeated; bilinear differed by up to 479 codes), the matrix in double precision in code units (normalising
+to [0, 1] and back cost exactness on some samples), rounded half up. Against libheif through Magick.NET:
 
-**The oracle is weaker here than in rung 2.** Upsampling and the matrix are filters and floating point,
-not specified bit for bit: compare against Magick.NET's libheif within a measured tolerance, kept apart
-from the exact plane comparison (the JPEG 2000 9/7 arrangement).
+| Case | Result |
+|---|---|
+| Canon: both CR3 previews, both R7 thumbnails, **the whole 6960x4640 R7 grid** | **exact**, every sample |
+| x265 full-range 4:2:2 at 8, 10, 12 bits under BT.601, BT.709, BT.2020 | **exact** |
+| narrow range (4:2:0 and 4:2:2), 4:2:0 at 8 bits, no colour box (the VUI, narrow here) | within 2 codes on under half the samples (measured 1.2-45 %, max 1 except BT.709 narrow 10-bit at 2): libheif's own integer shortcuts; tested as a tolerance, apart from the exact cases |
+| `irot` 90/180/270, `imir` 0/1, `clap`, and combinations, on 4:2:0 | the same geometry as libheif; only the narrow-range residual differs |
 
-**Previews are the practical input.** The whole R7 image is 32 Mpixels, 512 MiB as RGBA floats; the
-1620x1080 `thmb` item (and the CR3's `PRVW`) is what a viewer wants first, at about 28 MB and 200 ms.
+Things learned from libheif, by measurement, all documented on `HeifDecoder`:
+
+- `imir` axis 0 swaps **top and bottom** and 1 left and right; the rung 1 model had them the other way.
+- libheif applies the transforms to the Y'CbCr planes. Rotating a 4:2:2 image therefore leaves it with
+  vertically subsampled chroma, which it then upsamples with a filter (up to 117 codes from this decoder's
+  replicate-then-rotate); and whenever it rotates it converts with the stream's VUI, not the file's `nclx`.
+  The transform tests use an `nclx` equal to the VUI and 4:2:0 so that both paths convert alike.
+- A `clap` whose edge falls on a half pixel is rounded by libheif one way alone and the other way when a
+  rotation follows; the combined tests use a whole-pixel window. No camera file sets `clap`.
+- Magick.NET stores 10- and 12-bit codes shifted into its 16-bit quantum (not rescaled) and 8-bit ones
+  times 257; its Q16-HDRI build hands back floats.
+
+**Output is HDR, not tone-mapped.** `HeifRgbImage.ToLinearRgbaFloat` and `HeifImageDecoder.TryDecodeRgbaFloat`
+use the float tier `PngImageDecoder.TryDecodeRgbaFloat` defines: linear light, **1.0 = 203 cd/m²** for PQ
+and HLG, BT.2020 primaries reported, not converted. The curves are `HdrTransfer`, which moved from
+`SharpAstro.Png` (`PngHdr`) into `SharpAstro.Codecs.Abstractions` (internal, `InternalsVisibleTo` Png and
+Heif), so a PQ PNG and a PQ HEIF reach a viewer on the same scale from the same table.
+
+**The facade** (`HeifImageDecoder`, registered after WebP): `CanDecode` is the `ftyp` brand check;
+`TryReadInfo` gives the size after `clap` and `irot`; `TryDecode` gives three-channel UInt16, codes scaled
+to fill; `TryDecodeIntoRgba8` refuses PQ and HLG (no canonical 8-bit projection) and scales SDR images.
+Alpha (`auxl`) and depth items are not composed.
+
+**Speed and size, single-threaded:** the R7 grid in about 6 s (HEVC is nearly all of it); its R'G'B' is
+194 MB and as RGBA floats 517 MB. The 1620x1080 thumbnail is the practical preview, about 200 ms.
+SdlVulkan.Renderer issue #165 (flight SDL165) is the display side: an opt-in scRGB swapchain and float
+textures, with no cost to the SDR path.
 
 ### Rung 4: the rest of intra HEVC
 
@@ -247,6 +272,26 @@ were caught on the first run; the two that were not were closed by a new fixture
 
 The two halves need each other: six bugs only the fixtures see, one only Canon's multi-slice pictures do.
 
+## Mutation check (rung 3)
+
+Twelve deliberate bugs against `HeifDecodeTests` and the PNG float tests. Eleven were caught on the first
+run; the twelfth exposed a gap a new test closed.
+
+| Deliberate bug | Caught by |
+|---|---|
+| chroma taken from the next sample | Canon (both CR3 previews, the R7 thumbnails and grid), the exact x265 cases, the transforms |
+| BT.2020 Kb 0.0593 for 0.0594 | Canon and the exact BT.2020 fixture case (one coefficient digit) |
+| truncation for round-half-up | Canon, the fixtures, the transforms |
+| full-range chroma centred on 2^(n-1) - 1 | Canon and the exact cases |
+| narrow-range luma offset 15 for 16 | the tolerant cases and the transforms (beyond 2 codes) |
+| grid tiles placed column-major | **the whole R7 grid only**, the one grid there is |
+| conformance window's left offset ignored | **nothing at first**: x265 pads only right and bottom, Canon sets no window. `ConformanceWindow_EverySide_SelectsTheRightSamples` (a synthetic picture, expected samples computed by hand) was added and now catches it |
+| rotation clockwise | the transforms |
+| mirror axes swapped | the transforms |
+| clap centred without the -1 terms | the transforms (the half-pixel `clap` case) |
+| float scale 200 for 203 cd/m² | the HEIF float test and eight PNG float tests (the shared `HdrTransfer`) |
+| facade UInt16 by shift, not scaled to fill | the facade test |
+
 ## Code shared with the other codecs
 
 Checked against what the family already has, 2026-11-08:
@@ -255,7 +300,7 @@ Checked against what the family already has, 2026-11-08:
 |---|---|
 | ISOBMFF box walking | **Share.** `Jp2Reader.ReadBox` (JPEG 2000), `JxlContainer` and now `IsoBoxes` each walk the same 14496-12 box header. Candidate: move `IsoBoxes` + `BigEndianReader` into `SharpAstro.Codecs.Abstractions` as `internal` with `InternalsVisibleTo`, the arrangement `MqDecoder` and `Lzw` already use, and point the other two at it. Worth doing when AVIF (the same HEIF container, AV1 inside) is next. |
 | Exif item | **Reuse as is.** A HEIF Exif item is a 4-byte offset then TIFF data; `SharpAstro.Exif`'s `ExifReader.FromTiff` takes it from there. |
-| PQ / HLG transfer, BT.2020 | **Share at rung 3.** `PngHdr` (`PqInverseEotf`, the HLG OOTF, the 65536-entry table build) is exactly what a PQ HEIF needs for a float projection. Lift it out of `SharpAstro.Png` rather than copy it. |
+| PQ / HLG transfer, BT.2020 | **Shared (rung 3).** `PngHdr` moved to `SharpAstro.Codecs.Abstractions` as `HdrTransfer` (internal, `InternalsVisibleTo` Png and Heif); HEIF's float projection uses its tables. |
 | 4:2:2 chroma upsampling | **Probably not.** `JpegResample`'s H2 kernel is stb's, chosen for byte-exactness with JPEG; what HEIF needs is set by the chroma siting and by whatever the pixel oracle (libheif) does. Measure before reusing. |
 | Entropy coding | **No.** CABAC (adaptive binary arithmetic coding with a 64-state machine) shares only the idea with VP8's boolean decoder (fixed probabilities) and the MQ coder (a different state table and renormalisation); JXL uses ANS. |
 | Transforms and intra prediction | **No.** HEVC's integer DCT and DST constants are its own, and every codec here is held to bit-exactness against its own reference, so a shared "IDCT" would serve none of them. VP8's intra modes are cousins of HEVC's but differ in every detail. |

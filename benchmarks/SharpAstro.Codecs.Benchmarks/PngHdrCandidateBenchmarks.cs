@@ -33,13 +33,13 @@ internal static class PngHdrCandidates
     public static void FillHlgRgb16VectorGain(PngImage png, ColorEncoding enc, float[] dst, float[] scene)
     {
         int w = png.Width, h = png.Height;
-        PngHdr.BuildHlgSceneLightTable(16, enc.FullRange, scene);
+        HdrTransfer.BuildHlgSceneLightTable(16, enc.FullRange, scene);
         var wts = LumaWeights.For(enc.Primaries);
         var px = png.Pixels;
         var wr = Vector128.Create(wts.R);
         var wg = Vector128.Create(wts.G);
         var wb = Vector128.Create(wts.B);
-        var peak = Vector128.Create(PngHdr.HlgNominalPeakNits);
+        var peak = Vector128.Create(HdrTransfer.HlgNominalPeakNits);
         Span<float> gains = stackalloc float[4];
         Span<float> er = stackalloc float[4], eg = stackalloc float[4], eb = stackalloc float[4];
         for (int y = 0; y < h; y++)
@@ -65,9 +65,9 @@ internal static class PngHdrCandidates
                 for (int i = 0; i < n; i++)
                 {
                     int d = o + (x + i) * 4;
-                    dst[d] = gains[i] * er[i] / PngHdr.ReferenceWhiteNits;
-                    dst[d + 1] = gains[i] * eg[i] / PngHdr.ReferenceWhiteNits;
-                    dst[d + 2] = gains[i] * eb[i] / PngHdr.ReferenceWhiteNits;
+                    dst[d] = gains[i] * er[i] / HdrTransfer.ReferenceWhiteNits;
+                    dst[d + 1] = gains[i] * eg[i] / HdrTransfer.ReferenceWhiteNits;
+                    dst[d + 2] = gains[i] * eb[i] / HdrTransfer.ReferenceWhiteNits;
                     dst[d + 3] = 1f;
                 }
             }
@@ -78,7 +78,7 @@ internal static class PngHdrCandidates
     public static void FillRgb16VectorStore(PngImage png, ColorEncoding enc, float[] dst, float[] table)
     {
         int w = png.Width, h = png.Height;
-        PngHdr.BuildLinearTable(enc.Transfer, enc.Primaries, 16, enc.FullRange, table);
+        HdrTransfer.BuildLinearTable(enc.Transfer, enc.Primaries, 16, enc.FullRange, table);
         ref float t = ref MemoryMarshal.GetArrayDataReference(table);
         for (int y = 0; y < h; y++)
         {
@@ -183,7 +183,7 @@ public class PngHdrCurveBenchmarks
             _signal[i] = _codes[i] / 65535f;
         }
         _table = new float[65536];
-        PngHdr.BuildLinearTable(TransferFunction.Pq, ColorPrimaries.BT2020, 16, true, _table);
+        HdrTransfer.BuildLinearTable(TransferFunction.Pq, ColorPrimaries.BT2020, 16, true, _table);
 
         // Worst relative error of the vector form over the whole code range, against the scalar curve.
         double worst = 0;
@@ -193,7 +193,7 @@ public class PngHdrCurveBenchmarks
             PngHdrCandidates.PqNits(Vector128.Create(c / 65535f, (c + 1) / 65535f, (c + 2) / 65535f, (c + 3) / 65535f)).CopyTo(four);
             for (int k = 0; k < 4; k++)
             {
-                float exact = PngHdr.PqInverseEotf((c + k) / 65535f);
+                float exact = HdrTransfer.PqInverseEotf((c + k) / 65535f);
                 if (exact > 0)
                     worst = Math.Max(worst, Math.Abs((double)four[k] - exact) / exact);
             }
@@ -205,14 +205,14 @@ public class PngHdrCurveBenchmarks
     public float[] Scalar()
     {
         for (int i = 0; i < N; i++)
-            _out[i] = PngHdr.PqInverseEotf(_signal[i]) / PngHdr.ReferenceWhiteNits;
+            _out[i] = HdrTransfer.PqInverseEotf(_signal[i]) / HdrTransfer.ReferenceWhiteNits;
         return _out;
     }
 
     [Benchmark(Description = "PQ float Vector128 curve (exp/log), 4 per step")]
     public float[] Vector()
     {
-        var white = Vector128.Create(PngHdr.ReferenceWhiteNits);
+        var white = Vector128.Create(HdrTransfer.ReferenceWhiteNits);
         for (int i = 0; i < N; i += 4)
             (PngHdrCandidates.PqNits(Vector128.LoadUnsafe(ref MemoryMarshal.GetArrayDataReference(_signal), (nuint)i)) / white)
                 .StoreUnsafe(ref MemoryMarshal.GetArrayDataReference(_out), (nuint)i);

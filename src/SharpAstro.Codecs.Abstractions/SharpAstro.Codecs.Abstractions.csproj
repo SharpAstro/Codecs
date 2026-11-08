@@ -58,6 +58,13 @@
          and SharpAstro.Gif read one decoder here instead of carrying two. -->
     <InternalsVisibleTo Include="SharpAstro.Tiff" />
     <InternalsVisibleTo Include="SharpAstro.Gif" />
+    <!-- HdrTransfer (the PQ / HLG / sRGB / BT.709 curves and the 1.0 = 203 cd/m2 scale) moved
+         here from SharpAstro.Png when HEIF needed the same float projection: one copy, so a
+         PQ PNG and a PQ HEIF reach a viewer on exactly the same scale. The benchmarks keep
+         their PNG HDR candidates comparable against it. -->
+    <InternalsVisibleTo Include="SharpAstro.Png" />
+    <InternalsVisibleTo Include="SharpAstro.Heif" />
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Benchmarks" />
   </ItemGroup>
 
 </Project>

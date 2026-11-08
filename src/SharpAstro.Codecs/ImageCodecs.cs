@@ -4,6 +4,7 @@ using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Bmp;
 using SharpAstro.Exr;
 using SharpAstro.Gif;
+using SharpAstro.Heif;
 using SharpAstro.Jbig2;
 using SharpAstro.Jpeg;
 using SharpAstro.Jpeg2000;
@@ -24,7 +25,7 @@ namespace SharpAstro.Codecs;
 /// package pulls the whole codec family in lockstep; consumers call these entry
 /// points instead of hard-wiring per-format decoders.
 /// <para>
-/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP, GIF, Radiance RGBE, Netpbm, BMP and TGA. To add a
+/// Registers PNG, JPEG, TIFF, JPEG XR, OpenEXR, JPEG XL, JBIG2, JPEG 2000, WebP, HEIF, GIF, Radiance RGBE, Netpbm, BMP and TGA. To add a
 /// format, implement <see cref="IImageDecoder"/> in its codec package and add a
 /// <c>Register&lt;T&gt;()</c> line to <see cref="_registry"/> - the order is the
 /// sniff order (TIFF's <c>II*\0</c>/<c>MM\0*</c> and JXR's <c>II\xBC</c> differ
@@ -128,6 +129,9 @@ public static class ImageCodecs
         Register<Jbig2ImageDecoder>(),
         Register<Jpeg2000ImageDecoder>(),
         Register<WebpImageDecoder>(),
+        // HEIF answers only an ISOBMFF 'ftyp' as the FIRST box naming an HEVC image brand (heic/heix/heim/heis),
+        // so JPEG 2000's JP2 (a 'jP  ' signature box first), AVIF ('avif' brands) and CR3 ('crx ') never match.
+        Register<HeifImageDecoder>(),
         // BMP's signature is two letters, so BmpImageDecoder.CanDecode also checks the DIB header size and
         // the zeroed reserved words; it collides with nothing above.
         Register<BmpImageDecoder>(),

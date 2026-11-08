@@ -54,6 +54,7 @@
     <ProjectReference Include="..\SharpAstro.Radiance\SharpAstro.Radiance.csproj" />
     <ProjectReference Include="..\SharpAstro.Pnm\SharpAstro.Pnm.csproj" />
     <ProjectReference Include="..\SharpAstro.Tga\SharpAstro.Tga.csproj" />
+    <ProjectReference Include="..\SharpAstro.Heif\SharpAstro.Heif.csproj" />
   </ItemGroup>
 
 </Project>
