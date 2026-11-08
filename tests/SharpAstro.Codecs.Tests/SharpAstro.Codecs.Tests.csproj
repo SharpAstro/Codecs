@@ -41,6 +41,7 @@
     <ProjectReference Include="..\..\src\SharpAstro.Gif\SharpAstro.Gif.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Pnm\SharpAstro.Pnm.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Tga\SharpAstro.Tga.csproj" />
+    <ProjectReference Include="..\..\src\SharpAstro.Heif\SharpAstro.Heif.csproj" />
   </ItemGroup>
 
   <ItemGroup>

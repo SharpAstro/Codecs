@@ -11,7 +11,7 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Exif`,
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Heif` (container only so far, see `roadmap/heif.md`), `Exif`,
   `Color.Icc`, `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered
   *ahead of* the plain JPEG decoder).
 
@@ -189,7 +189,8 @@ the jxrlib re-port). See "JXR codec" below for the architecture and validation d
 Longer-horizon work lives in the roadmap docs under `roadmap/`: [`roadmap/jpeg-encoder.md`](roadmap/jpeg-encoder.md),
 [`roadmap/gain-map.md`](roadmap/gain-map.md), [`roadmap/pdf-codecs.md`](roadmap/pdf-codecs.md)
 (JBIG2's remaining Huffman variants), [`roadmap/jpx.md`](roadmap/jpx.md) (the JPEG 2000 rung
-table, rungs 1, 2 and 5 shipped), [`roadmap/jxl.md`](roadmap/jxl.md) (the VarDCT decode's LOH
+table, rungs 1, 2 and 5 shipped), [`roadmap/heif.md`](roadmap/heif.md) (HEIF/HEVC rungs and the measured Canon envelope),
+[`roadmap/jxl.md`](roadmap/jxl.md) (the VarDCT decode's LOH
 allocation question, and the feature envelope the codec currently refuses), plus
 [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
