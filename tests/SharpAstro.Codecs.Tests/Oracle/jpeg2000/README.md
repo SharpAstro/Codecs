@@ -36,7 +36,7 @@ box and CI would silently disagree about what the reference is.
 
 ## Probe results — what the tools actually do
 
-Hazard 7 in `ROADMAP-jpx.md` says to check the oracle's output conventions
+Hazard 7 in `roadmap/jpx.md` says to check the oracle's output conventions
 rather than assume them, because the JBIG2 work lost time to ImageMagick's
 photometric tag. Checked, on `v2.5.4`:
 

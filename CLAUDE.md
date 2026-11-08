@@ -186,10 +186,10 @@ codec" below, which lists them and why each is refused rather than guessed.
 
 `CODECS.md` documents the per-package decode/encode matrix (its `SharpAstro.Jxr` row reflects
 the jxrlib re-port). See "JXR codec" below for the architecture and validation discipline.
-Longer-horizon work lives in the root roadmap docs: [`ROADMAP-jpeg-encoder.md`](ROADMAP-jpeg-encoder.md),
-[`ROADMAP-gain-map.md`](ROADMAP-gain-map.md), [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md)
-(JBIG2's remaining Huffman variants), [`ROADMAP-jpx.md`](ROADMAP-jpx.md) (the JPEG 2000 rung
-table, rungs 1, 2 and 5 shipped), [`ROADMAP-jxl.md`](ROADMAP-jxl.md) (the VarDCT decode's LOH
+Longer-horizon work lives in the roadmap docs under `roadmap/`: [`roadmap/jpeg-encoder.md`](roadmap/jpeg-encoder.md),
+[`roadmap/gain-map.md`](roadmap/gain-map.md), [`roadmap/pdf-codecs.md`](roadmap/pdf-codecs.md)
+(JBIG2's remaining Huffman variants), [`roadmap/jpx.md`](roadmap/jpx.md) (the JPEG 2000 rung
+table, rungs 1, 2 and 5 shipped), [`roadmap/jxl.md`](roadmap/jxl.md) (the VarDCT decode's LOH
 allocation question, and the feature envelope the codec currently refuses), plus
 [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 

@@ -14,7 +14,7 @@
 # Licence: jbig2enc is Apache-2.0. Its *source* could not be a port source for
 # this Unlicense repo; its *output* is data — a rendering of a pattern authored
 # here — and carries no such constraint. Same distinction as every other
-# reference implementation in ROADMAP-pdf-codecs.md.
+# reference implementation in roadmap/pdf-codecs.md.
 set -euo pipefail
 
 if ! command -v jbig2 >/dev/null; then

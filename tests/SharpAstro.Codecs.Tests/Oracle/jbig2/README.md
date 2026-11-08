@@ -143,5 +143,5 @@ anywhere near it.
   the fixtures can be committed.
 
 Running a program is not linking to it. `SharpAstro.Jbig2` itself is clean-room
-from ITU-T T.88. See [`ROADMAP-pdf-codecs.md`](../../../../ROADMAP-pdf-codecs.md)
+from ITU-T T.88. See [`roadmap/pdf-codecs.md`](../../../../roadmap/pdf-codecs.md)
 for the full licence matrix.

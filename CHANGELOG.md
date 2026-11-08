@@ -772,7 +772,7 @@ decoded.
 
 **New package: `SharpAstro.Jpeg2000`** — a pure-managed, clean-room JPEG 2000 (ITU-T T.800 /
 ISO/IEC 15444-1, **Part 1**) decoder, aimed at PDF's `/JPXDecode` filter. This is rung 1 of the five
-in [`ROADMAP-jpx.md`](ROADMAP-jpx.md), and rung 1 here is unusually large on purpose: JPEG 2000 has
+in [`roadmap/jpx.md`](roadmap/jpx.md), and rung 1 here is unusually large on purpose: JPEG 2000 has
 no early pipeline stage that decodes anything on its own, so the rungs stage along *feature* axes
 rather than pipeline stages. Rung 1 is the whole pipeline — Annex A markers, tier-2 packet headers
 with tag trees, tier-1 EBCOT over the Annex D context tables, the reversible 5/3 inverse DWT, and
