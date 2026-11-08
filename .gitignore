@@ -264,3 +264,6 @@ __pycache__/
 BenchmarkDotNet.Artifacts/
 # Real-world WebP benchmark inputs fetched by fetch-webp-external.sh (third-party, not committed)
 benchmarks/SharpAstro.Codecs.Benchmarks/webp-inputs/external/
+
+# Real Canon HEIF/HEVC test files fetched by fetch-heif-external.sh (third-party, not committed; #66)
+tests/SharpAstro.Codecs.Tests/Fixtures/heif-external/
