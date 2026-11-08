@@ -643,6 +643,8 @@ internal sealed class HevcPictureDecoder
 
         var log2Sb = log2Size - 2;
         var sbWidth = 1 << log2Sb;
+        var subBlockOrder = HevcScan.Order(log2Sb, scanIdx);
+        var positionOrder = HevcScan.Order(2, scanIdx);
 
         // Find the sub-block and position of the last significant coefficient in scan order.
         var lastSubBlock = (1 << (2 * log2Sb)) - 1;
@@ -656,8 +658,8 @@ internal sealed class HevcPictureDecoder
                 if (--lastSubBlock < 0) throw new InvalidDataException("The last significant coefficient is outside its block.");
             }
             lastScanPos--;
-            xC = (HevcScan.X(log2Sb, scanIdx, lastSubBlock) << 2) + HevcScan.X(2, scanIdx, lastScanPos);
-            yC = (HevcScan.Y(log2Sb, scanIdx, lastSubBlock) << 2) + HevcScan.Y(2, scanIdx, lastScanPos);
+            xC = ((subBlockOrder[lastSubBlock] & 0xFF) << 2) + (positionOrder[lastScanPos] & 0xFF);
+            yC = ((subBlockOrder[lastSubBlock] >> 8) << 2) + (positionOrder[lastScanPos] >> 8);
         }
         while (xC != lastX || yC != lastY);
 
@@ -670,8 +672,8 @@ internal sealed class HevcPictureDecoder
 
         for (var i = lastSubBlock; i >= 0; i--)
         {
-            var xS = HevcScan.X(log2Sb, scanIdx, i);
-            var yS = HevcScan.Y(log2Sb, scanIdx, i);
+            var xS = subBlockOrder[i] & 0xFF;
+            var yS = subBlockOrder[i] >> 8;
             var right = xS + 1 < sbWidth && codedSubBlock[yS * 8 + xS + 1];
             var below = yS + 1 < sbWidth && codedSubBlock[(yS + 1) * 8 + xS];
 
@@ -701,14 +703,17 @@ internal sealed class HevcPictureDecoder
             if (coded)
             {
                 var previousCsbf = (right ? 1 : 0) | (below ? 2 : 0);
+                var sigContexts = SigContexts.AsSpan(SigContextRow(log2Size, chroma, scanIdx, previousCsbf, xS == 0 && yS == 0), 16);
                 for (var p = start; p >= 0; p--)
                 {
-                    var x = (xS << 2) + HevcScan.X(2, scanIdx, p);
-                    var y = (yS << 2) + HevcScan.Y(2, scanIdx, p);
+                    var xP = positionOrder[p] & 0xFF;
+                    var yP = positionOrder[p] >> 8;
+                    var x = (xS << 2) + xP;
+                    var y = (yS << 2) + yP;
                     bool significant;
                     if (p > 0 || !inferDc)
                     {
-                        significant = _cabac.Decision(HevcContext.SigCoeffFlag + SigContext(log2Size, chroma, scanIdx, x, y, xS, yS, previousCsbf)) == 1;
+                        significant = _cabac.Decision(HevcContext.SigCoeffFlag + sigContexts[(yP << 2) | xP]) == 1;
                         if (significant) inferDc = false;
                     }
                     else
@@ -772,6 +777,37 @@ internal sealed class HevcPictureDecoder
 
     private int LastPosition(int prefix) =>
         prefix <= 3 ? prefix : ((1 << ((prefix >> 1) - 1)) * (2 + (prefix & 1))) + _cabac.Bypass((prefix >> 1) - 1);
+
+    /// <summary>
+    /// <see cref="SigContext"/> for every case, built from it: the context depends on the block size, the
+    /// component, the scan, the coded-sub-block flags to the right and below, whether this is the first
+    /// sub-block, and the position inside the sub-block, and on nothing else. A row is 16 contexts indexed
+    /// <c>yP * 4 + xP</c>; <see cref="SigContextRow"/> finds it.
+    /// </summary>
+    private static readonly byte[] SigContexts = BuildSigContexts();
+
+    private static int SigContextRow(int log2Size, bool chroma, int scanIdx, int previousCsbf, bool firstSubBlock) =>
+        (((((log2Size - 2) * 2 + (chroma ? 1 : 0)) * 3 + scanIdx) * 4 + previousCsbf) * 2 + (firstSubBlock ? 0 : 1)) * 16;
+
+    private static byte[] BuildSigContexts()
+    {
+        var table = new byte[4 * 2 * 3 * 4 * 2 * 16];
+        for (var log2Size = 2; log2Size <= 5; log2Size++)
+            foreach (var chroma in new[] { false, true })
+                for (var scanIdx = 0; scanIdx < 3; scanIdx++)
+                    for (var csbf = 0; csbf < 4; csbf++)
+                        foreach (var first in new[] { true, false })
+                        {
+                            // Any sub-block other than the first stands for all of them: only xS > 0 || yS > 0 matters.
+                            int xS = 0, yS = first ? 0 : 1;
+                            if (!first && log2Size == 2) continue; // a 4x4 block is one sub-block
+                            var row = SigContextRow(log2Size, chroma, scanIdx, csbf, first);
+                            for (var yP = 0; yP < 4; yP++)
+                                for (var xP = 0; xP < 4; xP++)
+                                    table[row + (yP << 2) + xP] = (byte)SigContext(log2Size, chroma, scanIdx, (xS << 2) + xP, (yS << 2) + yP, xS, yS, csbf);
+                        }
+        return table;
+    }
 
     /// <summary>9.3.4.2.5: sig_coeff_flag's context.</summary>
     private static int SigContext(int log2Size, bool chroma, int scanIdx, int x, int y, int xS, int yS, int previousCsbf)

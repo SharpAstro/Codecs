@@ -5,7 +5,7 @@ namespace SharpAstro.Heif;
 
 /// <summary>
 /// A decoded HEIF image as full-range R'G'B' code values at its own bit depth: what the file's samples
-/// are after the YCbCr conversion, before any transfer function is undone. <see cref="ToLinearRgbaFloat"/>
+/// are after the YCbCr conversion, before any transfer function is undone. <see cref="ToLinearRgbaFloat(out ColorEncoding)"/>
 /// is the HDR projection for display.
 /// </summary>
 public sealed class HeifRgbImage
@@ -44,7 +44,15 @@ public sealed class HeifRgbImage
     /// <c>1.0 = SDR white</c>. The primaries are reported in <paramref name="encoding"/>, not converted.
     /// </summary>
     /// <exception cref="NotSupportedException">The transfer has no linearisation here (see <c>HdrTransfer.IsSupportedTransfer</c>).</exception>
-    public float[] ToLinearRgbaFloat(out ColorEncoding encoding)
+    public float[] ToLinearRgbaFloat(out ColorEncoding encoding) => ToLinearRgbaFloat(out encoding, -1);
+
+    /// <summary>
+    /// The same, with the rows filled by up to <paramref name="maxDegreeOfParallelism"/> threads at once (-1 for
+    /// as many as the machine runs). Each pixel is a function of its own samples alone, so the result does not
+    /// depend on how the rows were shared out; the fill is a table look-up and store stream, so the time is
+    /// mostly first touches of a fresh array of 16 bytes a pixel, which threads share well.
+    /// </summary>
+    internal float[] ToLinearRgbaFloat(out ColorEncoding encoding, int maxDegreeOfParallelism)
     {
         var transfer = ColorEncoding.Transfer;
         if (!HdrTransfer.IsSupportedTransfer(transfer))
@@ -53,30 +61,43 @@ public sealed class HeifRgbImage
         var pixels = Width * Height;
         var output = new float[(long)pixels * 4];
         var codes = 1 << BitDepth;
+        var samples = Samples;
+        // Bands of rows, about a quarter of a megapixel each, so a thumbnail stays on the calling thread.
+        var bandPixels = 1 << 18;
+        var bands = (int)Math.Max(1, (pixels + bandPixels - 1) / bandPixels);
+        var parallelism = new ParallelOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism };
         if (transfer == TransferFunction.Hlg)
         {
             // The HLG OOTF couples a pixel's channels through its luminance.
             var scene = new float[codes];
             HdrTransfer.BuildHlgSceneLightTable(BitDepth, fullRange: true, scene);
             var weights = LumaWeights.For(ColorEncoding.Primaries);
-            for (var p = 0; p < pixels; p++)
+            Parallel.For(0, bands, parallelism, band =>
             {
-                HdrTransfer.HlgSceneToLinear(scene[Samples[3 * p]], scene[Samples[3 * p + 1]], scene[Samples[3 * p + 2]], weights,
-                    out output[4 * p], out output[4 * p + 1], out output[4 * p + 2]);
-                output[4 * p + 3] = 1f;
-            }
+                var end = (int)Math.Min(pixels, (long)(band + 1) * bandPixels);
+                for (var p = band * bandPixels; p < end; p++)
+                {
+                    HdrTransfer.HlgSceneToLinear(scene[samples[3 * p]], scene[samples[3 * p + 1]], scene[samples[3 * p + 2]], weights,
+                        out output[4 * p], out output[4 * p + 1], out output[4 * p + 2]);
+                    output[4 * p + 3] = 1f;
+                }
+            });
         }
         else
         {
             var table = new float[codes];
             HdrTransfer.BuildLinearTable(transfer, ColorEncoding.Primaries, BitDepth, fullRange: true, table);
-            for (var p = 0; p < pixels; p++)
+            Parallel.For(0, bands, parallelism, band =>
             {
-                output[4 * p] = table[Samples[3 * p]];
-                output[4 * p + 1] = table[Samples[3 * p + 1]];
-                output[4 * p + 2] = table[Samples[3 * p + 2]];
-                output[4 * p + 3] = 1f;
-            }
+                var end = (int)Math.Min(pixels, (long)(band + 1) * bandPixels);
+                for (var p = band * bandPixels; p < end; p++)
+                {
+                    output[4 * p] = table[samples[3 * p]];
+                    output[4 * p + 1] = table[samples[3 * p + 1]];
+                    output[4 * p + 2] = table[samples[3 * p + 2]];
+                    output[4 * p + 3] = 1f;
+                }
+            });
         }
 
         encoding = new ColorEncoding
@@ -114,8 +135,16 @@ public static class HeifDecoder
     /// </summary>
     /// <exception cref="InvalidDataException">The file or its HEVC data is malformed.</exception>
     /// <exception cref="NotSupportedException">The image uses something this decoder does not handle (named in the message).</exception>
-    public static HeifRgbImage Decode(ReadOnlySpan<byte> file, HeifItem? item = null)
+    /// <param name="file">The whole HEIF file.</param>
+    /// <param name="item">The image item to decode; the primary item when null.</param>
+    /// <param name="maxDegreeOfParallelism">
+    /// How many of a grid's tiles may decode at once: -1 (the default) for as many as the machine runs, 1 to
+    /// decode on the calling thread alone. The result is the same either way.
+    /// </param>
+    public static HeifRgbImage Decode(ReadOnlySpan<byte> file, HeifItem? item = null, int maxDegreeOfParallelism = -1)
     {
+        if (maxDegreeOfParallelism is 0 or < -1)
+            throw new ArgumentOutOfRangeException(nameof(maxDegreeOfParallelism), maxDegreeOfParallelism, "Use -1 for no limit, or a positive count.");
         var heif = HeifReader.Read(file);
         var image = item is null ? heif.DescribePrimary(file) : heif.Describe(file, item);
         if (image.Item.Type == "grid")
@@ -135,15 +164,43 @@ public static class HeifDecoder
         {
             var tileWidth = (int)image.TileWidth;
             var tileHeight = (int)image.TileHeight;
+            // Everything that needs the file's bytes, and every refusal a tile's parameter sets carry, before
+            // any tile is decoded: a span cannot cross into the workers, and an unsupported tile 19 should not
+            // cost the decode of tiles 0 to 18.
+            var jobs = new List<(HevcDecoderConfiguration Coding, byte[] Data, int X0, int Y0)>();
             for (var t = 0; t < grid.TileItemIds.Count; t++)
             {
-                var tile = heif.GetItem(grid.TileItemIds[t])!;
                 int x0 = t % grid.Columns * tileWidth, y0 = t / grid.Columns * tileHeight;
                 if (x0 >= width || y0 >= height) continue; // a tile wholly outside the output size
-                var picture = HevcDecoder.Decode(heif.Describe(file, tile).Coding, heif.ReadItemData(file, tile));
-                colour ??= Colour.For(image, picture);
-                Convert(picture, colour, tileWidth, tileHeight, canvas, width, height, x0, y0);
+                var tile = heif.GetItem(grid.TileItemIds[t])!;
+                var coding = heif.Describe(file, tile).Coding;
+                var (sps, _) = HevcDecoder.ParameterSets(coding);
+                colour ??= Colour.For(image, sps.VideoSignal, sps.BitDepthLuma, sps.ChromaFormatIdc);
+                jobs.Add((coding, heif.ReadItemData(file, tile), x0, y0));
             }
+
+            // The tiles are independent pictures and write disjoint rectangles of the canvas, so they are decoded
+            // and converted in parallel; the result does not depend on the order. A failure stops the tiles after
+            // it (Break runs every one before it), and the first failing tile's exception is the one thrown, so a
+            // damaged file fails the same way however the work was scheduled.
+            var failures = new Exception?[jobs.Count];
+            var parallelism = new ParallelOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism };
+            Parallel.For(0, jobs.Count, parallelism, (j, state) =>
+            {
+                var job = jobs[j];
+                try
+                {
+                    var picture = HevcDecoder.Decode(job.Coding, job.Data);
+                    Convert(picture, colour!, tileWidth, tileHeight, canvas, width, height, job.X0, job.Y0);
+                }
+                catch (Exception e)
+                {
+                    failures[j] = e;
+                    state.Break();
+                }
+            });
+            if (failures.FirstOrDefault(e => e is not null) is { } failure)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
         }
         else
         {
@@ -237,7 +294,11 @@ public static class HeifDecoder
         /// From the <c>nclx</c> property; without one, from the HEVC VUI; without either, BT.709 primaries,
         /// the sRGB transfer and the BT.601 matrix at full range.
         /// </summary>
-        public static Colour For(HeifImage image, HevcPicture picture)
+        public static Colour For(HeifImage image, HevcPicture picture) =>
+            For(image, picture.VideoSignal, picture.BitDepthLuma, picture.ChromaFormatIdc);
+
+        /// <summary>The same, from what a picture's SPS says, so a grid's colour is known before a tile is decoded.</summary>
+        public static Colour For(HeifImage image, HevcVideoSignal? videoSignal, int bitDepth, int chromaFormatIdc)
         {
             ColorPrimaries primaries;
             TransferFunction transfer;
@@ -247,7 +308,7 @@ public static class HeifDecoder
             {
                 (primaries, transfer, matrix, fullRange) = (nclx.Primaries, nclx.Transfer, nclx.Matrix, nclx.FullRange);
             }
-            else if (picture.VideoSignal is { } vui)
+            else if (videoSignal is { } vui)
             {
                 primaries = (ColorPrimaries)(vui.Primaries ?? (int)ColorPrimaries.BT709);
                 transfer = (TransferFunction)(vui.Transfer ?? (int)TransferFunction.Srgb);
@@ -258,7 +319,7 @@ public static class HeifDecoder
             {
                 (primaries, transfer, matrix, fullRange) = (ColorPrimaries.BT709, TransferFunction.Srgb, MatrixCoefficients.BT470BG, true);
             }
-            return Create(picture.BitDepthLuma, picture.ChromaFormatIdc, primaries, transfer, matrix, fullRange);
+            return Create(bitDepth, chromaFormatIdc, primaries, transfer, matrix, fullRange);
         }
 
         internal static Colour Create(int bitDepth, int chromaFormatIdc, ColorPrimaries primaries, TransferFunction transfer,

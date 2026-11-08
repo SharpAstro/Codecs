@@ -11,6 +11,9 @@ internal static class HevcScan
     /// <summary><c>Orders[log2BlockSize][scanIdx]</c>: for each scan position, its (x, y) packed as <c>x | y &lt;&lt; 8</c>.</summary>
     private static readonly ushort[][][] Orders = Build();
 
+    /// <summary>One scan order: for each scan position, its (x, y) packed as <c>x | y &lt;&lt; 8</c>.</summary>
+    public static ushort[] Order(int log2BlockSize, int scanIdx) => Orders[log2BlockSize][scanIdx];
+
     public static int X(int log2BlockSize, int scanIdx, int position) => Orders[log2BlockSize][scanIdx][position] & 0xFF;
 
     public static int Y(int log2BlockSize, int scanIdx, int position) => Orders[log2BlockSize][scanIdx][position] >> 8;

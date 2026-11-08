@@ -1081,6 +1081,12 @@ touching it should know:
   shortcuts there; those tests are a tolerance, kept apart from the exact ones. libheif also transforms the
   Y'CbCr planes (so a rotated 4:2:2 image resamples chroma) and converts with the VUI when it rotates; the
   transform tests are built so neither matters. `imir` axis 0 swaps top and bottom.
+- **Speed (rung 5) is bit-identical and has a reference for every shortcut.** A grid's tiles decode in
+  parallel (`HeifDecoder.Decode`'s `maxDegreeOfParallelism`; the lowest-numbered failing tile's error is the
+  one thrown, however scheduled); the inverse transform runs in `Vector128<int>` lanes against
+  `InverseScalar`; CABAC reads from a 64-bit cache and decodes n bypass bins as one long division against
+  `BypassBinByBin`. The R7 went from 4.0 s to 0.27 s. Time the public decode in a lean process:
+  `--heif-report` (benchmarks) holds about 1 GB of other arrays and reads the parallel decode at 0.6 s.
 
 ## Oracle harnesses (all codecs)
 

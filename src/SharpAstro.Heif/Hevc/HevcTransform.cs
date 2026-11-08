@@ -1,3 +1,7 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+
 namespace SharpAstro.Heif.Hevc;
 
 /// <summary>
@@ -77,9 +81,21 @@ internal static class HevcTransform
 
     /// <summary>
     /// 8.6.4.2: the two-stage inverse transform, columns then rows, of the scaled coefficients
-    /// (<c>[y * N + x]</c>) into residuals in the same layout.
+    /// (<c>[y * N + x]</c>) into residuals in the same layout. <see cref="InverseVector"/> wherever the
+    /// hardware has 128-bit integer vectors (SSE2, NEON: essentially always), else <see cref="InverseScalar"/>;
+    /// the two are equal bit for bit (<c>HevcTransformEquivalenceTests</c>).
     /// </summary>
-    public static void Inverse(Span<int> coefficients, Span<int> residual, int log2N, bool dst, int bitDepth)
+    public static void Inverse(ReadOnlySpan<int> coefficients, Span<int> residual, int log2N, bool dst, int bitDepth)
+    {
+        if (Vector128.IsHardwareAccelerated) InverseVector(coefficients, residual, log2N, dst, bitDepth);
+        else InverseScalar(coefficients, residual, log2N, dst, bitDepth);
+    }
+
+    /// <summary>
+    /// The inverse transform as 8.6.4.2 writes it, one output sample at a time: the reference the vector form
+    /// is held to.
+    /// </summary>
+    internal static void InverseScalar(ReadOnlySpan<int> coefficients, Span<int> residual, int log2N, bool dst, int bitDepth)
     {
         var n = 1 << log2N;
         var basis = dst ? Dst : Dct[log2N - 2];
@@ -116,5 +132,95 @@ internal static class HevcTransform
                 residual[y * n + x] = (sum + round) >> shift;
             }
         }
+    }
+
+    /// <summary>
+    /// The same sums, four outputs at a time in <see cref="Vector128{T}"/> int lanes, over only the part of the
+    /// block that can be non-zero. Both stages are a row of inputs times one basis value, added into a row of
+    /// accumulators, so every lane does exactly the scalar form's integer arithmetic (in another order, which
+    /// integer addition does not notice: no sum here comes near 2^31, as coefficients and intermediates are
+    /// 16-bit and the basis below 91 in magnitude). Rows of coefficients below the last non-zero one, and
+    /// column groups right of the last non-zero column, contribute nothing and are not visited; a stage 1
+    /// column group with no coefficient is zero in the intermediate, exactly as <c>(0 + 64) &gt;&gt; 7</c> is.
+    /// </summary>
+    internal static void InverseVector(ReadOnlySpan<int> coefficients, Span<int> residual, int log2N, bool dst, int bitDepth)
+    {
+        var n = 1 << log2N;
+        var size = n * n;
+        if (coefficients.Length < size || residual.Length < size) throw new ArgumentException("The block is larger than its buffers.");
+        ReadOnlySpan<int> basis = dst ? Dst : Dct[log2N - 2];
+
+        // The last row with a non-zero coefficient, and the last column group of four with one.
+        int lastRow = -1, lastGroup = -1;
+        ref var c = ref MemoryMarshal.GetReference(coefficients);
+        for (var k = 0; k < n; k++)
+        {
+            for (var g = n / 4 - 1; g > lastGroup; g--)
+            {
+                if (Vector128.LoadUnsafe(ref c, (nuint)(k * n + 4 * g)) != Vector128<int>.Zero)
+                {
+                    lastGroup = g;
+                    break;
+                }
+            }
+            if (lastGroup >= 0 && lastRow < k && RowHasNonZero(ref c, k * n, lastGroup)) lastRow = k;
+        }
+        if (lastRow < 0)
+        {
+            // (0 + 64) >> 7 is 0, and (0 + round) >> shift is 0: an all-zero block has an all-zero residual.
+            residual[..size].Clear();
+            return;
+        }
+
+        Span<int> intermediate = stackalloc int[size];
+        ref var b = ref MemoryMarshal.GetReference(basis);
+        ref var m = ref MemoryMarshal.GetReference(intermediate);
+        var groups = lastGroup + 1;
+        var low = Vector128.Create((int)short.MinValue);
+        var high = Vector128.Create((int)short.MaxValue);
+        var r64 = Vector128.Create(64);
+
+        // Stage 1: intermediate[y][x] = clip16((sum over k of c[k][x] * basis[k][y] + 64) >> 7).
+        for (var y = 0; y < n; y++)
+        {
+            for (var g = 0; g < groups; g++)
+            {
+                var acc = Vector128<int>.Zero;
+                for (var k = 0; k <= lastRow; k++)
+                    acc += Vector128.LoadUnsafe(ref c, (nuint)(k * n + 4 * g)) * Vector128.Create(Unsafe.Add(ref b, k * n + y));
+                acc = Vector128.Min(Vector128.Max(Vector128.ShiftRightArithmetic(acc + r64, 7), low), high);
+                acc.StoreUnsafe(ref m, (nuint)(y * n + 4 * g));
+            }
+            // Column groups with no coefficient stay zero; stage 2 never reads past 4 * groups.
+        }
+
+        // Stage 2: residual[y][x] = (sum over k of intermediate[y][k] * basis[k][x] + round) >> (20 - bitDepth).
+        var shift = 20 - bitDepth;
+        var round = Vector128.Create(1 << (shift - 1));
+        var width = 4 * groups;
+        ref var r = ref MemoryMarshal.GetReference(residual);
+        Span<Vector128<int>> row = stackalloc Vector128<int>[8];
+        var outGroups = n / 4;
+        for (var y = 0; y < n; y++)
+        {
+            row[..outGroups].Clear();
+            for (var k = 0; k < width; k++)
+            {
+                var v = Unsafe.Add(ref m, y * n + k);
+                if (v == 0) continue;
+                var s = Vector128.Create(v);
+                for (var g = 0; g < outGroups; g++)
+                    row[g] += s * Vector128.LoadUnsafe(ref b, (nuint)(k * n + 4 * g));
+            }
+            for (var g = 0; g < outGroups; g++)
+                Vector128.ShiftRightArithmetic(row[g] + round, shift).StoreUnsafe(ref r, (nuint)(y * n + 4 * g));
+        }
+    }
+
+    private static bool RowHasNonZero(ref int c, int start, int lastGroup)
+    {
+        for (var g = 0; g <= lastGroup; g++)
+            if (Vector128.LoadUnsafe(ref c, (nuint)(start + 4 * g)) != Vector128<int>.Zero) return true;
+        return false;
     }
 }

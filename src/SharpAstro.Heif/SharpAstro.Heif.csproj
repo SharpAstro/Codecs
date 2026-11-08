@@ -17,8 +17,8 @@
     <PackageId>SharpAstro.Heif</PackageId>
     <Product>SharpAstro.Heif</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed HEIF (ISO/IEC 23008-12) container reader for .NET, written clean-room from the specifications: item structure, grid items, image properties (ispe, colr nclx/ICC, pixi, irot, imir, clap) and the HEVC decoder configuration and parameter sets (ITU-T H.265). Aimed at camera HEIF stills such as Canon's 10-bit HDR PQ .HIF. AOT-compatible. HEVC pixel decoding is not part of this release.</Description>
-    <PackageTags>heif heic hif isobmff hevc h265 hvcc canon hdr pq image container aot</PackageTags>
+    <Description>Pure-managed HEIF (ISO/IEC 23008-12) reader and decoder for .NET, written clean-room from the specifications: item structure, grid items, image properties (ispe, colr nclx/ICC, pixi, irot, imir, clap) and the HEVC decoder configuration and parameter sets (ITU-T H.265). Aimed at camera HEIF stills such as Canon's 10-bit HDR PQ .HIF. Decodes HEVC intra stills (clean-room from H.265, bit-exact against ffmpeg) inside the envelope camera files use, composes grids in parallel and applies clap/irot/imir, and converts to R'G'B' with an HDR (PQ/HLG) linear-float projection. Registered with the SharpAstro.Codecs facade. AOT-compatible.</Description>
+    <PackageTags>heif heic hif isobmff hevc h265 hvcc canon hdr pq image decoder container aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
@@ -41,6 +41,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Benchmarks" />
   </ItemGroup>
 
 </Project>

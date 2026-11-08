@@ -28,6 +28,13 @@ internal static class Program
             return;
         }
 
+        // dotnet run -c Release --project benchmarks/SharpAstro.Codecs.Benchmarks -- --heif-report [--runs=N]
+        if (args.Length > 0 && args[0] == "--heif-report")
+        {
+            Environment.Exit(HeifDecodeReport.Run(args));
+            return;
+        }
+
         BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }
