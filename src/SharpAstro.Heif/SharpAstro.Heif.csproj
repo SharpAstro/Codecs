@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+    <!-- Provenance. The container side is written from ISO/IEC 14496-12 (ISOBMFF) and
+         ISO/IEC 23008-12 (HEIF); the HEVC side from ITU-T H.265. Clean-room, for the same
+         licence arithmetic as SharpAstro.Jbig2 and SharpAstro.Jpeg2000: this repo is
+         Unlicense, so notice-retaining or copyleft code cannot be absorbed. libheif and
+         libde265 (LGPL), ffmpeg (LGPL/GPL) and the HM reference decoder (BSD, notice-retaining)
+         are oracle BINARIES only, never port sources. See roadmap/heif.md. -->
+
+    <PackageId>SharpAstro.Heif</PackageId>
+    <Product>SharpAstro.Heif</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>Pure-managed HEIF (ISO/IEC 23008-12) container reader for .NET, written clean-room from the specifications: item structure, grid items, image properties (ispe, colr nclx/ICC, pixi, irot, imir, clap) and the HEVC decoder configuration and parameter sets (ITU-T H.265). Aimed at camera HEIF stills such as Canon's 10-bit HDR PQ .HIF. AOT-compatible. HEVC pixel decoding is not part of this release.</Description>
+    <PackageTags>heif heic hif isobmff hevc h265 hvcc canon hdr pq image container aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../UNLICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The CICP enums (ColorPrimaries / TransferFunction / MatrixCoefficients) that an nclx
+         colour box carries, and later the IImageDecoder contract. -->
+    <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
+</Project>
