@@ -1,8 +1,7 @@
 namespace SharpAstro.Heif.Hevc;
 
 /// <summary>
-/// The slice segment header (H.265 7.3.6.1) of an intra slice of an IDR picture, the only kind rung 2
-/// decodes, with the byte offset in the RBSP where its slice data (and so its CABAC stream) starts.
+/// The slice segment header (H.265 7.3.6.1) of an intra slice of an IDR picture, the only kind decoded, with the byte offset in the RBSP where its slice data (and so its CABAC stream) starts.
 /// Everything a still intra picture can carry that this decoder does not implement is refused here by
 /// name, before any slice data is read.
 /// </summary>
@@ -16,6 +15,18 @@ internal sealed record HevcSliceHeader
 
     public required int CbQpOffset { get; init; }
     public required int CrQpOffset { get; init; }
+
+    /// <summary>slice_sao_luma_flag and slice_sao_chroma_flag: whether this slice's CTBs carry SAO parameters.</summary>
+    public bool SaoLuma { get; init; }
+    public bool SaoChroma { get; init; }
+
+    /// <summary>slice_deblocking_filter_disabled_flag, and the offsets the filter uses when it is not (7.4.7.1).</summary>
+    public bool DeblockingDisabled { get; init; } = true;
+    public int BetaOffsetDiv2 { get; init; }
+    public int TcOffsetDiv2 { get; init; }
+
+    /// <summary>slice_loop_filter_across_slices_enabled_flag: the filters may cross this slice's left and upper boundary.</summary>
+    public bool LoopFilterAcrossSlices { get; init; }
 
     /// <summary>The first byte of slice_segment_data() in the RBSP, after byte_alignment().</summary>
     public required int DataOffset { get; init; }
@@ -53,12 +64,11 @@ internal sealed record HevcSliceHeader
         if (pps.OutputFlagPresent) r.Flag(); // pic_output_flag
         // colour_plane_id would follow for separate colour planes, which the decoder refuses up front.
 
+        bool saoLuma = false, saoChroma = false;
         if (sps.SampleAdaptiveOffset)
         {
-            var saoLuma = r.Flag();
-            var saoChroma = sps.ChromaFormatIdc != 0 && r.Flag();
-            if (saoLuma || saoChroma)
-                throw new NotSupportedException("Sample adaptive offset is not applied yet (rung 4).");
+            saoLuma = r.Flag();
+            saoChroma = sps.ChromaFormatIdc != 0 && r.Flag();
         }
 
         var minQp = -6 * (sps.BitDepthLuma - 8);
@@ -76,19 +86,21 @@ internal sealed record HevcSliceHeader
         if (pps.ChromaQpOffsetList && r.Flag())
             throw new NotSupportedException("CU chroma QP offsets are not decoded (rung 4).");
 
+        // Without an override the slice takes the PPS's deblocking settings (7.4.7.1).
         var deblockingDisabled = pps.DeblockingDisabled;
+        int beta = pps.BetaOffsetDiv2, tc = pps.TcOffsetDiv2;
         if (pps.DeblockingOverrideEnabled && r.Flag()) // deblocking_filter_override_flag
         {
             deblockingDisabled = r.Flag();
             if (!deblockingDisabled)
             {
-                r.Se(-6, 6, "slice_beta_offset_div2");
-                r.Se(-6, 6, "slice_tc_offset_div2");
+                beta = r.Se(-6, 6, "slice_beta_offset_div2");
+                tc = r.Se(-6, 6, "slice_tc_offset_div2");
             }
         }
-        if (!deblockingDisabled)
-            throw new NotSupportedException("The deblocking filter is not applied yet (rung 4); this slice has it enabled.");
-        // slice_loop_filter_across_slices_enabled_flag is present only when SAO or deblocking is on, so never here.
+        var across = pps.LoopFilterAcrossSlices;
+        if (pps.LoopFilterAcrossSlices && (saoLuma || saoChroma || !deblockingDisabled))
+            across = r.Flag(); // slice_loop_filter_across_slices_enabled_flag
 
         if (pps.Tiles || pps.EntropyCodingSync)
         {
@@ -114,6 +126,12 @@ internal sealed record HevcSliceHeader
             SliceQpY = qp,
             CbQpOffset = cb,
             CrQpOffset = cr,
+            SaoLuma = saoLuma,
+            SaoChroma = saoChroma,
+            DeblockingDisabled = deblockingDisabled,
+            BetaOffsetDiv2 = beta,
+            TcOffsetDiv2 = tc,
+            LoopFilterAcrossSlices = across,
             DataOffset = (int)(r.BitPosition >> 3),
         };
     }

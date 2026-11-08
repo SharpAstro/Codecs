@@ -24,7 +24,9 @@ internal static class HevcContext
     public const int SigCoeffFlag = CodedSubBlockFlag + 4;   // 42
     public const int Greater1Flag = SigCoeffFlag + 42;       // 24
     public const int Greater2Flag = Greater1Flag + 24;       // 6
-    public const int Count = Greater2Flag + 6;
+    public const int SaoMergeFlag = Greater2Flag + 6;        // 1, shared by sao_merge_left_flag and sao_merge_up_flag
+    public const int SaoTypeIdx = SaoMergeFlag + 1;          // 1 (bin 0; bin 1 is bypass), luma and chroma
+    public const int Count = SaoTypeIdx + 1;
 
     /// <summary>initValue per context, in the layout above.</summary>
     public static ReadOnlySpan<byte> IntraInitValues =>
@@ -46,6 +48,8 @@ internal static class HevcContext
         140, 92, 137, 138, 140, 152, 138, 139, 153, 74, 149, 92,               // coeff_abs_level_greater1_flag (luma)
         139, 107, 122, 152, 140, 179, 166, 182, 140, 227, 122, 197,            //   (chroma from 16)
         138, 153, 136, 167, 152, 152,                                          // coeff_abs_level_greater2_flag
+        153,                                                                   // sao_merge_left_flag, sao_merge_up_flag
+        200,                                                                   // sao_type_idx_luma, sao_type_idx_chroma
     ];
 }
 

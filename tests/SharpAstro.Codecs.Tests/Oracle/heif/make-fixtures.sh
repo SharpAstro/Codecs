@@ -15,7 +15,9 @@
 # program, and its output is data. Same arrangement as the committed jbig2enc fixtures.
 #
 # x265 is not byte-reproducible from run to run even single-threaded (sizes move by a few bytes), so
-# regenerating rewrites every fixture and its digest together; never one without the other.
+# regenerating rewrites a fixture and its digest together; never one without the other. Name fixtures
+# on the command line to (re)generate only those (their digest lines are replaced, the rest kept):
+#   make-fixtures.sh x265-420p8-deblock x265-420p10-sao
 #
 # The expected output is ffmpeg's decode, and a fixture is committed only when libde265, an
 # independent decoder, produces the same bytes: two decoders agreeing is the check that the expected
@@ -36,7 +38,14 @@ ENCODERS="$(ffmpeg -hide_banner -encoders 2> /dev/null)"
 case "$ENCODERS" in *libx265*) ;; *) echo "[hevc fixtures] this ffmpeg has no libx265" >&2; exit 1 ;; esac
 
 mkdir -p "$OUT"
-printf 'name\twidth\theight\tpix_fmt\tsha256_of_decoded_planes\n' > "$DIGESTS"
+ONLY=" $* "
+if [ $# -eq 0 ] || [ ! -f "$DIGESTS" ]; then
+    printf 'name\twidth\theight\tpix_fmt\tsha256_of_decoded_planes\n' > "$DIGESTS"
+else
+    # Keep every other fixture's line; the named ones are written again below.
+    awk -F '\t' -v only="$ONLY" 'NR == 1 || index(only, " " $1 " ") == 0' "$DIGESTS" > "$WORK/digests"
+    cp "$WORK/digests" "$DIGESTS"
+fi
 
 # Four sources in a 2x2 mosaic: fractal edges in every direction (all the angles), smooth gradients
 # (planar, large blocks, strong smoothing), test bars with text (sharp horizontal and vertical edges),
@@ -72,11 +81,16 @@ lists() {
 # One intra (IDR) picture, with everything rung 2 refuses switched off; per-fixture parameters follow.
 BASE="log-level=error:keyint=1:no-open-gop=1:no-sao=1:no-deblock=1:no-signhide=1:no-wpp=1:no-info=1:rd=6:rdoq-level=2:frame-threads=1:pools=none"
 
-fixture() { # name width height pix_fmt rate-control x265-params [source-size]
-    local name="$1" width="$2" height="$3" format="$4" rate="$5" params="$6" source="${7:-$2x$3}"
+# Rung 4's loop filters: the same, with SAO and deblocking left to each fixture.
+LOOP_BASE="log-level=error:keyint=1:no-open-gop=1:no-signhide=1:no-wpp=1:no-info=1:rd=6:rdoq-level=2:frame-threads=1:pools=none"
+
+fixture() { # name width height pix_fmt rate-control x265-params [source-size] [base] [extra filter]
+    local name="$1" width="$2" height="$3" format="$4" rate="$5" params="$6" source="${7:-$2x$3}" base="${8:-$BASE}" extra="${9:+,$9}"
+    [ -z "$source" ] && source="${width}x${height}"
+    if [ "$ONLY" != "  " ] && [[ "$ONLY" != *" $name "* ]]; then return 0; fi
     local sw="${source%x*}" sh="${source#*x}"
-    ffmpeg -hide_banner -v error -y -filter_complex "$(mosaic "$sw" "$sh"),scale=${width}:${height}:flags=bicubic,format=$format" \
-        -frames:v 1 -c:v libx265 $rate -x265-params "$BASE:$params" -f hevc "$WORK/$name.hevc"
+    ffmpeg -hide_banner -v error -y -filter_complex "$(mosaic "$sw" "$sh"),scale=${width}:${height}:flags=bicubic${extra},format=$format" \
+        -frames:v 1 -c:v libx265 $rate -x265-params "$base:$params" -f hevc "$WORK/$name.hevc"
     ffmpeg -hide_banner -v error -y -f hevc -i "$WORK/$name.hevc" -frames:v 1 -f rawvideo -pix_fmt "$format" "$WORK/$name.ffmpeg.yuv"
     "$DEC265" -q -o "$WORK/$name.de265.yuv" "$WORK/$name.hevc" > /dev/null 2>&1 || true
     if ! cmp -s "$WORK/$name.ffmpeg.yuv" "$WORK/$name.de265.yuv"; then
@@ -108,5 +122,29 @@ fixture x265-420p10-chromaqp-lists 256 192 yuv420p10le "-crf 37" "ctu=32:min-cu-
 fixture x265-422p12 128 96 yuv422p12le "-crf 20" "ctu=32:min-cu-size=8"
 # 4:2:2 8-bit, CTB 16, mid QP.
 fixture x265-422p8-ctu16 128 96 yuv422p "-crf 18" "ctu=16:min-cu-size=8:max-tu-size=16:tu-intra-depth=2"
+
+# ---- rung 4: the loop filters ---------------------------------------------------------------------
+# Deblocking alone at a high QP, so strong and weak luma filtering and chroma edges all occur; 4:2:0 8-bit.
+fixture x265-420p8-deblock 256 192 yuv420p "-crf 36" "ctu=32:min-cu-size=8:no-sao=1" "" "$LOOP_BASE"
+# Deblocking with beta and tc offsets, in 4:2:2 10-bit (the Canon format) with chroma QP offsets, which
+# the chroma filter's QpC takes from the PPS alone.
+fixture x265-422p10-deblock-offsets 256 192 yuv422p10le "-crf 32" "ctu=64:min-cu-size=8:no-sao=1:deblock=2,-2:cbqpoffs=-4:crqpoffs=3" "" "$LOOP_BASE"
+# SAO alone (band and every edge class), 4:2:0 10-bit.
+fixture x265-420p10-sao 256 192 yuv420p10le "-crf 30" "ctu=32:min-cu-size=8:no-deblock=1:sao=1" "" "$LOOP_BASE"
+# Both filters, the way a camera or phone encoder ships them, in 4:2:2 10-bit, CTB 16 (many CTB edges).
+fixture x265-422p10-loopfilters 256 192 yuv422p10le "-crf 30" "ctu=16:min-cu-size=8:sao=1" "" "$LOOP_BASE"
+# Both filters at 12 bits (SAO offsets up to 31, bandShift 7) and at 8 bits (offsets up to 7) with a
+# conformance window, so the picture edge the filters stop at is not the output's edge.
+fixture x265-420p12-loopfilters 256 192 yuv420p12le "-crf 30" "ctu=32:min-cu-size=8:sao=1" "" "$LOOP_BASE"
+fixture x265-420p8-loopfilters-window 230 166 yuv420p "-crf 33" "ctu=32:sao=1" 232x168 "$LOOP_BASE"
+# Table 8-12 entry by entry: a wrong beta' or tC' changes only the edges whose Q selects it, so between
+# them the fixtures must reach every Q both tables define. Strong adaptive quantisation in 8x8 groups
+# spreads each picture's QPs; the offsets push Q to the top and bottom of both tables.
+AQ="ctu=32:min-cu-size=8:no-sao=1:aq-mode=2:aq-strength=3:qg-size=8"
+fixture x265-420p8-deblock-highqp 256 192 yuv420p "-crf 44" "$AQ:deblock=0,0" "" "$LOOP_BASE"
+fixture x265-420p8-deblock-highqp-offsets 256 192 yuv420p "-crf 44" "$AQ:deblock=6,6" "" "$LOOP_BASE"
+fixture x265-420p8-deblock-lowqp 256 192 yuv420p "-crf 19" "$AQ:deblock=0,0" "" "$LOOP_BASE"
+# (No fixture has a SAO band position of 29-31, whose four bands wrap past band 31 to band 0: x265 searches
+# positions 0-28 only, even for a picture near white, so it never writes one.)
 
 echo "[hevc fixtures] wrote $(($(wc -l < "$DIGESTS") - 1)) fixtures and $DIGESTS"

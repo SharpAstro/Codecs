@@ -87,7 +87,7 @@ size (`HevcPicture`; the conformance window and the crop to `ispe` are rung 3's)
 
 ```
 HevcDecoder          (parameter sets from hvcC, the envelope check, the size charge, slice dispatch)
-  → HevcSliceHeader  (7.3.6.1 for IDR I slices; refuses SAO/deblocking on, dependent slices, tiles/WPP)
+  → HevcSliceHeader  (7.3.6.1 for IDR I slices, loop-filter settings included; refuses dependent slices, tiles/WPP)
   → HevcCabac        (9.3: engine, decision/bypass/terminate; initType 0 contexts; over-read capped)
   → HevcPictureDecoder (7.3.8 coding quadtree / unit / transform tree / unit / residual_coding;
                        6.4.1 z-scan availability; 8.4.2 MPM; 8.4.3 + Table 8-3 chroma modes;
@@ -96,6 +96,8 @@ HevcDecoder          (parameter sets from hvcC, the envelope check, the size cha
   → HevcTransform    (8.6.2-8.6.4: scaling with lists, DST 4x4, DCT 4-32, the two-stage shifts)
   HevcScalingList    (7.3.4 / 7.4.5: coded lists kept, defaults, ScalingFactor expansion with DC)
   HevcScan           (6.5.3-6.5.5 scan orders)
+  HevcPictureDecoder.LoopFilter (rung 4: 7.3.8.3 sao() per CTB; 8.7.2 deblocking and 8.7.3 SAO over the
+                       finished picture)
 ```
 
 **The envelope as shipped** is wider than the Canon one, because the fixtures below validate more:
@@ -104,7 +106,8 @@ lists (default and coded); `cu_qp_delta` at any depth; PPS and slice chroma QP o
 intra smoothing; partial CTBs at the picture edge; several slices. Refused by name, before any sample is
 allocated, with the rung that owns it: 4:4:4 and monochrome, mixed bit depths, PCM, every range-extension
 tool, sign data hiding, transform skip, transquant bypass, tiles, WPP, dependent slices, cross-component
-prediction, chroma QP offset lists, non-IDR pictures, SAO and deblocking when switched on.
+prediction, chroma QP offset lists, non-IDR pictures. (Rung 4 has since added deblocking and SAO; see
+there for what of them is still refused.)
 
 **Validated by, strongest first:**
 
@@ -191,13 +194,53 @@ Alpha (`auxl`) and depth items are not composed.
 SdlVulkan.Renderer issue #165 (flight SDL165) is the display side: an opt-in scRGB swapchain and float
 textures, with no cost to the SDR path.
 
-### Rung 4: the rest of intra HEVC
+### Rung 4: the rest of intra HEVC (in progress)
 
-Deblocking (8.7.2) and SAO (8.7.3), transform skip, sign data hiding, PCM, transquant bypass, tiles and
-WPP entry points, dependent slices, 4:4:4 and monochrome, CRA/BLA pictures, the range-extension tools.
-Each needs an oracle stream that uses it: x265 through `make-fixtures.sh` can make most of them (SAO,
-deblocking, sign hiding, transform skip, WPP and so several slices, 4:4:4), the JCT-VC conformance
-suite the rest.
+In the order real files need them: deblocking and SAO (almost every HEIC outside Canon's has both on),
+then sign data hiding and transform skip (x265 defaults), then 4:4:4 and monochrome, then the rest
+(tiles and WPP entry points, so several x265 slices; dependent slices, PCM, transquant bypass, CRA/BLA
+pictures, the range-extension tools). Each needs an oracle stream that uses it: x265 through
+`make-fixtures.sh` can make most of them, the JCT-VC conformance suite the rest.
+
+**Deblocking and SAO (done).** `HevcPictureDecoder.LoopFilter.cs`, from 8.7.2, 8.7.3 and the `sao()`
+syntax of 7.3.8.3, applied to the whole picture after its last slice (8.7 has every intra prediction read
+unfiltered samples): vertical edges of the whole picture, then horizontal edges over the result, then SAO
+over a copy of the deblocked planes. In an intra picture the boundary strength of every transform edge on
+the 8x8 grid is 2, and those are all the edges (an NxN prediction split forces the transform split), so the
+decoder records transform edges as it goes (two bits per 4x4 block) and nothing else. Each edge belongs to
+the coding unit on its right or below, whose slice gives the beta and tC offsets; the chroma filter's QP
+is the luma QPs' mean plus the **PPS** chroma offset alone, through Table 8-10 for 4:2:0.
+
+Validated by ten more x265 fixtures, each committed only when ffmpeg and libde265 agree, all matching on
+the first run:
+
+| Fixture | What it is for |
+|---|---|
+| `x265-420p8-deblock` | deblocking alone at a high QP: strong, weak (and p1/q1) luma, skipped segments, chroma |
+| `x265-422p10-deblock-offsets` | 4:2:2 10-bit, CTB 64, beta -2 and tC +2 offsets, PPS chroma QP offsets -4 / +3 |
+| `x265-420p10-sao` | SAO alone: band and edge offsets, merges left and up, offsets past 8-bit's cMax |
+| `x265-422p10-loopfilters` | both, in the Canon format, CTB 16 (many CTB edges), SAO in 4:2:2 chroma |
+| `x265-420p12-loopfilters` | both at 12 bits (SAO offsets to 22 of 31, tC and beta scaled by 16) |
+| `x265-420p8-loopfilters-window` | both, a conformance window, every edge class, 8-bit's largest offset 7 |
+| `x265-420p8-deblock-highqp`, `-highqp-offsets`, `-lowqp` | QPs spread by strong adaptive quantisation, offsets at +6: between them every Q of Table 8-12 |
+
+`Fixture_CoversWhatItIsFor` pins each fixture's purpose from the decoder's statistics, and
+`Fixtures_TogetherReachEveryDeblockingTableEntry` requires every beta' (Q 16-51) and tC' (Q 18-53) entry
+to be looked up by some fixture. That test exists because the first mutation check put a wrong tC' at Q 47
+and nothing noticed: the first fixtures reached beta Q 19-35 and tC Q 23-39 only. x265 needed coaxing to
+use SAO at all: at 128x96, or at a high CRF, it chose "off" in every CTB.
+
+**Still refused or unverified, and why:**
+
+- **A slice after the first that keeps the filters off its boundary**
+  (`slice_loop_filter_across_slices_enabled_flag` 0): refused. It changes which samples both filters may
+  read and change there, and x265 writes several slices only with WPP, which is not decoded yet.
+- **Scaled SAO offsets** (`log2_sao_offset_scale`, a range-extension PPS field): refused; x265 never writes
+  one.
+- **A SAO band position of 29-31**, whose four bands wrap past band 31 to band 0: implemented as 8.7.3.2
+  says, and in no fixture. x265 searches band positions 0-28 only, even for a picture near white (tried).
+- **Slice chroma QP offsets in the chroma deblocking QP**: the spec takes the PPS offset alone; x265 writes
+  no slice chroma offsets, so no fixture can tell the two apart.
 
 ### Rung 5: speed (done)
 
@@ -369,6 +412,28 @@ them; one is unreachable.
 | the last failing tile's error thrown, not the first | **nothing at first**: the damaged tile failed at once, so `Break` stopped the loop before the second damaged tile started. The test now cuts the earlier tile's slice in half (it fails after decoding half a picture) and gives the later one no slice (it fails at once) |
 | float bands one pixel short; HLG bands a pixel late | **nothing at first**: the test compared the parallel fill with the same banded code on one thread, which shares any banding bug. It now compares with the per-pixel loop written out in the test, at 1, 3 and all threads |
 | `ReadBits` with a single shift, so a count of 0 reads 64 bits | not caught, and cannot be: nothing reads 0 bits (renormalisation shifts by at least 1, `Bypass(0)` returns first). The two-step shift is a guard, kept |
+
+## Mutation check (rung 4: deblocking and SAO)
+
+Twenty-three deliberate bugs against the HEIF and HEVC tests. Sixteen of the first 21 were caught at once;
+the misses led to the table fixtures and to two refusals; four cannot be caught by any stream here.
+
+| Deliberate bug | Caught by |
+|---|---|
+| beta' at Q 29 21 for 20 | the three fixtures with both filters (6 tests) |
+| tC' at Q 47 12 for 13 | **nothing at first**: no fixture reached Q 47. Now both high-QP fixtures |
+| beta' at Q 16 7 for 6; tC' at Q 18 2 for 1 | the low-QP fixture alone, each |
+| strong filter's p2 with 3p3 + 2p2; flatness test against beta >> 2; weak step limit 8 tC; dEp/dEq threshold beta >> 3; weak p1 step with -delta; luma QP from q alone; tC without the 2(bS - 1) term; horizontal edges before vertical; chroma vertical edges every 4 chroma samples | every deblocking fixture (10 tests each) |
+| chroma QP without Table 8-10 | the two 4:2:0 8-bit fixtures with deblocking |
+| Cb and Cr PPS offsets swapped | only `x265-422p10-deblock-offsets`, the one fixture with different offsets |
+| SAO edge classes 2 and 3 swapped | the SAO fixtures (6 tests) |
+| SAO edgeIdx 0 and 1 left unmapped | the SAO fixtures (8 tests) |
+| SAO in place, reading samples it has already changed | the SAO fixtures (8 tests) |
+| edge offsets 3 and 4 positive | only `x265-420p8-loopfilters-window`, the one fixture that uses class 3 enough |
+| SAO offsets without `log2_sao_offset_scale` | cannot be: x265 writes no scale. Now refused instead |
+| SAO band position not wrapped past band 31 | cannot be: x265 never writes positions 29-31 |
+| chroma deblocking QP with the slice offset added | cannot be: x265 writes no slice chroma offsets |
+| transform edges recorded off the 8x8 grid | cannot be, and is not a bug: the filters visit the 8x8 grid only, so the extra marks are never read |
 
 ## Code shared with the other codecs
 

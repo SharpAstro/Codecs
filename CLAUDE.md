@@ -1081,6 +1081,12 @@ touching it should know:
   shortcuts there; those tests are a tolerance, kept apart from the exact ones. libheif also transforms the
   Y'CbCr planes (so a rotated 4:2:2 image resamples chroma) and converts with the VUI when it rotates; the
   transform tests are built so neither matters. `imir` axis 0 swaps top and bottom.
+- **Deblocking and SAO (rung 4, first part)** run over the finished picture in `HevcPictureDecoder.LoopFilter.cs`.
+  A deblocking table is checked only as far as the fixtures reach into it: the first fixtures reached half
+  of Table 8-12 and a wrong tC' at Q 47 went unseen, so `Fixtures_TogetherReachEveryDeblockingTableEntry`
+  now requires every entry, and three adaptive-quantisation fixtures supply them. x265 picks SAO "off"
+  for small or high-CRF pictures; check `Fixture_CoversWhatItIsFor` after regenerating. Name fixtures on
+  `make-fixtures.sh`'s command line to write only those; x265 is not reproducible, so a full run rewrites all.
 - **Speed (rung 5) is bit-identical and has a reference for every shortcut.** A grid's tiles decode in
   parallel (`HeifDecoder.Decode`'s `maxDegreeOfParallelism`; the lowest-numbered failing tile's error is the
   one thrown, however scheduled); the inverse transform runs in `Vector128<int>` lanes against

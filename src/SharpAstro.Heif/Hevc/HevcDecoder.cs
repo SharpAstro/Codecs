@@ -59,8 +59,8 @@ internal static class HevcDecoder
     }
 
     /// <summary>
-    /// The rung 2 envelope: what the Canon R7 and R6 pictures use (roadmap/heif.md, "The files, measured").
-    /// Each refusal names the feature and the rung that owns it.
+    /// The envelope: what the Canon R7 and R6 pictures use (roadmap/heif.md, "The files, measured"), plus
+    /// rung 4's deblocking and SAO. Each refusal names the feature and the rung that owns it.
     /// </summary>
     internal static void CheckEnvelope(HevcSps sps, HevcPps pps)
     {
@@ -91,6 +91,8 @@ internal static class HevcDecoder
         if (pps.EntropyCodingSync) Refuse("Wavefront parallel processing", 4);
         if (pps.CrossComponentPrediction) Refuse("Cross-component prediction", 4);
         if (pps.ChromaQpOffsetList) Refuse("CU chroma QP offset lists", 4);
+        // A range-extension PPS field that scales SAO offsets; no encoder here writes it, so nothing could check it.
+        if (pps.Log2SaoOffsetScaleLuma != 0 || pps.Log2SaoOffsetScaleChroma != 0) Refuse("Scaled SAO offsets (log2_sao_offset_scale)", 4);
         if (pps.OtherExtensions) Refuse("A PPS multilayer, 3D or screen content extension", 4);
     }
 }
