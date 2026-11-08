@@ -67,6 +67,12 @@ internal sealed class HevcDecodeStatistics
     public long SignsHidden { get; set; }
     public long HiddenSignsNegative { get; set; }
 
+    /// <summary>Coded 32x32 chroma blocks (4:4:4 only), whose scaling factors come from the 16x16 lists.</summary>
+    public long CodedChroma32 { get; set; }
+
+    /// <summary>4:4:4 NxN coding units, which code a chroma mode for each of their four prediction blocks.</summary>
+    public long ChromaModesPerPart { get; set; }
+
     /// <summary>Transform blocks coded with transform_skip_flag, luma and chroma.</summary>
     public long TransformSkipLuma { get; set; }
     public long TransformSkipChroma { get; set; }
@@ -104,6 +110,7 @@ internal sealed partial class HevcPictureDecoder
     private readonly int _width4;
     private readonly byte[] _ctDepth;
     private readonly byte[] _lumaMode;
+    private readonly byte[] _chromaMode;      // per 4x4 block too: 4:4:4 codes one per NxN prediction block
     private readonly sbyte[] _qpMap;
 
     // Per 4x4 luma block: bit 0, a transform edge on its left; bit 1, one on its top (8.7.2.3). Every intra
@@ -178,6 +185,7 @@ internal sealed partial class HevcPictureDecoder
         var blocks = _width4 * (_height >> 2);
         _ctDepth = new byte[blocks];
         _lumaMode = new byte[blocks];
+        _chromaMode = new byte[blocks];
         _qpMap = new sbyte[blocks];
         _edges = new byte[blocks];
         var ctbs = _widthInCtbs * _heightInCtbs;
@@ -344,12 +352,23 @@ internal sealed partial class HevcPictureDecoder
             Fill(_lumaMode, xPb, yPb, partSize, (byte)mode);
         }
 
+        // intra_chroma_pred_mode: 0 -> 4 (derived from luma), else two bypass bins 0..3. One per coding unit,
+        // derived from the first prediction block's luma mode; in 4:4:4 one per prediction block, each from
+        // its own block's luma mode (7.3.8.5).
         var chromaMode = 0;
         if (_chroma != 0)
         {
-            // intra_chroma_pred_mode: 0 -> 4 (derived from luma), else two bypass bins 0..3.
-            var coded = _cabac.Decision(HevcContext.IntraChromaPredMode) == 0 ? 4 : _cabac.Bypass(2);
-            chromaMode = ChromaMode(coded, _lumaMode[Block(x0, y0)]);
+            var chromaParts = _chroma == 3 ? parts : 1;
+            for (var p = 0; p < chromaParts; p++)
+            {
+                var xPb = x0 + (p & 1) * partSize;
+                var yPb = y0 + (p >> 1) * partSize;
+                var coded = _cabac.Decision(HevcContext.IntraChromaPredMode) == 0 ? 4 : _cabac.Bypass(2);
+                var mode = ChromaMode(coded, _lumaMode[Block(xPb, yPb)]);
+                if (p == 0) chromaMode = mode;
+                Fill(_chromaMode, xPb, yPb, chromaParts == 1 ? size : partSize, (byte)mode);
+            }
+            if (chromaParts == 4 && _statistics is not null) _statistics.ChromaModesPerPart++;
         }
 
         var maxDepth = _sps.MaxTransformHierarchyDepthIntra + (intraSplit ? 1 : 0);
@@ -555,6 +574,8 @@ internal sealed partial class HevcPictureDecoder
             return;
         }
 
+        // 4:4:4: the chroma block's own prediction block's mode (the same as chromaMode unless NxN).
+        if (_chroma == 3) chromaMode = _chromaMode[Block(x0, y0)];
         var halves = _chroma == 2 ? 2 : 1;
         for (var t = 0; t < halves; t++)
             Reconstruct(1, xC, yC + (t << log2C), log2C, chromaMode, ((chromaCb >> t) & 1) != 0);
@@ -601,6 +622,7 @@ internal sealed partial class HevcPictureDecoder
         {
             (component == 0 ? _statistics.LumaModes : _statistics.ChromaModes)[mode]++;
             if (coded) _statistics.CodedTransformSizes[log2Size]++;
+            if (coded && component > 0 && log2Size == 5) _statistics.CodedChroma32++;
         }
         if (!coded) return;
 

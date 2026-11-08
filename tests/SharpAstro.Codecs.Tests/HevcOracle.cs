@@ -52,7 +52,7 @@ internal static class HevcOracle
     public static (ushort[] Luma, ushort[] Cb, ushort[] Cr) Decode(byte[] annexB, HevcPicture shape)
     {
         var ffmpeg = RequireFfmpeg();
-        var format = (shape.ChromaFormatIdc switch { 1 => "yuv420p", 2 => "yuv422p", _ => "yuv444p" })
+        var format = (shape.ChromaFormatIdc switch { 0 => "gray", 1 => "yuv420p", 2 => "yuv422p", _ => "yuv444p" })
                      + (shape.BitDepthLuma == 8 ? "" : $"{shape.BitDepthLuma}le");
         var bytesPerSample = shape.BitDepthLuma == 8 ? 1 : 2;
 
@@ -82,7 +82,7 @@ internal static class HevcOracle
             var width = shape.Width - window.Left - window.Right;
             var height = shape.Height - window.Top - window.Bottom;
             var (subW, subH) = shape.ChromaFormatIdc switch { 1 => (2, 2), 2 => (2, 1), _ => (1, 1) };
-            var chromaSamples = width / subW * (height / subH);
+            var chromaSamples = shape.ChromaFormatIdc == 0 ? 0 : width / subW * (height / subH);
             var expected = (width * height + 2 * chromaSamples) * bytesPerSample;
             if (raw.Length != expected)
                 throw new InvalidOperationException($"ffmpeg wrote {raw.Length} bytes as {format}; {width}x{height} needs {expected}.");

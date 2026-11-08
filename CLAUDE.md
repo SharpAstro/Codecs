@@ -1066,7 +1066,9 @@ touching it should know:
   WSL) found it. `HevcDecodeStatistics` counts what a decode exercised, and `Fixture_CoversWhatItIsFor`
   pins each fixture's purpose, so a regenerated fixture cannot quietly stop testing something.
 - **A fixture is committed only when ffmpeg and libde265 decode it to the same bytes.** Its digest then runs
-  with no tool installed; the live ffmpeg comparison runs where ffmpeg is (CI installs it).
+  with no tool installed; the live ffmpeg comparison runs where ffmpeg is (CI installs it). The one
+  exception is named in `make-fixtures.sh`'s `DE265_GAPS` with the experiment that narrowed it:
+  `x265-444p10-lists`, where libde265 does not weight 4:4:4 32x32 chroma by the 16x16 list (7.4.5).
 - **x265 is not byte-reproducible** between runs, so regenerating rewrites every fixture and the digest
   file together. It writes several slices only with WPP (refused), so slices are covered by Canon alone.
 - **The mutation check needs both halves**: six of 22 deliberate bugs are seen only by the fixtures,

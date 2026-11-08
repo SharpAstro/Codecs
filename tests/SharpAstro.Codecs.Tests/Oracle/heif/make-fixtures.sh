@@ -83,6 +83,14 @@ lists > "$WORK/lists.txt"
 # One intra (IDR) picture, with everything rung 2 refuses switched off; per-fixture parameters follow.
 BASE="log-level=error:keyint=1:no-open-gop=1:no-sao=1:no-deblock=1:no-signhide=1:no-wpp=1:no-info=1:rd=6:rdoq-level=2:frame-threads=1:pools=none"
 
+# Fixtures where libde265 is known to be wrong, so ffmpeg alone is the reference. Each is narrowed by
+# experiment to one rule, and the rule is ffmpeg's, this decoder's (written from the spec without
+# reading either) and, as read, H.265's:
+#   x265-444p10-lists: 7.4.5 weights a 4:4:4 32x32 chroma block by the 16x16 list of its matrixId (and its
+#     DC). libde265 does not: the same stream with transforms up to 16x16, or with the default lists,
+#     decodes identically in both; with 32x32 chroma blocks they differ from the first chroma sample on.
+DE265_GAPS="x265-444p10-lists"
+
 # Rung 4's loop filters: the same, with SAO and deblocking left to each fixture.
 LOOP_BASE="log-level=error:keyint=1:no-open-gop=1:no-signhide=1:no-wpp=1:no-info=1:rd=6:rdoq-level=2:frame-threads=1:pools=none"
 
@@ -95,13 +103,17 @@ fixture() { # name width height pix_fmt rate-control x265-params [source-size] [
         -frames:v 1 -c:v libx265 $rate -x265-params "$base:$params" -f hevc "$WORK/$name.hevc"
     ffmpeg -hide_banner -v error -y -f hevc -i "$WORK/$name.hevc" -frames:v 1 -f rawvideo -pix_fmt "$format" "$WORK/$name.ffmpeg.yuv"
     "$DEC265" -q -o "$WORK/$name.de265.yuv" "$WORK/$name.hevc" > /dev/null 2>&1 || true
+    local agreement="ffmpeg and libde265 agree"
     if ! cmp -s "$WORK/$name.ffmpeg.yuv" "$WORK/$name.de265.yuv"; then
-        echo "[hevc fixtures] ERROR: ffmpeg and libde265 disagree on $name; not committing it." >&2
-        exit 1
+        agreement="ffmpeg only (a known libde265 gap)"
+        case " $DE265_GAPS " in
+            *" $name "*) echo "[hevc fixtures] $name: libde265 disagrees, a known libde265 gap (see DE265_GAPS); ffmpeg is the reference" ;;
+            *) echo "[hevc fixtures] ERROR: ffmpeg and libde265 disagree on $name; not committing it." >&2; exit 1 ;;
+        esac
     fi
     cp "$WORK/$name.hevc" "$OUT/$name.hevc"
     printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$width" "$height" "$format" "$(sha256sum < "$WORK/$name.ffmpeg.yuv" | cut -d' ' -f1)" >> "$DIGESTS"
-    echo "[hevc fixtures] $name: $(stat -c %s "$OUT/$name.hevc") bytes, ffmpeg and libde265 agree"
+    echo "[hevc fixtures] $name: $(stat -c %s "$OUT/$name.hevc") bytes, $agreement"
 }
 
 # 4:2:2 10-bit, the Canon format, with every mode, CTB 64, 32x32 transforms and a deep transform tree.
@@ -151,6 +163,15 @@ fixture x265-422p10-signhide-tskip 256 192 yuv422p10le "-crf 24" "ctu=32:min-cu-
 # Transform skip with coded scaling lists (a 4x4 skipped block is still weighted by its list), and at 12 bits.
 fixture x265-420p10-tskip-lists 256 192 yuv420p10le "-crf 22" "ctu=32:min-cu-size=8:tskip=1:signhide=1:scaling-list=$WORK/lists.txt" "" "$LOOP_BASE"
 fixture x265-420p12-tskip 256 192 yuv420p12le "-crf 20" "ctu=32:min-cu-size=8:tskip=1:signhide=1" "" "$LOOP_BASE"
+# 4:4:4: a chroma mode per NxN prediction block, chroma 4x4 blocks of their own (DCT, not DST), chroma
+# reference smoothing; with coded scaling lists and 32x32 transforms, where a 32x32 chroma block takes the
+# 16x16 list; and at 12 bits with both loop filters.
+fixture x265-444p8-modes 256 192 yuv444p "-crf 22" "ctu=32:min-cu-size=8:sao=1" "" "$LOOP_BASE"
+fixture x265-444p10-lists 256 192 yuv444p10le "-crf 20" "ctu=64:min-cu-size=8:max-tu-size=32:tu-intra-depth=2:signhide=1:scaling-list=$WORK/lists.txt" "" "$LOOP_BASE"
+fixture x265-444p12-loopfilters 256 192 yuv444p12le "-crf 28" "ctu=32:min-cu-size=8:sao=1:tskip=1:signhide=1" "" "$LOOP_BASE"
+# Monochrome (4:0:0): no chroma at all.
+fixture x265-400p8 256 192 gray "-crf 24" "ctu=32:min-cu-size=8:sao=1" "" "$LOOP_BASE"
+fixture x265-400p10 256 192 gray10le "-crf 22" "ctu=32:min-cu-size=8:sao=1:signhide=1" "" "$LOOP_BASE"
 # (No fixture has a SAO band position of 29-31, whose four bands wrap past band 31 to band 0: x265 searches
 # positions 0-28 only, even for a picture near white, so it never writes one.)
 

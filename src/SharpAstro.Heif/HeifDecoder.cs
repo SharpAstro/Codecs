@@ -264,6 +264,19 @@ public static class HeifDecoder
         var w = Math.Min(usedWidth, canvasWidth - x0);
         var h = Math.Min(usedHeight, canvasHeight - y0);
         var max = (1 << colour.BitDepth) - 1;
+        if (picture.Cb is null)
+        {
+            // Monochrome (4:0:0): chroma at its mid-point, so every matrix gives R' = G' = B' = Y' expanded.
+            var mid = (ushort)(1 << (colour.BitDepth - 1));
+            for (var y = 0; y < h; y++)
+            {
+                var lumaRow = (y + window.Top) * picture.Width + window.Left;
+                var output = ((long)(y0 + y) * canvasWidth + x0) * 3;
+                for (var x = 0; x < w; x++, output += 3)
+                    colour.ToRgb(picture.Luma[lumaRow + x], mid, mid, max, out canvas[output], out canvas[output + 1], out canvas[output + 2]);
+            }
+            return;
+        }
         for (var y = 0; y < h; y++)
         {
             var ly = y + window.Top;

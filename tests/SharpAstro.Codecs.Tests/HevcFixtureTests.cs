@@ -38,6 +38,12 @@ public class HevcFixtureTests(ITestOutputHelper output)
         "x265-422p10-signhide-tskip",
         "x265-420p10-tskip-lists",
         "x265-420p12-tskip",
+        // Rung 4: 4:4:4 and monochrome.
+        "x265-444p8-modes",
+        "x265-444p10-lists",
+        "x265-444p12-loopfilters",
+        "x265-400p8",
+        "x265-400p10",
     ];
 
     private static readonly string Root = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hevc");
@@ -177,6 +183,29 @@ public class HevcFixtureTests(ITestOutputHelper output)
             case "x265-420p12-tskip":
                 (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((1, 12));
                 ShouldSkipTransforms(statistics);
+                break;
+            case "x265-444p8-modes":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((3, 8));
+                statistics.ChromaModesPerPart.ShouldBeGreaterThan(0, "NxN units coding four chroma modes");
+                statistics.ChromaModes.Count(c => c > 0).ShouldBeGreaterThan(30, "4:4:4 chroma takes nearly every mode");
+                ShouldUseSao(statistics);
+                break;
+            case "x265-444p10-lists":
+                // ffmpeg alone is the reference here: libde265 does not weight 32x32 chroma by the 16x16 list.
+                (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((3, 10));
+                (pps.ScalingList ?? sps.ScalingList).ShouldNotBeNull("coded lists");
+                statistics.CodedChroma32.ShouldBeGreaterThan(0, "32x32 chroma blocks, weighted by the 16x16 lists");
+                break;
+            case "x265-444p12-loopfilters":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((3, 12));
+                ShouldDeblockEveryWay(statistics);
+                ShouldSkipTransforms(statistics);
+                break;
+            case "x265-400p8" or "x265-400p10":
+                picture.ChromaFormatIdc.ShouldBe(0);
+                (picture.Cb, picture.Cr).ShouldBe((null, null));
+                statistics.ChromaModes.Sum().ShouldBe(0);
+                statistics.SaoEdgeClasses.Sum().ShouldBeGreaterThan(0);
                 break;
             case "x265-420p8-loopfilters-window":
                 (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((1, 8));
@@ -319,9 +348,12 @@ public class HevcFixtureTests(ITestOutputHelper output)
     // ---- loading -----------------------------------------------------------------------------------
 
     /// <summary>Splits an Annex B stream into an hvcC-like configuration and 4-byte length-prefixed item data.</summary>
-    internal static (HevcDecoderConfiguration Configuration, byte[] Item) Load(string name)
+    internal static (HevcDecoderConfiguration Configuration, byte[] Item) Load(string name) =>
+        FromAnnexB(File.ReadAllBytes(Path.Combine(Root, name + ".hevc")));
+
+    /// <summary>An Annex B stream as an hvcC-like configuration and 4-byte length-prefixed item data.</summary>
+    internal static (HevcDecoderConfiguration Configuration, byte[] Item) FromAnnexB(byte[] stream)
     {
-        var stream = File.ReadAllBytes(Path.Combine(Root, name + ".hevc"));
         var nals = SplitAnnexB(stream);
         var parameterSets = new Dictionary<int, List<byte[]>>();
         var item = new MemoryStream();
@@ -389,6 +421,8 @@ public class HevcFixtureTests(ITestOutputHelper output)
     {
         var w = picture.ConformanceWindow;
         var (subW, subH) = picture.ChromaFormatIdc switch { 1 => (2, 2), 2 => (2, 1), _ => (1, 1) };
+        if (picture.Cb is null)
+            return (CropPlane(picture.Luma, picture.Width, w.Left, w.Top, picture.Width - w.Left - w.Right, picture.Height - w.Top - w.Bottom), [], []);
         return (
             CropPlane(picture.Luma, picture.Width, w.Left, w.Top, picture.Width - w.Left - w.Right, picture.Height - w.Top - w.Bottom),
             CropPlane(picture.Cb!, picture.ChromaWidth, w.Left / subW, w.Top / subH, (picture.Width - w.Left - w.Right) / subW, (picture.Height - w.Top - w.Bottom) / subH),
