@@ -1,0 +1,127 @@
+namespace SharpAstro.Heif.Hevc;
+
+/// <summary>
+/// The slice segment header (H.265 7.3.6.1) of an intra slice of an IDR picture, the only kind rung 2
+/// decodes, with the byte offset in the RBSP where its slice data (and so its CABAC stream) starts.
+/// Everything a still intra picture can carry that this decoder does not implement is refused here by
+/// name, before any slice data is read.
+/// </summary>
+internal sealed record HevcSliceHeader
+{
+    public required bool FirstInPicture { get; init; }
+    public required int SegmentAddress { get; init; }
+
+    /// <summary>SliceQpY = 26 + init_qp_minus26 + slice_qp_delta (7.4.7.1).</summary>
+    public required int SliceQpY { get; init; }
+
+    public required int CbQpOffset { get; init; }
+    public required int CrQpOffset { get; init; }
+
+    /// <summary>The first byte of slice_segment_data() in the RBSP, after byte_alignment().</summary>
+    public required int DataOffset { get; init; }
+
+    public const int SliceTypeI = 2;
+
+    public static HevcSliceHeader Parse(HevcNalUnit nal, HevcSps sps, HevcPps pps)
+    {
+        // IDR_W_RADL and IDR_N_LP. A CRA or BLA picture is also intra, but its header carries a picture
+        // order count and reference picture sets this decoder does not parse.
+        if (nal.Type is not (19 or 20))
+            throw new NotSupportedException($"Slice NAL unit type {nal.Type} is not an IDR picture; only IDR pictures are decoded (rung 4).");
+
+        var r = new RbspReader(nal.Rbsp);
+        var first = r.Flag();
+        r.Flag(); // no_output_of_prior_pics_flag
+        var ppsId = r.Ue(63, "slice_pic_parameter_set_id");
+        if (ppsId != pps.Id)
+            throw new NotSupportedException($"A slice refers to PPS {ppsId}; only the one PPS in 'hvcC' ({pps.Id}) is present.");
+
+        var address = 0;
+        if (!first)
+        {
+            if (pps.DependentSliceSegments && r.Flag())
+                throw new NotSupportedException("Dependent slice segments are not decoded (rung 4).");
+            var ctbs = sps.WidthInCtbs * sps.HeightInCtbs;
+            address = (int)r.U(CeilLog2(ctbs));
+            if (address >= ctbs) throw new InvalidDataException($"slice_segment_address {address} is past the picture's {ctbs} CTBs.");
+        }
+
+        r.Skip(pps.NumExtraSliceHeaderBits); // slice_reserved_flag
+        var sliceType = r.Ue(2, "slice_type");
+        if (sliceType != SliceTypeI)
+            throw new InvalidDataException($"An IDR picture has a slice of type {sliceType}; IDR slices are intra (type 2).");
+        if (pps.OutputFlagPresent) r.Flag(); // pic_output_flag
+        // colour_plane_id would follow for separate colour planes, which the decoder refuses up front.
+
+        if (sps.SampleAdaptiveOffset)
+        {
+            var saoLuma = r.Flag();
+            var saoChroma = sps.ChromaFormatIdc != 0 && r.Flag();
+            if (saoLuma || saoChroma)
+                throw new NotSupportedException("Sample adaptive offset is not applied yet (rung 4).");
+        }
+
+        var minQp = -6 * (sps.BitDepthLuma - 8);
+        var qp = pps.InitQp + r.Se();
+        if (qp < minQp || qp > 51) throw new InvalidDataException($"SliceQpY {qp} is outside [{minQp}, 51].");
+
+        int cb = 0, cr = 0;
+        if (pps.SliceChromaQpOffsetsPresent)
+        {
+            cb = r.Se(-12, 12, "slice_cb_qp_offset");
+            cr = r.Se(-12, 12, "slice_cr_qp_offset");
+            if (pps.CbQpOffset + cb is < -12 or > 12 || pps.CrQpOffset + cr is < -12 or > 12)
+                throw new InvalidDataException("The PPS and slice chroma QP offsets add up past [-12, 12].");
+        }
+        if (pps.ChromaQpOffsetList && r.Flag())
+            throw new NotSupportedException("CU chroma QP offsets are not decoded (rung 4).");
+
+        var deblockingDisabled = pps.DeblockingDisabled;
+        if (pps.DeblockingOverrideEnabled && r.Flag()) // deblocking_filter_override_flag
+        {
+            deblockingDisabled = r.Flag();
+            if (!deblockingDisabled)
+            {
+                r.Se(-6, 6, "slice_beta_offset_div2");
+                r.Se(-6, 6, "slice_tc_offset_div2");
+            }
+        }
+        if (!deblockingDisabled)
+            throw new NotSupportedException("The deblocking filter is not applied yet (rung 4); this slice has it enabled.");
+        // slice_loop_filter_across_slices_enabled_flag is present only when SAO or deblocking is on, so never here.
+
+        if (pps.Tiles || pps.EntropyCodingSync)
+        {
+            // Refused with the PPS, but the syntax is read so the check stays in one place.
+            throw new NotSupportedException("Tiles and wavefront parallel processing are not decoded (rung 4).");
+        }
+
+        if (pps.SliceHeaderExtensionPresent)
+        {
+            var length = r.Ue(256, "slice_segment_header_extension_length");
+            r.Skip(length * 8);
+        }
+
+        // byte_alignment(): a one bit, then zeros up to the byte boundary.
+        if (!r.Flag()) throw new InvalidDataException("The slice header's byte_alignment() does not start with a one bit.");
+        while (!r.ByteAligned)
+            if (r.Flag()) throw new InvalidDataException("The slice header's byte_alignment() has a non-zero padding bit.");
+
+        return new HevcSliceHeader
+        {
+            FirstInPicture = first,
+            SegmentAddress = address,
+            SliceQpY = qp,
+            CbQpOffset = cb,
+            CrQpOffset = cr,
+            DataOffset = (int)(r.BitPosition >> 3),
+        };
+    }
+
+    internal static int CeilLog2(int value)
+    {
+        var bits = 0;
+        while ((1 << bits) < value) bits++;
+        return bits;
+    }
+}

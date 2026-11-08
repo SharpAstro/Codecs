@@ -58,8 +58,11 @@ jobs:
     # RFC 9649. Ubuntu's build is older than the libwebp 1.6.0 the committed digests
     # were made with; the two agree on every fixture, and a disagreement between
     # them would be worth knowing about rather than pinning away.
+    # ffmpeg is the HEVC oracle (HevcOracle): its native hevc decoder against
+    # SharpAstro.Heif's, plane by plane with no tolerance, on the committed x265
+    # fixtures. Binary only; the decoder is clean-room from H.265.
     - name: Install codec oracles
-      run: sudo apt-get update && sudo apt-get install -y jbig2dec webp
+      run: sudo apt-get update && sudo apt-get install -y jbig2dec webp ffmpeg
     # JxrEncApp / JxrDecApp from jxrlib (BSD-2), clang-built from a pinned
     # commit in ~10s. This is the strongest guarantee the repo makes about the
     # JXR port -- our codestream is byte-for-byte what the reference emits --

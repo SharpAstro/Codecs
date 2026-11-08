@@ -1,6 +1,7 @@
 # Roadmap: HEIF / HEVC stills (`SharpAstro.Heif`)
 
-> **Status: written 2026-11-08, rung 1 landed on `heif/external-fixtures`.** Issue #66. The
+> **Status: written 2026-11-08; rungs 1 (container) and 2 (HEVC intra decode) landed on
+> `heif/external-fixtures`.** Issue #66. The
 > consumer is FC.SDK: the viewer cannot preview the `.HIF` files a Canon R6 writes with HDR PQ on,
 > and the camera's own thumbnail for such a capture is HEVC too, so there is no JPEG to fall back on.
 
@@ -43,6 +44,10 @@ Every one of the 24 pictures in the two files says the same thing, and
 - **Transforms 4x4 to 16x16 only**, CTB 32 (16 on the small pictures), min CB 8.
 - **Scaling lists on**, with data in the SPS. `cu_qp_delta` on. No sign hiding, PCM, transquant bypass
   or strong intra smoothing.
+- **A narrow slice of intra HEVC** (counted by rung 2's decode statistics): luma uses DC and every fourth
+  angle only (modes 1, 6, 10, 14, 18, 22, 26, 30, 34), never planar; chroma uses modes 1, 10 and 26,
+  which the 4:2:2 remap leaves unchanged. Decoding these files right proves little about the rest of
+  intra HEVC, which is why rung 2 also has x265 fixtures.
 - **No SEI at all**, so in particular no decoded-picture-hash SEI: the files cannot check a decode
   themselves, and the oracle has to be external.
 - **The coded picture is larger than the image.** The thumbnails are coded 320x320 and 1664x1088
@@ -75,60 +80,98 @@ every truncation, 20,000 random byte-flip trials on a synthetic file and 5,000 o
 parameter sets (`HevcBitWriter`) with a known value placed after every variable-length structure; the
 Canon files against Magick.NET for size and depth. Mutation-checked: see the table below.
 
-### Rung 2: HEVC intra decode, the measured envelope
+### Rung 2: HEVC intra decode (done)
 
-Exactly the configuration above, and every other value refused by name (`NotSupportedException`
-naming the feature), the JPEG 2000 discipline:
+`HevcDecoder.Decode(hvcC, itemData)` (internal) decodes one IDR picture to sample planes at the coded
+size (`HevcPicture`; the conformance window and the crop to `ispe` are rung 3's). Clean-room from H.265:
 
-1. Slice segment header (I slices of an IDR picture; `slice_qp_delta`, the address, entry points).
-2. CABAC (9.3): context initialisation for I slices, the arithmetic decoding engine, bypass and
-   terminate, and the binarisations the syntax below uses.
-3. Coding quadtree and coding units (7.3.8): split flags, `part_mode` (2Nx2N / NxN for intra),
-   `cu_qp_delta`, the transform tree and its `cbf` flags.
-4. Intra prediction (8.4.4.2): reference sample substitution and filtering, planar, DC, the 33 angular
-   modes, the most-probable-mode derivation, and chroma mode derivation **for 4:2:2**, which remaps
-   the angle (Table 8-3) because a 4:2:2 chroma block is half as wide as it is tall. That remap is the
-   4:2:2-specific risk.
-5. Residual coding (7.3.8.11): sub-blocks, last position, significance maps, greater-1/2 flags,
-   remaining levels with Rice parameters.
-6. Dequantisation with **scaling lists** (default and SPS-coded, 7.3.4 / 7.4.5), the chroma QP
-   mapping (for 4:2:2, ChromaArrayType != 1, the table is the identity clipped to 51), and the inverse
-   DST 4x4 / DCT 4-16. A 4:2:2 chroma transform block is two square blocks stacked, each with its own cbf.
-7. Reconstruction into 10-bit planes, then the crop to `ispe`.
+```
+HevcDecoder          (parameter sets from hvcC, the envelope check, the size charge, slice dispatch)
+  → HevcSliceHeader  (7.3.6.1 for IDR I slices; refuses SAO/deblocking on, dependent slices, tiles/WPP)
+  → HevcCabac        (9.3: engine, decision/bypass/terminate; initType 0 contexts; over-read capped)
+  → HevcPictureDecoder (7.3.8 coding quadtree / unit / transform tree / unit / residual_coding;
+                       6.4.1 z-scan availability; 8.4.2 MPM; 8.4.3 + Table 8-3 chroma modes;
+                       8.6.1 QP prediction per quantization group; reconstruction per transform block)
+  → HevcIntraPrediction (8.4.4.2: substitution, [1 2 1] and strong filtering, planar, DC, 33 angles)
+  → HevcTransform    (8.6.2-8.6.4: scaling with lists, DST 4x4, DCT 4-32, the two-stage shifts)
+  HevcScalingList    (7.3.4 / 7.4.5: coded lists kept, defaults, ScalingFactor expansion with DC)
+  HevcScan           (6.5.3-6.5.5 scan orders)
+```
 
-No deblocking and no SAO: none of the files uses either. They are rung 4.
+**The envelope as shipped** is wider than the Canon one, because the fixtures below validate more:
+4:2:0 and 4:2:2; 8, 10 and 12 bits (luma and chroma equal); CTB 16-64; transforms 4x4-32x32; scaling
+lists (default and coded); `cu_qp_delta` at any depth; PPS and slice chroma QP offsets; strong
+intra smoothing; partial CTBs at the picture edge; several slices. Refused by name, before any sample is
+allocated, with the rung that owns it: 4:4:4 and monochrome, mixed bit depths, PCM, every range-extension
+tool, sign data hiding, transform skip, transquant bypass, tiles, WPP, dependent slices, cross-component
+prediction, chroma QP offset lists, non-IDR pictures, SAO and deblocking when switched on.
 
-**Oracles for rung 2, in order of strength:**
+**Validated by, strongest first:**
 
-- **libde265 / ffmpeg decoding to raw YUV**, compared plane by plane with **no tolerance**: an HEVC
-  decoder is bit-exact by specification, which JPEG's IDCT is not. Gated with `OracleGate` like the
-  other external tools, installed in CI the same way (`apt-get install` a decoder binary).
-- **Magick.NET** for the end-to-end picture: available everywhere, but its output is RGB after
-  libheif's YCbCr conversion, so either model that conversion or compare within a measured tolerance.
-  `R6_CrPreviewsDecodeThroughMagickOnceWrappedAsHeif` already shows it decodes the CR3 previews once
-  wrapped as one-item HEIFs, at the coded size.
-- **The JCT-VC conformance bitstreams** (ITU-T H.265.1), each published with an MD5 of its decoded
-  output. Fetched with a pinned hash like OpenJPEG's release. The intra-only RExt 4:2:2 10-bit ones
-  are the match; the rest wait for rung 4.
+- **ffmpeg, live, plane by plane, no tolerance** (`HevcOracle`): HEVC is bit-exact by specification.
+  On Windows, `Oracle/heif/fetch.sh` (pinned BtbN LGPL 9.0 build); on Linux and CI, `apt-get install
+  ffmpeg`. Gated by `OracleGate`. All 25 Canon pictures match: the R7's thumbnail, preview and 20 grid
+  tiles, and the R6 CR3's two previews (`HevcDecoderOracleTests`, skipped without the fetched files).
+- **Seven committed x265 fixtures** (`Fixtures/hevc`, about 66 KB together, made by
+  `Oracle/heif/make-fixtures.sh` in WSL): ffmpeg's decode is the expected output, written as a digest
+  only when **libde265 agrees**, so they run with no tool at all, and are checked live against ffmpeg as
+  well. Each crosses one axis: every mode at CTB 64 with 32x32 transforms; adaptive QP with the default
+  lists and chroma offsets; 4:2:0 8-bit with a conformance window and partial edge CTBs; QP 2 at CTB 16;
+  coded scaling lists with their own DC values and QPs across the whole 4:2:0 chroma table; 12-bit;
+  8-bit 4:2:2 at CTB 16. `Fixture_CoversWhatItIsFor` checks each still does, from the decoder's own
+  statistics (`HevcDecodeStatistics`): all 35 luma modes in every fixture, NxN units, remapped 4:2:2
+  chroma modes, 32x32 blocks, non-zero QP deltas, every qPi of Table 8-10, distinct DC weights.
+- **Damage**: 600 random byte changes and about 50 truncations of every fixture's slices
+  (`Fixture_DamagedSlices_AreRefusedCleanly`) end in a decode or `InvalidDataException`, never an index
+  out of range, an overflow or a hang.
 
-Fixture plan: the 320x214 thumbnails are the first target (11-43 KB of slice data, one or four
-slices), then the 1620x1080 previews, then the 20 R7 tiles. Synthetic streams cannot be written
-without an HEVC encoder; if Magick.NET's libheif can encode (needs x265 or kvazaar built in), it can
-produce small fixtures for committing, since our own output would be ours to license.
+**What the fixtures found.** The first cut matched ffmpeg on all 25 Canon pictures while its Table 8-3
+(the 4:2:2 chroma mode remap) was wrong in two entries: mode 11 maps to 12, not 11, and mode 14 to 17,
+not 16. The Canon pictures cannot see that (their chroma modes map to themselves); the x265 4:2:2
+fixtures each failed until both were corrected, and each correction alone left one of them failing.
+The corrected values are also what the geometry gives: a horizontal mode's slope doubles in a block
+half as wide, and mode 14's -13 doubled is mode 17's -26 exactly.
 
-### Rung 3: composition and the facade
+**Speed, first cut, single-threaded:** about 300 ms for a 1792x960 R7 tile, so about 6 s for the whole
+6960x4640 image; 200 ms for the 1620x1080 preview, under 20 ms for a 320x320 thumbnail. Rung 5.
 
-Grid tiles to one canvas, `irot` / `imir` / `clap` applied, chroma upsampled and YCbCr to RGB by the
-`nclx` matrix (BT.2020 non-constant luminance here). `TryDecode` gives native 10-bit samples (as
-UInt16, scaled to fill the format, as JPEG 2000's adapter does) with PQ `ColorEncoding`;
-`TryDecodeIntoRgba8` returns false, like the other HDR float paths, until a tone-map policy is agreed.
-A thumbnail decode (`thmb` items) is the cheap preview FC.SDK wants: 1620x1080 through the same decoder.
+**x265 notes for whoever regenerates the fixtures:** it is not byte-reproducible run to run even
+single-threaded, so the fixtures and the digest file are rewritten together; 3.5 writes several slices
+only with WPP (refused), so the Canon pictures cover slices; with identical scaling matrices it writes a
+`scaling_list_pred_matrix_id_delta` ffmpeg refuses as out of range, so the list file makes every matrix
+distinct; and it reads the list file in one pass, in HM's order (size outermost, then intra/inter).
+
+### Rung 3: composition, HDR output and the facade
+
+From planes to an image: the conformance window and the crop to `ispe` (Canon codes 320x320 for
+320x214), the grid's tiles onto one canvas cropped to its output size, then `irot` / `imir` / `clap`.
+Then chroma upsampled to 4:4:4 and YCbCr to R'G'B' by the `nclx` matrix (BT.2020 non-constant
+luminance, full range, on the Canon files).
+
+**Output is HDR, not tone-mapped.** The PQ signal goes through the facade's float tier, the one
+`PngImageDecoder.TryDecodeRgbaFloat` already defines: linear light with **1.0 = 203 cd/m²** (BT.2408
+reference white), BT.2020 primaries reported rather than converted. SdlVulkan.Renderer has shown HDR
+present through an scRGB swapchain (`tools/HdrProbe`; `R16G16B16A16_SFLOAT`, 1.0 = 80 nits), so a
+viewer multiplies by 203/80, converts BT.2020 to BT.709 primaries (scRGB keeps out-of-gamut colour as
+negative values) and uploads; an SDR fallback is the viewer's tone map, with the display's SDR white and
+headroom from SDL. The PQ curve and its table come from `PngHdr`, moved somewhere both packages can use
+rather than copied. `TryDecode` (UInt16, 10 bits scaled to fill) and `TryReadInfo` register with the
+facade; `TryDecodeIntoRgba8` stays false for PQ until a tone-map policy exists, as for the other HDR paths.
+
+**The oracle is weaker here than in rung 2.** Upsampling and the matrix are filters and floating point,
+not specified bit for bit: compare against Magick.NET's libheif within a measured tolerance, kept apart
+from the exact plane comparison (the JPEG 2000 9/7 arrangement).
+
+**Previews are the practical input.** The whole R7 image is 32 Mpixels, 512 MiB as RGBA floats; the
+1620x1080 `thmb` item (and the CR3's `PRVW`) is what a viewer wants first, at about 28 MB and 200 ms.
 
 ### Rung 4: the rest of intra HEVC
 
-Deblocking (8.7.2) and SAO (8.7.3), 32x32 transforms, transform skip, sign data hiding, PCM, tiles and
-WPP entry points, 4:2:0 and 4:4:4, 8 and 12 bits, the range-extension tools. Each needs an oracle stream
-that uses it: the conformance suite carries most of them.
+Deblocking (8.7.2) and SAO (8.7.3), transform skip, sign data hiding, PCM, transquant bypass, tiles and
+WPP entry points, dependent slices, 4:4:4 and monochrome, CRA/BLA pictures, the range-extension tools.
+Each needs an oracle stream that uses it: x265 through `make-fixtures.sh` can make most of them (SAO,
+deblocking, sign hiding, transform skip, WPP and so several slices, 4:4:4), the JCT-VC conformance
+suite the rest.
 
 ### Rung 5: speed
 
@@ -138,8 +181,11 @@ Measured end to end through the public API, per the benchmark rules in CLAUDE.md
 ## Hardening
 
 Running out of input is not a backstop here either: CABAC, like the MQ coder, keeps producing
-decisions from whatever it is fed. So every loop in rung 2 must advance something each iteration, and
-the decode charges the SPS's declared picture size against `HeifLimits` before allocating planes.
+decisions from whatever it is fed. So in rung 2 bits past the end of a slice read as zero and more than
+64 of them is `InvalidDataException`; every unbounded binarisation prefix (Exp-Golomb, the
+`coeff_abs_level_remaining` prefix) is capped; a coefficient level outside 16 bits is refused; a slice
+must end by the last CTB; the quadtree recursions halve a block each step; and the decode charges the
+SPS's declared picture size against `HeifLimits` before allocating planes.
 The container already does: `Describe` refuses declared sizes before any allocation, measured under
 256 KiB of allocation for a refusal.
 
@@ -168,6 +214,38 @@ after every variable-length structure for that reason.
 **A trap in the mutation harness itself.** Restoring a file by moving its backup back restores the
 backup's older timestamp, so MSBuild judged the last mutant's DLL up to date and the next run tested
 the mutant. Touch the sources (or rebuild) after a mutation run.
+
+## Mutation check (rung 2)
+
+Twenty-two deliberate bugs, one at a time, against the HEVC tests (`FullyQualifiedName~Hevc`). Twenty
+were caught on the first run; the two that were not were closed by a new fixture, after which both fail.
+
+| Deliberate bug | Caught by |
+|---|---|
+| CABAC MPS state capped at 63, not 62 | Canon (all four) and every fixture |
+| context initialisation offset -15 for -16 | the same |
+| Table 8-3 as first transcribed (11 and 16) | **the x265 4:2:2 fixtures only**; no Canon picture |
+| MPM neighbour-angle candidate off by one | Canon (3) and the fixtures |
+| `rem_intra_luma_pred_mode` adjusted with `>` for `>=` | Canon (all four) and the fixtures |
+| planar's bottom-left weight (y+1) as (x+1) | **the fixtures only** (Canon never uses planar) |
+| [1 2 1] filter threshold for 8x8 blocks 8 for 7 | the fixtures only |
+| strong intra smoothing never applied | the fixtures only (it fires on two blocks of one fixture) |
+| DC boundary smoothing left out | Canon and the fixtures |
+| angular projection without its +128 rounding | the fixtures only |
+| DCT for DST on intra 4x4 luma | Canon and the fixtures |
+| first-stage transform rounding dropped | Canon and the fixtures |
+| scaling-list DC value ignored | **nothing at first**: x265's default lists and Canon's coded ones have a DC equal to their first weight. `x265-420p10-chromaqp-lists` (coded lists with their own DC) was added and now catches it |
+| QP prediction ignoring the same-CTB rule | Canon (2) and the fixtures |
+| 4:2:0 chroma QP table, one entry off | **nothing at first**: no 4:2:0 fixture reached qPi 34. The same new fixture covers qPi 30..43 and now catches it |
+| `sig_coeff_flag` +3 for later sub-blocks left out | Canon and the fixtures |
+| greater1 context set never incremented | Canon and the fixtures |
+| Rice parameter threshold 4x for 3x | Canon and the fixtures |
+| 4:2:2 second chroma cbf only when not split | Canon and the fixtures |
+| availability ignoring slice boundaries | **Canon only**: x265 3.5 writes several slices only with WPP |
+| a quantization group keeping the previous group's prediction | Canon and the fixtures |
+| `split_cu_flag` context ignoring the above neighbour | Canon and the fixtures |
+
+The two halves need each other: six bugs only the fixtures see, one only Canon's multi-slice pictures do.
 
 ## Code shared with the other codecs
 
