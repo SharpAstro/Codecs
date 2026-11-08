@@ -76,7 +76,7 @@ public sealed class HeifImageDecoder : IImageDecoder
     }
 
     /// <summary>
-    /// The primary image as linear-light RGBA floats (see <see cref="HeifRgbImage.ToLinearRgbaFloat"/>):
+    /// The primary image as linear-light RGBA floats (see <see cref="HeifRgbImage.ToLinearRgbaFloat(out ColorEncoding)"/>):
     /// for PQ and HLG <c>1.0 = 203 cd/m²</c>, primaries reported in <paramref name="encoding"/>. False for a
     /// file this reader cannot decode or a transfer it cannot linearise.
     /// </summary>

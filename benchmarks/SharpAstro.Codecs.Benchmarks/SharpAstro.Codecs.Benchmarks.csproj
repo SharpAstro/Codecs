@@ -22,6 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\SharpAstro.Heif\SharpAstro.Heif.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jpeg\SharpAstro.Jpeg.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Jxl\SharpAstro.Jxl.csproj" />
     <ProjectReference Include="..\..\src\SharpAstro.Png\SharpAstro.Png.csproj" />

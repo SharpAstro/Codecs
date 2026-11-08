@@ -133,7 +133,8 @@ The corrected values are also what the geometry gives: a horizontal mode's slope
 half as wide, and mode 14's -13 doubled is mode 17's -26 exactly.
 
 **Speed, first cut, single-threaded:** about 300 ms for a 1792x960 R7 tile, so about 6 s for the whole
-6960x4640 image; 200 ms for the 1620x1080 preview, under 20 ms for a 320x320 thumbnail. Rung 5.
+6960x4640 image; 200 ms for the 1620x1080 preview, under 20 ms for a 320x320 thumbnail. Rung 5 took the
+whole image to 0.27 s (tiles in parallel) and a picture's decode to about half.
 
 **x265 notes for whoever regenerates the fixtures:** it is not byte-reproducible run to run even
 single-threaded, so the fixtures and the digest file are rewritten together; 3.5 writes several slices
@@ -198,10 +199,66 @@ Each needs an oracle stream that uses it: x265 through `make-fixtures.sh` can ma
 deblocking, sign hiding, transform skip, WPP and so several slices, 4:4:4), the JCT-VC conformance
 suite the rest.
 
-### Rung 5: speed
+### Rung 5: speed (done)
 
-The 20 R7 tiles are independent, so decode them in parallel; then SIMD for the inverse transforms.
-Measured end to end through the public API, per the benchmark rules in CLAUDE.md.
+**Measured end to end through the public API**, base (9e430f1, rung 3) against head, alternating, three
+rounds of five in one quiet sitting (arm64, 12 cores), on the Canon R7 file:
+
+| | base | head |
+|---|---|---|
+| `HeifDecoder.Decode`, the 6960x4640 grid | 4.00-4.05 s | **0.27-0.29 s** (about 15x) |
+| `ToLinearRgbaFloat` on it | 197 ms | **31 ms** |
+| both thumbnails (320x214 and 1620x1080, one picture each, so no tiles to share out) | 193-198 ms | **102-112 ms** |
+
+All of it is bit-identical: every digest, ffmpeg comparison and libheif comparison is unchanged. Five
+changes, in order of what they bought (the single-threaded HEVC decode of the 20 tiles in turn, from the
+`--heif-report` phase split, went from 4.07 s to 2.15 s):
+
+1. **Tiles in parallel** (`HeifDecoder.Decode`'s `maxDegreeOfParallelism`, default all cores). The tiles are
+   independent pictures writing disjoint rectangles of the canvas, so each worker decodes and converts its
+   own. Everything that needs the file's bytes, and every refusal a tile's parameter sets carry, happens
+   first on the calling thread (a span cannot cross into the workers; an unsupported tile 19 should not cost
+   the decode of 0 to 18), and the grid's colour comes from tile 0's SPS. A failure `Break`s the loop, which
+   still runs every tile before it, and the **lowest-numbered** tile's exception is thrown, so a damaged file
+   fails the same way however the work was scheduled. One GC pause of under 10 ms per decode: allocation is
+   not what limits it.
+2. **The inverse transform in `Vector128<int>` lanes** (`HevcTransform.InverseVector`; `InverseScalar` is the
+   8.6.4.2 transcription, kept as the reference and for hardware without 128-bit vectors). Both stages are a
+   row of inputs times one basis value added into a row of accumulators, so the lanes do exactly the scalar
+   integer arithmetic, and only the rows and column groups that can hold a non-zero coefficient are visited.
+   It was 40% of a tile's profile and is 12% after. `HevcTransformEquivalenceTests` drives both forms (every
+   size, DST, 8/10/12 bits, dense, sparse, a lone coefficient at every position, the 16-bit rails, larger
+   buffers): the dispatch means one machine only ever runs one of them, as with the JPEG IDCT.
+3. **CABAC reads bits from a 64-bit cache** and renormalises in one shift (`LeadingZeroCount`) rather than a
+   bit at a time. The over-read limit means what it meant (more than 64 bits *consumed* past the end), and
+   `HevcCabacTests` pins it at the boundary.
+4. **n bypass bins in one division.** A bypass bin is a step of binary long division of the offset by the
+   range (the offset stays below the range), so n of them are the quotient of the offset with n bits shifted
+   in, and the remainder is the new offset. `HevcCabac.BypassBinByBin` is the spec's form, and the tests hold
+   the division to it over random streams interleaved with context-coded decisions.
+5. **Lookups hoisted out of residual coding**: the scan orders are fetched once per block instead of a
+   triple-indexed read per coefficient, and `sig_coeff_flag`'s context comes from a table built at start-up
+   *from the existing `SigContext` function*, indexed by everything it depends on (size, component, scan, the
+   right and below flags, first sub-block or not, position in the sub-block).
+
+Plus the float projection, filled in parallel bands of 2^18 pixels (each pixel depends only on its own
+samples; a thumbnail stays on the calling thread). It is a table look-up and store stream into a fresh
+16-bytes-a-pixel array, so most of its time is first touches of that array, which threads share well.
+
+Things the next person would trip over:
+
+- **`--heif-report` reads 0.6 s for the parallel decode where a lean process reads 0.27 s.** The report's
+  process also holds the 20 decoded pictures, two canvases and a 516 MB float array (about 1 GB live), and
+  its 2/4/8-thread figures scale flatly for the same reason. Use it for the single-threaded phase split and
+  for A/B of one phase; time the public decode in a process that does only that.
+- **Run-to-run noise here is larger than most wins.** Another session compiling on the same machine moved
+  the single-threaded decode from 2.2 s to 3.5 s between two runs minutes apart. A/B in one sitting,
+  alternating, and check the machine's load first.
+- **What is left in a tile:** about 63% residual coding (CABAC decisions, now inlined into it), 24%
+  reconstruction (half of that the transform), 10% the coding quadtree. The bin-by-bin arithmetic decoder is
+  inherently serial; WPP or tiles inside a picture would parallelise it, but the Canon files use neither.
+- Not done: SIMD for the YCbCr conversion (now spread over the workers, 186 ms of CPU in all) and for
+  prediction and the residual add.
 
 ## Hardening
 
@@ -291,6 +348,27 @@ run; the twelfth exposed a gap a new test closed.
 | clap centred without the -1 terms | the transforms (the half-pixel `clap` case) |
 | float scale 200 for 203 cd/m² | the HEIF float test and eight PNG float tests (the shared `HdrTransfer`) |
 | facade UInt16 by shift, not scaled to fill | the facade test |
+
+## Mutation check (rung 5)
+
+Thirteen deliberate bugs against the HEIF and HEVC tests. Nine were caught on the first run; three exposed
+tests too weak to see them (two compared the new code with itself), which were strengthened and now catch
+them; one is unreachable.
+
+| Deliberate bug | Caught by |
+|---|---|
+| stage 1 skips the last coefficient row | 58 tests (Canon, fixtures, libheif cases) |
+| the last column group dropped | 52 tests |
+| stage 2 reads one intermediate column short | 57 tests |
+| stage 1's 16-bit clamp left out | **only the equivalence tests' rail cases** (15): no real picture reaches the rails |
+| renormalisation one bit short | 62 tests |
+| bypass remainder replaced | 62 tests |
+| the over-read limit a byte early | **only** `ReadingPastTheEnd_IsAllowedFor64BitsAndNoMore` |
+| the significance table's first-sub-block flag inverted | 58 tests |
+| the significance table's right and below flags swapped | 58 tests |
+| the last failing tile's error thrown, not the first | **nothing at first**: the damaged tile failed at once, so `Break` stopped the loop before the second damaged tile started. The test now cuts the earlier tile's slice in half (it fails after decoding half a picture) and gives the later one no slice (it fails at once) |
+| float bands one pixel short; HLG bands a pixel late | **nothing at first**: the test compared the parallel fill with the same banded code on one thread, which shares any banding bug. It now compares with the per-pixel loop written out in the test, at 1, 3 and all threads |
+| `ReadBits` with a single shift, so a count of 0 reads 64 bits | not caught, and cannot be: nothing reads 0 bits (renormalisation shifts by at least 1, `Bypass(0)` returns first). The two-step shift is a guard, kept |
 
 ## Code shared with the other codecs
 

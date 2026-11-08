@@ -1,3 +1,6 @@
+using System.Numerics;
+using System.Runtime.CompilerServices;
+
 namespace SharpAstro.Heif.Hevc;
 
 /// <summary>
@@ -91,9 +94,9 @@ internal sealed class HevcCabac
     private readonly byte[] _data;
     private readonly int _end;
     private int _position;      // next byte to load
-    private ulong _bits;        // bits not yet consumed, MSB first
-    private int _bitCount;
-    private int _overread;
+    private ulong _cache;       // bits loaded but not consumed, the next one in bit 63
+    private int _cached;        // how many of _cache's bits are loaded
+    private int _zeroBytes;     // bytes loaded past the end of the data, which read as zero
 
     private uint _range;
     private uint _offset;
@@ -127,33 +130,33 @@ internal sealed class HevcCabac
         if (_offset >= 510) throw new InvalidDataException("The CABAC stream starts with an offset of 510 or 511.");
     }
 
-    private uint ReadBit()
-    {
-        if (_bitCount == 0) Refill();
-        _bitCount--;
-        return (uint)(_bits >> _bitCount) & 1;
-    }
-
+    /// <summary>
+    /// The next <paramref name="count"/> bits (0 to 32), first bit most significant. Up to eight bytes are
+    /// loaded ahead of what is consumed; past the end of the data they read as zero, and consuming more than
+    /// <see cref="OverreadLimitBits"/> of those is a slice that ended before its last coding tree unit.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint ReadBits(int count)
     {
-        uint value = 0;
-        for (var i = 0; i < count; i++) value = value << 1 | ReadBit();
+        if (_cached < count) Refill();
+        var value = (uint)(_cache >> 32 >> (32 - count)); // two shifts, so a count of 0 gives 0 rather than a shift by 64
+        _cache <<= count;
+        _cached -= count;
+        if (_zeroBytes != 0 && _zeroBytes * 8 - _cached > OverreadLimitBits)
+            throw new InvalidDataException("The slice data ended before its last coding tree unit.");
         return value;
     }
 
     private void Refill()
     {
-        if (_position < _end)
+        while (_cached <= 56)
         {
-            _bits = _data[_position++];
-            _bitCount = 8;
-            return;
+            ulong next = 0;
+            if (_position < _end) next = _data[_position++];
+            else _zeroBytes++;
+            _cache |= next << (56 - _cached);
+            _cached += 8;
         }
-        _overread += 8;
-        if (_overread > OverreadLimitBits)
-            throw new InvalidDataException("The slice data ended before its last coding tree unit.");
-        _bits = 0;
-        _bitCount = 8;
     }
 
     /// <summary>9.3.4.3.2: one context-coded bin.</summary>
@@ -180,10 +183,12 @@ internal sealed class HevcCabac
             _state[context] = (byte)(Math.Min(pState + 1, 62) << 1 | mps);
         }
 
-        while (_range < 256)
+        // Renormalise (9.3.4.3.3): double the range until it is at least 256, one bit into the offset per doubling.
+        if (_range < 256)
         {
-            _range <<= 1;
-            _offset = _offset << 1 | ReadBit();
+            var shift = BitOperations.LeadingZeroCount(_range) - 23;
+            _range <<= shift;
+            _offset = _offset << shift | ReadBits(shift);
         }
         return bin;
     }
@@ -191,7 +196,7 @@ internal sealed class HevcCabac
     /// <summary>9.3.4.3.4: one bypass bin.</summary>
     public int Bypass()
     {
-        _offset = _offset << 1 | ReadBit();
+        _offset = _offset << 1 | ReadBits(1);
         if (_offset >= _range)
         {
             _offset -= _range;
@@ -201,7 +206,25 @@ internal sealed class HevcCabac
     }
 
     /// <summary><paramref name="count"/> bypass bins as an unsigned number, first bin most significant.</summary>
+    /// <remarks>
+    /// One bypass bin is a step of binary long division: shift a bit into the offset, and the bin is 1 when
+    /// the offset reaches the range, which is then subtracted. The offset is always below the range, so
+    /// <paramref name="count"/> steps are the division of the offset with <paramref name="count"/> bits shifted
+    /// in by the range: the quotient is the bins, the remainder the new offset. That is what this computes, in
+    /// one division rather than <paramref name="count"/> steps; <c>HevcCabacTests</c> holds it to the bin-by-bin form.
+    /// </remarks>
     public int Bypass(int count)
+    {
+        if (count <= 0) return 0;
+        if (count > 32) throw new InvalidDataException($"{count} bypass bins in one value.");
+        var dividend = (ulong)_offset << count | ReadBits(count);
+        var quotient = dividend / _range;
+        _offset = (uint)(dividend - quotient * _range);
+        return (int)quotient;
+    }
+
+    /// <summary>The same bins one at a time, as 9.3.4.3.4 writes them: the reference for <see cref="Bypass(int)"/>.</summary>
+    internal int BypassBinByBin(int count)
     {
         var value = 0;
         for (var i = 0; i < count; i++) value = value << 1 | Bypass();
@@ -213,10 +236,11 @@ internal sealed class HevcCabac
     {
         _range -= 2;
         if (_offset >= _range) return 1;
-        while (_range < 256)
+        if (_range < 256)
         {
-            _range <<= 1;
-            _offset = _offset << 1 | ReadBit();
+            var shift = BitOperations.LeadingZeroCount(_range) - 23;
+            _range <<= shift;
+            _offset = _offset << shift | ReadBits(shift);
         }
         return 0;
     }

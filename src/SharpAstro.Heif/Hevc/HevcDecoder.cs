@@ -10,20 +10,7 @@ internal static class HevcDecoder
 {
     public static HevcPicture Decode(HevcDecoderConfiguration configuration, ReadOnlySpan<byte> itemData, HevcDecodeStatistics? statistics = null)
     {
-        var spsNals = configuration.NalUnitsOfType(HevcNalUnit.SpsNut).ToList();
-        var ppsNals = configuration.NalUnitsOfType(HevcNalUnit.PpsNut).ToList();
-        if (spsNals.Count != 1 || ppsNals.Count != 1)
-            throw new NotSupportedException($"'hvcC' carries {spsNals.Count} SPS and {ppsNals.Count} PPS; one of each is handled.");
-
-        var sps = HevcSps.Parse(HevcNalUnit.Parse(spsNals[0]).Rbsp);
-        var pps = HevcPps.Parse(HevcNalUnit.Parse(ppsNals[0]).Rbsp);
-        if (pps.SpsId != sps.Id)
-            throw new InvalidDataException($"The PPS refers to SPS {pps.SpsId}, but the SPS is {sps.Id}.");
-        HevcSurvey.CheckAgreement(configuration, sps);
-        CheckEnvelope(sps, pps);
-
-        if ((long)sps.Width * sps.Height > HeifLimits.MaxImagePixels)
-            throw new InvalidDataException($"The SPS declares {sps.Width}x{sps.Height}, more than {HeifLimits.MaxImagePixels} pixels.");
+        var (sps, pps) = ParameterSets(configuration);
 
         // Split (and so length-check) the whole item before any plane is allocated.
         var nals = HevcNalUnit.SplitLengthPrefixed(itemData, configuration.LengthSize);
@@ -46,6 +33,29 @@ internal static class HevcDecoder
         }
         if (slices == 0) throw new InvalidDataException("The item data holds no slice.");
         return decoder.Finish();
+    }
+
+    /// <summary>
+    /// The SPS and PPS of an item's <c>hvcC</c>, checked against each other, the configuration, the envelope
+    /// and the size limit: everything <see cref="Decode"/> refuses before it reads a slice.
+    /// </summary>
+    public static (HevcSps Sps, HevcPps Pps) ParameterSets(HevcDecoderConfiguration configuration)
+    {
+        var spsNals = configuration.NalUnitsOfType(HevcNalUnit.SpsNut).ToList();
+        var ppsNals = configuration.NalUnitsOfType(HevcNalUnit.PpsNut).ToList();
+        if (spsNals.Count != 1 || ppsNals.Count != 1)
+            throw new NotSupportedException($"'hvcC' carries {spsNals.Count} SPS and {ppsNals.Count} PPS; one of each is handled.");
+
+        var sps = HevcSps.Parse(HevcNalUnit.Parse(spsNals[0]).Rbsp);
+        var pps = HevcPps.Parse(HevcNalUnit.Parse(ppsNals[0]).Rbsp);
+        if (pps.SpsId != sps.Id)
+            throw new InvalidDataException($"The PPS refers to SPS {pps.SpsId}, but the SPS is {sps.Id}.");
+        HevcSurvey.CheckAgreement(configuration, sps);
+        CheckEnvelope(sps, pps);
+
+        if ((long)sps.Width * sps.Height > HeifLimits.MaxImagePixels)
+            throw new InvalidDataException($"The SPS declares {sps.Width}x{sps.Height}, more than {HeifLimits.MaxImagePixels} pixels.");
+        return (sps, pps);
     }
 
     /// <summary>
