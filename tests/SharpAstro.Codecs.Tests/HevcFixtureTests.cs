@@ -23,6 +23,16 @@ public class HevcFixtureTests(ITestOutputHelper output)
         "x265-420p10-chromaqp-lists",
         "x265-422p12",
         "x265-422p8-ctu16",
+        // Rung 4: the loop filters.
+        "x265-420p8-deblock",
+        "x265-422p10-deblock-offsets",
+        "x265-420p10-sao",
+        "x265-422p10-loopfilters",
+        "x265-420p12-loopfilters",
+        "x265-420p8-loopfilters-window",
+        "x265-420p8-deblock-highqp",
+        "x265-420p8-deblock-highqp-offsets",
+        "x265-420p8-deblock-lowqp",
     ];
 
     private static readonly string Root = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hevc");
@@ -57,7 +67,9 @@ public class HevcFixtureTests(ITestOutputHelper output)
         var pps = HevcPps.Parse(HevcNalUnit.Parse(configuration.NalUnitsOfType(HevcNalUnit.PpsNut).Single()).Rbsp);
 
         // Every fixture: all 35 luma modes (planar and all 33 angles included), NxN units, coded 4x4 blocks.
-        statistics.LumaModes.ShouldAllBe(count => count > 0, $"{name} leaves a luma mode unused");
+        // Not the deblocking tables' fixtures, whose QPs are pushed to where x265 uses few modes.
+        if (!name.StartsWith("x265-420p8-deblock-", StringComparison.Ordinal))
+            statistics.LumaModes.ShouldAllBe(count => count > 0, $"{name} leaves a luma mode unused");
         statistics.NxNUnits.ShouldBeGreaterThan(0);
         statistics.CodedTransformSizes[2].ShouldBeGreaterThan(0);
         if (picture.ChromaFormatIdc == 2)
@@ -106,8 +118,92 @@ public class HevcFixtureTests(ITestOutputHelper output)
             case "x265-422p8-ctu16":
                 (picture.ChromaFormatIdc, picture.BitDepthLuma, sps.Log2CtbSize).ShouldBe((2, 8, 4));
                 break;
+
+            // Rung 4, the loop filters. Each checks the filter it is for really changed samples, in every
+            // way the filter can, and that the other filter is off where it should be.
+            case "x265-420p8-deblock":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((1, 8));
+                ShouldDeblockEveryWay(statistics);
+                ShouldHaveNoSao(statistics);
+                break;
+            case "x265-422p10-deblock-offsets":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma, sps.Log2CtbSize).ShouldBe((2, 10, 6));
+                (pps.TcOffsetDiv2, pps.BetaOffsetDiv2).ShouldBe((2, -2), "beta and tc offsets");
+                (pps.CbQpOffset, pps.CrQpOffset).ShouldBe((-4, 3), "the chroma filter's QP takes the PPS offsets");
+                ShouldDeblockEveryWay(statistics);
+                ShouldHaveNoSao(statistics);
+                break;
+            case "x265-420p10-sao":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((1, 10));
+                (statistics.DeblockStrong + statistics.DeblockWeak + statistics.DeblockChroma).ShouldBe(0, "deblocking is off");
+                ShouldUseSao(statistics);
+                statistics.SaoLargestOffset.ShouldBeGreaterThan(7, "an offset past 8-bit's cMax");
+                break;
+            case "x265-422p10-loopfilters":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma, sps.Log2CtbSize).ShouldBe((2, 10, 4));
+                ShouldDeblockEveryWay(statistics);
+                ShouldUseSao(statistics);
+                break;
+            case "x265-420p12-loopfilters":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((1, 12));
+                ShouldDeblockEveryWay(statistics);
+                statistics.SaoEdgeClasses.Sum().ShouldBeGreaterThan(0, "SAO at 12 bits");
+                statistics.SaoLargestOffset.ShouldBeGreaterThan(15);
+                break;
+            case "x265-420p8-deblock-highqp" or "x265-420p8-deblock-highqp-offsets" or "x265-420p8-deblock-lowqp":
+                (pps.CuQpDeltaEnabled, statistics.NonZeroQpDeltas > 0).ShouldBe((true, true), "QPs spread by adaptive quantisation");
+                ShouldHaveNoSao(statistics);
+                break;
+            case "x265-420p8-loopfilters-window":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((1, 8));
+                picture.ConformanceWindow.ShouldNotBe((0, 0, 0, 0));
+                ShouldDeblockEveryWay(statistics);
+                ShouldUseSao(statistics);
+                statistics.SaoEdgeClasses.ShouldAllBe(count => count > 0, "every edge offset class");
+                statistics.SaoLargestOffset.ShouldBe(7, "8-bit's largest offset, cMax");
+                break;
         }
     }
+
+    /// <summary>
+    /// Table 8-12 entry by entry. A wrong beta' or tC' changes only the edges whose Q selects it, so a
+    /// table is checked only as far as the fixtures reach into it (the mutation check found a wrong tC' at
+    /// Q 47 that nothing saw). Between them the fixtures must look up every Q where either table is
+    /// non-zero. (A SAO band position of 29-31, whose bands wrap past 31 to 0, is in no fixture: x265 never
+    /// writes one.)
+    /// </summary>
+    [Fact]
+    public void Fixtures_TogetherReachEveryDeblockingTableEntry()
+    {
+        var all = new HevcDecodeStatistics();
+        foreach (var name in Names.Select(row => (string)row.Data))
+        {
+            var (configuration, item) = Load(name);
+            HevcDecoder.Decode(configuration, item, all);
+        }
+        Enumerable.Range(16, 36).Where(q => all.BetaIndices[q] == 0).ShouldBeEmpty("beta' entries (Q 16-51) no fixture looks up");
+        Enumerable.Range(18, 36).Where(q => all.TcIndices[q] == 0).ShouldBeEmpty("tC' entries (Q 18-53) no fixture looks up");
+    }
+
+    private static void ShouldDeblockEveryWay(HevcDecodeStatistics s)
+    {
+        s.DeblockStrong.ShouldBeGreaterThan(0, "strong luma filtering");
+        s.DeblockWeak.ShouldBeGreaterThan(0, "weak luma filtering");
+        s.DeblockWeakSecondSample.ShouldBeGreaterThan(0, "weak filtering of p1 or q1 too");
+        s.DeblockSkipped.ShouldBeGreaterThan(0, "segments the decisions leave alone");
+        s.DeblockChroma.ShouldBeGreaterThan(0, "chroma edges");
+    }
+
+    private static void ShouldUseSao(HevcDecodeStatistics s)
+    {
+        s.SaoBand.ShouldBeGreaterThan(0, "band offset");
+        s.SaoEdgeClasses.Sum().ShouldBeGreaterThan(0, "edge offset");
+        s.SaoMergeLeft.ShouldBeGreaterThan(0, "parameters merged from the left");
+        s.SaoMergeUp.ShouldBeGreaterThan(0, "parameters merged from above");
+    }
+
+    private static void ShouldHaveNoSao(HevcDecodeStatistics s) =>
+        (s.SaoBand + s.SaoEdgeClasses.Sum() + s.SaoMergeLeft + s.SaoMergeUp).ShouldBe(0, "SAO is off");
 
     /// <summary>
     /// Damaged slice data is refused with <see cref="InvalidDataException"/> (or decodes to something):
@@ -178,6 +274,9 @@ public class HevcFixtureTests(ITestOutputHelper output)
         output.WriteLine($"  chroma modes ({s.ChromaModes.Count(c => c > 0)}): {Modes(s.ChromaModes)}; remapped CUs {s.RemappedChromaModes}");
         output.WriteLine($"  coded TB sizes: {string.Join(" ", s.CodedTransformSizes.Select((c, l) => (c, l)).Where(p => p.c > 0).Select(p => $"{1 << p.l}:{p.c}"))}");
         output.WriteLine($"  NxN {s.NxNUnits}, non-zero QP deltas {s.NonZeroQpDeltas}, strong smoothing {s.StrongSmoothing}, slices {s.Slices}");
+        output.WriteLine($"  deblocking: strong {s.DeblockStrong}, weak {s.DeblockWeak} (p1/q1 too {s.DeblockWeakSecondSample}), skipped {s.DeblockSkipped}, chroma {s.DeblockChroma}");
+        output.WriteLine($"  beta Q: {string.Join(" ", s.BetaIndices.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}; tc Q: {string.Join(" ", s.TcIndices.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}; band positions: {string.Join(" ", s.SaoBandPositions.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}");
+        output.WriteLine($"  SAO: band {s.SaoBand}, edge classes {string.Join("/", s.SaoEdgeClasses)}, merged left {s.SaoMergeLeft} up {s.SaoMergeUp}, largest offset {s.SaoLargestOffset}");
     }
 
     // ---- loading -----------------------------------------------------------------------------------

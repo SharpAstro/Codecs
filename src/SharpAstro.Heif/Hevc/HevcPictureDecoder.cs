@@ -36,6 +36,35 @@ internal sealed class HevcDecodeStatistics
     /// <summary>Coded chroma blocks by qPi, the chroma QP before the 4:2:0 mapping of Table 8-10 (index qPi + 12).</summary>
     public long[] ChromaQpIndices { get; } = new long[70];
     public int Slices { get; set; }
+
+    /// <summary>Luma edge segments (four lines) the deblocking filter changed, strongly and weakly.</summary>
+    public long DeblockStrong { get; set; }
+    public long DeblockWeak { get; set; }
+
+    /// <summary>Weak luma segments that also changed p1 or q1 (dEp, dEq), and chroma segments filtered.</summary>
+    public long DeblockWeakSecondSample { get; set; }
+    public long DeblockChroma { get; set; }
+
+    /// <summary>Luma edge segments the decisions left alone (d at least beta, or the weak step too large).</summary>
+    public long DeblockSkipped { get; set; }
+
+    /// <summary>SAO per CTB and component: band offset, and edge offset by class 0-3.</summary>
+    public long SaoBand { get; set; }
+    public long[] SaoEdgeClasses { get; } = new long[4];
+
+    /// <summary>CTBs whose SAO parameters were merged from the left and from above.</summary>
+    public long SaoMergeLeft { get; set; }
+    public long SaoMergeUp { get; set; }
+
+    /// <summary>The largest SAO offset magnitude seen, as coded (before log2_sao_offset_scale).</summary>
+    public int SaoLargestOffset { get; set; }
+
+    /// <summary>The Q each filtered deblocking segment looked up in Table 8-12, for beta (luma) and for tC (luma and chroma).</summary>
+    public long[] BetaIndices { get; } = new long[52];
+    public long[] TcIndices { get; } = new long[54];
+
+    /// <summary>SAO band offsets by sao_band_position.</summary>
+    public long[] SaoBandPositions { get; } = new long[32];
 }
 
 /// <summary>
@@ -43,7 +72,7 @@ internal sealed class HevcDecodeStatistics
 /// The envelope is checked by <see cref="HevcDecoder"/> before this is built; anything outside it that
 /// can only be seen in slice data is refused where it appears.
 /// </summary>
-internal sealed class HevcPictureDecoder
+internal sealed partial class HevcPictureDecoder
 {
     private readonly HevcSps _sps;
     private readonly HevcPps _pps;
@@ -68,6 +97,19 @@ internal sealed class HevcPictureDecoder
     private readonly byte[] _ctDepth;
     private readonly byte[] _lumaMode;
     private readonly sbyte[] _qpMap;
+
+    // Per 4x4 luma block: bit 0, a transform edge on its left; bit 1, one on its top (8.7.2.3). Every intra
+    // prediction block edge on the 8x8 grid is also a transform edge, so these are all the edges there are.
+    private readonly byte[] _edges;
+
+    // The slice headers in decoding order (indexed by _ctbSlice), for the loop filters' per-slice settings.
+    private readonly List<HevcSliceHeader> _sliceHeaders = [];
+
+    // Per CTB and component (index ctb * 3 + cIdx): SaoTypeIdx (0 none, 1 band, 2 edge), the band position or
+    // edge class, and SaoOffsetVal[1..4] (index * 4).
+    private readonly byte[] _saoType;
+    private readonly byte[] _saoBandOrClass;
+    private readonly short[] _saoOffsets;
 
     private int _slice = -1;
     private int _nextCtb;
@@ -129,12 +171,18 @@ internal sealed class HevcPictureDecoder
         _ctDepth = new byte[blocks];
         _lumaMode = new byte[blocks];
         _qpMap = new sbyte[blocks];
+        _edges = new byte[blocks];
+        var ctbs = _widthInCtbs * _heightInCtbs;
+        _saoType = new byte[ctbs * 3];
+        _saoBandOrClass = new byte[ctbs * 3];
+        _saoOffsets = new short[ctbs * 3 * 4];
     }
 
     public HevcPicture Finish()
     {
         if (_nextCtb != _ctbSlice.Length)
             throw new InvalidDataException($"The picture's slices cover {_nextCtb} of its {_ctbSlice.Length} coding tree blocks.");
+        ApplyLoopFilters();
         return new HevcPicture(_width, _height, _chroma, _sps.BitDepthLuma, _sps.BitDepthChroma,
             _luma, _cb, _cr, _chromaWidth, _chromaHeight, _sps.ConformanceWindow, _sps.VideoSignal);
     }
@@ -151,6 +199,7 @@ internal sealed class HevcPictureDecoder
             throw new InvalidDataException($"A slice starts at CTB {header.SegmentAddress}; the previous one ended before CTB {_nextCtb}.");
 
         _slice++;
+        _sliceHeaders.Add(header);
         if (_statistics is not null) _statistics.Slices++;
         _sliceQpY = header.SliceQpY;
         _cbOffset = _pps.CbQpOffset + header.CbQpOffset;
@@ -171,6 +220,7 @@ internal sealed class HevcPictureDecoder
             _ctbSlice[ctb] = _slice;
             var x = (ctb % _widthInCtbs) << _log2Ctb;
             var y = (ctb / _widthInCtbs) << _log2Ctb;
+            if (header.SaoLuma || header.SaoChroma) Sao(ctb, header);
             CodingQuadtree(x, y, _log2Ctb, 0);
             ctb++;
             if (_cabac.Terminate() == 1) break; // end_of_slice_segment_flag
@@ -474,6 +524,7 @@ internal sealed class HevcPictureDecoder
             UpdateQp();
         }
 
+        MarkTransformEdges(x0, y0, 1 << log2Size);
         var lumaMode = _lumaMode[Block(x0, y0)];
         Reconstruct(0, x0, y0, log2Size, lumaMode, cbfLuma);
         if (_chroma == 0) return;
