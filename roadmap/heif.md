@@ -241,6 +241,25 @@ lists, and at 12 bits; about 1,750 hidden signs per fixture, half of them negati
 all caught (the span threshold, the parity, the parity without the hidden level itself, the shift, the
 missing list, the rounding, chroma on the luma context); the list only by `x265-420p10-tskip-lists`.
 
+**4:4:4 and monochrome (done).** 4:4:4 codes a chroma mode for each NxN prediction block (7.3.8.5) and
+predicts each chroma block from its own; a 4x4 chroma block is its own (not deferred to the fourth luma
+block), transformed by the DCT (the DST is luma's), with the [1 2 1] reference smoothing luma has. A 32x32
+chroma block is weighted by the **16x16** list of its matrixId and that list's DC (7.4.5); the syntax codes
+no 32x32 chroma list. Monochrome has no chroma planes, and HEIF presents it as R' = G' = B' = Y' (H.273
+with chroma at its mid-point). Five fixtures, bit-exact against ffmpeg first time: 4:4:4 at 8 bits (NxN
+units with four chroma modes, nearly every chroma mode), at 10 bits with coded lists and 32x32 chroma
+blocks, at 12 bits with both loop filters and transform skip; monochrome at 8 and 10 bits. Against
+libheif the 4:4:4 8-bit and both monochrome fixtures are exact; 4:4:4 12-bit BT.2020 differs by 1 on 23
+of 147,456 samples (libheif's own 4:4:4 arithmetic), held to the tolerance group.
+
+**`x265-444p10-lists` has ffmpeg as its only reference.** libde265 disagrees with ffmpeg on it from the
+first chroma sample. Narrowed by experiment: the same stream with transforms up to 16x16, or with the
+default lists, decodes identically in both, so the disagreement is the 32x32 chroma weighting, where
+libde265 does not take the 16x16 list. ffmpeg does, this decoder (written from 7.4.5 before the
+comparison) does, and they agree on every sample. `make-fixtures.sh` names it in `DE265_GAPS`, the only
+fixture there. Seven deliberate bugs, all caught; two of them (the 32x32 list and its DC) only by this
+fixture.
+
 **Still refused or unverified, and why:**
 
 - **A slice after the first that keeps the filters off its boundary**

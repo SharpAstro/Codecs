@@ -69,6 +69,9 @@ public class HeifDecodeTests(ITestOutputHelper output)
         { "x265-422p12", 1 },        // 12-bit
         { "x265-422p8-ctu16", 5 },   // BT.601, 8-bit
         { "x265-422p8-ctu16", 9 },
+        { "x265-444p8-modes", 1 },          // 4:4:4: no chroma to upsample
+        { "x265-400p8", 1 },                // monochrome: R' = G' = B' = Y'
+        { "x265-400p10", 9 },
     };
 
     [Theory]
@@ -93,6 +96,7 @@ public class HeifDecodeTests(ITestOutputHelper output)
         { "x265-420p8-window", 1, true },        // 4:2:0 8-bit, full range
         { "x265-420p10-lowqp", 9, false },
         { "x265-422p8-ctu16", -1, true },        // no colr at all: the VUI (narrow range here)
+        { "x265-444p12-loopfilters", 9, true },  // 4:4:4 12-bit BT.2020 full: 23 of 147,456 samples 1 apart (its 4:4:4 path)
     };
 
     [Theory]

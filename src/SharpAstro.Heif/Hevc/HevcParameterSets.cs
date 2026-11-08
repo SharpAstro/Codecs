@@ -501,8 +501,8 @@ internal sealed class HevcScalingList
             }
         }
 
-        // The 32x32 lists exist only for matrixId 0 and 3 here; the chroma ones (4:4:4 only) are not coded
-        // in this version of the syntax. They are left at their defaults rather than unset.
+        // The 32x32 lists exist only for matrixId 0 and 3; Factors takes the chroma ones (4:4:4 only) from
+        // the 16x16 lists. The slots are filled with the defaults rather than left unset.
         foreach (var matrixId in (int[])[1, 2, 4, 5])
             lists.SetDefault(3, matrixId);
         return lists;
@@ -520,7 +520,10 @@ internal sealed class HevcScalingList
 
         var size = 1 << log2Size;
         var factors = new int[size * size];
-        var list = _lists[sizeId][matrixId];
+        // 7.4.5: a 32x32 chroma block (4:4:4 only) is weighted by the 16x16 list of its matrixId, expanded
+        // four times over, with the 16x16 DC; the syntax codes no 32x32 chroma lists.
+        var source = sizeId == 3 && matrixId % 3 != 0 ? 2 : sizeId;
+        var list = _lists[source][matrixId];
         if (sizeId == 0)
         {
             for (var i = 0; i < 16; i++)
@@ -537,7 +540,7 @@ internal sealed class HevcScalingList
                     for (var k = 0; k < ratio; k++)
                         factors[(y0 + j) * size + x0 + k] = list[i];
             }
-            if (sizeId > 1) factors[0] = _dc[sizeId][matrixId];
+            if (sizeId > 1) factors[0] = _dc[source][matrixId];
         }
         return _factors[sizeId][matrixId] = factors;
     }

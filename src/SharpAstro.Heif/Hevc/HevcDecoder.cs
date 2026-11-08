@@ -67,7 +67,6 @@ internal static class HevcDecoder
         static void Refuse(string feature, int rung) =>
             throw new NotSupportedException($"{feature} is not decoded yet (rung {rung}).");
 
-        if (sps.ChromaFormatIdc is not (1 or 2)) Refuse($"chroma_format_idc {sps.ChromaFormatIdc} (only 4:2:0 and 4:2:2)", 4);
         if (sps.SeparateColourPlanes) Refuse("Separate colour planes", 4);
         if (sps.BitDepthLuma > 12 || sps.BitDepthChroma > 12) Refuse($"A bit depth of {Math.Max(sps.BitDepthLuma, sps.BitDepthChroma)}", 4);
         // Nothing here can check a picture whose luma and chroma depths differ (ffmpeg has no such pixel format).
