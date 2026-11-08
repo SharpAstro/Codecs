@@ -56,7 +56,7 @@ internal sealed record HevcSurvey(
     }
 
     /// <summary>The hvcC summary must say what the SPS says; a mismatch means one of them is wrong.</summary>
-    private static void CheckAgreement(HevcDecoderConfiguration c, HevcSps sps)
+    internal static void CheckAgreement(HevcDecoderConfiguration c, HevcSps sps)
     {
         var ptl = sps.ProfileTierLevel;
         if ((int)c.ChromaFormat != sps.ChromaFormatIdc || c.BitDepthLuma != sps.BitDepthLuma || c.BitDepthChroma != sps.BitDepthChroma

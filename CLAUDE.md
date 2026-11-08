@@ -11,7 +11,7 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Heif` (container only so far, see `roadmap/heif.md`), `Exif`,
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Heif` (HEIF container + HEVC intra decode to planes, not on the facade yet; see `roadmap/heif.md`), `Exif`,
   `Color.Icc`, `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered
   *ahead of* the plain JPEG decoder).
 
@@ -1051,6 +1051,30 @@ alpha mask) BMP, written from Microsoft's header documentation, not from stb_ima
 - **RLE is the residual amplification:** a few bytes of RLE can declare a large image (up to the 2^28-pixel ceiling, 768 MiB of
   RGB). That is documented in the package README rather than limited further.
 
+## HEIF / HEVC — clean-room from H.265, ffmpeg as the oracle, x265 fixtures for coverage
+
+`SharpAstro.Heif` reads the HEIF container (rung 1) and decodes HEVC intra pictures to sample planes (rung 2,
+`HevcDecoder`, internal); composition, colour and the facade are rung 3. Clean-room from ISO/IEC 14496-12,
+23008-12, 14496-15 and ITU-T H.265: libheif, libde265, ffmpeg and x265 are programs here, never sources.
+[`roadmap/heif.md`](roadmap/heif.md) has the envelope, the rungs and both mutation tables. What a person
+touching it should know:
+
+- **The Canon files are not enough, and the decoder can tell you so.** Their encoder uses DC and every fourth
+  angle, never planar, and chroma modes the 4:2:2 remap leaves alone; a Table 8-3 with two wrong entries
+  matched ffmpeg on all 25 Canon pictures. The x265 fixtures (`Fixtures/hevc`, `Oracle/heif/make-fixtures.sh`,
+  WSL) found it. `HevcDecodeStatistics` counts what a decode exercised, and `Fixture_CoversWhatItIsFor`
+  pins each fixture's purpose, so a regenerated fixture cannot quietly stop testing something.
+- **A fixture is committed only when ffmpeg and libde265 decode it to the same bytes.** Its digest then runs
+  with no tool installed; the live ffmpeg comparison runs where ffmpeg is (CI installs it).
+- **x265 is not byte-reproducible** between runs, so regenerating rewrites every fixture and the digest
+  file together. It writes several slices only with WPP (refused), so slices are covered by Canon alone.
+- **The mutation check needs both halves**: six of 22 deliberate bugs are seen only by the fixtures,
+  one (slice-boundary availability) only by the Canon multi-slice pictures.
+- **Every refusal names the feature and its rung**, before planes are allocated; damaged slices end in
+  `InvalidDataException` (over-read capped at 64 bits, every unary prefix capped, levels kept to 16 bits).
+- **Rung 3 outputs HDR, not a tone map**: PQ to the facade's float tier (1.0 = 203 cd/m², as
+  `PngImageDecoder.TryDecodeRgbaFloat`), for an scRGB swapchain in SdlVulkan.Renderer.
+
 ## Oracle harnesses (all codecs)
 
 There are multiple oracle mechanisms, with different acquisition stories. All of them
@@ -1075,6 +1099,7 @@ refuses to accept that silence.
 | JPEG 2000 **conformance** | `opj_decompress` / `opj_compress` (OpenJPEG, BSD-2 — **binary only**) | `bash tests/SharpAstro.Codecs.Tests/Oracle/jpeg2000/fetch.sh` — **downloads** the pinned v2.5.4 release build (verified by SHA-256) into `dist/`, git-ignored. The only oracle here that is not compiled from source: OpenJPEG wants CMake, and upstream ships official builds for both platforms that matter, so this dev box and CI run the *same bytes* rather than merely the same source. **CI fetches it.** |
 | JBIG2 **conformance** | `jbig2dec` (Artifex, AGPL — **binary only**) | `apt-get install jbig2dec`, or on Windows `wsl -- sudo apt-get install -y jbig2dec` — `Jbig2Oracle` finds it on PATH or through WSL. CI installs it with a one-line apt step. |
 | WebP **decode** | `dwebp` / `anim_dump` (libwebp, BSD-3 — **binary only**) + committed digests | The digests in `Fixtures/webp/*-golden.tsv` run everywhere. The live comparisons need `apt-get install webp`, the libwebp release binaries on `PATH`, or `DWEBP` / `ANIM_DUMP`. **CI installs the apt package.** |
+| HEVC **decode** (HEIF) | `ffmpeg`'s native `hevc` decoder (LGPL/GPL — **binary only**) + committed x265 fixtures and digests | The digests in `Fixtures/hevc/hevc-oracle-golden.tsv` run everywhere. The live comparisons need ffmpeg: `apt-get install ffmpeg` (**CI installs it**), `Oracle/heif/fetch.sh` on Windows (pinned BtbN LGPL build, SHA-256 checked), or `FFMPEG`. The fixtures come from `Oracle/heif/make-fixtures.sh` (Linux/WSL, x265 through ffmpeg), which writes one only when ffmpeg and libde265 decode it to the same bytes. The Canon pictures are compared live and skip without the fetched files. |
 
 Byte-exactness claims that depend on a *pinned* reference break if the pin moves; treat the
 SHA-256 in `jpegenc/build.sh`, the `JXRLIB_COMMIT` in `Oracle/build.sh`, and the `OPJ_VERSION` +
@@ -1089,7 +1114,7 @@ installing its oracle looks exactly like a job that runs it. `REQUIRE_ORACLES=1`
 unavailable" from a skip into a **failure**, and CI's test step sets it.
 
 `OracleGate.RequireOrSkip(available, name, reason)` is the shared entry point. **Every external
-oracle is now on it, and CI installs, builds or fetches all five** — so a CI run has no
+oracle is now on it, and CI installs, builds or fetches all six** — so a CI run has no
 silently-absent oracle left.
 
 | Harness | Gated? | Installed/built in CI | Missing ⇒ |
@@ -1099,6 +1124,7 @@ silently-absent oracle left.
 | jpegenc (stbiw) | yes | `Oracle/jpegenc/build.sh`, ~5s | skip locally, **fail** in CI |
 | OpenJPEG | yes | `Oracle/jpeg2000/fetch.sh`, ~5s | skip locally, **fail** in CI |
 | libwebp (dwebp, anim_dump) | yes | `apt-get install webp` | skip locally, **fail** in CI |
+| ffmpeg (HEVC) | yes | `apt-get install ffmpeg` | skip locally, **fail** in CI |
 
 **Why JXR mattered most.** Its guards used to be `if (encApp is null) { _out.WriteLine(...);
 return; }` — which makes the test **pass**. On a dev box with `Oracle/bin/` populated that is
@@ -1120,9 +1146,14 @@ decode/encode and WebP still/animation -- and two JXR header tests), given a dev
 oracle present. They previously differed — local 4, CI 56 — purely because a dev box has
 `Oracle/bin/` populated and CI built nothing.
 
+The Canon HEIF/CR3 tests (`HeifCanonFileTests`, `HevcDecoderOracleTests`) are a separate case: their
+INPUT is fetched, not their oracle (`fetch-heif-external.sh`; third-party files with no licence), so
+they `Assert.SkipUnless` the file and skip in CI under `REQUIRE_ORACLES` too. CI's skip count is the 6
+above plus those.
+
 Related knobs: `OPJ_HOME=<prefix>` points the JPEG 2000 oracle at a prefix containing
 `bin/opj_decompress` — a local build, or a bogus path to exercise the failure branch.
-`DWEBP=<path>` / `ANIM_DUMP=<path>` do the same for the WebP oracles.
+`DWEBP=<path>` / `ANIM_DUMP=<path>` do the same for the WebP oracles, `FFMPEG=<path>` for the HEVC one.
 `JBIG2DEC=<path>` overrides jbig2dec resolution — point it at a custom build, or at
 a bogus path to exercise the failure branch. For the built oracles, temporarily renaming the
 binary does the same job — but note `jpegenc.exe` resolves from **two** places (`Oracle/bin/` and

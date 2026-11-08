@@ -79,6 +79,9 @@ internal sealed record HevcSps
     public required int MaxTransformHierarchyDepthIntra { get; init; }
     public required bool ScalingListEnabled { get; init; }
     public required bool ScalingListDataInSps { get; init; }
+
+    /// <summary>The lists coded in the SPS, or null when none are (the defaults then apply if scaling lists are enabled).</summary>
+    public required HevcScalingList? ScalingList { get; init; }
     public required bool AmpEnabled { get; init; }
     public required bool SampleAdaptiveOffset { get; init; }
     public required bool PcmEnabled { get; init; }
@@ -148,10 +151,11 @@ internal sealed record HevcSps
 
         var scalingEnabled = r.Flag();
         var scalingInSps = false;
+        HevcScalingList? scalingList = null;
         if (scalingEnabled)
         {
             scalingInSps = r.Flag();
-            if (scalingInSps) HevcScalingList.Skip(ref r);
+            if (scalingInSps) scalingList = HevcScalingList.Read(ref r);
         }
 
         var amp = r.Flag();
@@ -216,6 +220,7 @@ internal sealed record HevcSps
             MaxTransformHierarchyDepthIntra = depthIntra,
             ScalingListEnabled = scalingEnabled,
             ScalingListDataInSps = scalingInSps,
+            ScalingList = scalingList,
             AmpEnabled = amp,
             SampleAdaptiveOffset = sao,
             PcmEnabled = pcm,
@@ -260,6 +265,9 @@ internal sealed record HevcPps
     public required int BetaOffsetDiv2 { get; init; }
     public required int TcOffsetDiv2 { get; init; }
     public required bool ScalingListDataInPps { get; init; }
+
+    /// <summary>The lists coded in the PPS, which replace the SPS's for pictures using it; null when none are.</summary>
+    public required HevcScalingList? ScalingList { get; init; }
     public required bool SliceHeaderExtensionPresent { get; init; }
     public required int Log2MaxTransformSkipBlockSize { get; init; }
     public required bool CrossComponentPrediction { get; init; }
@@ -324,7 +332,7 @@ internal sealed record HevcPps
         }
 
         var scalingInPps = r.Flag();
-        if (scalingInPps) HevcScalingList.Skip(ref r);
+        var ppsScalingList = scalingInPps ? HevcScalingList.Read(ref r) : null;
         r.Flag(); // lists_modification_present_flag
         r.Ue();   // log2_parallel_merge_level_minus2
         var headerExtension = r.Flag();
@@ -384,6 +392,7 @@ internal sealed record HevcPps
             BetaOffsetDiv2 = beta,
             TcOffsetDiv2 = tc,
             ScalingListDataInPps = scalingInPps,
+            ScalingList = ppsScalingList,
             SliceHeaderExtensionPresent = headerExtension,
             Log2MaxTransformSkipBlockSize = log2MaxTs,
             CrossComponentPrediction = crossComponent,
@@ -395,25 +404,142 @@ internal sealed record HevcPps
     }
 }
 
-/// <summary>scaling_list_data() (H.265 7.3.4), read past. Rung 2 keeps the lists.</summary>
-internal static class HevcScalingList
+/// <summary>
+/// scaling_list_data() (H.265 7.3.4, semantics 7.4.5): the quantisation weighting matrices, kept as coded
+/// (each list in up-right diagonal order, plus the DC value of the 16x16 and 32x32 lists) and expanded on
+/// demand into <c>ScalingFactor</c>, the per-coefficient weight the scaling process multiplies by.
+/// </summary>
+internal sealed class HevcScalingList
 {
-    public static void Skip(ref RbspReader r)
+    /// <summary>Table 7-6, intra (matrixId 0..2) lists for sizeId 1..3, in diagonal order.</summary>
+    private static readonly byte[] DefaultIntra =
+    [
+        16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 17, 16, 17, 16, 17, 18, 17, 18, 18, 17, 18, 21, 19, 20, 21, 20, 19, 21, 24, 22, 22, 24,
+        24, 22, 22, 24, 25, 25, 27, 30, 27, 25, 25, 29, 31, 35, 35, 31, 29, 36, 41, 44, 41, 36, 47, 54, 54, 47, 65, 70, 65, 88, 88, 115,
+    ];
+
+    /// <summary>Table 7-6, inter (matrixId 3..5) lists for sizeId 1..3, in diagonal order.</summary>
+    private static readonly byte[] DefaultInter =
+    [
+        16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 17, 17, 17, 17, 17, 18, 18, 18, 18, 18, 18, 20, 20, 20, 20, 20, 20, 20, 24, 24, 24, 24,
+        24, 24, 24, 24, 25, 25, 25, 25, 25, 25, 25, 28, 28, 28, 28, 28, 28, 33, 33, 33, 33, 33, 41, 41, 41, 41, 54, 54, 54, 71, 71, 91,
+    ];
+
+    // [sizeId][matrixId]: the coded list (16 entries for sizeId 0, else 64) and the DC value (sizeId 2 and 3).
+    private readonly byte[][][] _lists = new byte[4][][];
+    private readonly int[][] _dc = new int[4][];
+    private readonly int[]?[][] _factors = new int[]?[4][];
+
+    private HevcScalingList()
     {
         for (var sizeId = 0; sizeId < 4; sizeId++)
         {
-            for (var matrixId = 0; matrixId < 6; matrixId += sizeId == 3 ? 3 : 1)
+            _lists[sizeId] = new byte[6][];
+            _dc[sizeId] = new int[6];
+            _factors[sizeId] = new int[]?[6];
+        }
+    }
+
+    /// <summary>The default lists (Table 7-5 / 7-6), used when scaling lists are enabled but none is coded.</summary>
+    public static HevcScalingList Default { get; } = CreateDefault();
+
+    private static HevcScalingList CreateDefault()
+    {
+        var lists = new HevcScalingList();
+        for (var sizeId = 0; sizeId < 4; sizeId++)
+            for (var matrixId = 0; matrixId < 6; matrixId++)
+                lists.SetDefault(sizeId, matrixId);
+        return lists;
+    }
+
+    private void SetDefault(int sizeId, int matrixId)
+    {
+        _lists[sizeId][matrixId] = sizeId == 0 ? Enumerable.Repeat((byte)16, 16).ToArray() : (matrixId < 3 ? DefaultIntra : DefaultInter);
+        _dc[sizeId][matrixId] = 16;
+    }
+
+    public static HevcScalingList Read(ref RbspReader r)
+    {
+        var lists = new HevcScalingList();
+        for (var sizeId = 0; sizeId < 4; sizeId++)
+        {
+            var step = sizeId == 3 ? 3 : 1;
+            for (var matrixId = 0; matrixId < 6; matrixId += step)
             {
                 if (!r.Flag()) // scaling_list_pred_mode_flag
                 {
-                    r.Ue(matrixId / (sizeId == 3 ? 3 : 1), "scaling_list_pred_matrix_id_delta");
+                    var delta = r.Ue(matrixId / step, "scaling_list_pred_matrix_id_delta");
+                    if (delta == 0)
+                    {
+                        lists.SetDefault(sizeId, matrixId);
+                    }
+                    else
+                    {
+                        var reference = matrixId - delta * step;
+                        lists._lists[sizeId][matrixId] = lists._lists[sizeId][reference];
+                        lists._dc[sizeId][matrixId] = lists._dc[sizeId][reference];
+                    }
                     continue;
                 }
+
                 var coefficients = Math.Min(64, 1 << (4 + (sizeId << 1)));
-                if (sizeId > 1) r.Se(-7, 247, "scaling_list_dc_coef_minus8");
-                for (var i = 0; i < coefficients; i++) r.Se(-128, 127, "scaling_list_delta_coef");
+                var next = 8;
+                if (sizeId > 1)
+                {
+                    next = r.Se(-7, 247, "scaling_list_dc_coef_minus8") + 8;
+                    lists._dc[sizeId][matrixId] = next;
+                }
+                var list = new byte[coefficients];
+                for (var i = 0; i < coefficients; i++)
+                {
+                    next = (next + r.Se(-128, 127, "scaling_list_delta_coef") + 256) % 256;
+                    // 7.4.5: every ScalingList entry is greater than 0; a zero weight would erase the coefficient.
+                    if (next == 0) throw new InvalidDataException($"Scaling list {sizeId}/{matrixId} has a zero entry at {i}.");
+                    list[i] = (byte)next;
+                }
+                lists._lists[sizeId][matrixId] = list;
             }
         }
+
+        // The 32x32 lists exist only for matrixId 0 and 3 here; the chroma ones (4:4:4 only) are not coded
+        // in this version of the syntax. They are left at their defaults rather than unset.
+        foreach (var matrixId in (int[])[1, 2, 4, 5])
+            lists.SetDefault(3, matrixId);
+        return lists;
+    }
+
+    /// <summary>
+    /// <c>ScalingFactor[sizeId][matrixId]</c> (7.4.5) for a block of 2^<paramref name="log2Size"/> a side,
+    /// indexed <c>[y * size + x]</c>. 4x4 and 8x8 place the list along the diagonal scan; 16x16 and 32x32
+    /// replicate the 8x8 list over 2x2 or 4x4 squares and then put the DC value at (0, 0).
+    /// </summary>
+    public int[] Factors(int log2Size, int matrixId)
+    {
+        var sizeId = log2Size - 2;
+        if (_factors[sizeId][matrixId] is { } cached) return cached;
+
+        var size = 1 << log2Size;
+        var factors = new int[size * size];
+        var list = _lists[sizeId][matrixId];
+        if (sizeId == 0)
+        {
+            for (var i = 0; i < 16; i++)
+                factors[HevcScan.Y(2, 0, i) * 4 + HevcScan.X(2, 0, i)] = list[i];
+        }
+        else
+        {
+            var ratio = size / 8;
+            for (var i = 0; i < 64; i++)
+            {
+                var x0 = HevcScan.X(3, 0, i) * ratio;
+                var y0 = HevcScan.Y(3, 0, i) * ratio;
+                for (var j = 0; j < ratio; j++)
+                    for (var k = 0; k < ratio; k++)
+                        factors[(y0 + j) * size + x0 + k] = list[i];
+            }
+            if (sizeId > 1) factors[0] = _dc[sizeId][matrixId];
+        }
+        return _factors[sizeId][matrixId] = factors;
     }
 }
 
