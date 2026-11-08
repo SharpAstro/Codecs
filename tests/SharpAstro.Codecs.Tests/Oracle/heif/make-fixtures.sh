@@ -78,6 +78,8 @@ lists() {
     done
 }
 
+lists > "$WORK/lists.txt"
+
 # One intra (IDR) picture, with everything rung 2 refuses switched off; per-fixture parameters follow.
 BASE="log-level=error:keyint=1:no-open-gop=1:no-sao=1:no-deblock=1:no-signhide=1:no-wpp=1:no-info=1:rd=6:rdoq-level=2:frame-threads=1:pools=none"
 
@@ -116,7 +118,6 @@ fixture x265-420p10-lowqp 128 96 yuv420p10le "-qp 2" "ctu=16:min-cu-size=8:tu-in
 # adaptive quantisation in 8x8 groups and chroma offsets, and CODED scaling lists whose 16x16 and 32x32
 # DC values differ from the lists' first entries (with the default lists the DC is 16 either way, so
 # a decoder that ignored it still matched; the mutation check found that).
-lists > "$WORK/lists.txt"
 fixture x265-420p10-chromaqp-lists 256 192 yuv420p10le "-crf 37" "ctu=32:min-cu-size=8:aq-mode=2:aq-strength=3:qg-size=8:cbqpoffs=7:crqpoffs=-3:scaling-list=$WORK/lists.txt"
 # 4:2:2 12-bit: the widest bit depth rung 2 accepts (QpBdOffset 24, a 20 - 12 = 8 bit final shift).
 fixture x265-422p12 128 96 yuv422p12le "-crf 20" "ctu=32:min-cu-size=8"
@@ -144,6 +145,12 @@ AQ="ctu=32:min-cu-size=8:no-sao=1:aq-mode=2:aq-strength=3:qg-size=8"
 fixture x265-420p8-deblock-highqp 256 192 yuv420p "-crf 44" "$AQ:deblock=0,0" "" "$LOOP_BASE"
 fixture x265-420p8-deblock-highqp-offsets 256 192 yuv420p "-crf 44" "$AQ:deblock=6,6" "" "$LOOP_BASE"
 fixture x265-420p8-deblock-lowqp 256 192 yuv420p "-crf 19" "$AQ:deblock=0,0" "" "$LOOP_BASE"
+# Sign data hiding (x265's default) and transform skip, with the loop filters on as an encoder ships them.
+fixture x265-420p8-signhide 256 192 yuv420p "-crf 24" "ctu=32:min-cu-size=8:signhide=1:sao=1" "" "$LOOP_BASE"
+fixture x265-422p10-signhide-tskip 256 192 yuv422p10le "-crf 24" "ctu=32:min-cu-size=8:signhide=1:tskip=1:sao=1" "" "$LOOP_BASE"
+# Transform skip with coded scaling lists (a 4x4 skipped block is still weighted by its list), and at 12 bits.
+fixture x265-420p10-tskip-lists 256 192 yuv420p10le "-crf 22" "ctu=32:min-cu-size=8:tskip=1:signhide=1:scaling-list=$WORK/lists.txt" "" "$LOOP_BASE"
+fixture x265-420p12-tskip 256 192 yuv420p12le "-crf 20" "ctu=32:min-cu-size=8:tskip=1:signhide=1" "" "$LOOP_BASE"
 # (No fixture has a SAO band position of 29-31, whose four bands wrap past band 31 to band 0: x265 searches
 # positions 0-28 only, even for a picture near white, so it never writes one.)
 

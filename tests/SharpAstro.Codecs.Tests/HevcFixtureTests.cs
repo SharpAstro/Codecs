@@ -33,6 +33,11 @@ public class HevcFixtureTests(ITestOutputHelper output)
         "x265-420p8-deblock-highqp",
         "x265-420p8-deblock-highqp-offsets",
         "x265-420p8-deblock-lowqp",
+        // Rung 4: sign data hiding and transform skip.
+        "x265-420p8-signhide",
+        "x265-422p10-signhide-tskip",
+        "x265-420p10-tskip-lists",
+        "x265-420p12-tskip",
     ];
 
     private static readonly string Root = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hevc");
@@ -154,6 +159,25 @@ public class HevcFixtureTests(ITestOutputHelper output)
                 (pps.CuQpDeltaEnabled, statistics.NonZeroQpDeltas > 0).ShouldBe((true, true), "QPs spread by adaptive quantisation");
                 ShouldHaveNoSao(statistics);
                 break;
+            case "x265-420p8-signhide":
+                (pps.SignDataHiding, pps.TransformSkip).ShouldBe((true, false));
+                ShouldHideSigns(statistics);
+                break;
+            case "x265-422p10-signhide-tskip":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((2, 10));
+                ShouldHideSigns(statistics);
+                ShouldSkipTransforms(statistics);
+                ShouldUseSao(statistics);
+                break;
+            case "x265-420p10-tskip-lists":
+                sps.ScalingListEnabled.ShouldBeTrue("a skipped 4x4 transform is still weighted by its scaling list");
+                (pps.ScalingList ?? sps.ScalingList).ShouldNotBeNull("coded lists, not the flat default");
+                ShouldSkipTransforms(statistics);
+                break;
+            case "x265-420p12-tskip":
+                (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((1, 12));
+                ShouldSkipTransforms(statistics);
+                break;
             case "x265-420p8-loopfilters-window":
                 (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((1, 8));
                 picture.ConformanceWindow.ShouldNotBe((0, 0, 0, 0));
@@ -192,6 +216,18 @@ public class HevcFixtureTests(ITestOutputHelper output)
         s.DeblockWeakSecondSample.ShouldBeGreaterThan(0, "weak filtering of p1 or q1 too");
         s.DeblockSkipped.ShouldBeGreaterThan(0, "segments the decisions leave alone");
         s.DeblockChroma.ShouldBeGreaterThan(0, "chroma edges");
+    }
+
+    private static void ShouldHideSigns(HevcDecodeStatistics s)
+    {
+        s.HiddenSignsNegative.ShouldBeGreaterThan(0, "a hidden sign the parity made negative");
+        (s.SignsHidden - s.HiddenSignsNegative).ShouldBeGreaterThan(0, "a hidden sign left positive");
+    }
+
+    private static void ShouldSkipTransforms(HevcDecodeStatistics s)
+    {
+        s.TransformSkipLuma.ShouldBeGreaterThan(0, "luma blocks with the transform skipped");
+        s.TransformSkipChroma.ShouldBeGreaterThan(0, "chroma blocks with the transform skipped");
     }
 
     private static void ShouldUseSao(HevcDecodeStatistics s)
@@ -276,6 +312,7 @@ public class HevcFixtureTests(ITestOutputHelper output)
         output.WriteLine($"  NxN {s.NxNUnits}, non-zero QP deltas {s.NonZeroQpDeltas}, strong smoothing {s.StrongSmoothing}, slices {s.Slices}");
         output.WriteLine($"  deblocking: strong {s.DeblockStrong}, weak {s.DeblockWeak} (p1/q1 too {s.DeblockWeakSecondSample}), skipped {s.DeblockSkipped}, chroma {s.DeblockChroma}");
         output.WriteLine($"  beta Q: {string.Join(" ", s.BetaIndices.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}; tc Q: {string.Join(" ", s.TcIndices.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}; band positions: {string.Join(" ", s.SaoBandPositions.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}");
+        output.WriteLine($"  signs hidden {s.SignsHidden} (negative {s.HiddenSignsNegative}), transform skip luma {s.TransformSkipLuma} chroma {s.TransformSkipChroma}");
         output.WriteLine($"  SAO: band {s.SaoBand}, edge classes {string.Join("/", s.SaoEdgeClasses)}, merged left {s.SaoMergeLeft} up {s.SaoMergeUp}, largest offset {s.SaoLargestOffset}");
     }
 

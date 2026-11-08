@@ -92,6 +92,22 @@ internal static class HevcTransform
     }
 
     /// <summary>
+    /// 8.6.4.2 with transform_skip_flag: no transform, the scaled coefficients shifted up by
+    /// <c>tsShift = 5 + log2(N)</c> (7 for the 4x4 blocks a PPS without range extensions allows), then the same
+    /// final <c>20 - bitDepth</c> shift as a transformed block (8.6.2). Rotation and extended precision,
+    /// which change both, are refused with the envelope.
+    /// </summary>
+    public static void SkipTransform(ReadOnlySpan<int> coefficients, Span<int> residual, int log2N, int bitDepth)
+    {
+        var size = 1 << (2 * log2N);
+        var tsShift = 5 + log2N;
+        var shift = 20 - bitDepth;
+        var round = 1 << (shift - 1);
+        for (var i = 0; i < size; i++)
+            residual[i] = ((coefficients[i] << tsShift) + round) >> shift;
+    }
+
+    /// <summary>
     /// The inverse transform as 8.6.4.2 writes it, one output sample at a time: the reference the vector form
     /// is held to.
     /// </summary>

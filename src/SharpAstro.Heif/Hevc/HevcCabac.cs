@@ -26,7 +26,8 @@ internal static class HevcContext
     public const int Greater2Flag = Greater1Flag + 24;       // 6
     public const int SaoMergeFlag = Greater2Flag + 6;        // 1, shared by sao_merge_left_flag and sao_merge_up_flag
     public const int SaoTypeIdx = SaoMergeFlag + 1;          // 1 (bin 0; bin 1 is bypass), luma and chroma
-    public const int Count = SaoTypeIdx + 1;
+    public const int TransformSkipFlag = SaoTypeIdx + 1;     // 2: luma, chroma
+    public const int Count = TransformSkipFlag + 2;
 
     /// <summary>initValue per context, in the layout above.</summary>
     public static ReadOnlySpan<byte> IntraInitValues =>
@@ -50,6 +51,7 @@ internal static class HevcContext
         138, 153, 136, 167, 152, 152,                                          // coeff_abs_level_greater2_flag
         153,                                                                   // sao_merge_left_flag, sao_merge_up_flag
         200,                                                                   // sao_type_idx_luma, sao_type_idx_chroma
+        139, 139,                                                              // transform_skip_flag (luma, chroma)
     ];
 }
 
