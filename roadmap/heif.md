@@ -230,6 +230,17 @@ to be looked up by some fixture. That test exists because the first mutation che
 and nothing noticed: the first fixtures reached beta Q 19-35 and tC Q 23-39 only. x265 needed coaxing to
 use SAO at all: at 128x96, or at a high CRF, it chose "off" in every CTB.
 
+**Sign data hiding and transform skip (done).** Sign hiding (7.3.8.11): a coded sub-block whose first and
+last significant scan positions are more than 3 apart codes no sign for its first coefficient, which is
+negative when the sub-block's levels sum to an odd number. Transform skip (8.6.4.2): `transform_skip_flag`
+(one context for luma, one for chroma) for blocks up to `Log2MaxTransformSkipSize` (4x4 without range
+extensions); the scaled coefficients are shifted up by `5 + log2 N` instead of transformed, and a skipped
+block larger than 4x4 is scaled flat (a 4x4 one still by its list). Four fixtures, all bit-exact first
+time: sign hiding alone (4:2:0 8-bit), both in 4:2:2 10-bit with SAO, transform skip with coded scaling
+lists, and at 12 bits; about 1,750 hidden signs per fixture, half of them negative. Seven deliberate bugs,
+all caught (the span threshold, the parity, the parity without the hidden level itself, the shift, the
+missing list, the rounding, chroma on the luma context); the list only by `x265-420p10-tskip-lists`.
+
 **Still refused or unverified, and why:**
 
 - **A slice after the first that keeps the filters off its boundary**

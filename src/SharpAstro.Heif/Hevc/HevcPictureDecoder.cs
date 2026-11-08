@@ -63,6 +63,14 @@ internal sealed class HevcDecodeStatistics
     public long[] BetaIndices { get; } = new long[52];
     public long[] TcIndices { get; } = new long[54];
 
+    /// <summary>Coded sub-blocks whose first coefficient's sign was hidden, and those where the parity made it negative.</summary>
+    public long SignsHidden { get; set; }
+    public long HiddenSignsNegative { get; set; }
+
+    /// <summary>Transform blocks coded with transform_skip_flag, luma and chroma.</summary>
+    public long TransformSkipLuma { get; set; }
+    public long TransformSkipChroma { get; set; }
+
     /// <summary>SAO band offsets by sao_band_position.</summary>
     public long[] SaoBandPositions { get; } = new long[32];
 }
@@ -599,12 +607,26 @@ internal sealed partial class HevcPictureDecoder
         var n = 1 << log2Size;
         var coefficients = _coefficients.AsSpan(0, n * n);
         coefficients.Clear();
-        ResidualCoding(log2Size, component, ScanIndex(log2Size, component, mode), coefficients);
+        var transformSkip = ResidualCoding(log2Size, component, ScanIndex(log2Size, component, mode), coefficients);
 
+        // 8.6.4.2: m is the flat 16 without scaling lists, and for a skipped transform larger than 4x4.
         var qp = component == 0 ? _qpY + _qpBdOffsetY : ChromaQp(component == 1 ? _cbOffset : _crOffset);
-        HevcTransform.Scale(coefficients, log2Size, qp, bitDepth, _scaling?.Factors(log2Size, component));
+        var factors = transformSkip && n > 4 ? null : _scaling?.Factors(log2Size, component);
+        HevcTransform.Scale(coefficients, log2Size, qp, bitDepth, factors);
         var residual = _residual.AsSpan(0, n * n);
-        HevcTransform.Inverse(coefficients, residual, log2Size, dst: component == 0 && n == 4, bitDepth);
+        if (transformSkip)
+        {
+            HevcTransform.SkipTransform(coefficients, residual, log2Size, bitDepth);
+            if (_statistics is not null)
+            {
+                if (component == 0) _statistics.TransformSkipLuma++;
+                else _statistics.TransformSkipChroma++;
+            }
+        }
+        else
+        {
+            HevcTransform.Inverse(coefficients, residual, log2Size, dst: component == 0 && n == 4, bitDepth);
+        }
 
         var max = (1 << bitDepth) - 1;
         for (var j = 0; j < n; j++)
@@ -666,10 +688,16 @@ internal sealed partial class HevcPictureDecoder
 
     private static ReadOnlySpan<byte> SigContext4x4 => [0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8];
 
-    private void ResidualCoding(int log2Size, int component, int scanIdx, Span<int> coefficients)
+    /// <returns>transform_skip_flag.</returns>
+    private bool ResidualCoding(int log2Size, int component, int scanIdx, Span<int> coefficients)
     {
         var n = 1 << log2Size;
         var chroma = component > 0;
+
+        // transform_skip_flag: one context for luma, one for chroma. (cu_transquant_bypass_flag, which would
+        // also suppress it, is refused with the envelope.)
+        var transformSkip = _pps.TransformSkip && log2Size <= _pps.Log2MaxTransformSkipBlockSize
+            && _cabac.Decision(HevcContext.TransformSkipFlag + (chroma ? 1 : 0)) == 1;
 
         // last_sig_coeff_{x,y}_prefix: truncated unary over contexts that depend on the block size.
         int ctxOffset, ctxShift;
@@ -718,6 +746,7 @@ internal sealed partial class HevcPictureDecoder
         Span<int> sigX = stackalloc int[16];
         Span<int> sigY = stackalloc int[16];
         Span<int> greater1 = stackalloc int[16];
+        Span<int> sigPosition = stackalloc int[16]; // each significant coefficient's scan position in its sub-block
         var firstSubBlock = true;
         var previousGreater1Ctx = 1;
 
@@ -747,6 +776,7 @@ internal sealed partial class HevcPictureDecoder
             if (i == lastSubBlock)
             {
                 sigX[0] = lastX;
+                sigPosition[0] = lastScanPos;
                 sigY[0] = lastY;
                 count = 1;
                 start = lastScanPos - 1;
@@ -774,6 +804,7 @@ internal sealed partial class HevcPictureDecoder
                     if (significant)
                     {
                         sigX[count] = x;
+                        sigPosition[count] = p;
                         sigY[count] = y;
                         count++;
                     }
@@ -805,8 +836,12 @@ internal sealed partial class HevcPictureDecoder
             previousGreater1Ctx = greater1Ctx;
             var greater2 = firstGreater1 >= 0 ? _cabac.Decision(HevcContext.Greater2Flag + ctxSet + (chroma ? 4 : 0)) : 0;
 
-            // Signs (no sign hiding in the envelope), then the remaining levels.
-            var signs = _cabac.Bypass(count);
+            // Signs, then the remaining levels. With sign data hiding (7.3.8.11), a sub-block whose first and
+            // last significant positions are more than 3 apart codes no sign for its first (lowest-position,
+            // so last in this list) coefficient: it is negative when the sum of the sub-block's levels is odd.
+            var signHidden = _pps.SignDataHiding && sigPosition[0] - sigPosition[count - 1] > 3;
+            var signs = signHidden ? _cabac.Bypass(count - 1) << 1 : _cabac.Bypass(count);
+            var sumAbsLevel = 0;
             var rice = 0;
             for (var k = 0; k < count; k++)
             {
@@ -819,11 +854,22 @@ internal sealed partial class HevcPictureDecoder
                     if (level > 3 * (1 << rice)) rice = Math.Min(rice + 1, 4);
                 }
                 var negative = ((signs >> (count - 1 - k)) & 1) != 0;
+                sumAbsLevel += level;
+                if (signHidden && k == count - 1)
+                {
+                    negative = (sumAbsLevel & 1) != 0;
+                    if (_statistics is not null)
+                    {
+                        _statistics.SignsHidden++;
+                        if (negative) _statistics.HiddenSignsNegative++;
+                    }
+                }
                 if (level > 32768 || (level == 32768 && !negative))
                     throw new InvalidDataException($"A transform coefficient level of {(negative ? -level : level)} is outside 16 bits.");
                 coefficients[sigY[k] * n + sigX[k]] = negative ? -level : level;
             }
         }
+        return transformSkip;
     }
 
     private int LastPosition(int prefix) =>

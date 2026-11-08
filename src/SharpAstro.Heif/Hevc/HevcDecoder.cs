@@ -84,8 +84,6 @@ internal static class HevcDecoder
         if (range.CabacBypassAlignment) Refuse("CABAC bypass alignment", 4);
         if (sps.OtherExtensions) Refuse("An SPS multilayer, 3D or screen content extension", 4);
 
-        if (pps.SignDataHiding) Refuse("Sign data hiding", 4);
-        if (pps.TransformSkip) Refuse("Transform skip", 4);
         if (pps.TransquantBypass) Refuse("Transquant bypass", 4);
         if (pps.Tiles) Refuse("Tiles", 4);
         if (pps.EntropyCodingSync) Refuse("Wavefront parallel processing", 4);
