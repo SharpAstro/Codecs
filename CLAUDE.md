@@ -11,7 +11,7 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Heif` (HEIF container + HEVC intra decode to planes, not on the facade yet; see `roadmap/heif.md`), `Exif`,
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Heif` (HEIF/HEVC stills: grids, transforms, PQ as linear floats; see `roadmap/heif.md`), `Exif`,
   `Color.Icc`, `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered
   *ahead of* the plain JPEG decoder).
 
@@ -938,7 +938,7 @@ high-byte mapping as any 16-bit PNG.
 ## PNG cICP float projection — a table beat every vector form tried
 
 `PngImageDecoder.TryDecodeRgbaFloat` (PQ / HLG / sRGB to linear-light RGBA floats) fills its raster from
-`PngFloatFill`. Each colour sample is a lookup in a 256- or 65536-entry table that `PngHdr` builds with the
+`PngFloatFill`. Each colour sample is a lookup in a 256- or 65536-entry table that `HdrTransfer` (in Abstractions since HEIF rung 3; it was `PngHdr`) builds with the
 **reference's own arithmetic**, so the shipped fill is **bit-identical** to `FillReference` (the scalar spec the tests
 and tiny images use) and there is no second kernel to keep equal; `PngFloatFillEquivalenceTests` is the guard. The
 flight's numbers are in the `3.26` CHANGELOG entry; the ones worth keeping in mind when touching it:
@@ -1053,8 +1053,9 @@ alpha mask) BMP, written from Microsoft's header documentation, not from stb_ima
 
 ## HEIF / HEVC — clean-room from H.265, ffmpeg as the oracle, x265 fixtures for coverage
 
-`SharpAstro.Heif` reads the HEIF container (rung 1) and decodes HEVC intra pictures to sample planes (rung 2,
-`HevcDecoder`, internal); composition, colour and the facade are rung 3. Clean-room from ISO/IEC 14496-12,
+`SharpAstro.Heif` reads the HEIF container (rung 1), decodes HEVC intra pictures to sample planes (rung 2,
+`HevcDecoder`, internal) and composes them into R'G'B' with an HDR float projection, registered with the facade
+(rung 3, `HeifDecoder` / `HeifImageDecoder`). Clean-room from ISO/IEC 14496-12,
 23008-12, 14496-15 and ITU-T H.265: libheif, libde265, ffmpeg and x265 are programs here, never sources.
 [`roadmap/heif.md`](roadmap/heif.md) has the envelope, the rungs and both mutation tables. What a person
 touching it should know:
@@ -1072,8 +1073,14 @@ touching it should know:
   one (slice-boundary availability) only by the Canon multi-slice pictures.
 - **Every refusal names the feature and its rung**, before planes are allocated; damaged slices end in
   `InvalidDataException` (over-read capped at 64 bits, every unary prefix capped, levels kept to 16 bits).
-- **Rung 3 outputs HDR, not a tone map**: PQ to the facade's float tier (1.0 = 203 cd/m², as
-  `PngImageDecoder.TryDecodeRgbaFloat`), for an scRGB swapchain in SdlVulkan.Renderer.
+- **HDR output, not a tone map**: PQ to the facade's float tier (1.0 = 203 cd/m², as
+  `PngImageDecoder.TryDecodeRgbaFloat`), from `HdrTransfer`, which now lives in Abstractions for PNG and HEIF
+  both. The display side is SdlVulkan.Renderer #165 (an scRGB swapchain, no SDR cost).
+- **The YCbCr conversion is H.273's and libheif agrees exactly for full-range 4:2:2** (every Canon picture,
+  the whole R7 grid). Narrow range and 4:2:0 at 8 bits are within 2 codes of libheif, which takes integer
+  shortcuts there; those tests are a tolerance, kept apart from the exact ones. libheif also transforms the
+  Y'CbCr planes (so a rotated 4:2:2 image resamples chroma) and converts with the VUI when it rotates; the
+  transform tests are built so neither matters. `imir` axis 0 swaps top and bottom.
 
 ## Oracle harnesses (all codecs)
 

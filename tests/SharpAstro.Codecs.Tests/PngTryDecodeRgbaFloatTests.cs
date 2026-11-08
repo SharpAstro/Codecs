@@ -14,7 +14,7 @@ namespace SharpAstro.Codecs.Tests;
 /// <remarks>
 /// <para>The reference for every number here is computed in this file, in double precision, straight
 /// from the standards (ST 2084, BT.2100 Table 5, IEC 61966-2-1, BT.709 / BT.2020 as printed, H.273
-/// §8.3) - not by calling <c>PngHdr</c>, whose own anchors are pinned in
+/// §8.3) - not by calling <c>HdrTransfer</c>, whose own anchors are pinned in
 /// <see cref="PngHdrTransferTests"/>. What these tests add is that the <i>decoder</i> wires the right
 /// samples, range, curve and alpha together for each colour type and depth.</para>
 /// <para>The PQ / HLG fixtures are Mike Pedersen's cICP conformance files (<c>Fixtures/Cicp</c>). They

@@ -224,11 +224,11 @@ public sealed class PngFloatFillEquivalenceTests
         foreach (var transfer in new[] { TransferFunction.Pq, TransferFunction.Hlg, TransferFunction.Srgb, TransferFunction.BT709, TransferFunction.Linear })
         {
             var table = new float[1 << bitDepth];
-            PngHdr.BuildLinearTable(transfer, ColorPrimaries.BT2020, bitDepth, fullRange, table);
+            HdrTransfer.BuildLinearTable(transfer, ColorPrimaries.BT2020, bitDepth, fullRange, table);
             for (int c = 0; c < table.Length; c++)
             {
-                Span<float> one = [PngHdr.CodeToSignal(c, bitDepth, fullRange)];
-                PngHdr.ToLinear(transfer, ColorPrimaries.BT2020, one, 1, 1);
+                Span<float> one = [HdrTransfer.CodeToSignal(c, bitDepth, fullRange)];
+                HdrTransfer.ToLinear(transfer, ColorPrimaries.BT2020, one, 1, 1);
                 BitConverter.SingleToInt32Bits(table[c]).ShouldBe(BitConverter.SingleToInt32Bits(one[0]), $"{transfer} code {c}");
             }
         }
@@ -237,9 +237,9 @@ public sealed class PngFloatFillEquivalenceTests
     [Fact]
     public void TableBuilders_RejectAWrongLengthTable()
     {
-        Should.Throw<ArgumentOutOfRangeException>(() => PngHdr.BuildLinearTable(TransferFunction.Pq, ColorPrimaries.BT2020, 8, true, new float[255]));
-        Should.Throw<ArgumentOutOfRangeException>(() => PngHdr.BuildHlgSceneLightTable(8, true, new float[257]));
-        Should.Throw<NotSupportedException>(() => PngHdr.BuildLinearTable(TransferFunction.Log100, ColorPrimaries.BT709, 8, true, new float[256]));
+        Should.Throw<ArgumentOutOfRangeException>(() => HdrTransfer.BuildLinearTable(TransferFunction.Pq, ColorPrimaries.BT2020, 8, true, new float[255]));
+        Should.Throw<ArgumentOutOfRangeException>(() => HdrTransfer.BuildHlgSceneLightTable(8, true, new float[257]));
+        Should.Throw<NotSupportedException>(() => HdrTransfer.BuildLinearTable(TransferFunction.Log100, ColorPrimaries.BT709, 8, true, new float[256]));
     }
 
     [Fact]
@@ -250,9 +250,9 @@ public sealed class PngFloatFillEquivalenceTests
         for (int i = 0; i < 2000; i++)
         {
             Span<float> px = [rnd.NextSingle(), rnd.NextSingle(), rnd.NextSingle()];
-            float er = PngHdr.HlgInverseOetf(px[0]), eg = PngHdr.HlgInverseOetf(px[1]), eb = PngHdr.HlgInverseOetf(px[2]);
-            PngHdr.HlgSceneToLinear(er, eg, eb, weights, out var r, out var g, out var b);
-            PngHdr.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, px, 3, 3);
+            float er = HdrTransfer.HlgInverseOetf(px[0]), eg = HdrTransfer.HlgInverseOetf(px[1]), eb = HdrTransfer.HlgInverseOetf(px[2]);
+            HdrTransfer.HlgSceneToLinear(er, eg, eb, weights, out var r, out var g, out var b);
+            HdrTransfer.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, px, 3, 3);
             BitConverter.SingleToInt32Bits(r).ShouldBe(BitConverter.SingleToInt32Bits(px[0]));
             BitConverter.SingleToInt32Bits(g).ShouldBe(BitConverter.SingleToInt32Bits(px[1]));
             BitConverter.SingleToInt32Bits(b).ShouldBe(BitConverter.SingleToInt32Bits(px[2]));

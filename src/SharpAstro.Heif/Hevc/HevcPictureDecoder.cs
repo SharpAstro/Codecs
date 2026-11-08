@@ -7,7 +7,8 @@ namespace SharpAstro.Heif.Hevc;
 internal sealed record HevcPicture(
     int Width, int Height, int ChromaFormatIdc, int BitDepthLuma, int BitDepthChroma,
     ushort[] Luma, ushort[]? Cb, ushort[]? Cr, int ChromaWidth, int ChromaHeight,
-    (int Left, int Right, int Top, int Bottom) ConformanceWindow);
+    (int Left, int Right, int Top, int Bottom) ConformanceWindow,
+    HevcVideoSignal? VideoSignal);
 
 /// <summary>
 /// What a decode exercised, for tests to check that a fixture covers what it is there for (a fixture
@@ -135,7 +136,7 @@ internal sealed class HevcPictureDecoder
         if (_nextCtb != _ctbSlice.Length)
             throw new InvalidDataException($"The picture's slices cover {_nextCtb} of its {_ctbSlice.Length} coding tree blocks.");
         return new HevcPicture(_width, _height, _chroma, _sps.BitDepthLuma, _sps.BitDepthChroma,
-            _luma, _cb, _cr, _chromaWidth, _chromaHeight, _sps.ConformanceWindow);
+            _luma, _cb, _cr, _chromaWidth, _chromaHeight, _sps.ConformanceWindow, _sps.VideoSignal);
     }
 
     // ---- slices ------------------------------------------------------------------------------------

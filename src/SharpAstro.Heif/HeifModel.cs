@@ -106,17 +106,18 @@ public sealed record HeifPixelInformation(IReadOnlyList<byte> BitsPerChannel) : 
 public sealed record HeifRotation(int Degrees) : HeifProperty("irot");
 
 /// <summary>
-/// <c>imir</c>: mirror the image for display. <see cref="HeifMirrorAxis.Vertical"/> flips left and right,
-/// <see cref="HeifMirrorAxis.Horizontal"/> top and bottom (23008-12 6.5.12).
+/// <c>imir</c>: mirror the image for display (23008-12 6.5.12). The axis value 0 (<see cref="HeifMirrorAxis.Vertical"/>)
+/// swaps top and bottom and 1 (<see cref="HeifMirrorAxis.Horizontal"/>) swaps left and right: what libheif does,
+/// measured, and so what files are written for. The names follow the field's two values, not a geometric claim.
 /// </summary>
 public sealed record HeifMirror(HeifMirrorAxis Axis) : HeifProperty("imir");
 
 public enum HeifMirrorAxis
 {
-    /// <summary>Mirror about a vertical axis: left and right swap.</summary>
+    /// <summary>Axis value 0: top and bottom swap (a vertical flip).</summary>
     Vertical = 0,
 
-    /// <summary>Mirror about a horizontal axis: top and bottom swap.</summary>
+    /// <summary>Axis value 1: left and right swap (a horizontal flip).</summary>
     Horizontal = 1,
 }
 

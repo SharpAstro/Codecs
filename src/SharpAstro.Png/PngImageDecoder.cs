@@ -148,7 +148,7 @@ public sealed class PngImageDecoder : IImageDecoder
     /// cICP <c>VideoFullRangeFlag</c>), and linearises it with the transfer the file declares. Greyscale
     /// is replicated into R = G = B; indexed images are expanded through their palette (and <c>tRNS</c>);
     /// every colour type and depth <see cref="PngReader"/> reads is covered, sub-byte ones by the reader's own
-    /// unpacking to 8 bits. The curves themselves are in <c>PngHdr</c>.
+    /// unpacking to 8 bits. The curves themselves are in <c>HdrTransfer</c>.
     /// </para>
     /// <para>
     /// <b>Which transfer.</b> A <c>cICP</c> chunk is authoritative, as in <see cref="TryDecode"/>. Without one,
@@ -208,7 +208,7 @@ public sealed class PngImageDecoder : IImageDecoder
         if (!PngReader.TryDecode(data, out var png)) return false;
 
         var source = MapColorEncoding(png);
-        if (!PngHdr.IsSupportedTransfer(source.Transfer)) return false;
+        if (!HdrTransfer.IsSupportedTransfer(source.Transfer)) return false;
         if (png.Cicp is { MatrixCoefficients: not MatrixCoefficients.Identity }) return false;
         // H.273's narrow-range equations start at 8 bits; a 1/2/4-bit grey level was scaled to 0-255 by the
         // reader, which is not a code at any depth the equations define. (Indexed colours are 8-bit palette entries.)

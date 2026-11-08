@@ -5,7 +5,7 @@ using Shouldly;
 namespace SharpAstro.Codecs.Tests;
 
 /// <summary>
-/// The transfer and range maths behind the PNG float projection (<see cref="PngHdr"/>): PQ, HLG
+/// The transfer and range maths behind the PNG float projection (<see cref="HdrTransfer"/>): PQ, HLG
 /// (inverse OETF + OOTF), sRGB / BT.709 linearisation and H.273 narrow-range expansion.
 /// </summary>
 /// <remarks>
@@ -54,15 +54,15 @@ public sealed class PngHdrTransferTests
     [Fact]
     public void Pq_EndpointsAreExact()
     {
-        PngHdr.PqInverseEotf(0f).ShouldBe(0f);
-        PngHdr.PqInverseEotf(1f).ShouldBe(10000f);
+        HdrTransfer.PqInverseEotf(0f).ShouldBe(0f);
+        HdrTransfer.PqInverseEotf(1f).ShouldBe(10000f);
     }
 
     [Fact]
     public void Pq_100Nits_IsCode0_5081()
     {
         // ST 2084's published code value for 100 cd/m2 is 0.5081 (4 decimals).
-        PngHdr.PqInverseEotf(0.5081f).ShouldBe(100f, 0.1);
+        HdrTransfer.PqInverseEotf(0.5081f).ShouldBe(100f, 0.1);
         PqForward(100.0).ShouldBe(0.5081, 5e-5);
     }
 
@@ -71,7 +71,7 @@ public sealed class PngHdrTransferTests
     {
         // BT.2408 puts HDR reference white at 203 cd/m2, ~58% PQ.
         PqForward(203.0).ShouldBe(0.5807, 5e-5);
-        PngHdr.PqInverseEotf(0.5807f).ShouldBe(203f, 0.5);
+        HdrTransfer.PqInverseEotf(0.5807f).ShouldBe(203f, 0.5);
     }
 
     [Theory]
@@ -88,7 +88,7 @@ public sealed class PngHdrTransferTests
         var code = (float)PqForward(nits);
         // Float code precision (6e-8 relative) is amplified by the curve's steepness at the top
         // and bottom; a 0.1% relative bound is far tighter than any display step and still ample.
-        PngHdr.PqInverseEotf(code).ShouldBe((float)nits, nits * 1e-3 + 1e-6);
+        HdrTransfer.PqInverseEotf(code).ShouldBe((float)nits, nits * 1e-3 + 1e-6);
     }
 
     [Fact]
@@ -97,7 +97,7 @@ public sealed class PngHdrTransferTests
         float previous = -1f;
         for (int code = 0; code <= 4095; code++)
         {
-            float nits = PngHdr.PqInverseEotf(code / 4095f);
+            float nits = HdrTransfer.PqInverseEotf(code / 4095f);
             nits.ShouldBeGreaterThan(previous, $"code {code}");
             nits.ShouldBeInRange(0f, 10000f);
             previous = nits;
@@ -107,8 +107,8 @@ public sealed class PngHdrTransferTests
     [Fact]
     public void Pq_ClampsItsDomain()
     {
-        PngHdr.PqInverseEotf(-0.25f).ShouldBe(0f);
-        PngHdr.PqInverseEotf(1.0913f).ShouldBe(10000f);
+        HdrTransfer.PqInverseEotf(-0.25f).ShouldBe(0f);
+        HdrTransfer.PqInverseEotf(1.0913f).ShouldBe(10000f);
     }
 
     // ---- HLG ------------------------------------------------------------------------------
@@ -117,22 +117,22 @@ public sealed class PngHdrTransferTests
     public void Hlg_InverseOetf_HalfSignalIsOneTwelfthSceneLight()
     {
         // BT.2100 Table 5: the quadratic segment ends at E' = 1/2, where E = (1/2)^2 / 3 = 1/12.
-        PngHdr.HlgInverseOetf(0.5f).ShouldBe(1f / 12f, 1e-7);
-        PngHdr.HlgInverseOetf(0f).ShouldBe(0f);
+        HdrTransfer.HlgInverseOetf(0.5f).ShouldBe(1f / 12f, 1e-7);
+        HdrTransfer.HlgInverseOetf(0f).ShouldBe(0f);
     }
 
     [Fact]
     public void Hlg_InverseOetf_FullSignalIsFullSceneLight()
     {
         // The printed constants (8 digits) make OETF(1) = 1 only to ~2e-4.
-        PngHdr.HlgInverseOetf(1f).ShouldBe(1f, 5e-4);
+        HdrTransfer.HlgInverseOetf(1f).ShouldBe(1f, 5e-4);
     }
 
     [Fact]
     public void Hlg_InverseOetf_IsContinuousAtTheKnee()
     {
         // The exp branch evaluated just above 1/2 must meet the quadratic branch at 1/12.
-        PngHdr.HlgInverseOetf(0.5000001f).ShouldBe(1f / 12f, 1e-5);
+        HdrTransfer.HlgInverseOetf(0.5000001f).ShouldBe(1f / 12f, 1e-5);
     }
 
     [Fact]
@@ -140,7 +140,7 @@ public sealed class PngHdrTransferTests
     {
         // Constants are printed to 8 digits, so the two directions agree to about 1e-6 of scene light.
         for (double e = 0.0; e <= 1.0; e += 1.0 / 256)
-            PngHdr.HlgInverseOetf((float)HlgForward(e)).ShouldBe((float)e, 1e-5, $"E = {e}");
+            HdrTransfer.HlgInverseOetf((float)HlgForward(e)).ShouldBe((float)e, 1e-5, $"E = {e}");
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public sealed class PngHdrTransferTests
         float previous = -1f;
         for (int code = 0; code <= 1023; code++)
         {
-            float e = PngHdr.HlgInverseOetf(code / 1023f);
+            float e = HdrTransfer.HlgInverseOetf(code / 1023f);
             e.ShouldBeGreaterThan(previous, $"code {code}");
             previous = e;
         }
@@ -159,12 +159,12 @@ public sealed class PngHdrTransferTests
     public void Hlg_Ootf_ReferenceWhiteSignal_IsAbout203NitsOnTheNominalDisplay()
     {
         // BT.2408: 75% HLG is the 203 cd/m2 reference white on a 1000 cd/m2 display. Grey, so Ys = E.
-        float scene = PngHdr.HlgInverseOetf(0.75f);
+        float scene = HdrTransfer.HlgInverseOetf(0.75f);
         scene.ShouldBe(0.265f, 1e-3);
-        PngHdr.HlgOotfGrey(scene).ShouldBe(203f, 1.0);
+        HdrTransfer.HlgOotfGrey(scene).ShouldBe(203f, 1.0);
 
         // ...and the RGB form agrees for R = G = B (the weights sum to 1).
-        var (r, g, b) = PngHdr.HlgOotf(scene, scene, scene, LumaWeights.Bt2020);
+        var (r, g, b) = HdrTransfer.HlgOotf(scene, scene, scene, LumaWeights.Bt2020);
         r.ShouldBe(203f, 1.0);
         g.ShouldBe(r, 1e-3);
         b.ShouldBe(r, 1e-3);
@@ -174,12 +174,12 @@ public sealed class PngHdrTransferTests
     public void Hlg_Ootf_FullWhiteIsThePeakLuminance()
     {
         // Ys = 1 so the gain is just L_W.
-        var (r, g, b) = PngHdr.HlgOotf(1f, 1f, 1f, LumaWeights.Bt2020);
+        var (r, g, b) = HdrTransfer.HlgOotf(1f, 1f, 1f, LumaWeights.Bt2020);
         r.ShouldBe(1000f, 0.1);
         g.ShouldBe(1000f, 0.1);
         b.ShouldBe(1000f, 0.1);
-        PngHdr.HlgOotfGrey(1f).ShouldBe(1000f);
-        PngHdr.HlgOotfGrey(0f).ShouldBe(0f);
+        HdrTransfer.HlgOotfGrey(1f).ShouldBe(1000f);
+        HdrTransfer.HlgOotfGrey(0f).ShouldBe(0f);
     }
 
     [Fact]
@@ -191,7 +191,7 @@ public sealed class PngHdrTransferTests
         double ys = 0.2627 * rs + 0.6780 * gs + 0.0593 * bs;
         double gain = 1000.0 * Math.Pow(ys, 0.2);
 
-        var (r, g, b) = PngHdr.HlgOotf(rs, gs, bs, w);
+        var (r, g, b) = HdrTransfer.HlgOotf(rs, gs, bs, w);
 
         r.ShouldBe((float)(gain * rs), 1e-3);
         g.ShouldBe((float)(gain * gs), 1e-3);
@@ -205,8 +205,8 @@ public sealed class PngHdrTransferTests
     public void Hlg_Ootf_LuminanceComesFromThePrimariesWeights()
     {
         // Pure red: Ys is 0.2126 under BT.709 and 0.2627 under BT.2020, and the gain is Ys^0.2.
-        var (r709, _, _) = PngHdr.HlgOotf(1f, 0f, 0f, LumaWeights.Bt709);
-        var (r2020, _, _) = PngHdr.HlgOotf(1f, 0f, 0f, LumaWeights.Bt2020);
+        var (r709, _, _) = HdrTransfer.HlgOotf(1f, 0f, 0f, LumaWeights.Bt709);
+        var (r2020, _, _) = HdrTransfer.HlgOotf(1f, 0f, 0f, LumaWeights.Bt2020);
 
         r709.ShouldBe((float)(1000.0 * Math.Pow(0.2126, 0.2)), 1e-2);
         r2020.ShouldBe((float)(1000.0 * Math.Pow(0.2627, 0.2)), 1e-2);
@@ -216,7 +216,7 @@ public sealed class PngHdrTransferTests
     [Fact]
     public void Hlg_Ootf_BlackStaysBlackWithoutNaN()
     {
-        var (r, g, b) = PngHdr.HlgOotf(0f, 0f, 0f, LumaWeights.Bt709);
+        var (r, g, b) = HdrTransfer.HlgOotf(0f, 0f, 0f, LumaWeights.Bt709);
         (r, g, b).ShouldBe((0f, 0f, 0f));
     }
 
@@ -227,7 +227,7 @@ public sealed class PngHdrTransferTests
         for (int i = 0; i <= 1000; i++)
         {
             float e = i / 1000f;
-            var (r, _, _) = PngHdr.HlgOotf(e, 0.5f * e, 0.25f * e, LumaWeights.Bt2020);
+            var (r, _, _) = HdrTransfer.HlgOotf(e, 0.5f * e, 0.25f * e, LumaWeights.Bt2020);
             r.ShouldBeGreaterThanOrEqualTo(previous, $"E = {e}");
             previous = r;
         }
@@ -303,20 +303,20 @@ public sealed class PngHdrTransferTests
         // The segments are continuous to ~1e-6 at the knee (that is how the constants were chosen)...
         linearSegment.ShouldBe(powerSegment, 1e-6);
         // ...and the function is the linear one at and below the knee, the power one above it.
-        PngHdr.SrgbToLinear((float)knee).ShouldBe((float)linearSegment, 1e-7);
-        PngHdr.SrgbToLinear(0.02f).ShouldBe(0.02f / 12.92f, 1e-8);
-        PngHdr.SrgbToLinear(0.05f).ShouldBe((float)Math.Pow((0.05 + 0.055) / 1.055, 2.4), 1e-7);
-        PngHdr.SrgbToLinear(0.0405f).ShouldBe((float)Math.Pow((0.0405 + 0.055) / 1.055, 2.4), 1e-7);
+        HdrTransfer.SrgbToLinear((float)knee).ShouldBe((float)linearSegment, 1e-7);
+        HdrTransfer.SrgbToLinear(0.02f).ShouldBe(0.02f / 12.92f, 1e-8);
+        HdrTransfer.SrgbToLinear(0.05f).ShouldBe((float)Math.Pow((0.05 + 0.055) / 1.055, 2.4), 1e-7);
+        HdrTransfer.SrgbToLinear(0.0405f).ShouldBe((float)Math.Pow((0.0405 + 0.055) / 1.055, 2.4), 1e-7);
     }
 
     [Fact]
     public void Srgb_EndpointsAndMidpoint()
     {
-        PngHdr.SrgbToLinear(0f).ShouldBe(0f);
-        PngHdr.SrgbToLinear(1f).ShouldBe(1f, 1e-7);
-        PngHdr.SrgbToLinear(0.5f).ShouldBe(0.21404f, 1e-5);   // the familiar 188-in-8-bit-sRGB = 50% grey figure
-        PngHdr.SrgbToLinear(-0.1f).ShouldBe(0f);
-        PngHdr.SrgbToLinear(1.2f).ShouldBe(1f, 1e-7);
+        HdrTransfer.SrgbToLinear(0f).ShouldBe(0f);
+        HdrTransfer.SrgbToLinear(1f).ShouldBe(1f, 1e-7);
+        HdrTransfer.SrgbToLinear(0.5f).ShouldBe(0.21404f, 1e-5);   // the familiar 188-in-8-bit-sRGB = 50% grey figure
+        HdrTransfer.SrgbToLinear(-0.1f).ShouldBe(0f);
+        HdrTransfer.SrgbToLinear(1.2f).ShouldBe(1f, 1e-7);
     }
 
     [Fact]
@@ -326,7 +326,7 @@ public sealed class PngHdrTransferTests
         for (int code = 0; code <= 255; code++)
         {
             float v = code / 255f;
-            float linear = PngHdr.SrgbToLinear(v);
+            float linear = HdrTransfer.SrgbToLinear(v);
             linear.ShouldBeGreaterThan(previous, $"code {code}");
             SrgbForward(linear).ShouldBe(v, 1e-6, $"code {code}");
             previous = linear;
@@ -336,18 +336,18 @@ public sealed class PngHdrTransferTests
     [Fact]
     public void Bt709_EndpointsKneeAndGreyCard()
     {
-        PngHdr.Bt709ToLinear(0f).ShouldBe(0f);
-        PngHdr.Bt709ToLinear(1f).ShouldBe(1f, 1e-6);
+        HdrTransfer.Bt709ToLinear(0f).ShouldBe(0f);
+        HdrTransfer.Bt709ToLinear(1f).ShouldBe(1f, 1e-6);
 
         // Encoded knee 4.5 * beta: below it the curve is v / 4.5, above it the power segment, and
         // the two meet (value and slope are what fix alpha and beta).
         const double knee = 4.5 * 0.018053968510807;
-        PngHdr.Bt709ToLinear((float)(knee - 1e-4)).ShouldBe((float)((knee - 1e-4) / 4.5), 1e-7);
-        PngHdr.Bt709ToLinear((float)(knee + 1e-4)).ShouldBe(0.018053968510807f, 1e-4);
-        PngHdr.Bt709ToLinear((float)knee).ShouldBe(0.018053968510807f, 1e-6);
+        HdrTransfer.Bt709ToLinear((float)(knee - 1e-4)).ShouldBe((float)((knee - 1e-4) / 4.5), 1e-7);
+        HdrTransfer.Bt709ToLinear((float)(knee + 1e-4)).ShouldBe(0.018053968510807f, 1e-4);
+        HdrTransfer.Bt709ToLinear((float)knee).ShouldBe(0.018053968510807f, 1e-6);
 
         // The 18% grey card's well-known BT.709 signal level is ~0.409.
-        PngHdr.Bt709ToLinear(0.4089f).ShouldBe(0.18f, 5e-4);
+        HdrTransfer.Bt709ToLinear(0.4089f).ShouldBe(0.18f, 5e-4);
     }
 
     [Fact]
@@ -357,7 +357,7 @@ public sealed class PngHdrTransferTests
         for (int code = 0; code <= 1023; code++)
         {
             float v = code / 1023f;
-            float linear = PngHdr.Bt709ToLinear(v);
+            float linear = HdrTransfer.Bt709ToLinear(v);
             linear.ShouldBeGreaterThan(previous, $"code {code}");
             Bt709Forward(linear).ShouldBe(v, 1e-6, $"code {code}");
             previous = linear;
@@ -369,40 +369,40 @@ public sealed class PngHdrTransferTests
     [Fact]
     public void NarrowRange_8Bit_16Is0_And235Is1()
     {
-        PngHdr.CodeToSignal(16, 8, fullRange: false).ShouldBe(0f);
-        PngHdr.CodeToSignal(235, 8, fullRange: false).ShouldBe(1f);
-        PngHdr.CodeToSignal(126, 8, fullRange: false).ShouldBe(110f / 219f, 1e-7);
+        HdrTransfer.CodeToSignal(16, 8, fullRange: false).ShouldBe(0f);
+        HdrTransfer.CodeToSignal(235, 8, fullRange: false).ShouldBe(1f);
+        HdrTransfer.CodeToSignal(126, 8, fullRange: false).ShouldBe(110f / 219f, 1e-7);
     }
 
     [Fact]
     public void NarrowRange_10Bit_64Is0_And940Is1()
     {
-        PngHdr.CodeToSignal(64, 10, fullRange: false).ShouldBe(0f);
-        PngHdr.CodeToSignal(940, 10, fullRange: false).ShouldBe(1f);
+        HdrTransfer.CodeToSignal(64, 10, fullRange: false).ShouldBe(0f);
+        HdrTransfer.CodeToSignal(940, 10, fullRange: false).ShouldBe(1f);
     }
 
     [Fact]
     public void NarrowRange_16Bit_4096Is0_And60160Is1_TheTenBitCodesShiftedLeftBySix()
     {
-        PngHdr.CodeToSignal(4096, 16, fullRange: false).ShouldBe(0f);
-        PngHdr.CodeToSignal(60160, 16, fullRange: false).ShouldBe(1f);
+        HdrTransfer.CodeToSignal(4096, 16, fullRange: false).ShouldBe(0f);
+        HdrTransfer.CodeToSignal(60160, 16, fullRange: false).ShouldBe(1f);
 
         // 16 << 8 = 64 << 6 and 235 << 8 = 940 << 6: the scaling-to-depth is a plain shift, so a
         // 16-bit file that carries 10-bit video-range content lands on the same signal.
         4096.ShouldBe(64 << 6);
         60160.ShouldBe(940 << 6);
         for (int code10 = 0; code10 <= 1023; code10 += 17)
-            PngHdr.CodeToSignal(code10 << 6, 16, fullRange: false)
-                .ShouldBe(PngHdr.CodeToSignal(code10, 10, fullRange: false), 1e-6);
+            HdrTransfer.CodeToSignal(code10 << 6, 16, fullRange: false)
+                .ShouldBe(HdrTransfer.CodeToSignal(code10, 10, fullRange: false), 1e-6);
     }
 
     [Fact]
     public void NarrowRange_FootroomAndHeadroomAreNotClamped()
     {
-        PngHdr.CodeToSignal(0, 8, fullRange: false).ShouldBe(-16f / 219f, 1e-7);
-        PngHdr.CodeToSignal(255, 8, fullRange: false).ShouldBe(239f / 219f, 1e-7);
-        PngHdr.CodeToSignal(0, 8, fullRange: false).ShouldBeLessThan(0f);
-        PngHdr.CodeToSignal(255, 8, fullRange: false).ShouldBeGreaterThan(1f);
+        HdrTransfer.CodeToSignal(0, 8, fullRange: false).ShouldBe(-16f / 219f, 1e-7);
+        HdrTransfer.CodeToSignal(255, 8, fullRange: false).ShouldBe(239f / 219f, 1e-7);
+        HdrTransfer.CodeToSignal(0, 8, fullRange: false).ShouldBeLessThan(0f);
+        HdrTransfer.CodeToSignal(255, 8, fullRange: false).ShouldBeGreaterThan(1f);
     }
 
     [Theory]
@@ -412,8 +412,8 @@ public sealed class PngHdrTransferTests
     [InlineData(16, 65535)]
     public void FullRange_SpansZeroToOne(int bitDepth, int maxCode)
     {
-        PngHdr.CodeToSignal(0, bitDepth, fullRange: true).ShouldBe(0f);
-        PngHdr.CodeToSignal(maxCode, bitDepth, fullRange: true).ShouldBe(1f);
+        HdrTransfer.CodeToSignal(0, bitDepth, fullRange: true).ShouldBe(0f);
+        HdrTransfer.CodeToSignal(maxCode, bitDepth, fullRange: true).ShouldBe(1f);
     }
 
     [Theory]
@@ -422,7 +422,7 @@ public sealed class PngHdrTransferTests
     [InlineData(7, false)]     // H.273's narrow-range equations start at 8 bits
     [InlineData(17, false)]
     public void CodeToSignal_RejectsBitDepthsOutsideTheDefinedRange(int bitDepth, bool fullRange) =>
-        Should.Throw<ArgumentOutOfRangeException>(() => PngHdr.CodeToSignal(0, bitDepth, fullRange));
+        Should.Throw<ArgumentOutOfRangeException>(() => HdrTransfer.CodeToSignal(0, bitDepth, fullRange));
 
     [Fact]
     public void ExpandCodes_AgreesWithTheScalarForm()
@@ -431,20 +431,20 @@ public sealed class PngHdrTransferTests
         ushort[] words = [0, 4096, 30000, 60160, 65535];
         var signal = new float[5];
 
-        PngHdr.ExpandCodes(bytes, fullRange: false, signal);
+        HdrTransfer.ExpandCodes(bytes, fullRange: false, signal);
         for (int i = 0; i < bytes.Length; i++)
-            signal[i].ShouldBe(PngHdr.CodeToSignal(bytes[i], 8, fullRange: false));
+            signal[i].ShouldBe(HdrTransfer.CodeToSignal(bytes[i], 8, fullRange: false));
 
-        PngHdr.ExpandCodes(words, 16, fullRange: true, signal);
+        HdrTransfer.ExpandCodes(words, 16, fullRange: true, signal);
         for (int i = 0; i < words.Length; i++)
-            signal[i].ShouldBe(PngHdr.CodeToSignal(words[i], 16, fullRange: true));
+            signal[i].ShouldBe(HdrTransfer.CodeToSignal(words[i], 16, fullRange: true));
 
-        PngHdr.ExpandCodes(words, 16, fullRange: false, signal);
+        HdrTransfer.ExpandCodes(words, 16, fullRange: false, signal);
         signal[1].ShouldBe(0f);
         signal[3].ShouldBe(1f);
 
-        Should.Throw<ArgumentOutOfRangeException>(() => PngHdr.ExpandCodes(bytes, true, new float[4]));
-        Should.Throw<ArgumentOutOfRangeException>(() => PngHdr.ExpandCodes(words, 4, false, new float[5]));
+        Should.Throw<ArgumentOutOfRangeException>(() => HdrTransfer.ExpandCodes(bytes, true, new float[4]));
+        Should.Throw<ArgumentOutOfRangeException>(() => HdrTransfer.ExpandCodes(words, 4, false, new float[5]));
     }
 
     // ---- ToLinear: the pipeline over pixels -----------------------------------------------
@@ -454,7 +454,7 @@ public sealed class PngHdrTransferTests
     {
         // grey, one channel per pixel: PQ(203 nits) -> 1.0, PQ(1.0) -> 10000 / 203.
         float[] px = [(float)PqForward(203.0), 1f, 0f];
-        PngHdr.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, px, colorChannels: 1, stride: 1);
+        HdrTransfer.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, px, colorChannels: 1, stride: 1);
 
         px[0].ShouldBe(1f, 1e-4);
         px[1].ShouldBe(10000f / 203f, 1e-4);
@@ -466,7 +466,7 @@ public sealed class PngHdrTransferTests
     {
         // RGBA, stride 4: alpha (index 3) is coverage, not light, and must not be curved.
         float[] px = [(float)PqForward(100.0), 1.0913f, -0.1f, 0.5f];
-        PngHdr.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, px, colorChannels: 3, stride: 4);
+        HdrTransfer.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, px, colorChannels: 3, stride: 4);
 
         px[0].ShouldBe(100f / 203f, 1e-3);
         px[1].ShouldBe(10000f / 203f, 1e-4);   // narrow-range super-white clamps to peak
@@ -479,7 +479,7 @@ public sealed class PngHdrTransferTests
     {
         // 75% signal on the nominal display is 203 cd/m2 = 1.0 on this scale (203.1 / 203).
         float[] rgb = [0.75f, 0.75f, 0.75f];
-        PngHdr.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, rgb, colorChannels: 3, stride: 3);
+        HdrTransfer.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, rgb, colorChannels: 3, stride: 3);
 
         foreach (var v in rgb) v.ShouldBe(1f, 0.01);
     }
@@ -488,7 +488,7 @@ public sealed class PngHdrTransferTests
     public void ToLinear_Hlg_FullWhiteIsPeakOverReferenceWhite()
     {
         float[] rgb = [1f, 1f, 1f];
-        PngHdr.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, rgb, colorChannels: 3, stride: 3);
+        HdrTransfer.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, rgb, colorChannels: 3, stride: 3);
 
         foreach (var v in rgb) v.ShouldBe(1000f / 203f, 0.01);
     }
@@ -497,12 +497,12 @@ public sealed class PngHdrTransferTests
     public void ToLinear_Hlg_GreyAndRgbPathsAgree_AndUsePrimariesOnlyForRgb()
     {
         float[] grey = [0.6f, 0.9f];
-        PngHdr.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, grey, colorChannels: 1, stride: 1);
+        HdrTransfer.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, grey, colorChannels: 1, stride: 1);
 
         foreach (var primaries in new[] { ColorPrimaries.BT2020, ColorPrimaries.BT709, ColorPrimaries.DisplayP3 })
         {
             float[] rgb = [0.6f, 0.6f, 0.6f, 0.9f, 0.9f, 0.9f];
-            PngHdr.ToLinear(TransferFunction.Hlg, primaries, rgb, colorChannels: 3, stride: 3);
+            HdrTransfer.ToLinear(TransferFunction.Hlg, primaries, rgb, colorChannels: 3, stride: 3);
 
             rgb[0].ShouldBe(grey[0], 1e-4);
             rgb[2].ShouldBe(grey[0], 1e-4);
@@ -516,8 +516,8 @@ public sealed class PngHdrTransferTests
     {
         float[] viaBt2020 = [1f, 0f, 0f];
         float[] viaBt709 = [1f, 0f, 0f];
-        PngHdr.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, viaBt2020, 3, 3);
-        PngHdr.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT709, viaBt709, 3, 3);
+        HdrTransfer.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, viaBt2020, 3, 3);
+        HdrTransfer.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT709, viaBt709, 3, 3);
 
         // E_S = 1 for the red channel; display red is L_W * Ys^0.2 / 203.
         viaBt2020[0].ShouldBe((float)(1000.0 * Math.Pow(0.2627, 0.2) / 203.0), 1e-2);
@@ -530,7 +530,7 @@ public sealed class PngHdrTransferTests
     public void ToLinear_Hlg_LeavesAlphaAlone()
     {
         float[] rgba = [0.75f, 0.75f, 0.75f, 0.25f, 0.5f, 0.5f, 0.5f, 1f];
-        PngHdr.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, rgba, colorChannels: 3, stride: 4);
+        HdrTransfer.ToLinear(TransferFunction.Hlg, ColorPrimaries.BT2020, rgba, colorChannels: 3, stride: 4);
 
         rgba[3].ShouldBe(0.25f);
         rgba[7].ShouldBe(1f);
@@ -545,11 +545,11 @@ public sealed class PngHdrTransferTests
     public void ToLinear_SdrTransfers_StayOnTheSdrWhiteScale(TransferFunction transfer)
     {
         float[] px = [0f, 0.3f, 1f];
-        PngHdr.ToLinear(transfer, ColorPrimaries.BT709, px, colorChannels: 1, stride: 1);
+        HdrTransfer.ToLinear(transfer, ColorPrimaries.BT709, px, colorChannels: 1, stride: 1);
 
         float expectedMid = transfer == TransferFunction.Srgb
-            ? PngHdr.SrgbToLinear(0.3f)
-            : PngHdr.Bt709ToLinear(0.3f);
+            ? HdrTransfer.SrgbToLinear(0.3f)
+            : HdrTransfer.Bt709ToLinear(0.3f);
 
         px[0].ShouldBe(0f);
         px[1].ShouldBe(expectedMid);
@@ -560,7 +560,7 @@ public sealed class PngHdrTransferTests
     public void ToLinear_Linear_PassesThroughUnclamped()
     {
         float[] px = [-0.1f, 0.5f, 1f, 3.5f];
-        PngHdr.ToLinear(TransferFunction.Linear, ColorPrimaries.BT709, px, colorChannels: 1, stride: 1);
+        HdrTransfer.ToLinear(TransferFunction.Linear, ColorPrimaries.BT709, px, colorChannels: 1, stride: 1);
 
         px.ShouldBe(new[] { -0.1f, 0.5f, 1f, 3.5f });
     }
@@ -571,8 +571,8 @@ public sealed class PngHdrTransferTests
         // End to end for a narrow-range 10-bit PQ greyscale: code 64 is black, code 940 is 10 000 cd/m2.
         ushort[] codes = [64, 940];
         var px = new float[2];
-        PngHdr.ExpandCodes(codes, 10, fullRange: false, px);
-        PngHdr.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, px, colorChannels: 1, stride: 1);
+        HdrTransfer.ExpandCodes(codes, 10, fullRange: false, px);
+        HdrTransfer.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, px, colorChannels: 1, stride: 1);
 
         px[0].ShouldBe(0f);
         px[1].ShouldBe(10000f / 203f, 1e-4);
@@ -595,23 +595,23 @@ public sealed class PngHdrTransferTests
     [InlineData(TransferFunction.SMPTE428, false)]
     public void IsSupportedTransfer_CoversExactlyTheCurvesImplemented(TransferFunction transfer, bool expected)
     {
-        PngHdr.IsSupportedTransfer(transfer).ShouldBe(expected);
+        HdrTransfer.IsSupportedTransfer(transfer).ShouldBe(expected);
 
         float[] px = [0.5f];
         if (expected)
-            Should.NotThrow(() => PngHdr.ToLinear(transfer, ColorPrimaries.BT709, px, 1, 1));
+            Should.NotThrow(() => HdrTransfer.ToLinear(transfer, ColorPrimaries.BT709, px, 1, 1));
         else
-            Should.Throw<NotSupportedException>(() => PngHdr.ToLinear(transfer, ColorPrimaries.BT709, px, 1, 1));
+            Should.Throw<NotSupportedException>(() => HdrTransfer.ToLinear(transfer, ColorPrimaries.BT709, px, 1, 1));
     }
 
     [Fact]
     public void ToLinear_RejectsBadShapes()
     {
         Should.Throw<ArgumentOutOfRangeException>(() =>
-            PngHdr.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, new float[4], colorChannels: 2, stride: 2));
+            HdrTransfer.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, new float[4], colorChannels: 2, stride: 2));
         Should.Throw<ArgumentOutOfRangeException>(() =>
-            PngHdr.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, new float[6], colorChannels: 3, stride: 2));
+            HdrTransfer.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, new float[6], colorChannels: 3, stride: 2));
         Should.Throw<ArgumentException>(() =>
-            PngHdr.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, new float[7], colorChannels: 3, stride: 4));
+            HdrTransfer.ToLinear(TransferFunction.Pq, ColorPrimaries.BT2020, new float[7], colorChannels: 3, stride: 4));
     }
 }
