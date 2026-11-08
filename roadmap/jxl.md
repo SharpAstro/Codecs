@@ -2,7 +2,7 @@
 
 > **Status: written 2026-09-11**, when a performance investigation into `JxlDct` produced a
 > finding that had nowhere to live — this repo has issues disabled on GitHub, and the
-> convention is a `ROADMAP-*.md` at the root. JXL was the one substantial codec here without
+> convention is a roadmap file (now under `roadmap/`). JXL was the one substantial codec here without
 > one. The performance question below is the reason the file exists; the feature envelope is
 > included because it was already knowable from the code and otherwise only discoverable by
 > grepping for `NotSupportedException`.

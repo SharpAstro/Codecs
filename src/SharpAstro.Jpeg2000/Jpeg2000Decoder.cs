@@ -105,7 +105,7 @@ public sealed record Jpeg2000Info(
 /// LRCP progression: losslessly with the reversible 5/3 wavelet, or lossily with
 /// the irreversible 9/7 wavelet and scalar quantization, with or without the
 /// matching component transform (RCT or ICT). That is rungs 1 and 2 of
-/// <c>ROADMAP-jpx.md</c>, with quality layers brought forward from rung 3
+/// <c>roadmap/jpx.md</c>, with quality layers brought forward from rung 3
 /// because every <c>/JPXDecode</c> image measured in real PDFs has several.
 /// Anything outside it raises <see cref="NotSupportedException"/> naming the
 /// feature and the rung that owns it — never a plausible-looking wrong raster.

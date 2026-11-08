@@ -163,7 +163,7 @@ Two findings from building it:
   7/8, the run sweep 6/8 (its rows are horizontal-mode by construction, so it is
   blind to mode logic), and the hand vectors 8/8 but two of those structurally
   rather than by decoding. The per-layer matrix is in
-  [`Oracle/jbig2/README.md`](tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
+  [`Oracle/jbig2/README.md`](../tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
 - **The polarity is not what it looks like.** ImageMagick tags bilevel output
   `PhotometricInterpretation = 1` (BlackIsZero), and libtiff's fax coder ignores
   the tag — bit 0 is a *white* run regardless. So the coded runs come out
@@ -206,7 +206,7 @@ layer that rung 2 forced:
    ✅ **Done, in both directions.** `jbig2dec` and `jbig2enc` both turned out to be
    apt-installable (`jbig2dec` / `jbig2` on Ubuntu 24.04), so no source builds were
    needed — a happy surprise given win-arm64. See
-   [`Oracle/jbig2/README.md`](tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
+   [`Oracle/jbig2/README.md`](../tests/SharpAstro.Codecs.Tests/Oracle/jbig2/README.md).
    - **jbig2enc → us**: its output is committed as `Fixtures/jbig2/*.jb2` (under 130
      bytes each), so this runs in CI with nothing installed. Covers GBTEMPLATE 0 /
      nominal AT only — all jbig2enc emits.

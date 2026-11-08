@@ -8,7 +8,7 @@
 >
 > This file was written on 2026-09-03 as an
 > uncommitted working note, offering itself to be committed, folded into
-> [`ROADMAP-pdf-codecs.md`](ROADMAP-pdf-codecs.md) or deleted once the work started.
+> [`roadmap/pdf-codecs.md`](pdf-codecs.md) or deleted once the work started.
 > The work started, so it is committed, and it is now kept current: the rung table
 > below carries what landed, and the hazard list records which hazards the
 > implementation actually met and which the tests are measurably blind to.
@@ -18,7 +18,7 @@
 
 ## Where the gate actually stands
 
-`ROADMAP-pdf-codecs.md` sets the gate as: JBIG2 shipped, **and** the PDF-embedded-stream
+`roadmap/pdf-codecs.md` sets the gate as: JBIG2 shipped, **and** the PDF-embedded-stream
 API shape has survived contact with a real consumer. The first half is met. The second is
 not, and it is worth knowing precisely why, because closing it is small:
 
@@ -122,7 +122,7 @@ feature rather than returning a plausible raster, which is the discipline that h
 across this repo.
 
 Note the sum (about 5700 to 8700) lands below the 8 to 15k headline in
-`ROADMAP-pdf-codecs.md`. The difference is the refusals above, mostly ROI and part 2. If
+`roadmap/pdf-codecs.md`. The difference is the refusals above, mostly ROI and part 2. If
 those come back, so does the headline number.
 
 ## What PDF files actually need (measured 2026-10-07)
@@ -164,7 +164,7 @@ What followed from it, as built:
 
 ## Rung 5 deserves a note
 
-`ROADMAP-pdf-codecs.md` calls the LOD property "the single most attractive property of the
+`roadmap/pdf-codecs.md` calls the LOD property "the single most attractive property of the
 format" for the pdf-viewer use case, and it is right: resolution levels fall out of the
 codestream structure, where `SharpAstro.Jpeg`'s scaled decode had to be bolted onto the
 transform as DCT-domain decimation. But it is last in the table on purpose. Tier-2 already
