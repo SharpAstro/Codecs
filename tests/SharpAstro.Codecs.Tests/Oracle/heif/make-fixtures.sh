@@ -178,6 +178,9 @@ fixture x265-400p10 256 192 gray10le "-crf 22" "ctu=32:min-cu-size=8:sao=1:signh
 # (x265 quietly turns WPP off without a thread pool, so these take pools=1 too.)
 fixture x265-422p10-wpp 256 192 yuv422p10le "-crf 26" "ctu=32:min-cu-size=8:wpp=1:sao=1:signhide=1:aq-mode=2:qg-size=16:pools=1" "" "$LOOP_BASE"
 fixture x265-420p8-wpp-ctu16 256 192 yuv420p "-crf 30" "ctu=16:min-cu-size=8:wpp=1:sao=1:pools=1" "" "$LOOP_BASE"
+# A tall flat picture: rows of three CTBs coded in a few bytes, so a substream ends within the bit reader's
+# look-ahead of the slice's end (the PR #69 review found a check that mistook that look-ahead for an over-read).
+fixture x265-420p8-wpp-tall-flat 192 1024 yuv420p "" "ctu=64:min-cu-size=8:wpp=1:pools=2:sao=0" "" "$LOOP_BASE" "lutyuv=y=235:u=128:v=128"
 # (x265 3.5 segfaults on several slices with pools=none; with one pool it does not, but its output is then
 # not deterministic, and about one run in three gives a stream ffmpeg and libde265 decode differently.
 # The check refuses those; run again until it passes. A disagreeing stream was not kept to find out why.)

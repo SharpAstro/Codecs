@@ -259,6 +259,60 @@ public class HeifContainerTests
         Should.Throw<InvalidDataException>(() => heif.DescribePrimary(file), what);
     }
 
+    /// <summary>
+    /// Every iloc extent must cost input. With offset, length and index sizes all 0 an extent is zero bytes
+    /// wide, so before this was checked a 10.9 KB file of 400 items, each declaring 65,535 such extents,
+    /// allocated 1.1 GiB while it was read (found by the PR #69 review). Now: one zero-width extent is
+    /// allowed (it is "the whole file"), more is refused, and so is a count the box has no bytes for.
+    /// </summary>
+    [Fact]
+    public void ExtentsThatCostNoInput_AreRefusedWhileReading()
+    {
+        static byte[] File(int items, ushort extents, byte sizes)
+        {
+            var infes = Enumerable.Range(1, items).Select(i => HeifBuilder.FullBox("infe", 2, 0,
+                HeifBuilder.Concat(HeifBuilder.U16((ushort)i), HeifBuilder.U16(0), HeifBuilder.Ascii("hvc1"), [0]))).ToArray();
+            var entries = Enumerable.Range(1, items).Select(i => HeifBuilder.Concat(
+                HeifBuilder.U16((ushort)i), HeifBuilder.U16(0), HeifBuilder.U16(extents))).ToArray(); // id, data_reference_index, extent_count
+            var iloc = HeifBuilder.FullBox("iloc", 0, 0, HeifBuilder.Concat([sizes, 0], HeifBuilder.U16((ushort)items), HeifBuilder.Concat(entries)));
+            var meta = HeifBuilder.FullBox("meta", 0, 0, HeifBuilder.Concat(
+                HeifBuilder.FullBox("hdlr", 0, 0, HeifBuilder.Concat(HeifBuilder.U32(0), HeifBuilder.Ascii("pict"), new byte[13])),
+                HeifBuilder.FullBox("pitm", 0, 0, HeifBuilder.U16(1)),
+                HeifBuilder.FullBox("iinf", 0, 0, HeifBuilder.Concat(HeifBuilder.U16((ushort)items), HeifBuilder.Concat(infes))),
+                iloc));
+            return HeifBuilder.Concat(HeifBuilder.Box("ftyp", HeifBuilder.Concat(HeifBuilder.Ascii("heic"), HeifBuilder.U32(0), HeifBuilder.Ascii("mif1"))), meta);
+        }
+
+        var hostile = File(400, 65535, 0x00);
+        hostile.Length.ShouldBeLessThan(16_000);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Should.Throw<InvalidDataException>(() => HeifReader.Read(hostile)).Message.ShouldContain("65535 extents");
+        (GC.GetAllocatedBytesForCurrentThread() - before).ShouldBeLessThan(1L << 20, "refused before the extents are recorded");
+
+        // One zero-width extent is the whole file, and allowed; with 4-byte fields, 65535 need bytes the box lacks.
+        HeifReader.Read(File(1, 1, 0x00)).GetItem(1)!.Location!.Extents.Count.ShouldBe(1);
+        Should.Throw<InvalidDataException>(() => HeifReader.Read(File(1, 65535, 0x44)));
+    }
+
+    /// <summary>
+    /// An item whose extents overlap can add up to more than its file; one that does is a file repeating
+    /// itself (65,535 "to the end" extents made a 136-byte file 8.9 MB of item data), refused before copying.
+    /// </summary>
+    [Fact]
+    public void ItemDataLargerThanItsFile_IsRefused()
+    {
+        var b = new HeifBuilder();
+        b.AddItem(new HeifBuilder.Item(1, "hvc1", new byte[64]));
+        var file = b.Build();
+        var heif = HeifReader.Read(file);
+        var item = heif.GetItem(1)!;
+        var whole = item.Location!.Extents[0];
+        item.Location = item.Location with { Extents = [whole, whole, whole] }; // three extents over the same 64 bytes: still fits
+        heif.ReadItemData(file, item).Length.ShouldBe(192);
+        item.Location = item.Location with { Extents = Enumerable.Repeat(((ulong)0, (ulong)0), 50).ToList() }; // 50 times "the whole file"
+        Should.Throw<InvalidDataException>(() => heif.ReadItemData(file, item)).Message.ShouldContain("more than the");
+    }
+
     [Fact]
     public void AnExtentPastTheEndOfTheFile_IsRefusedWhenRead()
     {

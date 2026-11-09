@@ -206,7 +206,13 @@ public static class HeifReader
             var baseOffset = reader.Sized(baseOffsetSize);
             var extentCount = reader.U16();
 
-            var extents = new List<(ulong, ulong)>(Math.Min((int)extentCount, reader.Remaining));
+            // Every extent must cost input, or a few bytes could declare 65535 of them per item. With all three
+            // field widths 0 an extent is zero bytes wide and every one is the same (offset 0, "to the end"), so
+            // only one is meaningful; otherwise the extents must fit in what is left of the box.
+            var entrySize = (indexSize > 0 ? indexSize : 0) + offsetSize + lengthSize;
+            if (entrySize == 0 ? extentCount > 1 : (long)extentCount * entrySize > reader.Remaining)
+                throw new InvalidDataException($"'iloc' declares {extentCount} extents for item {id} of {entrySize} bytes each; the box has {reader.Remaining} left.");
+            var extents = new List<(ulong, ulong)>(extentCount);
             for (var e = 0; e < extentCount; e++)
             {
                 if (indexSize > 0) reader.Sized(indexSize);
@@ -357,8 +363,10 @@ public sealed class HeifFile
         var ranges = ItemRanges(file.Length, item);
         long total = 0;
         foreach (var (_, length) in ranges) total += length;
-        if (total > Array.MaxLength)
-            throw new InvalidDataException($"Item {item.Id} is {total} bytes, more than an array can hold.");
+        // Extents may overlap (14496-12 does not forbid it), so their sum is not bounded by the file; an item's
+        // data larger than the file holding it is a file repeating itself, refused before it is copied.
+        if (total > file.Length)
+            throw new InvalidDataException($"Item {item.Id}'s extents add up to {total} bytes, more than the {file.Length}-byte file holds.");
 
         var data = new byte[total];
         var at = 0;

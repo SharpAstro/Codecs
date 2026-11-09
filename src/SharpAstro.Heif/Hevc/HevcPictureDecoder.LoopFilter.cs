@@ -68,6 +68,7 @@ internal sealed partial class HevcPictureDecoder
         }
 
         var components = _chroma != 0 ? 3 : 1;
+        Span<int> magnitude = stackalloc int[4]; // once, not per component (CA2014)
         for (var c = 0; c < components; c++)
         {
             var i = ctb * 3 + c;
@@ -87,7 +88,6 @@ internal sealed partial class HevcPictureDecoder
 
             var bitDepth = c == 0 ? _sps.BitDepthLuma : _sps.BitDepthChroma;
             var cMax = (1 << (Math.Min(bitDepth, 10) - 5)) - 1;
-            Span<int> magnitude = stackalloc int[4];
             for (var k = 0; k < 4; k++)
             {
                 var value = 0;

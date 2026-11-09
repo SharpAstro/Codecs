@@ -168,7 +168,11 @@ public static class HeifDecoder
             // any tile is decoded and before the canvas is allocated: a span cannot cross into the workers, an
             // unsupported tile 19 should not cost the decode of tiles 0 to 18, and a tile whose SPS does not fit
             // what the file declares should not cost the canvas.
-            var jobs = new List<(HevcDecoderConfiguration Coding, byte[] Data, int X0, int Y0)>();
+            // The file is copied once and each tile gets its bytes as a slice of that copy; only a tile split
+            // over several extents is concatenated, and those copies together may not exceed the file.
+            var shared = file.ToArray();
+            long concatenated = 0;
+            var jobs = new List<(HevcDecoderConfiguration Coding, ReadOnlyMemory<byte> Data, int X0, int Y0)>();
             long largestPicture = 0;
             for (var t = 0; t < grid.TileItemIds.Count; t++)
             {
@@ -181,7 +185,21 @@ public static class HeifDecoder
                 CheckCodedSize(sps, tileWidth, tileHeight, covered, $"Tile {t}");
                 largestPicture = Math.Max(largestPicture, PictureBytes(sps));
                 colour ??= Colour.For(image, sps.VideoSignal, sps.BitDepthLuma, sps.ChromaFormatIdc);
-                jobs.Add((coding, heif.ReadItemData(file, tile), x0, y0));
+                var ranges = heif.ItemRanges(file.Length, tile);
+                ReadOnlyMemory<byte> data;
+                if (ranges.Count == 1)
+                {
+                    data = shared.AsMemory(ranges[0].Start, ranges[0].Length);
+                }
+                else
+                {
+                    var bytes = heif.ReadItemData(file, tile);
+                    concatenated += bytes.Length;
+                    if (concatenated > file.Length)
+                        throw new InvalidDataException($"The grid's tiles split over several extents add up to more than the {file.Length}-byte file.");
+                    data = bytes;
+                }
+                jobs.Add((coding, data, x0, y0));
             }
             canvas = new ushort[(long)width * height * 3];
 
@@ -201,7 +219,7 @@ public static class HeifDecoder
                 var job = jobs[j];
                 try
                 {
-                    var picture = HevcDecoder.Decode(job.Coding, job.Data);
+                    var picture = HevcDecoder.Decode(job.Coding, job.Data.Span);
                     Convert(picture, colour!, tileWidth, tileHeight, canvas, width, height, job.X0, job.Y0);
                 }
                 catch (Exception e)
@@ -258,14 +276,15 @@ public static class HeifDecoder
     internal const long LivePictureBytes = 1L << 30;
 
     /// <summary>
-    /// What decoding a picture of this SPS allocates before it reads a slice byte: two bytes a sample for
-    /// luma and chroma, and about one byte per 4x4 block for each of the decoder's five per-block maps.
+    /// What decoding a picture of this SPS holds at its peak: two bytes a sample for luma and chroma, one byte
+    /// per 4x4 block for each of the decoder's six per-block maps, and the copy of the luma plane SAO reads
+    /// from while it filters (2 bytes a sample; the per-CTB arrays are noise beside these).
     /// </summary>
     internal static long PictureBytes(HevcSps sps)
     {
         long luma = (long)sps.Width * sps.Height;
         var chroma = sps.ChromaFormatIdc switch { 0 => 0, 1 => luma / 2, 2 => luma, _ => 2 * luma };
-        return 2 * (luma + chroma) + 5 * (luma / 16);
+        return 2 * (luma + chroma) + 6 * (luma / 16) + (sps.SampleAdaptiveOffset ? 2 * luma : 0);
     }
 
     /// <summary>
