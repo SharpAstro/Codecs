@@ -51,7 +51,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "[webp oracle] downloading $ASSET"
-curl -sSfL "$BASE/$ASSET" -o "$WORK/$ASSET"
+curl -sSfL --retry 5 --retry-delay 15 --retry-all-errors "$BASE/$ASSET" -o "$WORK/$ASSET"
 echo "$ASSET_SHA256 *$WORK/$ASSET" | sha256sum -c -
 
 # Extract only the two tools, by exact member name.

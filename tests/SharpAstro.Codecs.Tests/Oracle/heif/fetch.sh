@@ -40,7 +40,7 @@ esac
 ARCHIVE="$HERE/$ASSET"
 if [ ! -f "$ARCHIVE" ]; then
     echo "[hevc oracle] downloading $ASSET"
-    curl -sSfL "$BASE/$ASSET" -o "$ARCHIVE"
+    curl -sSfL --retry 5 --retry-delay 15 --retry-all-errors "$BASE/$ASSET" -o "$ARCHIVE"
 fi
 echo "$ASSET_SHA256 *$ARCHIVE" | sha256sum -c -
 

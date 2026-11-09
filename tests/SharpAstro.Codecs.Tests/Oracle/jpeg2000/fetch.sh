@@ -46,7 +46,10 @@ esac
 ARCHIVE="$HERE/$ASSET"
 if [ ! -f "$ARCHIVE" ]; then
     echo "[jpeg2000 oracle] downloading $ASSET"
-    curl -sSL "$OPJ_BASE/$ASSET" -o "$ARCHIVE"
+    # --fail: a server error (GitHub answered this download with HTTP 504 on 2026-11-09, which turned master
+    # red) must be a download failure, not an error page that then "fails" the SHA-256 check; --retry rides
+    # out a short outage.
+    curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors "$OPJ_BASE/$ASSET" -o "$ARCHIVE"
 fi
 echo "$ASSET_SHA256 *$ARCHIVE" | sha256sum -c -
 

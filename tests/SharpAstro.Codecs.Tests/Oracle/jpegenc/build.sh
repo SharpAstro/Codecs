@@ -17,7 +17,8 @@ HDR="$HERE/stb_image_write.h"
 
 if [ ! -f "$HDR" ]; then
     echo "[jpegenc oracle] downloading pinned stb_image_write.h ($STB_SHA)"
-    curl -sSL "https://raw.githubusercontent.com/nothings/stb/$STB_SHA/stb_image_write.h" -o "$HDR"
+    # --fail and --retry: a server error is a download failure, retried, not a page that fails the hash.
+    curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors "https://raw.githubusercontent.com/nothings/stb/$STB_SHA/stb_image_write.h" -o "$HDR"
 fi
 echo "$STB_SHA256 *$HDR" | sha256sum -c -
 

@@ -171,9 +171,11 @@ internal sealed class HevcCabac
     public void StartSubstreamAt(int start)
     {
         var consumed = (long)(_position - _start + _zeroBytes) * 8 - _cached;
-        // _zeroBytes would count the cache's look-ahead past the end of the data, not bytes consumed: a real
-        // over-read is refused by ReadBits, so it is not tested here (a substream ending in the slice's last few
-        // bytes, as a tall flat picture's rows do, is valid).
+        // `consumed` is the true bit position: bytes loaded (zero bytes past the end included) less what the cache
+        // still holds. The zero-byte count itself is not tested here: it includes the cache's look-ahead past the
+        // end, which a substream ending in the slice's last few bytes (a tall flat picture's rows) loads without
+        // reading, and a real over-read is refused by ReadBits. The reset below keeps one substream's look-ahead
+        // from counting against the next.
         if (start < _start + consumed / 8 || start >= _end)
             throw new InvalidDataException($"An entry point puts a substream at byte {start}, but the one before it reads to bit {consumed} of the slice data.");
         _position = start;
