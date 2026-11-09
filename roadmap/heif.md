@@ -194,7 +194,11 @@ Alpha (`auxl`) and depth items are not composed.
 SdlVulkan.Renderer issue #165 (flight SDL165) is the display side: an opt-in scRGB swapchain and float
 textures, with no cost to the SDR path.
 
-### Rung 4: the rest of intra HEVC (in progress)
+### Rung 4: the rest of intra HEVC (done except the range extensions, backlogged as #68)
+
+What is left (the range-extension coding tools, extended precision and 16-bit, unequal luma and chroma bit
+depths) is refused by name and tracked in [#68](https://github.com/SharpAstro/Codecs/issues/68), with how to
+check each against the conformance streams. No camera or phone HEIC known uses any of it.
 
 In the order real files need them: deblocking and SAO (almost every HEIC outside Canon's has both on),
 then sign data hiding and transform skip (x265 defaults), then 4:4:4 and monochrome, then the rest
