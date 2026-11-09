@@ -100,14 +100,16 @@ HevcDecoder          (parameter sets from hvcC, the envelope check, the size cha
                        finished picture)
 ```
 
-**The envelope as shipped** is wider than the Canon one, because the fixtures below validate more:
+**The envelope as rung 2 shipped it** (the state at rung 2; rung 4 has since widened it to everything in its
+section, and what is still refused is listed there and in #68) was wider than the Canon one, because the
+fixtures below validate more:
 4:2:0 and 4:2:2; 8, 10 and 12 bits (luma and chroma equal); CTB 16-64; transforms 4x4-32x32; scaling
 lists (default and coded); `cu_qp_delta` at any depth; PPS and slice chroma QP offsets; strong
 intra smoothing; partial CTBs at the picture edge; several slices. Refused by name, before any sample is
 allocated, with the rung that owns it: 4:4:4 and monochrome, mixed bit depths, PCM, every range-extension
 tool, sign data hiding, transform skip, transquant bypass, tiles, WPP, dependent slices, cross-component
-prediction, chroma QP offset lists, non-IDR pictures. (Rung 4 has since added deblocking and SAO; see
-there for what of them is still refused.)
+prediction, chroma QP offset lists, non-IDR pictures. Rung 4 has since added all of these but the range-extension
+tools and mixed bit depths (and deblocking and SAO).
 
 **Validated by, strongest first:**
 
@@ -140,8 +142,9 @@ half as wide, and mode 14's -13 doubled is mode 17's -26 exactly.
 whole image to 0.27 s (tiles in parallel) and a picture's decode to about half.
 
 **x265 notes for whoever regenerates the fixtures:** it is not byte-reproducible run to run even
-single-threaded, so the fixtures and the digest file are rewritten together; 3.5 writes several slices
-only with WPP (refused), so the Canon pictures cover slices; with identical scaling matrices it writes a
+single-threaded, so a fixture and its digest line are rewritten together; 3.5 writes several slices only
+with WPP (at rung 2 refused, so the Canon pictures covered slices; rung 4 decodes WPP and has x265 slice
+fixtures); with identical scaling matrices it writes a
 `scaling_list_pred_matrix_id_delta` ffmpeg refuses as out of range, so the list file makes every matrix
 distinct; and it reads the list file in one pass, in HM's order (size outermost, then intra/inter).
 
@@ -471,7 +474,7 @@ were caught on the first run; the two that were not were closed by a new fixture
 | greater1 context set never incremented | Canon and the fixtures |
 | Rice parameter threshold 4x for 3x | Canon and the fixtures |
 | 4:2:2 second chroma cbf only when not split | Canon and the fixtures |
-| availability ignoring slice boundaries | **Canon only**: x265 3.5 writes several slices only with WPP |
+| availability ignoring slice boundaries | **Canon only** at rung 2 (x265 3.5 writes several slices only with WPP); re-run at the PR #69 review, 19 tests, the x265 WPP-slice fixtures and conformance streams among them |
 | a quantization group keeping the previous group's prediction | Canon and the fixtures |
 | `split_cu_flag` context ignoring the above neighbour | Canon and the fixtures |
 

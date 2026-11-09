@@ -156,7 +156,6 @@ internal sealed class HevcCabac
     /// </summary>
     public void BeginPcm()
     {
-        if (_zeroBytes != 0) throw new InvalidDataException("The slice data ended before its PCM samples.");
         var padding = _cached % 8;
         if (ReadBits(padding) != 0) throw new InvalidDataException("pcm_alignment_zero_bits are not zero.");
     }
@@ -172,7 +171,10 @@ internal sealed class HevcCabac
     public void StartSubstreamAt(int start)
     {
         var consumed = (long)(_position - _start + _zeroBytes) * 8 - _cached;
-        if (_zeroBytes != 0 || start < _start + consumed / 8 || start >= _end)
+        // _zeroBytes would count the cache's look-ahead past the end of the data, not bytes consumed: a real
+        // over-read is refused by ReadBits, so it is not tested here (a substream ending in the slice's last few
+        // bytes, as a tall flat picture's rows do, is valid).
+        if (start < _start + consumed / 8 || start >= _end)
             throw new InvalidDataException($"An entry point puts a substream at byte {start}, but the one before it reads to bit {consumed} of the slice data.");
         _position = start;
         _cache = 0;

@@ -7,7 +7,9 @@ namespace SharpAstro.Heif;
 /// <para>
 /// The container itself needs no ceiling of its own: every item, extent, reference and property the
 /// reader records costs at least a few bytes of input, so what the reader holds is proportional to the
-/// file. The amplification is in what the boxes declare: an <c>ispe</c> or a grid's output size is a pair
+/// file. (That had one hole, closed at the PR #69 review: iloc extent fields may be zero bytes wide, so the
+/// reader now allows one such extent per item and checks every extent count against the bytes left; an
+/// item's data larger than its file, from overlapping extents, is refused before it is copied.) The amplification is in what the boxes declare: an <c>ispe</c> or a grid's output size is a pair
 /// of 32-bit numbers, eight bytes that can name 2^64 pixels. That is what is bounded here.
 /// </para>
 /// <para>
@@ -20,8 +22,10 @@ namespace SharpAstro.Heif;
 /// tile pictures alive at once (at least one), however many cores decode it. So the ceiling is the canvas
 /// plus about one picture: a 36 KB 1x2 grid whose tiles' SPS declare 16384x16384 4:2:2 and whose output is
 /// 32768x8192 peaks at 2.6 GiB before its slice data runs out (it was the canvas plus one picture per core);
-/// a 4:4:4 grid at the limit, about 3.2 GiB. A caller wanting less should check <c>HeifFile.Describe</c>'s
-/// sizes before decoding.
+/// a 4:4:4 grid at the limit, about 3.2 GiB. Those are before the loop filters: a picture that reaches SAO
+/// also holds a copy of its luma plane while it is filtered (2 bytes a sample, about 0.5 GiB more for a
+/// 16384x16384 picture), which the live-picture budget counts. A caller wanting less should check
+/// <c>HeifFile.Describe</c>'s sizes before decoding.
 /// </para>
 /// </summary>
 public static class HeifLimits

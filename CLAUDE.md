@@ -1069,10 +1069,12 @@ touching it should know:
   with no tool installed; the live ffmpeg comparison runs where ffmpeg is (CI installs it). The one
   exception is named in `make-fixtures.sh`'s `DE265_GAPS` with the experiment that narrowed it:
   `x265-444p10-lists`, where libde265 does not weight 4:4:4 32x32 chroma by the 16x16 list (7.4.5).
-- **x265 is not byte-reproducible** between runs, so regenerating rewrites every fixture and the digest
-  file together. It writes several slices only with WPP (refused), so slices are covered by Canon alone.
-- **The mutation check needs both halves**: six of 22 deliberate bugs are seen only by the fixtures,
-  one (slice-boundary availability) only by the Canon multi-slice pictures.
+- **x265 is not byte-reproducible** between runs, so regenerating rewrites a fixture and its digest line
+  together (`make-fixtures.sh <names>` writes only those). It writes several slices only with WPP, decoded
+  since rung 4 part 4 (`x265-420p8-wpp-slices`, `x265-422p10-wpp-slices`, with the Canon multi-slice pictures).
+- **The mutation check needs both halves**: at rung 2, six of 22 deliberate bugs were seen only by the
+  fixtures and one (slice-boundary availability) only by the Canon multi-slice pictures; re-run at the PR #69
+  review, that one now fails 19 tests, the x265 WPP-slice fixtures and the conformance streams among them.
 - **Every refusal names the feature and its rung**, before planes are allocated; damaged slices end in
   `InvalidDataException` (over-read capped at 64 bits, every unary prefix capped, levels kept to 16 bits).
 - **HDR output, not a tone map**: PQ to the facade's float tier (1.0 = 203 cd/m², as

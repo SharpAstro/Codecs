@@ -52,6 +52,7 @@ public class HevcFixtureTests(ITestOutputHelper output)
         "x265-420p8-lossless",
         "x265-420p10-cu-lossless",
         "x265-420p10-cu-lossless-sao",
+        "x265-420p8-wpp-tall-flat",
     ];
 
     private static readonly string Root = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hevc");
@@ -87,10 +88,15 @@ public class HevcFixtureTests(ITestOutputHelper output)
 
         // Every fixture: all 35 luma modes (planar and all 33 angles included), NxN units, coded 4x4 blocks.
         // Not the deblocking tables' fixtures, whose QPs are pushed to where x265 uses few modes.
-        if (!name.StartsWith("x265-420p8-deblock-", StringComparison.Ordinal))
+        // The flat picture, one colour, is exempt from all three.
+        var flat = name == "x265-420p8-wpp-tall-flat";
+        if (!name.StartsWith("x265-420p8-deblock-", StringComparison.Ordinal) && !flat)
             statistics.LumaModes.ShouldAllBe(count => count > 0, $"{name} leaves a luma mode unused");
-        statistics.NxNUnits.ShouldBeGreaterThan(0);
-        statistics.CodedTransformSizes[2].ShouldBeGreaterThan(0);
+        if (!flat)
+        {
+            statistics.NxNUnits.ShouldBeGreaterThan(0);
+            statistics.CodedTransformSizes[2].ShouldBeGreaterThan(0);
+        }
         if (picture.ChromaFormatIdc == 2)
             statistics.RemappedChromaModes.ShouldBeGreaterThan(0, "a 4:2:2 fixture must exercise Table 8-3 with modes it changes");
 
@@ -234,6 +240,10 @@ public class HevcFixtureTests(ITestOutputHelper output)
                 statistics.FilteringSkippedForBypass.ShouldBeGreaterThan(0, "deblocking edges with a lossless side kept");
                 statistics.ChromaDeblockKeptForBypass.ShouldBeGreaterThan(0, "a lossless chroma sample the filter would have changed");
                 pps.SignDataHiding.ShouldBeTrue("a lossless unit codes every sign even so");
+                break;
+            case "x265-420p8-wpp-tall-flat":
+                pps.EntropyCodingSync.ShouldBeTrue();
+                statistics.SubstreamsByEntryPoint.ShouldBe(sps.HeightInCtbs - 1, "every row's substream, the short ones at the slice's end included");
                 break;
             case "x265-420p8-lossless":
                 pps.SignDataHiding.ShouldBeTrue("a lossless unit codes every sign even so");

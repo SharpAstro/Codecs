@@ -19,9 +19,11 @@ fixture still exercises what it is there for, so a regeneration cannot quietly e
 
 ## Things learned
 
-- **x265 is not byte-reproducible** from run to run even single-threaded; regenerating rewrites every
-  fixture and the digest file together.
-- **x265 3.5 writes several slices only with WPP**, which rung 2 refuses; the Canon pictures (one to
-  four slices each) cover multiple slices instead.
+- **x265 is not byte-reproducible** from run to run even single-threaded; regenerating rewrites a fixture
+  and its digest line together (name fixtures on the command line to write only those).
+- **x265 3.5 writes several slices only with WPP**, and only with a thread pool (`pools=1` or more; with
+  `pools=none` it segfaults on slices and quietly turns WPP off). Rung 4 decodes WPP, so the WPP-slice
+  fixtures cover slices along with the Canon pictures; with a pool the output is not deterministic and about
+  one run in three gives a stream ffmpeg and libde265 decode differently, which the check refuses.
 - **`ffmpeg -encoders | grep -q` fails under `set -o pipefail`**: grep exits on its first match and
   ffmpeg dies of SIGPIPE. The scripts capture the list first.
