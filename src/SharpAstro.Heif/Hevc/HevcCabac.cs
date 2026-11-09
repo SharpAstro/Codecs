@@ -27,7 +27,8 @@ internal static class HevcContext
     public const int SaoMergeFlag = Greater2Flag + 6;        // 1, shared by sao_merge_left_flag and sao_merge_up_flag
     public const int SaoTypeIdx = SaoMergeFlag + 1;          // 1 (bin 0; bin 1 is bypass), luma and chroma
     public const int TransformSkipFlag = SaoTypeIdx + 1;     // 2: luma, chroma
-    public const int Count = TransformSkipFlag + 2;
+    public const int CuTransquantBypassFlag = TransformSkipFlag + 2; // 1
+    public const int Count = CuTransquantBypassFlag + 1;
 
     /// <summary>initValue per context, in the layout above.</summary>
     public static ReadOnlySpan<byte> IntraInitValues =>
@@ -52,6 +53,7 @@ internal static class HevcContext
         153,                                                                   // sao_merge_left_flag, sao_merge_up_flag
         200,                                                                   // sao_type_idx_luma, sao_type_idx_chroma
         139, 139,                                                              // transform_skip_flag (luma, chroma)
+        154,                                                                   // cu_transquant_bypass_flag
     ];
 }
 
@@ -99,6 +101,7 @@ internal sealed class HevcCabac
 
     private readonly byte[] _data;
     private readonly int _end;
+    private readonly int _start;    // where the slice data begins, for counting the bits consumed
     private int _position;      // next byte to load
     private ulong _cache;       // bits loaded but not consumed, the next one in bit 63
     private int _cached;        // how many of _cache's bits are loaded
@@ -114,11 +117,19 @@ internal sealed class HevcCabac
     {
         _data = data;
         _position = start;
+        _start = start;
         _end = end;
     }
 
     /// <summary>9.3.2.2: every context from its initValue at SliceQpY, then 9.3.2.5: the engine.</summary>
     public void Start(int sliceQpY)
+    {
+        InitializeContexts(sliceQpY);
+        StartEngine();
+    }
+
+    /// <summary>9.3.2.2: every context from its initValue at SliceQpY.</summary>
+    public void InitializeContexts(int sliceQpY)
     {
         var init = HevcContext.IntraInitValues;
         var qp = Math.Clamp(sliceQpY, 0, 51);
@@ -129,7 +140,30 @@ internal sealed class HevcCabac
             var pre = Math.Clamp(((slope * qp) >> 4) + offset, 1, 126);
             _state[i] = pre <= 63 ? (byte)((63 - pre) << 1) : (byte)(((pre - 64) << 1) | 1);
         }
+    }
 
+    /// <summary>The context variables, for the wavefront synchronisation (9.3.2.4) to restore.</summary>
+    public void SaveContexts(byte[] into) => _state.AsSpan().CopyTo(into);
+
+    public void RestoreContexts(byte[] from) => from.AsSpan(0, _state.Length).CopyTo(_state);
+
+    /// <summary>
+    /// Restarts the engine (9.3.2.5) at RBSP byte <paramref name="start"/>, where an entry point puts the next
+    /// substream, after the terminating bin that ended this one. It must lie past what this substream read.
+    /// </summary>
+    public void StartSubstreamAt(int start)
+    {
+        var consumed = (long)(_position - _start + _zeroBytes) * 8 - _cached;
+        if (_zeroBytes != 0 || start < _start + consumed / 8 || start >= _end)
+            throw new InvalidDataException($"An entry point puts a substream at byte {start}, but the one before it reads to bit {consumed} of the slice data.");
+        _position = start;
+        _cache = 0;
+        _cached = 0;
+        StartEngine();
+    }
+
+    private void StartEngine()
+    {
         _range = 510;
         _offset = ReadBits(9);
         // 9.3.2.5: a conforming stream never starts with 510 or 511.

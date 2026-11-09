@@ -44,6 +44,14 @@ public class HevcFixtureTests(ITestOutputHelper output)
         "x265-444p12-loopfilters",
         "x265-400p8",
         "x265-400p10",
+        // Rung 4: wavefronts, slices, lossless coding units.
+        "x265-422p10-wpp",
+        "x265-420p8-wpp-ctu16",
+        "x265-420p8-wpp-slices",
+        "x265-422p10-wpp-slices",
+        "x265-420p8-lossless",
+        "x265-420p10-cu-lossless",
+        "x265-420p10-cu-lossless-sao",
     ];
 
     private static readonly string Root = Path.Combine(AppContext.BaseDirectory, "Fixtures", "hevc");
@@ -207,6 +215,34 @@ public class HevcFixtureTests(ITestOutputHelper output)
                 statistics.ChromaModes.Sum().ShouldBe(0);
                 statistics.SaoEdgeClasses.Sum().ShouldBeGreaterThan(0);
                 break;
+            case "x265-422p10-wpp" or "x265-420p8-wpp-ctu16":
+                pps.EntropyCodingSync.ShouldBeTrue();
+                statistics.Slices.ShouldBe(1);
+                statistics.WavefrontRows.ShouldBe(sps.HeightInCtbs - 1, "every row after the first starts a substream");
+                ShouldUseSao(statistics);
+                if (name == "x265-422p10-wpp") statistics.NonZeroQpDeltas.ShouldBeGreaterThan(0, "QP prediction restarting at each row");
+                break;
+            case "x265-420p8-wpp-slices" or "x265-422p10-wpp-slices":
+                pps.EntropyCodingSync.ShouldBeTrue();
+                statistics.Slices.ShouldBeGreaterThan(2);
+                statistics.WavefrontRows.ShouldBeGreaterThan(0, "rows inside a slice, found by entry points");
+                statistics.SliceBoundariesKept.ShouldBeGreaterThan(0, "slice_loop_filter_across_slices_enabled_flag 0: edges and SAO neighbours not crossed");
+                ShouldDeblockEveryWay(statistics);
+                break;
+            case "x265-420p10-cu-lossless":
+                statistics.BypassUnits.ShouldBeGreaterThan(0, "lossless coding units");
+                statistics.FilteringSkippedForBypass.ShouldBeGreaterThan(0, "deblocking edges with a lossless side kept");
+                statistics.ChromaDeblockKeptForBypass.ShouldBeGreaterThan(0, "a lossless chroma sample the filter would have changed");
+                pps.SignDataHiding.ShouldBeTrue("a lossless unit codes every sign even so");
+                break;
+            case "x265-420p8-lossless":
+                pps.SignDataHiding.ShouldBeTrue("a lossless unit codes every sign even so");
+                statistics.BypassUnits.ShouldBeGreaterThan(0);
+                break;
+            case "x265-420p10-cu-lossless-sao":
+                statistics.BypassUnits.ShouldBeGreaterThan(0, "lossless coding units");
+                statistics.SaoSamplesKeptForBypass.ShouldBeGreaterThan(0, "SAO leaving a lossless unit's samples alone");
+                break;
             case "x265-420p8-loopfilters-window":
                 (picture.ChromaFormatIdc, picture.BitDepthLuma).ShouldBe((1, 8));
                 picture.ConformanceWindow.ShouldNotBe((0, 0, 0, 0));
@@ -341,6 +377,7 @@ public class HevcFixtureTests(ITestOutputHelper output)
         output.WriteLine($"  NxN {s.NxNUnits}, non-zero QP deltas {s.NonZeroQpDeltas}, strong smoothing {s.StrongSmoothing}, slices {s.Slices}");
         output.WriteLine($"  deblocking: strong {s.DeblockStrong}, weak {s.DeblockWeak} (p1/q1 too {s.DeblockWeakSecondSample}), skipped {s.DeblockSkipped}, chroma {s.DeblockChroma}");
         output.WriteLine($"  beta Q: {string.Join(" ", s.BetaIndices.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}; tc Q: {string.Join(" ", s.TcIndices.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}; band positions: {string.Join(" ", s.SaoBandPositions.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}");
+        output.WriteLine($"  wavefront rows {s.WavefrontRows}, lossless CUs {s.BypassUnits} (filtering kept {s.FilteringSkippedForBypass}, chroma {s.ChromaDeblockKeptForBypass}, SAO {s.SaoSamplesKeptForBypass}), slice boundaries kept {s.SliceBoundariesKept}");
         output.WriteLine($"  signs hidden {s.SignsHidden} (negative {s.HiddenSignsNegative}), transform skip luma {s.TransformSkipLuma} chroma {s.TransformSkipChroma}");
         output.WriteLine($"  SAO: band {s.SaoBand}, edge classes {string.Join("/", s.SaoEdgeClasses)}, merged left {s.SaoMergeLeft} up {s.SaoMergeUp}, largest offset {s.SaoLargestOffset}");
     }

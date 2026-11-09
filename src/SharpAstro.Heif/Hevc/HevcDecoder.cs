@@ -83,9 +83,7 @@ internal static class HevcDecoder
         if (range.CabacBypassAlignment) Refuse("CABAC bypass alignment", 4);
         if (sps.OtherExtensions) Refuse("An SPS multilayer, 3D or screen content extension", 4);
 
-        if (pps.TransquantBypass) Refuse("Transquant bypass", 4);
         if (pps.Tiles) Refuse("Tiles", 4);
-        if (pps.EntropyCodingSync) Refuse("Wavefront parallel processing", 4);
         if (pps.CrossComponentPrediction) Refuse("Cross-component prediction", 4);
         if (pps.ChromaQpOffsetList) Refuse("CU chroma QP offset lists", 4);
         // A range-extension PPS field that scales SAO offsets; no encoder here writes it, so nothing could check it.

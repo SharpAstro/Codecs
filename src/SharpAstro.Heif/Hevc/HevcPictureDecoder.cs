@@ -70,6 +70,22 @@ internal sealed class HevcDecodeStatistics
     /// <summary>Coded 32x32 chroma blocks (4:4:4 only), whose scaling factors come from the 16x16 lists.</summary>
     public long CodedChroma32 { get; set; }
 
+    /// <summary>CTB rows started from the row above's contexts or afresh (wavefront parallel processing).</summary>
+    public long WavefrontRows { get; set; }
+
+    /// <summary>Substreams (CTB rows after a slice's first) started at their entry point.</summary>
+    public long SubstreamsByEntryPoint { get; set; }
+
+    /// <summary>Coding units coded losslessly (cu_transquant_bypass_flag), and loop filter samples they kept unchanged.</summary>
+    public long BypassUnits { get; set; }
+    public long FilteringSkippedForBypass { get; set; }
+    public long SaoSamplesKeptForBypass { get; set; }
+    /// <summary>Chroma lines where a lossless side kept a sample the deblocking filter would have changed.</summary>
+    public long ChromaDeblockKeptForBypass { get; set; }
+
+    /// <summary>Slice boundary edges and SAO neighbours the loop filters did not cross (slice_loop_filter_across_slices_enabled_flag 0).</summary>
+    public long SliceBoundariesKept { get; set; }
+
     /// <summary>4:4:4 NxN coding units, which code a chroma mode for each of their four prediction blocks.</summary>
     public long ChromaModesPerPart { get; set; }
 
@@ -129,6 +145,11 @@ internal sealed partial class HevcPictureDecoder
     private int _slice = -1;
     private int _nextCtb;
     private HevcCabac _cabac = null!;
+    private readonly byte[] _wavefrontContexts = new byte[HevcContext.Count];
+    private bool _cuBypass;
+
+    // Per 4x4 luma block: 1 where the coding unit is cu_transquant_bypass (lossless), which both loop filters leave alone.
+    private readonly byte[] _bypass;
 
     // QP state (8.6.1).
     private int _sliceQpY, _cbOffset, _crOffset;
@@ -188,6 +209,7 @@ internal sealed partial class HevcPictureDecoder
         _chromaMode = new byte[blocks];
         _qpMap = new sbyte[blocks];
         _edges = new byte[blocks];
+        _bypass = new byte[blocks];
         var ctbs = _widthInCtbs * _heightInCtbs;
         _saoType = new byte[ctbs * 3];
         _saoBandOrClass = new byte[ctbs * 3];
@@ -229,6 +251,8 @@ internal sealed partial class HevcPictureDecoder
         _cabac.Start(_sliceQpY);
 
         var ctb = header.SegmentAddress;
+        var wavefront = _pps.EntropyCodingSync;
+        var substream = 0;
         while (true)
         {
             if (ctb >= _ctbSlice.Length)
@@ -236,11 +260,40 @@ internal sealed partial class HevcPictureDecoder
             _ctbSlice[ctb] = _slice;
             var x = (ctb % _widthInCtbs) << _log2Ctb;
             var y = (ctb / _widthInCtbs) << _log2Ctb;
+            if (wavefront && x == 0 && ctb != header.SegmentAddress)
+            {
+                // A new CTB row (9.3.1): the contexts as they were after the second CTB of the row above, when
+                // that CTB is available (in the picture and the slice), else fresh; and the QP prediction
+                // starts again from SliceQpY (8.6.1).
+                if (Available(x, y, x + (1 << _log2Ctb), y - (1 << _log2Ctb))) _cabac.RestoreContexts(_wavefrontContexts);
+                else _cabac.InitializeContexts(_sliceQpY);
+                _lastCuQpY = _sliceQpY;
+                _qgPreviousQpY = _sliceQpY;
+                if (_statistics is not null) _statistics.WavefrontRows++;
+            }
             if (header.SaoLuma || header.SaoChroma) Sao(ctb, header);
             CodingQuadtree(x, y, _log2Ctb, 0);
+            if (wavefront && ctb % _widthInCtbs == 1) _cabac.SaveContexts(_wavefrontContexts);
             ctb++;
             if (_cabac.Terminate() == 1) break; // end_of_slice_segment_flag
+            if (wavefront && ctb % _widthInCtbs == 0)
+            {
+                // end_of_subset_one_bit, byte_alignment(), and the next row's substream.
+                if (_cabac.Terminate() != 1)
+                    throw new InvalidDataException($"The substream of CTB row {ctb / _widthInCtbs - 1} (slice {_slice}) does not end with end_of_subset_one_bit.");
+                // The next row's substream begins where its entry point says (7.4.7.1: a slice segment codes one
+                // per CTB row after its first, so there is always one), as ffmpeg and libde265 find it. Not by
+                // reading on past byte_alignment() from where the arithmetic decoder stopped: in every x265
+                // stream here the alignment's one bit sits one bit before that point (measured on all of them),
+                // which only a decoder that follows the entry points does not notice.
+                if (substream >= header.SubstreamStarts.Length)
+                    throw new InvalidDataException($"Slice {_slice} has more CTB rows than its {header.SubstreamStarts.Length} entry points allow.");
+                _cabac.StartSubstreamAt(header.SubstreamStarts[substream++]);
+                if (_statistics is not null) _statistics.SubstreamsByEntryPoint++;
+            }
         }
+        if (wavefront && substream != header.SubstreamStarts.Length)
+            throw new InvalidDataException($"Slice {_slice} codes {header.SubstreamStarts.Length} entry points but has {substream + 1} CTB rows.");
         _nextCtb = ctb;
     }
 
@@ -325,6 +378,11 @@ internal sealed partial class HevcPictureDecoder
         var size = 1 << log2Size;
         Fill(_ctDepth, x0, y0, size, (byte)depth);
         PredictQp(x0, y0);
+
+        // cu_transquant_bypass_flag: a lossless coding unit, its residual the coded levels themselves.
+        _cuBypass = _pps.TransquantBypass && _cabac.Decision(HevcContext.CuTransquantBypassFlag) == 1;
+        Fill(_bypass, x0, y0, size, _cuBypass ? (byte)1 : (byte)0);
+        if (_cuBypass && _statistics is not null) _statistics.BypassUnits++;
 
         // part_mode: for an intra CU only at the minimum size, one bin, 1 = 2Nx2N and 0 = NxN.
         var intraSplit = log2Size == _log2MinCb && _cabac.Decision(HevcContext.PartMode) == 0;
@@ -631,6 +689,19 @@ internal sealed partial class HevcPictureDecoder
         coefficients.Clear();
         var transformSkip = ResidualCoding(log2Size, component, ScanIndex(log2Size, component, mode), coefficients);
 
+        if (_cuBypass)
+        {
+            // 8.6.2: with cu_transquant_bypass_flag the residual is the coded levels, unscaled and untransformed.
+            var maxBypass = (1 << bitDepth) - 1;
+            for (var j = 0; j < n; j++)
+            {
+                var row = (y + j) * stride + x;
+                for (var i = 0; i < n; i++)
+                    plane[row + i] = (ushort)Math.Clamp(plane[row + i] + coefficients[j * n + i], 0, maxBypass);
+            }
+            return;
+        }
+
         // 8.6.4.2: m is the flat 16 without scaling lists, and for a skipped transform larger than 4x4.
         var qp = component == 0 ? _qpY + _qpBdOffsetY : ChromaQp(component == 1 ? _cbOffset : _crOffset);
         var factors = transformSkip && n > 4 ? null : _scaling?.Factors(log2Size, component);
@@ -716,9 +787,8 @@ internal sealed partial class HevcPictureDecoder
         var n = 1 << log2Size;
         var chroma = component > 0;
 
-        // transform_skip_flag: one context for luma, one for chroma. (cu_transquant_bypass_flag, which would
-        // also suppress it, is refused with the envelope.)
-        var transformSkip = _pps.TransformSkip && log2Size <= _pps.Log2MaxTransformSkipBlockSize
+        // transform_skip_flag: one context for luma, one for chroma; not coded in a lossless coding unit.
+        var transformSkip = _pps.TransformSkip && !_cuBypass && log2Size <= _pps.Log2MaxTransformSkipBlockSize
             && _cabac.Decision(HevcContext.TransformSkipFlag + (chroma ? 1 : 0)) == 1;
 
         // last_sig_coeff_{x,y}_prefix: truncated unary over contexts that depend on the block size.
@@ -861,7 +931,7 @@ internal sealed partial class HevcPictureDecoder
             // Signs, then the remaining levels. With sign data hiding (7.3.8.11), a sub-block whose first and
             // last significant positions are more than 3 apart codes no sign for its first (lowest-position,
             // so last in this list) coefficient: it is negative when the sum of the sub-block's levels is odd.
-            var signHidden = _pps.SignDataHiding && sigPosition[0] - sigPosition[count - 1] > 3;
+            var signHidden = _pps.SignDataHiding && !_cuBypass && sigPosition[0] - sigPosition[count - 1] > 3;
             var signs = signHidden ? _cabac.Bypass(count - 1) << 1 : _cabac.Bypass(count);
             var sumAbsLevel = 0;
             var rice = 0;

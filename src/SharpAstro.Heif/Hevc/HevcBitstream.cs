@@ -3,6 +3,33 @@ namespace SharpAstro.Heif.Hevc;
 /// <summary>An HEVC NAL unit: its two-byte header (H.265 7.3.1.2) and its payload as RBSP.</summary>
 internal sealed record HevcNalUnit(int Type, int LayerId, int TemporalId, byte[] Rbsp)
 {
+    /// <summary>
+    /// Where emulation prevention removed a byte: for each removed <c>03</c>, the RBSP position it preceded.
+    /// Entry point offsets count those bytes (7.4.7.1), so they are needed to find a substream in the RBSP.
+    /// </summary>
+    public int[] EmulationPrevention { get; init; } = [];
+
+    /// <summary>The RBSP position of the byte <paramref name="payloadOffset"/> bytes into the payload, after the header.</summary>
+    public int RbspPosition(int payloadOffset)
+    {
+        // The k-th removed byte sat at payload offset EmulationPrevention[k] + k.
+        var removed = 0;
+        while (removed < EmulationPrevention.Length && EmulationPrevention[removed] + removed < payloadOffset) removed++;
+        return payloadOffset - removed;
+    }
+
+    /// <summary>The payload offset (after the header) of RBSP position <paramref name="rbspPosition"/>.</summary>
+    public int PayloadOffset(int rbspPosition)
+    {
+        var removed = 0;
+        foreach (var at in EmulationPrevention)
+        {
+            if (at > rbspPosition) break;
+            removed++;
+        }
+        return rbspPosition + removed;
+    }
+
     public const int VpsNut = 32, SpsNut = 33, PpsNut = 34, AudNut = 35, PrefixSeiNut = 39, SuffixSeiNut = 40;
 
     /// <summary>IDR_W_RADL..CRA_NUT and the reserved IRAP types: every picture here is one of these (16..23).</summary>
@@ -24,10 +51,14 @@ internal sealed record HevcNalUnit(int Type, int LayerId, int TemporalId, byte[]
         var layer = ((nal[0] & 1) << 5) | (nal[1] >> 3);
         var temporalPlus1 = nal[1] & 7;
         if (temporalPlus1 == 0) throw new InvalidDataException("A NAL unit has nuh_temporal_id_plus1 = 0.");
-        return new HevcNalUnit(type, layer, temporalPlus1 - 1, StripEmulationPrevention(nal[2..]));
+        var removed = new List<int>();
+        var rbsp = StripEmulationPrevention(nal[2..], removed);
+        return new HevcNalUnit(type, layer, temporalPlus1 - 1, rbsp) { EmulationPrevention = [.. removed] };
     }
 
-    public static byte[] StripEmulationPrevention(ReadOnlySpan<byte> payload)
+    public static byte[] StripEmulationPrevention(ReadOnlySpan<byte> payload) => StripEmulationPrevention(payload, null);
+
+    private static byte[] StripEmulationPrevention(ReadOnlySpan<byte> payload, List<int>? removed)
     {
         var rbsp = new byte[payload.Length];
         var length = 0;
@@ -36,6 +67,7 @@ internal sealed record HevcNalUnit(int Type, int LayerId, int TemporalId, byte[]
         {
             if (zeros >= 2 && b == 3)
             {
+                removed?.Add(length);
                 zeros = 0;
                 continue;
             }
