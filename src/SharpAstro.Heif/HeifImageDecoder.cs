@@ -48,7 +48,17 @@ public sealed class HeifImageDecoder : IImageDecoder
         image = null;
         if (!TryDecodeRgb(data, out var rgb)) return false;
         var max = (1 << rgb.BitDepth) - 1;
-        var pixels = new byte[rgb.Samples.Length * 2];
+        byte[] pixels;
+        try
+        {
+            // Six more bytes a pixel on top of the decoded canvas: a picture that decodes but cannot be copied is
+            // false here too, never an exception out of a Try method.
+            pixels = new byte[rgb.Samples.Length * 2];
+        }
+        catch (OutOfMemoryException)
+        {
+            return false;
+        }
         var wide = MemoryMarshal.Cast<byte, ushort>(pixels.AsSpan());
         for (var i = 0; i < rgb.Samples.Length; i++)
             wide[i] = (ushort)((rgb.Samples[i] * 65535 + max / 2) / max);
