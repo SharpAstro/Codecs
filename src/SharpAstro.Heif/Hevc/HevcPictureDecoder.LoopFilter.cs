@@ -9,8 +9,9 @@ namespace SharpAstro.Heif.Hevc;
 /// <para>
 /// In an intra picture every edge on the 8x8 grid that is a transform block edge has boundary strength 2
 /// (8.7.2.4: one side is intra), and those are the only edges: an intra prediction block's edges on that
-/// grid are transform edges too (an NxN split forces the transform split). PCM and transquant bypass,
-/// which exempt samples from both filters, are refused with the envelope.
+/// grid are transform edges too (an NxN split forces the transform split), as are a PCM unit's. Lossless
+/// coding units (cu_transquant_bypass_flag) and, with pcm_loop_filter_disabled_flag, PCM units keep their
+/// samples out of both filters (<c>_bypass</c>).
 /// </para>
 /// </summary>
 internal sealed partial class HevcPictureDecoder

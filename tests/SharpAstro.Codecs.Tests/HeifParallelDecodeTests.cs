@@ -85,6 +85,53 @@ public sealed class HeifParallelDecodeTests
     }
 
     [Fact]
+    public void Grid_WithTheSharedDefaultScalingLists_InParallel_EqualsOneThread()
+    {
+        // x265's scaling-list=default enables scaling lists without coding any, so every tile weights its
+        // coefficients by the one shared HevcScalingList.Default, from several threads at once.
+        const string scaled = "x265-422p10-aq-scaling"; // 256x192
+        var file = Grid(512, 384, Enumerable.Repeat(HevcFixtureTests.Load(scaled).Item, 4).ToArray(), columns: 2, rows: 2, fixture: scaled, tileWidth: 256, tileHeight: 192);
+        var serial = HeifDecoder.Decode(file, maxDegreeOfParallelism: 1);
+        for (var run = 0; run < 3; run++)
+            HeifDecoder.Decode(file).Samples.ShouldBe(serial.Samples);
+    }
+
+    /// <summary>
+    /// A file whose HEVC picture is smaller than the size it declares is refused from the SPS alone, before
+    /// the canvas (1.5 GiB for 16384x16384) or a plane is allocated.
+    /// </summary>
+    [Fact]
+    public void DeclaredSizeBiggerThanThePicture_IsRefusedBeforeAllocating()
+    {
+        var (configuration, item) = HevcFixtureTests.Load(Fixture);
+        var file = HeifBuilder.WrapHevcPicture(HvcC(configuration), item, 16384, 16384, null, null);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Should.Throw<InvalidDataException>(() => HeifDecoder.Decode(file)).Message.ShouldContain("declares 16384x16384");
+        (GC.GetAllocatedBytesForCurrentThread() - before).ShouldBeLessThan(4L << 20, "refused before the canvas and the planes");
+    }
+
+    /// <summary>
+    /// A picture coded at more than twice the area it is shown at (plus a CTB) is refused before allocating,
+    /// for a grid's tiles as for a single image: padding beyond that is memory the output never shows.
+    /// </summary>
+    [Fact]
+    public void PictureFarBiggerThanItsDeclaredSize_IsRefusedBeforeAllocating()
+    {
+        var (configuration, item) = HevcFixtureTests.Load(Fixture); // coded 232x168
+        var single = HeifBuilder.WrapHevcPicture(HvcC(configuration), item, 16, 16, null, null);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Should.Throw<InvalidDataException>(() => HeifDecoder.Decode(single)).Message.ShouldContain("more than twice");
+        (GC.GetAllocatedBytesForCurrentThread() - before).ShouldBeLessThan(4L << 20);
+
+        // A grid whose 230x166 tiles each cover only a 40x40 corner of the output.
+        var grid = Grid(40, 40, [Tile()], columns: 1, rows: 1);
+        Should.Throw<InvalidDataException>(() => HeifDecoder.Decode(grid)).Message.ShouldContain("more than twice");
+
+        // Canon's shape stays decodable: coded 1.5 times the area it shows.
+        HeifDecoder.Decode(HeifBuilder.WrapHevcPicture(HvcC(configuration), item, 230, 112, null, null)).Height.ShouldBe(112);
+    }
+
+    [Fact]
     public void ParallelismOfZero_IsRefused() =>
         Should.Throw<ArgumentOutOfRangeException>(() => HeifDecoder.Decode(Grid(460, 166, [Tile(), Tile()], columns: 2, rows: 1), maxDegreeOfParallelism: 0));
 
@@ -133,16 +180,17 @@ public sealed class HeifParallelDecodeTests
 
     private static byte[] Tile() => HevcFixtureTests.Load(Fixture).Item;
 
-    private static byte[] Grid(uint width, uint height, byte[][] tiles, int columns = 3, int rows = 2, byte[]? nclx = null)
+    private static byte[] Grid(uint width, uint height, byte[][] tiles, int columns = 3, int rows = 2, byte[]? nclx = null,
+        string fixture = Fixture, uint tileWidth = 230, uint tileHeight = 166)
     {
-        var (configuration, _) = HevcFixtureTests.Load(Fixture);
+        var (configuration, _) = HevcFixtureTests.Load(fixture);
         var builder = new HeifBuilder();
         builder.AddItem(new HeifBuilder.Item(1, "grid", HeifBuilder.GridLayout(rows, columns, width, height)));
         var ids = Enumerable.Range(10, tiles.Length).Select(i => (uint)i).ToArray();
         for (var t = 0; t < tiles.Length; t++) builder.AddItem(new HeifBuilder.Item(ids[t], "hvc1", tiles[t], Hidden: true));
         builder.Reference("dimg", 1, ids);
         var hvcc = builder.Property("hvcC", HvcC(configuration));
-        var size = builder.Property("ispe", HeifBuilder.Ispe(230, 166));
+        var size = builder.Property("ispe", HeifBuilder.Ispe(tileWidth, tileHeight));
         foreach (var id in ids)
         {
             builder.Associate(id, hvcc, essential: true);

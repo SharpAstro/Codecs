@@ -316,13 +316,18 @@ public class HevcFixtureTests(ITestOutputHelper output)
     public void Fixture_DamagedSlices_AreRefusedCleanly(string name)
     {
         var (configuration, item) = Load(name);
-        var random = new Random(name.GetHashCode(StringComparison.Ordinal) & 0x7FFFFFFF);
+        // A seed that is the same in every process (string.GetHashCode is randomised per process), so a failure
+        // replays; it is in the failure's message.
+        var seed = StableSeed(name);
+        var random = new Random(seed);
         var outcomes = new Dictionary<string, int>();
         var watch = System.Diagnostics.Stopwatch.StartNew();
+        var attempts = 0;
 
         void Attempt(byte[] data)
         {
             string outcome;
+            attempts++;
             try
             {
                 HevcDecoder.Decode(configuration, data);
@@ -330,6 +335,10 @@ public class HevcFixtureTests(ITestOutputHelper output)
             }
             catch (InvalidDataException) { outcome = "invalid"; }
             catch (NotSupportedException) { outcome = "not supported"; }
+            catch (Exception e)
+            {
+                throw new InvalidOperationException($"{name}, seed {seed}, attempt {attempts}: {e.GetType().Name}: {e.Message}", e);
+            }
             outcomes[outcome] = outcomes.GetValueOrDefault(outcome) + 1;
         }
 
@@ -387,6 +396,14 @@ public class HevcFixtureTests(ITestOutputHelper output)
     /// <summary>Splits an Annex B stream into an hvcC-like configuration and 4-byte length-prefixed item data.</summary>
     internal static (HevcDecoderConfiguration Configuration, byte[] Item) Load(string name) =>
         FromAnnexB(File.ReadAllBytes(Path.Combine(Root, name + ".hevc")));
+
+    /// <summary>FNV-1a of the name: a seed that does not change between processes or machines.</summary>
+    internal static int StableSeed(string name)
+    {
+        var hash = 2166136261u;
+        foreach (var c in name) hash = (hash ^ c) * 16777619u;
+        return (int)(hash & 0x7FFFFFFF);
+    }
 
     /// <summary>An Annex B stream as an hvcC-like configuration and 4-byte length-prefixed item data.</summary>
     internal static (HevcDecoderConfiguration Configuration, byte[] Item) FromAnnexB(byte[] stream)

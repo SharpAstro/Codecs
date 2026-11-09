@@ -221,10 +221,14 @@ public class HeifDecodeTests(ITestOutputHelper output)
         var rgba = new byte[width * height * 4];
         ImageCodecs.TryDecodeIntoRgba8(heif, rgba).ShouldBeTrue();
         var rgb = HeifDecoder.Decode(heif);
-        for (var p = 0; p < width * height; p += 31)
+        rgb.BitDepth.ShouldBe(8);
+        for (var p = 0; p < width * height; p++)
         {
-            rgba[4 * p].ShouldBe((byte)rgb.Samples[3 * p]);
-            rgba[4 * p + 3].ShouldBe((byte)255);
+            // Every pixel, every channel: a swapped G and B or an offset slip would show here.
+            rgba[4 * p].ShouldBe((byte)rgb.Samples[3 * p], $"R at {p}");
+            rgba[4 * p + 1].ShouldBe((byte)rgb.Samples[3 * p + 1], $"G at {p}");
+            rgba[4 * p + 2].ShouldBe((byte)rgb.Samples[3 * p + 2], $"B at {p}");
+            rgba[4 * p + 3].ShouldBe((byte)255, $"alpha at {p}");
         }
     }
 

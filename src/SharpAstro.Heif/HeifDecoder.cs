@@ -157,17 +157,19 @@ public static class HeifDecoder
         var width = (int)image.Width;
         var height = (int)image.Height;
         var depth = image.Coding.BitDepthLuma;
-        var canvas = new ushort[(long)width * height * 3];
         Colour? colour = null;
+        ushort[] canvas;
 
         if (image.Grid is { } grid)
         {
             var tileWidth = (int)image.TileWidth;
             var tileHeight = (int)image.TileHeight;
             // Everything that needs the file's bytes, and every refusal a tile's parameter sets carry, before
-            // any tile is decoded: a span cannot cross into the workers, and an unsupported tile 19 should not
-            // cost the decode of tiles 0 to 18.
+            // any tile is decoded and before the canvas is allocated: a span cannot cross into the workers, an
+            // unsupported tile 19 should not cost the decode of tiles 0 to 18, and a tile whose SPS does not fit
+            // what the file declares should not cost the canvas.
             var jobs = new List<(HevcDecoderConfiguration Coding, byte[] Data, int X0, int Y0)>();
+            long largestPicture = 0;
             for (var t = 0; t < grid.TileItemIds.Count; t++)
             {
                 int x0 = t % grid.Columns * tileWidth, y0 = t / grid.Columns * tileHeight;
@@ -175,16 +177,25 @@ public static class HeifDecoder
                 var tile = heif.GetItem(grid.TileItemIds[t])!;
                 var coding = heif.Describe(file, tile).Coding;
                 var (sps, _) = HevcDecoder.ParameterSets(coding);
+                var covered = (long)Math.Min(tileWidth, width - x0) * Math.Min(tileHeight, height - y0);
+                CheckCodedSize(sps, tileWidth, tileHeight, covered, $"Tile {t}");
+                largestPicture = Math.Max(largestPicture, PictureBytes(sps));
                 colour ??= Colour.For(image, sps.VideoSignal, sps.BitDepthLuma, sps.ChromaFormatIdc);
                 jobs.Add((coding, heif.ReadItemData(file, tile), x0, y0));
             }
+            canvas = new ushort[(long)width * height * 3];
+
+            // As many tiles at once as the machine runs (or the caller allows), but no more decoded pictures
+            // alive at once than LivePictureBytes holds: memory is the canvas plus that, not one picture per core.
+            var degree = maxDegreeOfParallelism == -1 ? Environment.ProcessorCount : maxDegreeOfParallelism;
+            degree = (int)Math.Clamp(LivePictureBytes / Math.Max(1, largestPicture), 1, degree);
 
             // The tiles are independent pictures and write disjoint rectangles of the canvas, so they are decoded
             // and converted in parallel; the result does not depend on the order. A failure stops the tiles after
             // it (Break runs every one before it), and the first failing tile's exception is the one thrown, so a
             // damaged file fails the same way however the work was scheduled.
             var failures = new Exception?[jobs.Count];
-            var parallelism = new ParallelOptions { MaxDegreeOfParallelism = maxDegreeOfParallelism };
+            var parallelism = new ParallelOptions { MaxDegreeOfParallelism = degree };
             Parallel.For(0, jobs.Count, parallelism, (j, state) =>
             {
                 var job = jobs[j];
@@ -204,6 +215,9 @@ public static class HeifDecoder
         }
         else
         {
+            var (sps, _) = HevcDecoder.ParameterSets(image.Coding);
+            CheckCodedSize(sps, width, height, (long)width * height, image.Item.ToString());
+            canvas = new ushort[(long)width * height * 3];
             var picture = HevcDecoder.Decode(image.Coding, heif.ReadItemData(file, image.Item));
             colour = Colour.For(image, picture);
             Convert(picture, colour, width, height, canvas, width, height, 0, 0);
@@ -234,6 +248,43 @@ public static class HeifDecoder
         }
 
         return new HeifRgbImage(width, height, depth, canvas, colour!.Encoding, image.Icc?.Profile);
+    }
+
+    /// <summary>
+    /// The most decoded tile pictures (their planes and per-block maps, <see cref="PictureBytes"/>) a grid
+    /// keeps alive at once: 1 GiB, which bounds how many tiles decode in parallel when the tiles are large.
+    /// An R7 tile is about 7 MB, so this never limits a real grid below the core count.
+    /// </summary>
+    internal const long LivePictureBytes = 1L << 30;
+
+    /// <summary>
+    /// What decoding a picture of this SPS allocates before it reads a slice byte: two bytes a sample for
+    /// luma and chroma, and about one byte per 4x4 block for each of the decoder's five per-block maps.
+    /// </summary>
+    internal static long PictureBytes(HevcSps sps)
+    {
+        long luma = (long)sps.Width * sps.Height;
+        var chroma = sps.ChromaFormatIdc switch { 0 => 0, 1 => luma / 2, 2 => luma, _ => 2 * luma };
+        return 2 * (luma + chroma) + 5 * (luma / 16);
+    }
+
+    /// <summary>
+    /// Checked from the SPS alone, before the canvas or any plane is allocated: the coded picture, less its
+    /// conformance window, must hold the <paramref name="declaredWidth"/> x <paramref name="declaredHeight"/>
+    /// the file declares for it, and must not be much larger than the part of the output it covers. A picture
+    /// may be coded bigger than it is shown (Canon codes 320x320 for a 320x214 thumbnail, 1.5 times the area,
+    /// and a grid's last row and column of tiles run past the output), so the ceiling is twice that area plus
+    /// one 64x64 coding tree block, and above it the file is refused rather than decoded into memory it does not
+    /// show. What is left is memory in proportion to what the file declares, up to <see cref="HeifLimits"/>.
+    /// </summary>
+    internal static void CheckCodedSize(HevcSps sps, int declaredWidth, int declaredHeight, long coveredArea, string what)
+    {
+        var window = sps.ConformanceWindow;
+        int shownWidth = sps.Width - window.Left - window.Right, shownHeight = sps.Height - window.Top - window.Bottom;
+        if (declaredWidth > shownWidth || declaredHeight > shownHeight)
+            throw new InvalidDataException($"{what} declares {declaredWidth}x{declaredHeight}, but its HEVC picture is {shownWidth}x{shownHeight}.");
+        if ((long)sps.Width * sps.Height > 2 * coveredArea + 64 * 64)
+            throw new InvalidDataException($"{what}'s HEVC picture of {sps.Width}x{sps.Height} is more than twice the {coveredArea} pixels of the output it covers.");
     }
 
     /// <summary>An essential property this reader does not understand means the image cannot be shown right (23008-12 6.5.1).</summary>

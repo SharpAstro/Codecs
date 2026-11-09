@@ -10,6 +10,19 @@ namespace SharpAstro.Heif;
 /// file. The amplification is in what the boxes declare: an <c>ispe</c> or a grid's output size is a pair
 /// of 32-bit numbers, eight bytes that can name 2^64 pixels. That is what is bounded here.
 /// </para>
+/// <para>
+/// What a decode may still allocate, measured: before reading a slice byte, the decoder allocates the output
+/// canvas (6 bytes a pixel) and each picture's planes (about 3.4 bytes a pixel in 4:2:0, 6.4 in 4:4:4), so a
+/// file of a few KB that declares sizes at these limits gets memory in proportion to what it declares, not to
+/// its size; this is the floor for any decoder that accepts images this large. What is checked first, from
+/// the parameter sets alone: each coded picture holds the size the file declares for it, and is at most
+/// twice the area of the output it covers (plus one 64x64 CTB), and a grid keeps at most 1 GiB of decoded
+/// tile pictures alive at once (at least one), however many cores decode it. So the ceiling is the canvas
+/// plus about one picture: a 36 KB 1x2 grid whose tiles' SPS declare 16384x16384 4:2:2 and whose output is
+/// 32768x8192 peaks at 2.6 GiB before its slice data runs out (it was the canvas plus one picture per core);
+/// a 4:4:4 grid at the limit, about 3.2 GiB. A caller wanting less should check <c>HeifFile.Describe</c>'s
+/// sizes before decoding.
+/// </para>
 /// </summary>
 public static class HeifLimits
 {

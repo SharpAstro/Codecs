@@ -485,6 +485,13 @@ internal sealed class HevcScalingList
         for (var sizeId = 0; sizeId < 4; sizeId++)
             for (var matrixId = 0; matrixId < 6; matrixId++)
                 lists.SetDefault(sizeId, matrixId);
+        // Every factor matrix built here, once, before the instance is published: Default is shared by every
+        // picture that enables scaling lists without coding any, and a grid's tiles decode in parallel, so its
+        // lazy cache must never be written after construction. (A coded list belongs to one parameter set
+        // parsed by one decode, so only this instance is shared.)
+        for (var log2 = 2; log2 <= 5; log2++)
+            for (var matrixId = 0; matrixId < 6; matrixId++)
+                lists.Factors(log2, matrixId);
         return lists;
     }
 
