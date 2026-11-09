@@ -260,11 +260,45 @@ comparison) does, and they agree on every sample. `make-fixtures.sh` names it in
 fixture there. Seven deliberate bugs, all caught; two of them (the 32x32 list and its DC) only by this
 fixture.
 
+**Wavefronts, slices and lossless coding units (done).** WPP (`entropy_coding_sync_enabled_flag`): each CTB
+row after a slice's first is a substream; its contexts are those saved after the second CTB of the row
+above when that CTB is available, else fresh, and the QP prediction restarts from SliceQpY (8.6.1). A
+substream is found by its **entry point** (offsets in NAL unit bytes, emulation prevention included, so
+`HevcNalUnit` records where it removed `03` bytes), and a slice must code one per row after its first
+(7.4.7.1), else it is `InvalidDataException`. Not by reading on past `byte_alignment()` from where the
+arithmetic decoder stopped: in every x265 substream here the alignment's one bit sits one bit **before**
+that point (measured on all of them), which only a decoder that follows the entry points does not notice;
+that path was written first, never exercised (x265 quietly turns WPP off without a thread pool, so the
+first "WPP" fixtures were not WPP; the coverage check caught it), and is gone.
+Slices: `slice_loop_filter_across_slices_enabled_flag` 0, which x265 writes for every slice of a multi-slice
+picture, keeps the deblocking filter off a slice's left and upper boundary (the q side's slice decides) and
+keeps SAO from reading a neighbour across it (the later slice of the two decides). Lossless coding units
+(`cu_transquant_bypass_flag`): the levels are the residual, no transform skip flag, no sign hiding, and
+both loop filters keep their samples.
+
+Seven fixtures: WPP in 4:2:2 10-bit and at CTB 16 (11 substreams), WPP with three and four slices (the
+across flag 0), a whole lossless picture with sign hiding and deblocking on, and lossless units among lossy
+ones for each filter. Notes for regenerating them:
+
+- x265 3.5 segfaults on several slices with `pools=none`, writes several slices only with WPP, and turns
+  WPP off without a pool; with `pools=1` its output is not deterministic, and about one run in three gives
+  a stream ffmpeg and libde265 decode differently (refused by the check; run again).
+- With SAO on, some runs with lossless units give a stream on which **ffmpeg 6.1** differs by 1 on a few
+  chroma samples near the lossless units, where libde265 and this decoder agree on every sample (measured
+  on one such stream: six chroma samples in a 10x3 patch, four lossless units). With SAO off, or with no
+  lossless unit, all three agree. Those streams are refused by the check; the committed ones are not such.
+- x265 picks few lossless units at moderate QPs, and at low QPs the chroma deblocking tC is 0, so a lossless
+  chroma sample the filter would have changed needed chroma QP offsets of +12 to appear (1,782 of them).
+
+Twelve deliberate bugs: eleven caught (three only after the fixtures were strengthened: sign hiding on in
+the lossless fixtures, the chroma QP offsets, and a unit test of the emulation-prevention mapping, which no
+fixture's entry points cross); the twelfth, deciding a SAO slice boundary by the current sample's slice
+instead of the later one, cannot be seen when every slice has the same flag, which is all x265 writes.
+
 **Still refused or unverified, and why:**
 
-- **A slice after the first that keeps the filters off its boundary**
-  (`slice_loop_filter_across_slices_enabled_flag` 0): refused. It changes which samples both filters may
-  read and change there, and x265 writes several slices only with WPP, which is not decoded yet.
+- **Slices whose across flags differ** decide SAO's boundaries by the later slice, as 8.7.3 says; x265
+  gives every slice the same flag, so no fixture tells the two readings apart.
 - **Scaled SAO offsets** (`log2_sao_offset_scale`, a range-extension PPS field): refused; x265 never writes
   one.
 - **A SAO band position of 29-31**, whose four bands wrap past band 31 to band 0: implemented as 8.7.3.2

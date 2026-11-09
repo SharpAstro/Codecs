@@ -28,6 +28,12 @@ internal sealed record HevcSliceHeader
     /// <summary>slice_loop_filter_across_slices_enabled_flag: the filters may cross this slice's left and upper boundary.</summary>
     public bool LoopFilterAcrossSlices { get; init; }
 
+    /// <summary>
+    /// Where each substream after the first begins, as RBSP positions, from the entry points (7.4.7.1: offsets
+    /// in NAL unit bytes, emulation prevention included). Empty when the slice codes none.
+    /// </summary>
+    public int[] SubstreamStarts { get; init; } = [];
+
     /// <summary>The first byte of slice_segment_data() in the RBSP, after byte_alignment().</summary>
     public required int DataOffset { get; init; }
 
@@ -102,10 +108,18 @@ internal sealed record HevcSliceHeader
         if (pps.LoopFilterAcrossSlices && (saoLuma || saoChroma || !deblockingDisabled))
             across = r.Flag(); // slice_loop_filter_across_slices_enabled_flag
 
-        if (pps.Tiles || pps.EntropyCodingSync)
+        if (pps.Tiles) throw new NotSupportedException("Tiles are not decoded yet (rung 4).");
+        var entryOffsets = Array.Empty<long>();
+        if (pps.EntropyCodingSync)
         {
-            // Refused with the PPS, but the syntax is read so the check stays in one place.
-            throw new NotSupportedException("Tiles and wavefront parallel processing are not decoded (rung 4).");
+            // Entry points: the size of each CTB row's substream but the last, in NAL unit bytes.
+            var count = r.Ue(sps.HeightInCtbs - 1, "num_entry_point_offsets");
+            if (count > 0)
+            {
+                var bits = r.Ue(31, "offset_len_minus1") + 1;
+                entryOffsets = new long[count];
+                for (var i = 0; i < count; i++) entryOffsets[i] = (long)r.U(bits) + 1;
+            }
         }
 
         if (pps.SliceHeaderExtensionPresent)
@@ -119,8 +133,21 @@ internal sealed record HevcSliceHeader
         while (!r.ByteAligned)
             if (r.Flag()) throw new InvalidDataException("The slice header's byte_alignment() has a non-zero padding bit.");
 
+        var dataOffset = (int)(r.BitPosition >> 3);
+        var starts = new int[entryOffsets.Length];
+        long payload = nal.PayloadOffset(dataOffset);
+        for (var i = 0; i < starts.Length; i++)
+        {
+            payload += entryOffsets[i];
+            var start = payload < int.MaxValue ? nal.RbspPosition((int)payload) : int.MaxValue;
+            if (start >= nal.Rbsp.Length || (i > 0 && start <= starts[i - 1]))
+                throw new InvalidDataException($"Entry point {i} puts a substream at byte {payload} of a {nal.Rbsp.Length}-byte slice.");
+            starts[i] = start;
+        }
+
         return new HevcSliceHeader
         {
+            SubstreamStarts = starts,
             FirstInPicture = first,
             SegmentAddress = address,
             SliceQpY = qp,
@@ -132,7 +159,7 @@ internal sealed record HevcSliceHeader
             BetaOffsetDiv2 = beta,
             TcOffsetDiv2 = tc,
             LoopFilterAcrossSlices = across,
-            DataOffset = (int)(r.BitPosition >> 3),
+            DataOffset = dataOffset,
         };
     }
 

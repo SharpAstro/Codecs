@@ -144,12 +144,11 @@ internal sealed partial class HevcPictureDecoder
         }
         if (!deblock && !sao) return;
 
-        // A slice after the first that keeps the filters off its left and upper boundary changes which
-        // samples they may read and change there. No oracle stream here has one (x265 writes several slices
-        // only with WPP), so it is refused rather than guessed.
+        // A later slice may keep the filters off its left and upper boundary; checking that per sample is only
+        // needed when one does. Lossless coding units are kept per sample too.
+        _sliceBoundariesMatter = false;
         for (var s = 1; s < _sliceHeaders.Count; s++)
-            if (!_sliceHeaders[s].LoopFilterAcrossSlices)
-                throw new NotSupportedException("A slice that keeps the loop filters off its boundary (slice_loop_filter_across_slices_enabled_flag 0) is not decoded yet (rung 4).");
+            _sliceBoundariesMatter |= !_sliceHeaders[s].LoopFilterAcrossSlices;
 
         if (deblock)
         {
@@ -171,6 +170,22 @@ internal sealed partial class HevcPictureDecoder
 
     private HevcSliceHeader SliceAt(int x, int y) => _sliceHeaders[_ctbSlice[CtbAddress(x, y)]];
 
+    private bool _sliceBoundariesMatter;
+
+    /// <summary>
+    /// Whether a deblocking edge between p at (xp, yp) and q at (xq, yq) is filtered across a slice boundary:
+    /// the edge is q's coding unit's, so q's slice decides (7.4.7.1: the flag covers a slice's left and
+    /// upper boundary).
+    /// </summary>
+    private bool CrossesKeptSliceBoundary(int xp, int yp, int xq, int yq)
+    {
+        if (!_sliceBoundariesMatter) return false;
+        int p = _ctbSlice[CtbAddress(xp, yp)], q = _ctbSlice[CtbAddress(xq, yq)];
+        if (p == q || _sliceHeaders[q].LoopFilterAcrossSlices) return false;
+        if (_statistics is not null) _statistics.SliceBoundariesKept++;
+        return true;
+    }
+
     /// <summary>
     /// 8.7.2.5.3 and 8.7.2.5.6-7 over every luma edge of one direction: four lines at a time, each segment
     /// belonging to the coding unit on its right (or below), whose slice gives the offsets.
@@ -188,8 +203,10 @@ internal sealed partial class HevcPictureDecoder
                 if ((_edges[Block(x, y)] & bit) == 0) continue;
                 var slice = SliceAt(x, y);
                 if (slice.DeblockingDisabled) continue;
+                int xp = vertical ? x - 1 : x, yp = vertical ? y : y - 1;
+                if (CrossesKeptSliceBoundary(xp, yp, x, y)) continue;
                 int qpQ = _qpMap[Block(x, y)];
-                int qpP = vertical ? _qpMap[Block(x - 1, y)] : _qpMap[Block(x, y - 1)];
+                int qpP = _qpMap[Block(xp, yp)];
                 var qpL = (qpQ + qpP + 1) >> 1;
                 var betaQ = Math.Clamp(qpL + (slice.BetaOffsetDiv2 << 1), 0, 51);
                 var tcQ = Math.Clamp(qpL + 2 * (IntraBoundaryStrength - 1) + (slice.TcOffsetDiv2 << 1), 0, 53);
@@ -200,7 +217,8 @@ internal sealed partial class HevcPictureDecoder
                 }
                 var beta = BetaTable[betaQ] << (bitDepth - 8);
                 var tc = TcTable[tcQ] << (bitDepth - 8);
-                FilterLumaSegment(_luma, y * _width + x, across, along, beta, tc, max);
+                FilterLumaSegment(_luma, y * _width + x, across, along, beta, tc, max,
+                    keepP: _bypass[Block(xp, yp)] != 0, keepQ: _bypass[Block(x, y)] != 0);
             }
         }
     }
@@ -210,8 +228,12 @@ internal sealed partial class HevcPictureDecoder
     /// <c>(i + 1) * across</c> before a line's q0 and q<sub>i</sub> <c>i * across</c> after it, and line k
     /// starts <c>k * along</c> after line 0.
     /// </summary>
-    private void FilterLumaSegment(ushort[] s, int at, int across, int along, int beta, int tc, int max)
+    private void FilterLumaSegment(ushort[] s, int at, int across, int along, int beta, int tc, int max, bool keepP, bool keepQ)
     {
+        // A lossless coding unit's samples are kept (nDp or nDq 0, 8.7.2.5.7): computed from, never written.
+        if ((keepP || keepQ) && _statistics is not null) _statistics.FilteringSkippedForBypass++;
+        void SetP(int i, int k, int value) { if (!keepP) s[at + k * along - (i + 1) * across] = (ushort)value; }
+        void SetQ(int i, int k, int value) { if (!keepQ) s[at + k * along + i * across] = (ushort)value; }
         int P(int i, int k) => s[at + k * along - (i + 1) * across];
         int Q(int i, int k) => s[at + k * along + i * across];
 
@@ -251,12 +273,12 @@ internal sealed partial class HevcPictureDecoder
             if (strong)
             {
                 var c = 2 * tc;
-                s[line - across] = (ushort)Math.Clamp((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3, p0 - c, p0 + c);
-                s[line - 2 * across] = (ushort)Math.Clamp((p2 + p1 + p0 + q0 + 2) >> 2, p1 - c, p1 + c);
-                s[line - 3 * across] = (ushort)Math.Clamp((2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3, p2 - c, p2 + c);
-                s[line] = (ushort)Math.Clamp((p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3, q0 - c, q0 + c);
-                s[line + across] = (ushort)Math.Clamp((p0 + q0 + q1 + q2 + 2) >> 2, q1 - c, q1 + c);
-                s[line + 2 * across] = (ushort)Math.Clamp((p0 + q0 + q1 + 3 * q2 + 2 * q3 + 4) >> 3, q2 - c, q2 + c);
+                SetP(0, k, Math.Clamp((p2 + 2 * p1 + 2 * p0 + 2 * q0 + q1 + 4) >> 3, p0 - c, p0 + c));
+                SetP(1, k, Math.Clamp((p2 + p1 + p0 + q0 + 2) >> 2, p1 - c, p1 + c));
+                SetP(2, k, Math.Clamp((2 * p3 + 3 * p2 + p1 + p0 + q0 + 4) >> 3, p2 - c, p2 + c));
+                SetQ(0, k, Math.Clamp((p1 + 2 * p0 + 2 * q0 + 2 * q1 + q2 + 4) >> 3, q0 - c, q0 + c));
+                SetQ(1, k, Math.Clamp((p0 + q0 + q1 + q2 + 2) >> 2, q1 - c, q1 + c));
+                SetQ(2, k, Math.Clamp((p0 + q0 + q1 + 3 * q2 + 2 * q3 + 4) >> 3, q2 - c, q2 + c));
                 any = true;
                 continue;
             }
@@ -264,20 +286,20 @@ internal sealed partial class HevcPictureDecoder
             var delta = (9 * (q0 - p0) - 3 * (q1 - p1) + 8) >> 4;
             if (Math.Abs(delta) >= tc * 10) continue;
             delta = Math.Clamp(delta, -tc, tc);
-            s[line - across] = (ushort)Math.Clamp(p0 + delta, 0, max);
-            s[line] = (ushort)Math.Clamp(q0 - delta, 0, max);
+            SetP(0, k, Math.Clamp(p0 + delta, 0, max));
+            SetQ(0, k, Math.Clamp(q0 - delta, 0, max));
             any = true;
             var half = tc >> 1;
             if (dEp)
             {
                 var deltaP = Math.Clamp((((p2 + p0 + 1) >> 1) - p1 + delta) >> 1, -half, half);
-                s[line - 2 * across] = (ushort)Math.Clamp(p1 + deltaP, 0, max);
+                SetP(1, k, Math.Clamp(p1 + deltaP, 0, max));
                 second = true;
             }
             if (dEq)
             {
                 var deltaQ = Math.Clamp((((q2 + q0 + 1) >> 1) - q1 - delta) >> 1, -half, half);
-                s[line + across] = (ushort)Math.Clamp(q1 + deltaQ, 0, max);
+                SetQ(1, k, Math.Clamp(q1 + deltaQ, 0, max));
                 second = true;
             }
         }
@@ -311,8 +333,11 @@ internal sealed partial class HevcPictureDecoder
                 if ((_edges[Block(x, y)] & bit) == 0) continue;
                 var slice = SliceAt(x, y);
                 if (slice.DeblockingDisabled) continue;
+                int xp = vertical ? x - 1 : x, yp = vertical ? y : y - 1;
+                if (CrossesKeptSliceBoundary(xp, yp, x, y)) continue;
                 int qpQ = _qpMap[Block(x, y)];
-                int qpP = vertical ? _qpMap[Block(x - 1, y)] : _qpMap[Block(x, y - 1)];
+                int qpP = _qpMap[Block(xp, yp)];
+                bool keepP = _bypass[Block(xp, yp)] != 0, keepQ = _bypass[Block(x, y)] != 0;
                 for (var c = 1; c <= 2; c++)
                 {
                     var qpi = ((qpQ + qpP + 1) >> 1) + (c == 1 ? _pps.CbQpOffset : _pps.CrQpOffset);
@@ -330,13 +355,29 @@ internal sealed partial class HevcPictureDecoder
                         int p0 = plane[line - across], p1 = plane[line - 2 * across];
                         int q0 = plane[line], q1 = plane[line + across];
                         var delta = Math.Clamp((((q0 - p0) << 2) + p1 - q1 + 4) >> 3, -tc, tc);
-                        plane[line - across] = (ushort)Math.Clamp(p0 + delta, 0, max);
-                        plane[line] = (ushort)Math.Clamp(q0 - delta, 0, max);
+                        // Counted where keeping a lossless side actually prevents a change.
+                        if (delta != 0 && (keepP || keepQ) && _statistics is not null) _statistics.ChromaDeblockKeptForBypass++;
+                        if (!keepP) plane[line - across] = (ushort)Math.Clamp(p0 + delta, 0, max);
+                        if (!keepQ) plane[line] = (ushort)Math.Clamp(q0 - delta, 0, max);
                     }
                     if (_statistics is not null) _statistics.DeblockChroma++;
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// 8.7.3: a neighbour in another slice is not used when the boundary between them is kept, which the
+    /// later of the two slices decides: the current sample's slice if the neighbour precedes it in decoding
+    /// order, the neighbour's if it follows.
+    /// </summary>
+    private bool SaoNeighbourKept(int x, int y, int nx, int ny, int log2W, int log2H)
+    {
+        int current = _ctbSlice[CtbAddress(x << log2W, y << log2H)], neighbour = _ctbSlice[CtbAddress(nx << log2W, ny << log2H)];
+        if (current == neighbour) return false;
+        var kept = !_sliceHeaders[Math.Max(current, neighbour)].LoopFilterAcrossSlices;
+        if (kept && _statistics is not null) _statistics.SliceBoundariesKept++;
+        return kept;
     }
 
     /// <summary>
@@ -372,6 +413,11 @@ internal sealed partial class HevcPictureDecoder
                 for (var y = y0; y < y1; y++)
                     for (var x = x0; x < x1; x++)
                     {
+                        if (_bypass[Block(x << log2W, y << log2H)] != 0)
+                        {
+                            if (_statistics is not null) _statistics.SaoSamplesKeptForBypass++;
+                            continue; // lossless: kept (8.7.3)
+                        }
                         var v = source[y * width + x];
                         plane[y * width + x] = (ushort)Math.Clamp(v + offsets[bandTable[v >> shift]], 0, max);
                     }
@@ -386,6 +432,13 @@ internal sealed partial class HevcPictureDecoder
                 {
                     int ax = x - dx, ay = y - dy, bx = x + dx, by = y + dy;
                     if (ax < 0 || ay < 0 || bx < 0 || by < 0 || ax >= width || bx >= width || ay >= height || by >= height) continue;
+                    if (_bypass[Block(x << log2W, y << log2H)] != 0)
+                    {
+                        if (_statistics is not null) _statistics.SaoSamplesKeptForBypass++;
+                        continue; // lossless: kept (8.7.3)
+                    }
+                    if (_sliceBoundariesMatter && (SaoNeighbourKept(x, y, ax, ay, log2W, log2H) || SaoNeighbourKept(x, y, bx, by, log2W, log2H)))
+                        continue;
                     var v = source[y * width + x];
                     var edge = 2 + Math.Sign(v - source[ay * width + ax]) + Math.Sign(v - source[by * width + bx]);
                     // edgeIdx 0, 1, 2 become 1, 2, 0: a local minimum is category 1, a flat sample none.

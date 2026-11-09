@@ -172,6 +172,25 @@ fixture x265-444p12-loopfilters 256 192 yuv444p12le "-crf 28" "ctu=32:min-cu-siz
 # Monochrome (4:0:0): no chroma at all.
 fixture x265-400p8 256 192 gray "-crf 24" "ctu=32:min-cu-size=8:sao=1" "" "$LOOP_BASE"
 fixture x265-400p10 256 192 gray10le "-crf 22" "ctu=32:min-cu-size=8:sao=1:signhide=1" "" "$LOOP_BASE"
+# Wavefront parallel processing: a substream per CTB row, each starting from the contexts after the second
+# CTB of the row above, and QP prediction restarting at each row. With slices, which x265 writes only with
+# WPP: the loop filters across (or not across) slice boundaries.
+# (x265 quietly turns WPP off without a thread pool, so these take pools=1 too.)
+fixture x265-422p10-wpp 256 192 yuv422p10le "-crf 26" "ctu=32:min-cu-size=8:wpp=1:sao=1:signhide=1:aq-mode=2:qg-size=16:pools=1" "" "$LOOP_BASE"
+fixture x265-420p8-wpp-ctu16 256 192 yuv420p "-crf 30" "ctu=16:min-cu-size=8:wpp=1:sao=1:pools=1" "" "$LOOP_BASE"
+# (x265 3.5 segfaults on several slices with pools=none; with one pool it does not, but its output is then
+# not deterministic, and about one run in three gives a stream ffmpeg and libde265 decode differently.
+# The check refuses those; run again until it passes. A disagreeing stream was not kept to find out why.)
+fixture x265-420p8-wpp-slices 256 192 yuv420p "-crf 32" "ctu=32:min-cu-size=8:wpp=1:slices=3:sao=1:pools=1" "" "$LOOP_BASE"
+fixture x265-422p10-wpp-slices 256 192 yuv422p10le "-crf 28" "ctu=32:min-cu-size=8:wpp=1:slices=4:sao=1:signhide=1:pools=1" "" "$LOOP_BASE"
+# Lossless coding units (cu_transquant_bypass_flag): the whole picture, and chosen per coding unit among
+# lossy ones, where each loop filter must leave the lossless samples alone, one fixture per filter. With SAO
+# on, some x265 runs give a stream on which ffmpeg 6.1 differs by 1 on a few chroma samples near lossless
+# units, where libde265 and this decoder agree with each other (see roadmap/heif.md); the check refuses
+# those, so run again. x265 also picks few lossless units: repeat until Fixture_CoversWhatItIsFor finds some.
+fixture x265-420p8-lossless 128 96 yuv420p "" "ctu=32:min-cu-size=8:lossless=1:signhide=1:deblock=0,0:sao=1" "" "$LOOP_BASE"
+fixture x265-420p10-cu-lossless 256 192 yuv420p10le "-crf 10" "ctu=32:min-cu-size=8:cu-lossless=1:no-sao=1:signhide=1:cbqpoffs=12:crqpoffs=12" "" "$LOOP_BASE"
+fixture x265-420p10-cu-lossless-sao 256 192 yuv420p10le "-crf 10" "ctu=32:min-cu-size=8:cu-lossless=1:no-deblock=1:sao=1:signhide=1" "" "$LOOP_BASE"
 # (No fixture has a SAO band position of 29-31, whose four bands wrap past band 31 to band 0: x265 searches
 # positions 0-28 only, even for a picture near white, so it never writes one.)
 
