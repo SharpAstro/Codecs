@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Radiance` / `.Pnm` / `.Tga` / `.Bmp` / `.Gif`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Radiance` / `.Pnm` / `.Tga` / `.Bmp` / `.Gif` / `.Heif`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -13,6 +13,42 @@ This file was created at 3.10 by migrating the note trail out of the two comment
 it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose above a variable that no
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
+
+## 3.33
+
+**New package: `SharpAstro.Heif` reads HEIF/HEIC stills, with a clean-room HEVC intra decoder** (Codecs #66). It is
+registered with the `SharpAstro.Codecs` facade. Written from ISO/IEC 14496-12, 23008-12, 14496-15 and ITU-T H.265, with
+libheif, libde265, ffmpeg, x265 and HM used only as programs (oracles and fixture encoders), never as sources. The plan, the
+measured envelope and every mutation check are in [`roadmap/heif.md`](roadmap/heif.md).
+
+- **Container** (`HeifReader.Read`, `HeifFile.Describe`): items, `iloc` (`idat` included), `iref`, properties (`ispe`,
+  `colr` nclx/ICC, `pixi`, `irot`, `imir`, `clap`, `hvcC`), grid items, thumbnails (`thmb`) and Exif/XMP. Declared sizes
+  are charged against `HeifLimits` before anything is allocated.
+- **HEVC intra decode**, bit-exact against ffmpeg:
+  - Formats: IDR, CRA, BLA and intra trailing pictures; 4:2:0, 4:2:2, 4:4:4 and monochrome; 8, 10 and 12 bits.
+  - Coding tools: CTB 16-64, transforms to 32x32, scaling lists, `cu_qp_delta`, sign data hiding, transform skip, PCM,
+    lossless coding units.
+  - Picture structure: several slices and dependent slice segments, tiles, wavefronts (WPP).
+  - Loop filters: deblocking and SAO.
+- **Composition and colour** (`HeifDecoder.Decode`):
+  - Grids are composed with their tiles decoded in parallel (`maxDegreeOfParallelism`), and `clap`/`irot`/`imir` are
+    applied in file order.
+  - YCbCr becomes R'G'B' by H.273, exactly as libheif does for full-range 4:2:2 (the Canon format) and within 2 codes
+    elsewhere.
+  - `HeifRgbImage.ToLinearRgbaFloat` gives PQ/HLG as linear light, 1.0 = 203 cd/m², the scale PNG's float tier uses. The
+    curves now live in `SharpAstro.Codecs.Abstractions` (`HdrTransfer`, formerly `PngHdr`) for both.
+- **Facade** (`HeifImageDecoder`): UInt16 R'G'B' with the file's primaries and transfer; RGBA floats through
+  `TryDecodeRgbaFloat`; `TryDecodeIntoRgba8` is false for PQ/HLG, as for PNG.
+- **Speed**: a Canon R7 6960x4640 grid decodes in about 0.27 s (arm64, 12 cores); a single picture's decode is about twice
+  the first cut's speed. Every shortcut keeps its reference form beside it and a test holds the two equal.
+- **Validated by**:
+  - 25 Canon pictures (fetched, not committed).
+  - 32 committed x265 fixtures, each kept only when ffmpeg and libde265 agree (one named exception, where libde265 is
+    shown wrong).
+  - 34 of 45 JCT-VC conformance streams (fetched by `fetch-hevc-conformance.sh`), first and later random-access pictures.
+  - libheif through Magick.NET for the colour conversion.
+- **Refused by name, never decoded wrong**: inter (P/B) slices, the HEVC range-extension tools, extended precision and
+  16-bit, unequal luma and chroma bit depths, and loop filters kept off tile boundaries. Backlog: Codecs #68.
 
 ## 3.32
 
