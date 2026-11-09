@@ -70,6 +70,15 @@ internal sealed class HevcDecodeStatistics
     /// <summary>Coded 32x32 chroma blocks (4:4:4 only), whose scaling factors come from the 16x16 lists.</summary>
     public long CodedChroma32 { get; set; }
 
+    /// <summary>Coding units coded as PCM samples.</summary>
+    public long PcmUnits { get; set; }
+
+    /// <summary>Dependent slice segments, each continuing the slice before it.</summary>
+    public long DependentSegments { get; set; }
+
+    /// <summary>Tiles started (after the first in a slice), each with fresh contexts.</summary>
+    public long TileStarts { get; set; }
+
     /// <summary>CTB rows started from the row above's contexts or afresh (wavefront parallel processing).</summary>
     public long WavefrontRows { get; set; }
 
@@ -143,9 +152,14 @@ internal sealed partial class HevcPictureDecoder
     private readonly short[] _saoOffsets;
 
     private int _slice = -1;
-    private int _nextCtb;
+    private int _nextCtb;          // in tile scan
+
+    // 6.5.1: the tile scan. Raster (Rs) and tile scan (Ts) CTB addresses each way, each CTB's tile, and each
+    // CTB column's tile's first column (for the wavefront rows inside a tile).
+    private readonly int[] _rsToTs, _tsToRs, _tileOfRs, _tileFirstColumn;
     private HevcCabac _cabac = null!;
     private readonly byte[] _wavefrontContexts = new byte[HevcContext.Count];
+    private readonly byte[] _dependentContexts = new byte[HevcContext.Count];
     private bool _cuBypass;
 
     // Per 4x4 luma block: 1 where the coding unit is cu_transquant_bypass (lossless), which both loop filters leave alone.
@@ -200,6 +214,7 @@ internal sealed partial class HevcPictureDecoder
             _cr = new ushort[_chromaWidth * _chromaHeight];
         }
 
+        (_rsToTs, _tsToRs, _tileOfRs, _tileFirstColumn) = TileScan(pps, _widthInCtbs, _heightInCtbs);
         _ctbSlice = new int[_widthInCtbs * _heightInCtbs];
         Array.Fill(_ctbSlice, -1);
         _width4 = _width >> 2;
@@ -229,80 +244,120 @@ internal sealed partial class HevcPictureDecoder
 
     public void DecodeSlice(HevcNalUnit nal)
     {
-        var header = HevcSliceHeader.Parse(nal, _sps, _pps);
+        var header = HevcSliceHeader.Parse(nal, _sps, _pps, _sliceHeaders.Count > 0 ? _sliceHeaders[^1] : null);
         if (header.FirstInPicture != (_slice < 0))
             throw new InvalidDataException(_slice < 0 ? "The picture's first slice is not marked first_slice_segment_in_pic." : "A second slice claims to be the first in the picture.");
-        // Slices follow each other in CTB order with no gap and no overlap.
-        if (header.SegmentAddress != _nextCtb)
-            throw new InvalidDataException($"A slice starts at CTB {header.SegmentAddress}; the previous one ended before CTB {_nextCtb}.");
+        // Slices follow each other in tile scan order with no gap and no overlap.
+        if (header.SegmentAddress >= _rsToTs.Length || _rsToTs[header.SegmentAddress] != _nextCtb)
+            throw new InvalidDataException($"A slice starts at CTB {header.SegmentAddress}; the previous one ended before CTB {(_nextCtb < _tsToRs.Length ? _tsToRs[_nextCtb] : _nextCtb)}.");
 
-        _slice++;
-        _sliceHeaders.Add(header);
-        if (_statistics is not null) _statistics.Slices++;
-        _sliceQpY = header.SliceQpY;
-        _cbOffset = _pps.CbQpOffset + header.CbQpOffset;
-        _crOffset = _pps.CrQpOffset + header.CrQpOffset;
-        _lastCuQpY = _sliceQpY;          // the first quantization group of a slice predicts from SliceQpY
-        _qgPreviousQpY = _sliceQpY;
+        // A slice is an independent segment and the dependent segments after it: availability, the loop
+        // filters' settings and QP prediction go by the slice, the CABAC engine restarts per segment.
+        if (!header.Dependent)
+        {
+            _slice++;
+            _sliceHeaders.Add(header);
+            if (_statistics is not null) _statistics.Slices++;
+            _sliceQpY = header.SliceQpY;
+            _cbOffset = _pps.CbQpOffset + header.CbQpOffset;
+            _crOffset = _pps.CrQpOffset + header.CrQpOffset;
+            _lastCuQpY = _sliceQpY;          // the first quantization group of a slice predicts from SliceQpY
+            _qgPreviousQpY = _sliceQpY;
+        }
+        else if (_statistics is not null)
+        {
+            _statistics.DependentSegments++;
+        }
         _isCuQpDeltaCoded = false;
         _cuQpDeltaVal = 0;
 
         _cabac = new HevcCabac(nal.Rbsp, header.DataOffset, nal.Rbsp.Length);
         _cabac.Start(_sliceQpY);
 
-        var ctb = header.SegmentAddress;
+        var start = _rsToTs[header.SegmentAddress];
+        var ts = start;
         var wavefront = _pps.EntropyCodingSync;
         var substream = 0;
         while (true)
         {
-            if (ctb >= _ctbSlice.Length)
+            if (ts >= _tsToRs.Length)
                 throw new InvalidDataException("A slice runs past the last coding tree block without ending.");
+            var ctb = _tsToRs[ts];
             _ctbSlice[ctb] = _slice;
-            var x = (ctb % _widthInCtbs) << _log2Ctb;
+            var column = ctb % _widthInCtbs;
+            var x = column << _log2Ctb;
             var y = (ctb / _widthInCtbs) << _log2Ctb;
-            if (wavefront && x == 0 && ctb != header.SegmentAddress)
+            var firstInTile = ts == 0 || (_pps.Tiles && _tileOfRs[ctb] != _tileOfRs[_tsToRs[ts - 1]]);
+            if (ts == start && header.Dependent && !firstInTile && !(wavefront && column == _tileFirstColumn[column]))
             {
-                // A new CTB row (9.3.1): the contexts as they were after the second CTB of the row above, when
-                // that CTB is available (in the picture and the slice), else fresh; and the QP prediction
-                // starts again from SliceQpY (8.6.1).
-                if (Available(x, y, x + (1 << _log2Ctb), y - (1 << _log2Ctb))) _cabac.RestoreContexts(_wavefrontContexts);
-                else _cabac.InitializeContexts(_sliceQpY);
-                _lastCuQpY = _sliceQpY;
-                _qgPreviousQpY = _sliceQpY;
-                if (_statistics is not null) _statistics.WavefrontRows++;
+                // 9.3.2.2: a dependent segment that starts inside a tile and a row continues with the contexts as
+                // the previous segment left them.
+                _cabac.RestoreContexts(_dependentContexts);
+            }
+            if (ts != start || header.Dependent)
+            {
+                if (firstInTile)
+                {
+                    // A new tile (9.3.1): fresh contexts (a segment's start has them already), and QP prediction
+                    // from SliceQpY (8.6.1), a dependent segment that begins the tile included.
+                    if (ts != start)
+                    {
+                        _cabac.InitializeContexts(_sliceQpY);
+                        if (_statistics is not null) _statistics.TileStarts++;
+                    }
+                    _lastCuQpY = _sliceQpY;
+                    _qgPreviousQpY = _sliceQpY;
+                }
+                else if (wavefront && column == _tileFirstColumn[column])
+                {
+                    // A new CTB row of the tile (9.3.1): the contexts as they were after the second CTB of the row
+                    // above, when that CTB is available (in the picture, the slice and the tile), else fresh; and the
+                    // QP prediction starts again from SliceQpY (8.6.1).
+                    if (Available(x, y, x + (1 << _log2Ctb), y - (1 << _log2Ctb))) _cabac.RestoreContexts(_wavefrontContexts);
+                    else _cabac.InitializeContexts(_sliceQpY);
+                    _lastCuQpY = _sliceQpY;
+                    _qgPreviousQpY = _sliceQpY;
+                    if (_statistics is not null) _statistics.WavefrontRows++;
+                }
             }
             if (header.SaoLuma || header.SaoChroma) Sao(ctb, header);
             CodingQuadtree(x, y, _log2Ctb, 0);
-            if (wavefront && ctb % _widthInCtbs == 1) _cabac.SaveContexts(_wavefrontContexts);
-            ctb++;
-            if (_cabac.Terminate() == 1) break; // end_of_slice_segment_flag
-            if (wavefront && ctb % _widthInCtbs == 0)
+            if (wavefront && column == _tileFirstColumn[column] + 1) _cabac.SaveContexts(_wavefrontContexts);
+            ts++;
+            if (_cabac.Terminate() == 1) // end_of_slice_segment_flag
             {
-                // end_of_subset_one_bit, byte_alignment(), and the next row's substream.
+                if (_pps.DependentSliceSegments) _cabac.SaveContexts(_dependentContexts); // for a dependent segment after this one
+                break;
+            }
+            var next = ts < _tsToRs.Length ? _tsToRs[ts] : -1;
+            if (next >= 0 && ((_pps.Tiles && _tileOfRs[next] != _tileOfRs[ctb])
+                || (wavefront && next % _widthInCtbs == _tileFirstColumn[next % _widthInCtbs])))
+            {
+                // end_of_subset_one_bit, byte_alignment(), and the next tile's or row's substream.
                 if (_cabac.Terminate() != 1)
-                    throw new InvalidDataException($"The substream of CTB row {ctb / _widthInCtbs - 1} (slice {_slice}) does not end with end_of_subset_one_bit.");
+                    throw new InvalidDataException($"The substream ending at CTB {ctb} (slice {_slice}) does not end with end_of_subset_one_bit.");
                 // The next row's substream begins where its entry point says (7.4.7.1: a slice segment codes one
                 // per CTB row after its first, so there is always one), as ffmpeg and libde265 find it. Not by
                 // reading on past byte_alignment() from where the arithmetic decoder stopped: in every x265
                 // stream here the alignment's one bit sits one bit before that point (measured on all of them),
                 // which only a decoder that follows the entry points does not notice.
                 if (substream >= header.SubstreamStarts.Length)
-                    throw new InvalidDataException($"Slice {_slice} has more CTB rows than its {header.SubstreamStarts.Length} entry points allow.");
+                    throw new InvalidDataException($"Slice {_slice} has more substreams than its {header.SubstreamStarts.Length} entry points allow.");
                 _cabac.StartSubstreamAt(header.SubstreamStarts[substream++]);
                 if (_statistics is not null) _statistics.SubstreamsByEntryPoint++;
             }
         }
-        if (wavefront && substream != header.SubstreamStarts.Length)
-            throw new InvalidDataException($"Slice {_slice} codes {header.SubstreamStarts.Length} entry points but has {substream + 1} CTB rows.");
-        _nextCtb = ctb;
+        if ((wavefront || _pps.Tiles) && substream != header.SubstreamStarts.Length)
+            throw new InvalidDataException($"Slice {_slice} codes {header.SubstreamStarts.Length} entry points but has {substream + 1} substreams.");
+        _nextCtb = ts;
     }
 
     // ---- availability (6.4.1) ----------------------------------------------------------------------
 
-    /// <summary>MinTbAddrZs (6.5.2) with no tiles: the CTB's raster address, then the z-order inside it.</summary>
+    /// <summary>MinTbAddrZs (6.5.2): the CTB's tile scan address, then the z-order inside it.</summary>
     private int ZAddress(int x, int y)
     {
-        var ctb = (y >> _log2Ctb) * _widthInCtbs + (x >> _log2Ctb);
+        var ctb = _rsToTs[(y >> _log2Ctb) * _widthInCtbs + (x >> _log2Ctb)];
         var mask = (1 << _log2Ctb) - 1;
         var bx = (x & mask) >> _log2MinTb;
         var by = (y & mask) >> _log2MinTb;
@@ -314,12 +369,57 @@ internal sealed partial class HevcPictureDecoder
 
     private int CtbAddress(int x, int y) => (y >> _log2Ctb) * _widthInCtbs + (x >> _log2Ctb);
 
-    /// <summary>6.4.1: the neighbour is in the picture, earlier in z-scan order, and in the same slice.</summary>
+    /// <summary>6.4.1: the neighbour is in the picture, earlier in z-scan order, and in the same slice and tile.</summary>
     private bool Available(int xCurrent, int yCurrent, int xNeighbour, int yNeighbour)
     {
         if (xNeighbour < 0 || yNeighbour < 0 || xNeighbour >= _width || yNeighbour >= _height) return false;
         if (ZAddress(xNeighbour, yNeighbour) > ZAddress(xCurrent, yCurrent)) return false;
-        return _ctbSlice[CtbAddress(xNeighbour, yNeighbour)] == _slice;
+        var neighbour = CtbAddress(xNeighbour, yNeighbour);
+        return _ctbSlice[neighbour] == _slice && _tileOfRs[neighbour] == _tileOfRs[CtbAddress(xCurrent, yCurrent)];
+    }
+
+    /// <summary>
+    /// 6.5.1: the tile column and row boundaries (uniform spacing, or the coded sizes with the last column and
+    /// row taking the rest), and from them the raster and tile scan conversions and each CTB's tile.
+    /// </summary>
+    private static (int[] RsToTs, int[] TsToRs, int[] TileOfRs, int[] TileFirstColumn) TileScan(HevcPps pps, int widthInCtbs, int heightInCtbs)
+    {
+        static int[] Boundaries(int count, int[]? coded, int total, string what)
+        {
+            var bounds = new int[count + 1];
+            for (var i = 0; i < count; i++)
+            {
+                var size = coded is null ? (i + 1) * total / count - i * total / count
+                    : i < count - 1 ? coded[i] : total - bounds[i];
+                if (size <= 0) throw new InvalidDataException($"The tile {what} sizes do not fit the picture's {total} CTBs.");
+                bounds[i + 1] = bounds[i] + size;
+            }
+            if (bounds[count] != total) throw new InvalidDataException($"The tile {what} sizes do not fit the picture's {total} CTBs.");
+            return bounds;
+        }
+
+        int columns = pps.Tiles ? pps.TileColumns : 1, rows = pps.Tiles ? pps.TileRows : 1;
+        if (columns > widthInCtbs || rows > heightInCtbs)
+            throw new InvalidDataException($"{columns}x{rows} tiles do not fit a picture of {widthInCtbs}x{heightInCtbs} CTBs.");
+        var colBd = Boundaries(columns, pps.TileColumnWidths, widthInCtbs, "column");
+        var rowBd = Boundaries(rows, pps.TileRowHeights, heightInCtbs, "row");
+
+        var count = widthInCtbs * heightInCtbs;
+        int[] rsToTs = new int[count], tsToRs = new int[count], tileOfRs = new int[count], firstColumn = new int[widthInCtbs];
+        for (var c = 0; c < columns; c++)
+            for (var x = colBd[c]; x < colBd[c + 1]; x++) firstColumn[x] = colBd[c];
+        var ts = 0;
+        for (var tr = 0; tr < rows; tr++)
+            for (var tc = 0; tc < columns; tc++)
+                for (var y = rowBd[tr]; y < rowBd[tr + 1]; y++)
+                    for (var x = colBd[tc]; x < colBd[tc + 1]; x++)
+                    {
+                        var rs = y * widthInCtbs + x;
+                        rsToTs[rs] = ts;
+                        tsToRs[ts++] = rs;
+                        tileOfRs[rs] = tr * columns + tc;
+                    }
+        return (rsToTs, tsToRs, tileOfRs, firstColumn);
     }
 
     private int Block(int x, int y) => (y >> 2) * _width4 + (x >> 2);
@@ -386,6 +486,14 @@ internal sealed partial class HevcPictureDecoder
 
         // part_mode: for an intra CU only at the minimum size, one bin, 1 = 2Nx2N and 0 = NxN.
         var intraSplit = log2Size == _log2MinCb && _cabac.Decision(HevcContext.PartMode) == 0;
+
+        // pcm_flag (a terminating bin) for a 2Nx2N unit of a PCM size: raw samples instead of prediction and residual.
+        if (!intraSplit && _sps.PcmEnabled && log2Size >= _sps.Log2MinPcmCodingBlockSize && log2Size <= _sps.Log2MaxPcmCodingBlockSize
+            && _cabac.Terminate() == 1)
+        {
+            PcmSamples(x0, y0, log2Size);
+            return;
+        }
         if (intraSplit && _statistics is not null) _statistics.NxNUnits++;
 
         // Intra luma modes: every prev_intra_luma_pred_flag first, then each mpm_idx / rem_intra_luma_pred_mode.
@@ -639,6 +747,41 @@ internal sealed partial class HevcPictureDecoder
             Reconstruct(1, xC, yC + (t << log2C), log2C, chromaMode, ((chromaCb >> t) & 1) != 0);
         for (var t = 0; t < halves; t++)
             Reconstruct(2, xC, yC + (t << log2C), log2C, chromaMode, ((chromaCr >> t) & 1) != 0);
+    }
+
+    /// <summary>
+    /// pcm_sample() (7.3.8.7, 8.4.4.1): the samples as coded, shifted up to the picture's bit depth. The unit is
+    /// one transform block for deblocking, its luma mode is DC for its neighbours' candidates (8.4.2), and
+    /// with pcm_loop_filter_disabled_flag both loop filters keep its samples.
+    /// </summary>
+    private void PcmSamples(int x0, int y0, int log2Size)
+    {
+        var size = 1 << log2Size;
+        Fill(_lumaMode, x0, y0, size, (byte)HevcIntraPrediction.Dc);
+        if (_sps.PcmLoopFilterDisabled) Fill(_bypass, x0, y0, size, 1);
+        MarkTransformEdges(x0, y0, size);
+        if (_statistics is not null) _statistics.PcmUnits++;
+
+        _cabac.BeginPcm();
+        var shift = _sps.BitDepthLuma - _sps.PcmBitDepthLuma;
+        for (var j = 0; j < size; j++)
+            for (var i = 0; i < size; i++)
+                _luma[(y0 + j) * _width + x0 + i] = (ushort)(_cabac.ReadPcmSample(_sps.PcmBitDepthLuma) << shift);
+        if (_chroma != 0)
+        {
+            int w = size >> _log2SubW, h = size >> _log2SubH, xc = x0 >> _log2SubW, yc = y0 >> _log2SubH;
+            var shiftC = _sps.BitDepthChroma - _sps.PcmBitDepthChroma;
+            foreach (var plane in new[] { _cb!, _cr! })
+                for (var j = 0; j < h; j++)
+                    for (var i = 0; i < w; i++)
+                        plane[(yc + j) * _chromaWidth + xc + i] = (ushort)(_cabac.ReadPcmSample(_sps.PcmBitDepthChroma) << shiftC);
+        }
+        _cabac.RestartAfterPcm();
+
+        var w4 = Math.Min(size, _width - x0) >> 2;
+        var h4 = Math.Min(size, _height - y0) >> 2;
+        for (var j = 0; j < h4; j++) _qpMap.AsSpan(Block(x0, y0 + 4 * j), w4).Fill((sbyte)_qpY);
+        _lastCuQpY = _qpY;
     }
 
     /// <summary>cu_qp_delta_abs (prefix TU cMax 5 + EG0 suffix) and its sign; range-checked against 7.4.9.14.</summary>

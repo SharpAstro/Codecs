@@ -85,7 +85,17 @@ internal sealed record HevcSps
     public required bool AmpEnabled { get; init; }
     public required bool SampleAdaptiveOffset { get; init; }
     public required bool PcmEnabled { get; init; }
+    public int PcmBitDepthLuma { get; init; }
+    public int PcmBitDepthChroma { get; init; }
+    public int Log2MinPcmCodingBlockSize { get; init; }
+    public int Log2MaxPcmCodingBlockSize { get; init; }
+    public bool PcmLoopFilterDisabled { get; init; }
     public required int NumShortTermRefPicSets { get; init; }
+
+    /// <summary>NumDeltaPocs of each SPS short-term set: a slice header's own set may be predicted from one.</summary>
+    public required int[] NumDeltaPocs { get; init; }
+
+    public required int NumLongTermRefPicsSps { get; init; }
     public required bool LongTermRefPicsPresent { get; init; }
     public required bool TemporalMvpEnabled { get; init; }
     public required bool StrongIntraSmoothing { get; init; }
@@ -161,11 +171,17 @@ internal sealed record HevcSps
         var amp = r.Flag();
         var sao = r.Flag();
         var pcm = r.Flag();
+        int pcmDepthLuma = 0, pcmDepthChroma = 0, log2MinPcm = 0, log2MaxPcm = 0;
+        var pcmLoopFilterDisabled = false;
         if (pcm)
         {
-            r.U(4); r.U(4); // pcm sample bit depths
-            r.Ue(); r.Ue(); // pcm block sizes
-            r.Flag();       // pcm_loop_filter_disabled_flag
+            pcmDepthLuma = (int)r.U(4) + 1;
+            pcmDepthChroma = (int)r.U(4) + 1;
+            log2MinPcm = r.Ue(2, "log2_min_pcm_luma_coding_block_size_minus3") + 3;
+            log2MaxPcm = log2MinPcm + r.Ue(5 - log2MinPcm, "log2_diff_max_min_pcm_luma_coding_block_size");
+            pcmLoopFilterDisabled = r.Flag();
+            if (pcmDepthLuma > depthLuma || pcmDepthChroma > depthChroma)
+                throw new InvalidDataException($"PCM samples of {pcmDepthLuma}/{pcmDepthChroma} bits are deeper than the picture's {depthLuma}/{depthChroma}.");
         }
 
         var numStRps = r.Ue(64, "num_short_term_ref_pic_sets");
@@ -174,10 +190,11 @@ internal sealed record HevcSps
             numDeltaPocs[i] = HevcShortTermRps.Skip(ref r, i, numStRps, numDeltaPocs);
 
         var longTerm = r.Flag();
+        var longTermSps = 0;
         if (longTerm)
         {
-            var count = r.Ue(32, "num_long_term_ref_pics_sps");
-            for (var i = 0; i < count; i++) { r.U(log2MaxPocLsb); r.Flag(); }
+            longTermSps = r.Ue(32, "num_long_term_ref_pics_sps");
+            for (var i = 0; i < longTermSps; i++) { r.U(log2MaxPocLsb); r.Flag(); }
         }
 
         var temporalMvp = r.Flag();
@@ -224,7 +241,14 @@ internal sealed record HevcSps
             AmpEnabled = amp,
             SampleAdaptiveOffset = sao,
             PcmEnabled = pcm,
+            PcmBitDepthLuma = pcmDepthLuma,
+            PcmBitDepthChroma = pcmDepthChroma,
+            Log2MinPcmCodingBlockSize = log2MinPcm,
+            Log2MaxPcmCodingBlockSize = log2MaxPcm,
+            PcmLoopFilterDisabled = pcmLoopFilterDisabled,
             NumShortTermRefPicSets = numStRps,
+            NumDeltaPocs = numDeltaPocs,
+            NumLongTermRefPicsSps = longTermSps,
             LongTermRefPicsPresent = longTerm,
             TemporalMvpEnabled = temporalMvp,
             StrongIntraSmoothing = strongSmoothing,
@@ -256,6 +280,12 @@ internal sealed record HevcPps
     public required bool TransquantBypass { get; init; }
     public required bool Tiles { get; init; }
     public required int TileColumns { get; init; }
+
+    /// <summary>The coded widths of every tile column but the last, in CTBs; null for uniform spacing.</summary>
+    public int[]? TileColumnWidths { get; init; }
+
+    /// <summary>The coded heights of every tile row but the last, in CTBs; null for uniform spacing.</summary>
+    public int[]? TileRowHeights { get; init; }
     public required int TileRows { get; init; }
     public required bool EntropyCodingSync { get; init; }
     public required bool LoopFilterAcrossTiles { get; init; }
@@ -305,14 +335,18 @@ internal sealed record HevcPps
 
         int columns = 1, rows = 1;
         var acrossTiles = true;
+        int[]? columnWidths = null, rowHeights = null; // null: uniform spacing (6.5.1), sized against the SPS later
         if (tiles)
         {
             columns = r.Ue(HeifLimits.MaxCodedDimension / 256, "num_tile_columns_minus1") + 1;
             rows = r.Ue(HeifLimits.MaxCodedDimension / 64, "num_tile_rows_minus1") + 1;
             if (!r.Flag()) // uniform_spacing_flag
             {
-                for (var i = 0; i < columns - 1; i++) r.Ue();
-                for (var i = 0; i < rows - 1; i++) r.Ue();
+                // The last column and row take what is left; only the others are coded.
+                columnWidths = new int[columns - 1];
+                rowHeights = new int[rows - 1];
+                for (var i = 0; i < columns - 1; i++) columnWidths[i] = r.Ue(HeifLimits.MaxCodedDimension / 16, "column_width_minus1") + 1;
+                for (var i = 0; i < rows - 1; i++) rowHeights[i] = r.Ue(HeifLimits.MaxCodedDimension / 16, "row_height_minus1") + 1;
             }
             acrossTiles = r.Flag();
         }
@@ -383,6 +417,8 @@ internal sealed record HevcPps
             TransquantBypass = bypass,
             Tiles = tiles,
             TileColumns = columns,
+            TileColumnWidths = columnWidths,
+            TileRowHeights = rowHeights,
             TileRows = rows,
             EntropyCodingSync = sync,
             LoopFilterAcrossTiles = acrossTiles,
@@ -549,13 +585,17 @@ internal sealed class HevcScalingList
 /// <summary>st_ref_pic_set() (H.265 7.3.7), read past. A still image never refers to another picture.</summary>
 internal static class HevcShortTermRps
 {
-    /// <summary>Reads set <paramref name="index"/> of an SPS and returns its NumDeltaPocs.</summary>
+    /// <summary>
+    /// Reads st_ref_pic_set(<paramref name="index"/>) (7.3.7): set <paramref name="index"/> of an SPS, or with
+    /// <paramref name="index"/> == <paramref name="numSets"/> the one a slice header codes; returns its NumDeltaPocs.
+    /// </summary>
     public static int Skip(ref RbspReader r, int index, int numSets, int[] numDeltaPocs)
     {
         if (index != 0 && r.Flag()) // inter_ref_pic_set_prediction_flag
         {
-            // delta_idx_minus1 is only present when parsing in a slice header (index == numSets); never here.
+            // delta_idx_minus1 is present only when the set is coded in a slice header (index == numSets).
             var refIndex = index - 1;
+            if (index == numSets) refIndex = index - 1 - r.Ue(index - 1, "delta_idx_minus1");
             r.Flag(); // delta_rps_sign
             r.Ue((1 << 15) - 1, "abs_delta_rps_minus1");
             var count = 0;

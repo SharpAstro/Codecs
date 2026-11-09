@@ -50,16 +50,16 @@ internal sealed partial class HevcPictureDecoder
     {
         var rx = ctb % _widthInCtbs;
         var ry = ctb / _widthInCtbs;
-        var sliceAddress = header.SegmentAddress; // no dependent slice segments: the slice starts where its segment does
+        var sliceAddress = header.SliceAddress; // SliceAddrRs: where the slice's independent segment starts
 
         // Merging copies every component's parameters from the CTB to the left or above, inside the slice.
-        if (rx > 0 && ctb - 1 >= sliceAddress && _cabac.Decision(HevcContext.SaoMergeFlag) == 1)
+        if (rx > 0 && ctb - 1 >= sliceAddress && _tileOfRs[ctb - 1] == _tileOfRs[ctb] && _cabac.Decision(HevcContext.SaoMergeFlag) == 1)
         {
             CopySao(ctb - 1, ctb);
             if (_statistics is not null) _statistics.SaoMergeLeft++;
             return;
         }
-        if (ry > 0 && ctb - _widthInCtbs >= sliceAddress && _cabac.Decision(HevcContext.SaoMergeFlag) == 1)
+        if (ry > 0 && ctb - _widthInCtbs >= sliceAddress && _tileOfRs[ctb - _widthInCtbs] == _tileOfRs[ctb] && _cabac.Decision(HevcContext.SaoMergeFlag) == 1)
         {
             CopySao(ctb - _widthInCtbs, ctb);
             if (_statistics is not null) _statistics.SaoMergeUp++;
@@ -149,6 +149,11 @@ internal sealed partial class HevcPictureDecoder
         _sliceBoundariesMatter = false;
         for (var s = 1; s < _sliceHeaders.Count; s++)
             _sliceBoundariesMatter |= !_sliceHeaders[s].LoopFilterAcrossSlices;
+        // Keeping the filters off tile boundaries (loop_filter_across_tiles_enabled_flag 0) is in no intra picture
+        // of any oracle stream here (the tile conformance streams use it only in inter pictures), so it is
+        // refused rather than guessed.
+        if (_pps.Tiles && !_pps.LoopFilterAcrossTiles)
+            throw new NotSupportedException("Loop filters kept off tile boundaries (loop_filter_across_tiles_enabled_flag 0) are not decoded yet (rung 4).");
 
         if (deblock)
         {
@@ -171,6 +176,7 @@ internal sealed partial class HevcPictureDecoder
     private HevcSliceHeader SliceAt(int x, int y) => _sliceHeaders[_ctbSlice[CtbAddress(x, y)]];
 
     private bool _sliceBoundariesMatter;
+
 
     /// <summary>
     /// Whether a deblocking edge between p at (xp, yp) and q at (xq, yq) is filtered across a slice boundary:

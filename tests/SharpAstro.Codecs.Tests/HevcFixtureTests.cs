@@ -426,7 +426,7 @@ public class HevcFixtureTests(ITestOutputHelper output)
         return (configuration, item.ToArray());
     }
 
-    private static List<byte[]> SplitAnnexB(byte[] stream)
+    internal static List<byte[]> SplitAnnexB(byte[] stream)
     {
         // Start codes are 00 00 01 (a leading 00 makes the four-byte form); a NAL unit never contains one.
         var starts = new List<int>();

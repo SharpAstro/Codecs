@@ -10,6 +10,12 @@ internal sealed record HevcSliceHeader
     public required bool FirstInPicture { get; init; }
     public required int SegmentAddress { get; init; }
 
+    /// <summary>SliceAddrRs: the address of the slice's independent segment, which a dependent one inherits.</summary>
+    public int SliceAddress { get; init; }
+
+    /// <summary>dependent_slice_segment_flag: this segment continues the slice of the one before it.</summary>
+    public bool Dependent { get; init; }
+
     /// <summary>SliceQpY = 26 + init_qp_minus26 + slice_qp_delta (7.4.7.1).</summary>
     public required int SliceQpY { get; init; }
 
@@ -39,36 +45,86 @@ internal sealed record HevcSliceHeader
 
     public const int SliceTypeI = 2;
 
-    public static HevcSliceHeader Parse(HevcNalUnit nal, HevcSps sps, HevcPps pps)
+    /// <summary>
+    /// Parses a slice segment header. A dependent slice segment (7.4.7.1) codes only its address and entry
+    /// points and takes everything else from <paramref name="independent"/>, the header of the slice it
+    /// continues.
+    /// </summary>
+    public static HevcSliceHeader Parse(HevcNalUnit nal, HevcSps sps, HevcPps pps, HevcSliceHeader? independent = null)
     {
-        // IDR_W_RADL and IDR_N_LP. A CRA or BLA picture is also intra, but its header carries a picture
-        // order count and reference picture sets this decoder does not parse.
-        if (nal.Type is not (19 or 20))
-            throw new NotSupportedException($"Slice NAL unit type {nal.Type} is not an IDR picture; only IDR pictures are decoded (rung 4).");
+        // Any picture whose slices are all intra decodes on its own: an IDR, a CRA or BLA (which also carry a
+        // picture order count and reference picture sets, parsed and unused), or a trailing picture that
+        // happens to be intra. Its inter slices are refused below.
+        var idr = nal.Type is 19 or 20;
 
         var r = new RbspReader(nal.Rbsp);
         var first = r.Flag();
-        r.Flag(); // no_output_of_prior_pics_flag
+        if (nal.IsIrap) r.Flag(); // no_output_of_prior_pics_flag
         var ppsId = r.Ue(63, "slice_pic_parameter_set_id");
         if (ppsId != pps.Id)
             throw new NotSupportedException($"A slice refers to PPS {ppsId}; only the one PPS in 'hvcC' ({pps.Id}) is present.");
 
         var address = 0;
+        var dependent = false;
         if (!first)
         {
-            if (pps.DependentSliceSegments && r.Flag())
-                throw new NotSupportedException("Dependent slice segments are not decoded (rung 4).");
+            dependent = pps.DependentSliceSegments && r.Flag();
             var ctbs = sps.WidthInCtbs * sps.HeightInCtbs;
             address = (int)r.U(CeilLog2(ctbs));
             if (address >= ctbs) throw new InvalidDataException($"slice_segment_address {address} is past the picture's {ctbs} CTBs.");
+        }
+        if (dependent)
+        {
+            if (independent is null) throw new InvalidDataException("A dependent slice segment has no slice to continue.");
+            var (dependentStarts, dependentOffset) = ReadTail(ref r, nal, sps, pps);
+            return independent with
+            {
+                FirstInPicture = false,
+                SegmentAddress = address,
+                Dependent = true,
+                SubstreamStarts = dependentStarts,
+                DataOffset = dependentOffset,
+            };
         }
 
         r.Skip(pps.NumExtraSliceHeaderBits); // slice_reserved_flag
         var sliceType = r.Ue(2, "slice_type");
         if (sliceType != SliceTypeI)
-            throw new InvalidDataException($"An IDR picture has a slice of type {sliceType}; IDR slices are intra (type 2).");
+        {
+            if (nal.IsIrap) throw new InvalidDataException($"An IRAP picture has a slice of type {sliceType}; its slices are intra (type 2).");
+            throw new NotSupportedException($"An inter-coded (P or B) slice is not decoded: this is a still-picture decoder.");
+        }
         if (pps.OutputFlagPresent) r.Flag(); // pic_output_flag
         // colour_plane_id would follow for separate colour planes, which the decoder refuses up front.
+
+        if (!idr)
+        {
+            // 7.3.6.1: the picture order count and the reference picture sets, which an intra picture never uses.
+            r.Skip(sps.Log2MaxPocLsb); // slice_pic_order_cnt_lsb
+            if (!r.Flag()) // short_term_ref_pic_set_sps_flag
+                HevcShortTermRps.Skip(ref r, sps.NumShortTermRefPicSets, sps.NumShortTermRefPicSets, sps.NumDeltaPocs);
+            else if (sps.NumShortTermRefPicSets > 1)
+                r.Skip(CeilLog2(sps.NumShortTermRefPicSets)); // short_term_ref_pic_set_idx
+            if (sps.LongTermRefPicsPresent)
+            {
+                var fromSps = sps.NumLongTermRefPicsSps > 0 ? r.Ue(sps.NumLongTermRefPicsSps, "num_long_term_sps") : 0;
+                var coded = r.Ue(32, "num_long_term_pics");
+                for (var i = 0; i < fromSps + coded; i++)
+                {
+                    if (i < fromSps)
+                    {
+                        if (sps.NumLongTermRefPicsSps > 1) r.Skip(CeilLog2(sps.NumLongTermRefPicsSps)); // lt_idx_sps
+                    }
+                    else
+                    {
+                        r.Skip(sps.Log2MaxPocLsb); // poc_lsb_lt
+                        r.Flag();                  // used_by_curr_pic_lt_flag
+                    }
+                    if (r.Flag()) r.Ue(); // delta_poc_msb_present_flag, delta_poc_msb_cycle_lt
+                }
+            }
+            if (sps.TemporalMvpEnabled) r.Flag(); // slice_temporal_mvp_enabled_flag
+        }
 
         bool saoLuma = false, saoChroma = false;
         if (sps.SampleAdaptiveOffset)
@@ -108,12 +164,41 @@ internal sealed record HevcSliceHeader
         if (pps.LoopFilterAcrossSlices && (saoLuma || saoChroma || !deblockingDisabled))
             across = r.Flag(); // slice_loop_filter_across_slices_enabled_flag
 
-        if (pps.Tiles) throw new NotSupportedException("Tiles are not decoded yet (rung 4).");
-        var entryOffsets = Array.Empty<long>();
-        if (pps.EntropyCodingSync)
+        var (starts, dataOffset) = ReadTail(ref r, nal, sps, pps);
+
+        return new HevcSliceHeader
         {
-            // Entry points: the size of each CTB row's substream but the last, in NAL unit bytes.
-            var count = r.Ue(sps.HeightInCtbs - 1, "num_entry_point_offsets");
+            SubstreamStarts = starts,
+            FirstInPicture = first,
+            SegmentAddress = address,
+            SliceAddress = address,
+            SliceQpY = qp,
+            CbQpOffset = cb,
+            CrQpOffset = cr,
+            SaoLuma = saoLuma,
+            SaoChroma = saoChroma,
+            DeblockingDisabled = deblockingDisabled,
+            BetaOffsetDiv2 = beta,
+            TcOffsetDiv2 = tc,
+            LoopFilterAcrossSlices = across,
+            DataOffset = dataOffset,
+        };
+    }
+
+    /// <summary>
+    /// The end of every slice segment header, dependent or not: the entry points (as RBSP positions), the
+    /// header extension and byte_alignment(); returns where the slice data begins.
+    /// </summary>
+    private static (int[] Starts, int DataOffset) ReadTail(ref RbspReader r, HevcNalUnit nal, HevcSps sps, HevcPps pps)
+    {
+        var entryOffsets = Array.Empty<long>();
+        if (pps.Tiles || pps.EntropyCodingSync)
+        {
+            // Entry points: the size of each substream (a tile, or a CTB row of one) but the last, in NAL unit bytes.
+            var maxCount = pps.EntropyCodingSync
+                ? (pps.Tiles ? pps.TileColumns * sps.HeightInCtbs : sps.HeightInCtbs) - 1
+                : pps.TileColumns * pps.TileRows - 1;
+            var count = r.Ue(maxCount, "num_entry_point_offsets");
             if (count > 0)
             {
                 var bits = r.Ue(31, "offset_len_minus1") + 1;
@@ -145,22 +230,7 @@ internal sealed record HevcSliceHeader
             starts[i] = start;
         }
 
-        return new HevcSliceHeader
-        {
-            SubstreamStarts = starts,
-            FirstInPicture = first,
-            SegmentAddress = address,
-            SliceQpY = qp,
-            CbQpOffset = cb,
-            CrQpOffset = cr,
-            SaoLuma = saoLuma,
-            SaoChroma = saoChroma,
-            DeblockingDisabled = deblockingDisabled,
-            BetaOffsetDiv2 = beta,
-            TcOffsetDiv2 = tc,
-            LoopFilterAcrossSlices = across,
-            DataOffset = dataOffset,
-        };
+        return (starts, dataOffset);
     }
 
     internal static int CeilLog2(int value)

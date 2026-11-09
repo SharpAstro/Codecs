@@ -295,6 +295,43 @@ the lossless fixtures, the chroma QP offsets, and a unit test of the emulation-p
 fixture's entry points cross); the twelfth, deciding a SAO slice boundary by the current sample's slice
 instead of the later one, cannot be seen when every slice has the same flag, which is all x265 writes.
 
+**The JCT-VC conformance streams (part 5).** What x265 cannot write is checked against the H.265.1
+conformance bitstreams: `tests/SharpAstro.Codecs.Tests/fetch-hevc-conformance.sh` downloads 45 of them from
+the ITU's JCT-VC site (each zip pinned by SHA-256) into the git-ignored `Fixtures/hevc-conformance/`;
+third-party data, not committed, so the tests skip without them, like the Canon files. Most are video
+sequences: `HevcConformanceTests` decodes each stream's first picture and up to six later IRAP pictures (each
+decodes on its own) and compares them with ffmpeg's decode of the same access unit, sample for sample. The
+md5s that ship with the streams cover whole, mostly inter-coded, sequences, so they are not used. Every
+fetched stream is in one of two lists, decoded (with the feature it must show) or refused (with the feature
+the refusal names), and `EveryFetchedStream_IsClassified` keeps the lists and the script together.
+
+Added with them, each matching ffmpeg on every stream that has it:
+
+- **CRA and BLA pictures, and intra trailing pictures**: the slice header's picture order count, short-term
+  reference picture set (coded, or an index into the SPS's, with inter-set prediction) and long-term pictures
+  are parsed and unused; an inter (P or B) slice is refused. `RAP_A`, `RAP_B` and `NUT_A` (every BLA type and
+  CRA, in mid-stream). The short-term set index branch is in no IRAP picture of these streams (a deliberate
+  bug there goes unseen).
+- **PCM** (7.3.8.7): samples shifted up to the picture's depth, the unit's luma mode DC for its neighbours,
+  its edges deblocked, `pcm_loop_filter_disabled_flag` keeping both filters off its samples. Where the
+  samples start after `pcm_flag`'s terminating bin was settled on the six PCM streams: the alignment begins
+  exactly where the arithmetic decoder stopped (one bit either side breaks some of them), and its bits are
+  checked to be zero. That differs from x265's WPP substreams by one bit (above); both are as measured.
+- **Tiles** (6.5.1): the tile scan, uniform or coded spacing, availability and SAO merging within a tile,
+  fresh contexts and QP prediction at each tile, WPP rows inside tiles, entry points per tile. `TILES_A`,
+  `TILES_B`, `PICSIZE_C`, `DSLICE_C`, `DBLK_D`. Loop filters kept off tile boundaries
+  (`loop_filter_across_tiles_enabled_flag` 0) are **refused**: the tile streams use it only in inter pictures.
+- **Dependent slice segments**: the header inherited from the slice's independent segment, contexts carried
+  from the end of the previous segment unless a tile or a wavefront row starts there, QP prediction carried
+  on, availability and the loop filters by slice, not segment. `DSLICE_A`-`C`, `DBLK_D`.
+- A monochrome picture's chroma bit depth is not refused for differing from luma's (it has no chroma).
+
+34 of the 45 streams decode; 11 are refused by name (unequal luma and chroma bit depths, the range-extension
+tools, 16 bits), the rest of rung 4. Mutation check, fourteen deliberate bugs: twelve caught (the PCM
+alignment, depth shift, DC mode, loop filter flag and edges; tile availability, contexts, QP, SAO merge and
+spacing; dependent segment contexts and QP); the loop filters across tiles (now refused) and the short-term
+set index were not, as above.
+
 **Still refused or unverified, and why:**
 
 - **Slices whose across flags differ** decide SAO's boundaries by the later slice, as 8.7.3 says; x265

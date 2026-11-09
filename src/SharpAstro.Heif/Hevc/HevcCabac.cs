@@ -148,6 +148,24 @@ internal sealed class HevcCabac
     public void RestoreContexts(byte[] from) => from.AsSpan(0, _state.Length).CopyTo(_state);
 
     /// <summary>
+    /// After pcm_flag (a terminating bin of 1): pcm_alignment_zero_bits from exactly where the arithmetic
+    /// decoder stopped up to the byte boundary, after which <see cref="ReadPcmSample"/> reads the raw samples
+    /// and <see cref="RestartAfterPcm"/> starts the engine again (9.3.2.5) wherever they end. The start was
+    /// settled on the conformance streams: of the positions one bit either side and this one, only this one
+    /// decodes all six PCM streams as ffmpeg does, and the alignment bits are checked to be zero.
+    /// </summary>
+    public void BeginPcm()
+    {
+        if (_zeroBytes != 0) throw new InvalidDataException("The slice data ended before its PCM samples.");
+        var padding = _cached % 8;
+        if (ReadBits(padding) != 0) throw new InvalidDataException("pcm_alignment_zero_bits are not zero.");
+    }
+
+    public int ReadPcmSample(int bits) => (int)ReadBits(bits);
+
+    public void RestartAfterPcm() => StartEngine();
+
+    /// <summary>
     /// Restarts the engine (9.3.2.5) at RBSP byte <paramref name="start"/>, where an entry point puts the next
     /// substream, after the terminating bin that ended this one. It must lie past what this substream read.
     /// </summary>

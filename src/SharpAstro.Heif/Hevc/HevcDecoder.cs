@@ -68,10 +68,11 @@ internal static class HevcDecoder
             throw new NotSupportedException($"{feature} is not decoded yet (rung {rung}).");
 
         if (sps.SeparateColourPlanes) Refuse("Separate colour planes", 4);
-        if (sps.BitDepthLuma > 12 || sps.BitDepthChroma > 12) Refuse($"A bit depth of {Math.Max(sps.BitDepthLuma, sps.BitDepthChroma)}", 4);
+        // A monochrome picture has no chroma, so its chroma bit depth (coded all the same) means nothing.
+        var chromaDepth = sps.ChromaFormatIdc == 0 ? sps.BitDepthLuma : sps.BitDepthChroma;
+        if (sps.BitDepthLuma > 12 || chromaDepth > 12) Refuse($"A bit depth of {Math.Max(sps.BitDepthLuma, chromaDepth)}", 4);
         // Nothing here can check a picture whose luma and chroma depths differ (ffmpeg has no such pixel format).
-        if (sps.BitDepthLuma != sps.BitDepthChroma) Refuse($"Luma at {sps.BitDepthLuma} bits with chroma at {sps.BitDepthChroma}", 4);
-        if (sps.PcmEnabled) Refuse("PCM", 4);
+        if (sps.ChromaFormatIdc != 0 && sps.BitDepthLuma != sps.BitDepthChroma) Refuse($"Luma at {sps.BitDepthLuma} bits with chroma at {sps.BitDepthChroma}", 4);
         var range = sps.RangeExtension;
         if (range.TransformSkipRotation) Refuse("Transform skip rotation", 4);
         if (range.TransformSkipContext) Refuse("The transform skip context", 4);
@@ -83,7 +84,6 @@ internal static class HevcDecoder
         if (range.CabacBypassAlignment) Refuse("CABAC bypass alignment", 4);
         if (sps.OtherExtensions) Refuse("An SPS multilayer, 3D or screen content extension", 4);
 
-        if (pps.Tiles) Refuse("Tiles", 4);
         if (pps.CrossComponentPrediction) Refuse("Cross-component prediction", 4);
         if (pps.ChromaQpOffsetList) Refuse("CU chroma QP offset lists", 4);
         // A range-extension PPS field that scales SAO offsets; no encoder here writes it, so nothing could check it.
