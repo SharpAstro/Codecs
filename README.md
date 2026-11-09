@@ -24,6 +24,7 @@ package instead of cherry-picking codecs.
 | **BMP** | ✅ | ✅ | Windows + OS/2 DIB, 1–32 bpp, RLE4/RLE8, bit-field masks, V5 ICC; writes 24-bit BGR and 32-bit BGRA with alpha |
 | **GIF** | ✅ (stills + animation frames) | — | GIF87a/GIF89a, global/local palettes, interlace, transparency, disposal; composited full-canvas frames; LZW shared with TIFF |
 | **TGA** | ✅ | ✅ | types 1/2/3 + RLE 9/10/11, 8–32-bit; writes 24/32-bit raw or RLE. The facade recognises it **only by the TGA 2.0 footer** (`TRUEVISION-XFILE.`): TGA has no magic number, so footerless files decode via `SharpAstro.Tga.TgaReader` directly |
+| **HEIF / HEIC** | ✅ (HEVC stills, grids, previews) | — | clean-room HEVC intra decoder, bit-exact against ffmpeg; Canon .HIF HDR PQ and phone HEIC; `clap`/`irot`/`imir`; PQ/HLG as linear floats. The HEVC range extensions are refused by name ([#68](https://github.com/SharpAstro/Codecs/issues/68)) |
 | **EXIF** | ✅ | — | metadata only, from JPEG / TIFF / PNG |
 
 See **[CODECS.md](CODECS.md)** for the full per-package matrix, what each codec does and does not
@@ -44,7 +45,7 @@ lockstep (shared Major.Minor + CI run-number patch).
 ## NuGet
 
 ```
-# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, GIF, Radiance .hdr, Netpbm, BMP, TGA with footer, .jb2):
+# One facade for sniff-and-decode (PNG, JPEG incl. Ultra HDR, TIFF, JXR, EXR, JXL, WebP, GIF, HEIF/HEIC, Radiance .hdr, Netpbm, BMP, TGA with footer, .jb2):
 dotnet add package SharpAstro.Codecs
 
 # ...or reference just the format(s) you need:
@@ -52,6 +53,7 @@ dotnet add package SharpAstro.Png
 dotnet add package SharpAstro.Jxr
 dotnet add package SharpAstro.Webp
 dotnet add package SharpAstro.Gif
+dotnet add package SharpAstro.Heif
 ```
 
 ## Usage
