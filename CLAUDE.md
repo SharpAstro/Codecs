@@ -1083,6 +1083,12 @@ touching it should know:
   shortcuts there; those tests are a tolerance, kept apart from the exact ones. libheif also transforms the
   Y'CbCr planes (so a rotated 4:2:2 image resamples chroma) and converts with the VUI when it rotates; the
   transform tests are built so neither matters. `imir` axis 0 swaps top and bottom.
+- **Memory from declared sizes (review of PR #69)**: the canvas and each picture's planes are allocated
+  before a slice byte is read, so a few-KB file declaring sizes at `HeifLimits` gets proportionate memory.
+  Checked first from the SPS (`HeifDecoder.CheckCodedSize`): a picture must hold what the file declares, and
+  be at most twice the output area it covers; a grid keeps at most `LivePictureBytes` (1 GiB) of decoded
+  tiles alive. The residual (canvas plus one picture, 2.6 GiB measured, about 3.2 GiB worst case) is in
+  `HeifLimits`' remarks, as JBIG2's is in its section.
 - **Deblocking and SAO (rung 4, first part)** run over the finished picture in `HevcPictureDecoder.LoopFilter.cs`.
   A deblocking table is checked only as far as the fixtures reach into it: the first fixtures reached half
   of Table 8-12 and a wrong tC' at Q 47 went unseen, so `Fixtures_TogetherReachEveryDeblockingTableEntry`

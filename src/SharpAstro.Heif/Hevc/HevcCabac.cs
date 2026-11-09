@@ -6,7 +6,7 @@ namespace SharpAstro.Heif.Hevc;
 /// <summary>
 /// Where each syntax element's contexts sit in <see cref="HevcCabac"/>'s state array, and their
 /// initialisation values for initType 0 (I slices), from H.265 Tables 9-5 to 9-37. Only the elements an
-/// intra slice of the rung 2 envelope codes are here.
+/// intra slice of the decoded envelope codes are here.
 /// </summary>
 internal static class HevcContext
 {

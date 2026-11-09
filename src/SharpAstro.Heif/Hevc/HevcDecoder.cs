@@ -2,9 +2,11 @@ namespace SharpAstro.Heif.Hevc;
 
 /// <summary>
 /// Decodes one HEVC-coded HEIF image item: the parameter sets from its <c>hvcC</c>, the slices from its
-/// data. Rung 2 decodes intra (IDR) pictures inside the envelope measured on the Canon files and refuses
-/// everything else by name, before allocating a sample, with <see cref="NotSupportedException"/>; a stream
-/// that breaks the syntax or semantics is <see cref="InvalidDataException"/>.
+/// data. It decodes intra pictures (IDR, CRA, BLA, and trailing pictures whose slices are all intra) of
+/// H.265 version 1's tools and 4:4:4 / monochrome, and refuses everything else by name with
+/// <see cref="NotSupportedException"/>, before allocating a sample where the parameter sets show it (the range
+/// extensions, Codecs #68) and where the slice data does otherwise (an inter slice); a stream that breaks the
+/// syntax or semantics is <see cref="InvalidDataException"/>.
 /// </summary>
 internal static class HevcDecoder
 {

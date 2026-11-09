@@ -1,7 +1,7 @@
 namespace SharpAstro.Heif.Hevc;
 
 /// <summary>
-/// The slice segment header (H.265 7.3.6.1) of an intra slice of an IDR picture, the only kind decoded, with the byte offset in the RBSP where its slice data (and so its CABAC stream) starts.
+/// The slice segment header (H.265 7.3.6.1) of an intra slice: an IDR, CRA or BLA picture, or an intra trailing picture, with the byte offset in the RBSP where its slice data (and so its CABAC stream) starts.
 /// Everything a still intra picture can carry that this decoder does not implement is refused here by
 /// name, before any slice data is read.
 /// </summary>

@@ -55,15 +55,19 @@ internal sealed record HevcSurvey(
         return new HevcSurvey(configuration, sps, pps, counts, sei, slices);
     }
 
-    /// <summary>The hvcC summary must say what the SPS says; a mismatch means one of them is wrong.</summary>
+    /// <summary>
+    /// The hvcC summary must say what the SPS says about what a reader sizes and converts from it, the chroma
+    /// format and bit depths: a mismatch there means one of them is wrong, and the HEIF side would describe
+    /// planes the decoder does not produce. Profile, tier and level are not checked: decoding depends on the
+    /// SPS alone, and a file whose hvcC states a different (often a higher, rounded-up) level still decodes.
+    /// </summary>
     internal static void CheckAgreement(HevcDecoderConfiguration c, HevcSps sps)
     {
-        var ptl = sps.ProfileTierLevel;
-        if ((int)c.ChromaFormat != sps.ChromaFormatIdc || c.BitDepthLuma != sps.BitDepthLuma || c.BitDepthChroma != sps.BitDepthChroma
-            || c.ProfileIdc != ptl.ProfileIdc || c.HighTier != ptl.HighTier || c.LevelIdc != ptl.LevelIdc)
+        var chromaDepth = sps.ChromaFormatIdc == 0 ? c.BitDepthChroma : sps.BitDepthChroma; // monochrome: no chroma to agree on
+        if ((int)c.ChromaFormat != sps.ChromaFormatIdc || c.BitDepthLuma != sps.BitDepthLuma || c.BitDepthChroma != chromaDepth)
             throw new InvalidDataException(
-                $"'hvcC' says profile {c.ProfileIdc} level {c.LevelIdc} chroma {(int)c.ChromaFormat} {c.BitDepthLuma}/{c.BitDepthChroma}-bit, " +
-                $"the SPS profile {ptl.ProfileIdc} level {ptl.LevelIdc} chroma {sps.ChromaFormatIdc} {sps.BitDepthLuma}/{sps.BitDepthChroma}-bit.");
+                $"'hvcC' says chroma format {(int)c.ChromaFormat} at {c.BitDepthLuma}/{c.BitDepthChroma} bits, " +
+                $"the SPS chroma format {sps.ChromaFormatIdc} at {sps.BitDepthLuma}/{sps.BitDepthChroma} bits.");
     }
 
     private static List<HevcSeiMessage> ReadSei(HevcNalUnit nal)
