@@ -267,3 +267,5 @@ benchmarks/SharpAstro.Codecs.Benchmarks/webp-inputs/external/
 
 # Real Canon HEIF/HEVC test files fetched by fetch-heif-external.sh (third-party, not committed; #66)
 tests/SharpAstro.Codecs.Tests/Fixtures/heif-external/
+# HEVC conformance bitstreams fetched by fetch-hevc-conformance.sh (JCT-VC, third-party, not committed; #66)
+tests/SharpAstro.Codecs.Tests/Fixtures/hevc-conformance/
