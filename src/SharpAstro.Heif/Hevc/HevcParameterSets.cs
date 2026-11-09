@@ -55,7 +55,14 @@ internal sealed record HevcSpsRangeExtension(
 }
 
 /// <summary>The colour and range a VUI states (E.2.1), when it states them.</summary>
-internal sealed record HevcVideoSignal(int VideoFormat, bool FullRange, int? Primaries, int? Transfer, int? Matrix, int? ChromaLocationTop);
+internal sealed record HevcVideoSignal(int VideoFormat, bool FullRange, int? Primaries, int? Transfer, int? Matrix, int? ChromaLocationTop)
+{
+    /// <summary>
+    /// video_signal_type_present_flag. A VUI that codes only the chroma location still gets a record (to carry
+    /// it), but without a signal type it says nothing about range or colour, and is converted as no VUI is.
+    /// </summary>
+    public bool SignalTypePresent { get; init; } = true;
+}
 
 /// <summary>A sequence parameter set (H.265 7.3.2.2), the fields a still-image decoder needs.</summary>
 internal sealed record HevcSps
@@ -656,7 +663,7 @@ internal static class HevcVui
         {
             var top = r.Ue(5, "chroma_sample_loc_type_top_field");
             r.Ue(5, "chroma_sample_loc_type_bottom_field");
-            signal = (signal ?? new HevcVideoSignal(5, false, null, null, null, null)) with { ChromaLocationTop = top };
+            signal = (signal ?? new HevcVideoSignal(5, false, null, null, null, null) { SignalTypePresent = false }) with { ChromaLocationTop = top };
         }
 
         r.Flag(); // neutral_chroma_indication_flag

@@ -17,8 +17,10 @@ namespace SharpAstro.Heif;
 /// canvas (6 bytes a pixel) and each picture's planes (about 3.4 bytes a pixel in 4:2:0, 6.4 in 4:4:4), so a
 /// file of a few KB that declares sizes at these limits gets memory in proportion to what it declares, not to
 /// its size; this is the floor for any decoder that accepts images this large. What is checked first, from
-/// the parameter sets alone: each coded picture holds the size the file declares for it, and is at most
-/// twice the area of the output it covers (plus one 64x64 CTB), and a grid keeps at most 1 GiB of decoded
+/// the parameter sets alone: each coded picture holds the size the file declares for it; a single picture is
+/// coded at most twice the area it shows and a grid's tiles together at most four times its output (each
+/// plus one 64x64 CTB: a legal grid's last row and column overhang by anything short of a tile, which stays
+/// under twice on an axis of two or more tiles); and a grid keeps at most 1 GiB of decoded
 /// tile pictures alive at once (at least one), however many cores decode it. So the ceiling is the canvas
 /// plus about one picture: a 36 KB 1x2 grid whose tiles' SPS declare 16384x16384 4:2:2 and whose output is
 /// 32768x8192 peaks at 2.6 GiB before its slice data runs out (it was the canvas plus one picture per core);

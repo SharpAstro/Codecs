@@ -179,6 +179,7 @@ internal sealed class HevcCabac
         _position = start;
         _cache = 0;
         _cached = 0;
+        _zeroBytes = 0; // the previous substream's look-ahead past the end, not this one's
         StartEngine();
     }
 

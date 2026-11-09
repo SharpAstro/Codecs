@@ -44,6 +44,25 @@ public sealed class HevcCabacTests
         fast.Terminate().ShouldBe(slow.Terminate());
     }
 
+    /// <summary>
+    /// Substreams of two bytes each, restarted at their entry points to the slice's end: the bit reader loads
+    /// up to eight bytes ahead, so the last few restarts each look past the end, and that look-ahead must
+    /// not count against the next substream (the PR #69 review found 3 such substreams refused, 16 at byte 30).
+    /// </summary>
+    [Fact]
+    public void ShortSubstreamsAtTheEndOfASlice_AllRestart()
+    {
+        var data = Enumerable.Repeat(new byte[] { 0xFD, 0x00 }, 16).SelectMany(b => b).ToArray();
+        var cabac = new HevcCabac(data, 0, data.Length);
+        cabac.Start(30);
+        for (var k = 1; k < 16; k++)
+        {
+            cabac.Terminate().ShouldBe(0, "end_of_slice_segment_flag");
+            cabac.Terminate().ShouldBe(1, "end_of_subset_one_bit");
+            cabac.StartSubstreamAt(2 * k); // throws if the restart is refused
+        }
+    }
+
     [Fact]
     public void ReadingPastTheEnd_IsAllowedFor64BitsAndNoMore()
     {

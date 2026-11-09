@@ -283,7 +283,9 @@ keeps SAO from reading a neighbour across it (the later slice of the two decides
 (`cu_transquant_bypass_flag`): the levels are the residual, no transform skip flag, no sign hiding, and
 both loop filters keep their samples.
 
-Seven fixtures: WPP in 4:2:2 10-bit and at CTB 16 (11 substreams), WPP with three and four slices (the
+Eight fixtures: WPP in 4:2:2 10-bit and at CTB 16 (11 substreams), a tall flat WPP picture whose rows are a
+few bytes each (added at the PR #69 review, which found a substream check mistaking the bit reader's look-ahead
+past the slice's end for an over-read), WPP with three and four slices (the
 across flag 0), a whole lossless picture with sign hiding and deblocking on, and lossless units among lossy
 ones for each filter. Notes for regenerating them:
 

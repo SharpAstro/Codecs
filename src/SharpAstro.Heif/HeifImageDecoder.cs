@@ -122,8 +122,9 @@ public sealed class HeifImageDecoder : IImageDecoder
         {
             switch (association.Property)
             {
-                case HeifCleanAperture { WidthD: > 0, HeightD: > 0 } clap:
-                    (width, height) = ((int)Math.Round((double)clap.WidthN / clap.WidthD), (int)Math.Round((double)clap.HeightN / clap.HeightD));
+                case HeifCleanAperture clap:
+                    // The same rectangle Crop takes, with its checks (a bad clap is InvalidData here too).
+                    (_, _, width, height) = Transforms.CleanAperture(width, height, clap);
                     break;
                 case HeifRotation { Degrees: 90 or 270 }:
                     (width, height) = (height, width);
