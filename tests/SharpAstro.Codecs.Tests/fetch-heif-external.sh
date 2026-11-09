@@ -47,7 +47,15 @@ for entry in "${FILES[@]}"; do
             continue
         fi
         echo "[heif external] downloading $name"
+        # A download takes its final name only once its .part has passed the pin, so a broken transfer is
+        # never left behind as a cached file.
+        rm -f "$target.part"
         curl -sSfL "$url" -o "$target.part"
+        if ! echo "$sha *$target.part" | sha256sum -c - > /dev/null 2>&1; then
+            rm -f "$target.part"
+            echo "[heif external] SHA-256 mismatch for the download of $name; refusing to use it." >&2
+            exit 1
+        fi
         mv "$target.part" "$target"
     fi
     if ! echo "$sha *$target" | sha256sum -c - > /dev/null 2>&1; then

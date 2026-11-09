@@ -8,3 +8,6 @@ jpeg2000/*.zip
 jpeg2000/*.tar.gz
 heif/dist/
 heif/*.zip
+jpeg2000/*.part
+heif/*.part
+jpegenc/*.part

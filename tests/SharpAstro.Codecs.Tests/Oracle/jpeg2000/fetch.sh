@@ -44,12 +44,28 @@ case "$(uname -s)" in
 esac
 
 ARCHIVE="$HERE/$ASSET"
+# A cached archive that fails its pin (a transfer that broke part-way, or an error page an older version of this
+# script saved) would otherwise be skipped by the download and fail the hash for ever, so it is removed and
+# fetched again.
+if [ -f "$ARCHIVE" ] && ! echo "$ASSET_SHA256 *$ARCHIVE" | sha256sum -c - > /dev/null 2>&1; then
+    echo "[jpeg2000 oracle] $ASSET is stale or corrupt (SHA-256 mismatch); deleting it and downloading again"
+    rm -f "$ARCHIVE"
+fi
 if [ ! -f "$ARCHIVE" ]; then
     echo "[jpeg2000 oracle] downloading $ASSET"
+    # The download goes to $ARCHIVE.part and only takes its final name once it has passed the pin, so a broken
+    # transfer can never be mistaken for a cached archive on the next run.
+    rm -f "$ARCHIVE.part"
     # --fail: a server error (GitHub answered this download with HTTP 504 on 2026-11-09, which turned master
     # red) must be a download failure, not an error page that then "fails" the SHA-256 check; --retry rides
     # out a short outage.
-    curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors "$OPJ_BASE/$ASSET" -o "$ARCHIVE"
+    curl -fsSL --retry 5 --retry-delay 15 --retry-all-errors "$OPJ_BASE/$ASSET" -o "$ARCHIVE.part"
+    if ! echo "$ASSET_SHA256 *$ARCHIVE.part" | sha256sum -c -; then
+        rm -f "$ARCHIVE.part"
+        echo "[jpeg2000 oracle] ERROR: the download of $ASSET does not match its pinned SHA-256" >&2
+        exit 1
+    fi
+    mv "$ARCHIVE.part" "$ARCHIVE"
 fi
 echo "$ASSET_SHA256 *$ARCHIVE" | sha256sum -c -
 
