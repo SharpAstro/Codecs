@@ -43,7 +43,7 @@ measured envelope and every mutation check are in [`roadmap/heif.md`](roadmap/he
   the first cut's speed. Every shortcut keeps its reference form beside it and a test holds the two equal.
 - **Validated by**:
   - 25 Canon pictures (fetched, not committed).
-  - 32 committed x265 fixtures, each kept only when ffmpeg and libde265 agree (one named exception, where libde265 is
+  - 33 committed x265 fixtures, each kept only when ffmpeg and libde265 agree (one named exception, where libde265 is
     shown wrong).
   - 34 of 45 JCT-VC conformance streams (fetched by `fetch-hevc-conformance.sh`), first and later random-access pictures.
   - libheif through Magick.NET for the colour conversion.

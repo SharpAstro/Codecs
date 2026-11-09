@@ -123,12 +123,35 @@ public sealed class HeifParallelDecodeTests
         Should.Throw<InvalidDataException>(() => HeifDecoder.Decode(single)).Message.ShouldContain("more than twice");
         (GC.GetAllocatedBytesForCurrentThread() - before).ShouldBeLessThan(4L << 20);
 
-        // A grid whose 230x166 tiles each cover only a 40x40 corner of the output.
+        // A grid whose 230x166 tile covers only a 40x40 corner of the output: its coded canvas is far over four
+        // times the output.
         var grid = Grid(40, 40, [Tile()], columns: 1, rows: 1);
-        Should.Throw<InvalidDataException>(() => HeifDecoder.Decode(grid)).Message.ShouldContain("more than twice");
+        Should.Throw<InvalidDataException>(() => HeifDecoder.Decode(grid)).Message.ShouldContain("more than four times");
 
         // Canon's shape stays decodable: coded 1.5 times the area it shows.
         HeifDecoder.Decode(HeifBuilder.WrapHevcPicture(HvcC(configuration), item, 230, 112, null, null)).Height.ShouldBe(112);
+    }
+
+    /// <summary>
+    /// A legal grid's last row may overhang its output by anything short of a tile (23008-12 only requires the
+    /// tiles to cover the output). Before the PR #69 review a per-tile ceiling refused a last row covering 60, 8
+    /// or 1 of its 192 rows, and so would have refused 4032x2268 from 512x512 tiles; the bound is now on the
+    /// grid's whole coded canvas.
+    /// </summary>
+    [Theory]
+    [InlineData(192 + 192)]
+    [InlineData(192 + 60)]
+    [InlineData(192 + 8)]
+    [InlineData(192 + 1)]
+    public void OverhangingGrid_Decodes(int outputHeight)
+    {
+        const string fixture = "x265-420p8-wpp-ctu16"; // 256x192, no conformance window
+        var tile = HevcFixtureTests.Load(fixture).Item;
+        var file = Grid(256, (uint)outputHeight, [tile, tile], columns: 1, rows: 2, fixture: fixture, tileWidth: 256, tileHeight: 192);
+        var rgb = HeifDecoder.Decode(file);
+        (rgb.Width, rgb.Height).ShouldBe((256, outputHeight));
+        // The second tile's first row equals the first tile's.
+        rgb.Samples.AsSpan(192 * 256 * 3, 256 * 3).ToArray().ShouldBe(rgb.Samples.AsSpan(0, 256 * 3).ToArray());
     }
 
     [Fact]

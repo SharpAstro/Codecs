@@ -12,22 +12,31 @@ internal sealed record HevcNalUnit(int Type, int LayerId, int TemporalId, byte[]
     /// <summary>The RBSP position of the byte <paramref name="payloadOffset"/> bytes into the payload, after the header.</summary>
     public int RbspPosition(int payloadOffset)
     {
-        // The k-th removed byte sat at payload offset EmulationPrevention[k] + k.
-        var removed = 0;
-        while (removed < EmulationPrevention.Length && EmulationPrevention[removed] + removed < payloadOffset) removed++;
-        return payloadOffset - removed;
+        // The k-th removed byte sat at payload offset EmulationPrevention[k] + k, which only increases with k, so
+        // the count before payloadOffset is a binary search: a slice header's entry points (up to about 69,000)
+        // cost a logarithm each, not a scan of every removed byte.
+        int low = 0, high = EmulationPrevention.Length;
+        while (low < high)
+        {
+            var middle = (low + high) >>> 1;
+            if (EmulationPrevention[middle] + middle < payloadOffset) low = middle + 1;
+            else high = middle;
+        }
+        return payloadOffset - low;
     }
 
     /// <summary>The payload offset (after the header) of RBSP position <paramref name="rbspPosition"/>.</summary>
     public int PayloadOffset(int rbspPosition)
     {
-        var removed = 0;
-        foreach (var at in EmulationPrevention)
+        // The removed bytes that preceded RBSP positions up to rbspPosition: a binary search over a sorted list.
+        int low = 0, high = EmulationPrevention.Length;
+        while (low < high)
         {
-            if (at > rbspPosition) break;
-            removed++;
+            var middle = (low + high) >>> 1;
+            if (EmulationPrevention[middle] <= rbspPosition) low = middle + 1;
+            else high = middle;
         }
-        return rbspPosition + removed;
+        return rbspPosition + low;
     }
 
     public const int VpsNut = 32, SpsNut = 33, PpsNut = 34, AudNut = 35, PrefixSeiNut = 39, SuffixSeiNut = 40;

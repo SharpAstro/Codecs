@@ -214,6 +214,48 @@ public class HeifDecodeTests(ITestOutputHelper output)
         ImageCodecs.TryDecodeIntoRgba8(heif, new byte[320 * 214 * 4]).ShouldBeFalse("PQ has no canonical 8-bit projection");
     }
 
+    /// <summary>
+    /// A clap of 32-bit fractions can name a width of 4 billion; cast to int it saturated and an int sum
+    /// wrapped, so Decode, TryDecode and ImageCodecs.TryDecode threw OverflowException (out of bool-returning
+    /// Try methods) and TryReadInfo reported a width of 2147483647 (found by the PR #69 review). Now the
+    /// rectangle is checked before any cast, in one place for the decode and the facade's size.
+    /// </summary>
+    [Fact]
+    public void CleanApertureOutsideThe32BitRange_IsInvalidData_AndTheFacadeSaysNo()
+    {
+        var (configuration, item) = HevcFixtureTests.Load("x265-420p8-window");
+        var builder = new HeifBuilder().AddItem(new HeifBuilder.Item(1, "hvc1", item));
+        builder.Associate(1, "hvcC", HvcC(configuration), essential: true);
+        builder.Associate(1, "ispe", HeifBuilder.Ispe(230, 166));
+        builder.Associate(1, "clap", HeifBuilder.Concat(
+            HeifBuilder.U32(4294967295), HeifBuilder.U32(1), HeifBuilder.U32(1), HeifBuilder.U32(1),
+            HeifBuilder.U32(2147483647), HeifBuilder.U32(1), HeifBuilder.U32(0), HeifBuilder.U32(1)), essential: true);
+        var heif = builder.Build();
+
+        Should.Throw<InvalidDataException>(() => HeifDecoder.Decode(heif)).Message.ShouldContain("'clap'");
+        ImageCodecs.TryDecode(heif, out _).ShouldBeFalse();
+        ImageCodecs.TryReadInfo(heif, out _).ShouldBeFalse();
+        HeifImageDecoder.TryReadInfo(heif, out _).ShouldBeFalse();
+        HeifImageDecoder.TryDecodeRgbaFloat(heif, out _, out _, out _, out _).ShouldBeFalse();
+    }
+
+    /// <summary>
+    /// A VUI that codes a chroma location but no signal type states no colour or range, so it converts as no
+    /// VUI does (the full-range default), not as narrow range (the PR #69 review's question).
+    /// </summary>
+    [Fact]
+    public void VuiWithOnlyAChromaLocation_ConvertsAsNoVuiDoes()
+    {
+        var (heif, _, _) = Wrap("x265-420p8-window", null);
+        var image = HeifReader.Read(heif).DescribePrimary(heif);
+        var none = HeifDecoder.Colour.For(image, null, 8, 1);
+        var locationOnly = HeifDecoder.Colour.For(image, new SharpAstro.Heif.Hevc.HevcVideoSignal(5, false, null, null, null, 2) { SignalTypePresent = false }, 8, 1);
+        (locationOnly.FullRange, locationOnly.Kr, locationOnly.Kb).ShouldBe((none.FullRange, none.Kr, none.Kb));
+        none.FullRange.ShouldBeTrue();
+        HeifDecoder.Colour.For(image, new SharpAstro.Heif.Hevc.HevcVideoSignal(5, false, null, null, null, null), 8, 1).FullRange
+            .ShouldBeFalse("a coded signal type that says narrow range is still narrow");
+    }
+
     [Fact]
     public void Facade_DecodesAnSdrHeif_ToRgba8()
     {

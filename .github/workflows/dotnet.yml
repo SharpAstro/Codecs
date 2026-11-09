@@ -96,8 +96,8 @@ jobs:
       # oracle harness degrades to a skip so a clean clone stays green, which is
       # right locally and misleading here -- without this, a CI job that stopped
       # installing jbig2dec or building an oracle would look exactly like one
-      # that did. All five external oracles (jbig2dec, jxrlib, jpegenc, OpenJPEG
-      # and libwebp's dwebp / anim_dump) are gated and fetched or built above, so
+      # that did. All six external oracles (jbig2dec, jxrlib, jpegenc, OpenJPEG,
+      # libwebp's dwebp / anim_dump and ffmpeg) are gated and fetched or built above, so
       # this run has no silently-absent oracle left.
       env:
         REQUIRE_ORACLES: 1

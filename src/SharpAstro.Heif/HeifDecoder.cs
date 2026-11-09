@@ -174,6 +174,10 @@ public static class HeifDecoder
             long concatenated = 0;
             var jobs = new List<(HevcDecoderConfiguration Coding, ReadOnlyMemory<byte> Data, int X0, int Y0)>();
             long largestPicture = 0;
+            // The grid's whole coded canvas may be at most four times its output (plus a CTB): a legal grid's
+            // last row and column may overhang the output by anything short of a tile, which on an axis of two
+            // or more tiles stays under twice, while a few-pixel output over huge tiles is still refused.
+            long codedArea = 0;
             for (var t = 0; t < grid.TileItemIds.Count; t++)
             {
                 int x0 = t % grid.Columns * tileWidth, y0 = t / grid.Columns * tileHeight;
@@ -181,8 +185,10 @@ public static class HeifDecoder
                 var tile = heif.GetItem(grid.TileItemIds[t])!;
                 var coding = heif.Describe(file, tile).Coding;
                 var (sps, _) = HevcDecoder.ParameterSets(coding);
-                var covered = (long)Math.Min(tileWidth, width - x0) * Math.Min(tileHeight, height - y0);
-                CheckCodedSize(sps, tileWidth, tileHeight, covered, $"Tile {t}");
+                CheckCodedSize(sps, tileWidth, tileHeight, $"Tile {t}");
+                codedArea += (long)sps.Width * sps.Height;
+                if (codedArea > 4 * (long)width * height + 64 * 64)
+                    throw new InvalidDataException($"The grid's HEVC pictures add up to more than four times its {width}x{height} output.");
                 largestPicture = Math.Max(largestPicture, PictureBytes(sps));
                 colour ??= Colour.For(image, sps.VideoSignal, sps.BitDepthLuma, sps.ChromaFormatIdc);
                 var ranges = heif.ItemRanges(file.Length, tile);
@@ -234,7 +240,9 @@ public static class HeifDecoder
         else
         {
             var (sps, _) = HevcDecoder.ParameterSets(image.Coding);
-            CheckCodedSize(sps, width, height, (long)width * height, image.Item.ToString());
+            CheckCodedSize(sps, width, height, image.Item.ToString());
+            if ((long)sps.Width * sps.Height > 2 * (long)width * height + 64 * 64)
+                throw new InvalidDataException($"{image.Item}'s HEVC picture of {sps.Width}x{sps.Height} is more than twice its {width}x{height}.");
             canvas = new ushort[(long)width * height * 3];
             var picture = HevcDecoder.Decode(image.Coding, heif.ReadItemData(file, image.Item));
             colour = Colour.For(image, picture);
@@ -290,20 +298,18 @@ public static class HeifDecoder
     /// <summary>
     /// Checked from the SPS alone, before the canvas or any plane is allocated: the coded picture, less its
     /// conformance window, must hold the <paramref name="declaredWidth"/> x <paramref name="declaredHeight"/>
-    /// the file declares for it, and must not be much larger than the part of the output it covers. A picture
-    /// may be coded bigger than it is shown (Canon codes 320x320 for a 320x214 thumbnail, 1.5 times the area,
-    /// and a grid's last row and column of tiles run past the output), so the ceiling is twice that area plus
-    /// one 64x64 coding tree block, and above it the file is refused rather than decoded into memory it does not
-    /// show. What is left is memory in proportion to what the file declares, up to <see cref="HeifLimits"/>.
+    /// the file declares for it. How much bigger it may be is checked by the caller: a single picture at most
+    /// twice the area it shows plus one 64x64 CTB (Canon codes 320x320 for a 320x214 thumbnail, 1.5 times), a
+    /// grid's tiles together at most four times the output plus one CTB (a legal last row or column overhangs
+    /// by anything short of a tile). Beyond those the file is refused rather than decoded into memory it does
+    /// not show; what is left is memory in proportion to what the file declares, up to <see cref="HeifLimits"/>.
     /// </summary>
-    internal static void CheckCodedSize(HevcSps sps, int declaredWidth, int declaredHeight, long coveredArea, string what)
+    internal static void CheckCodedSize(HevcSps sps, int declaredWidth, int declaredHeight, string what)
     {
         var window = sps.ConformanceWindow;
         int shownWidth = sps.Width - window.Left - window.Right, shownHeight = sps.Height - window.Top - window.Bottom;
         if (declaredWidth > shownWidth || declaredHeight > shownHeight)
             throw new InvalidDataException($"{what} declares {declaredWidth}x{declaredHeight}, but its HEVC picture is {shownWidth}x{shownHeight}.");
-        if ((long)sps.Width * sps.Height > 2 * coveredArea + 64 * 64)
-            throw new InvalidDataException($"{what}'s HEVC picture of {sps.Width}x{sps.Height} is more than twice the {coveredArea} pixels of the output it covers.");
     }
 
     /// <summary>An essential property this reader does not understand means the image cannot be shown right (23008-12 6.5.1).</summary>
@@ -391,8 +397,11 @@ public static class HeifDecoder
             {
                 (primaries, transfer, matrix, fullRange) = (nclx.Primaries, nclx.Transfer, nclx.Matrix, nclx.FullRange);
             }
-            else if (videoSignal is { } vui)
+            else if (videoSignal is { SignalTypePresent: true } vui)
             {
+                // (A VUI with only a chroma location falls through to the default below, as no VUI does: H.265
+                // would infer a narrow range from it, but then two files differing in that one flag would convert
+                // with different ranges, and no colour was stated either way.)
                 primaries = (ColorPrimaries)(vui.Primaries ?? (int)ColorPrimaries.BT709);
                 transfer = (TransferFunction)(vui.Transfer ?? (int)TransferFunction.Srgb);
                 matrix = (MatrixCoefficients)(vui.Matrix ?? (int)MatrixCoefficients.BT470BG);
@@ -482,21 +491,34 @@ internal static class Transforms
     /// </summary>
     public static (ushort[] Canvas, int Width, int Height) Crop(ushort[] canvas, int width, int height, HeifCleanAperture clap)
     {
+        var (x0, y0, w, h) = CleanAperture(width, height, clap);
+
+        var cropped = new ushort[(long)w * h * 3];
+        for (var y = 0; y < h; y++)
+            canvas.AsSpan((int)(((long)(y0 + y) * width + x0) * 3), w * 3).CopyTo(cropped.AsSpan(y * w * 3));
+        return (cropped, w, h);
+    }
+
+    /// <summary>
+    /// The rectangle a <c>clap</c> selects from a <paramref name="width"/> x <paramref name="height"/> image,
+    /// checked to lie inside it before anything is cast to int: the fractions are 32-bit numerators over
+    /// 32-bit denominators, so a crafted one names a width of 4 billion, which an int cast saturates and an
+    /// int sum wraps. Used by <see cref="Crop"/> and by the facade's size, so the two cannot disagree.
+    /// </summary>
+    /// <exception cref="InvalidDataException">A zero denominator, or a rectangle not inside the image.</exception>
+    public static (int X, int Y, int Width, int Height) CleanAperture(int width, int height, HeifCleanAperture clap)
+    {
         if (clap.WidthD == 0 || clap.HeightD == 0 || clap.HorizontalOffsetD == 0 || clap.VerticalOffsetD == 0)
             throw new InvalidDataException("'clap' has a zero denominator.");
         var cleanWidth = (double)clap.WidthN / clap.WidthD;
         var cleanHeight = (double)clap.HeightN / clap.HeightD;
         var left = (width - 1) / 2.0 + (double)clap.HorizontalOffsetN / clap.HorizontalOffsetD - (cleanWidth - 1) / 2.0;
         var top = (height - 1) / 2.0 + (double)clap.VerticalOffsetN / clap.VerticalOffsetD - (cleanHeight - 1) / 2.0;
-        int x0 = (int)Math.Round(left), y0 = (int)Math.Round(top);
-        int w = (int)Math.Round(cleanWidth), h = (int)Math.Round(cleanHeight);
-        if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0 || x0 + w > width || y0 + h > height)
+        double x0 = Math.Round(left), y0 = Math.Round(top), w = Math.Round(cleanWidth), h = Math.Round(cleanHeight);
+        // In doubles, every term exact at these magnitudes; a NaN fails every comparison and is refused too.
+        if (!(w >= 1 && h >= 1 && x0 >= 0 && y0 >= 0 && x0 + w <= width && y0 + h <= height))
             throw new InvalidDataException($"'clap' selects {w}x{h} at ({x0}, {y0}), outside the {width}x{height} image.");
-
-        var cropped = new ushort[(long)w * h * 3];
-        for (var y = 0; y < h; y++)
-            canvas.AsSpan((int)(((long)(y0 + y) * width + x0) * 3), w * 3).CopyTo(cropped.AsSpan(y * w * 3));
-        return (cropped, w, h);
+        return ((int)x0, (int)y0, (int)w, (int)h);
     }
 
     /// <summary><c>irot</c>: <paramref name="degrees"/> ANTICLOCKWISE.</summary>
