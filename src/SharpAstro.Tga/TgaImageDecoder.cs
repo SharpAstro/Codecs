@@ -22,9 +22,9 @@ namespace SharpAstro.Tga;
 public sealed class TgaImageDecoder : IImageDecoder
 {
     private const int HeaderSize = 18;
-    private const int FooterSize = 26;
+    private const int FooterSize = TgaReader.FooterSize;
 
-    private static ReadOnlySpan<byte> FooterSignature => "TRUEVISION-XFILE.\0"u8;
+    private static ReadOnlySpan<byte> FooterSignature => TgaReader.FooterSignature;
 
     /// <summary>
     /// The smallest file <see cref="CanDecode"/> can accept: an 18-byte header and the 26-byte footer. Unlike the
