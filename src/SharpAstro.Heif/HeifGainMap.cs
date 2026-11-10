@@ -129,7 +129,7 @@ public static class HeifGainMap
             throw new InvalidDataException($"The gain map's base image {info.Base.Id} declares {baseImage.Width}x{baseImage.Height}, over the {HeifLimits.MaxGainMapBasePixels}-pixel limit for a reconstruction.");
         if (mapPixels > basePixels)
             throw new InvalidDataException($"The gain map {info.Map.Id} ({mapImage.Width}x{mapImage.Height}) is larger than its base image {info.Base.Id} ({baseImage.Width}x{baseImage.Height}).");
-        if (!MapMatchesBaseShape(baseImage, mapImage))
+        if (!MapMatchesBaseShape(baseImage, mapImage, info.Dialect))
             throw new InvalidDataException($"The gain map {info.Map.Id} ({mapImage.Width}x{mapImage.Height}) does not have its base image {info.Base.Id}'s orientation ({baseImage.Width}x{baseImage.Height}): a map stored in another orientation is refused, not stretched onto it.");
 
         var headroom = displayHeadroom ?? metadata.HdrCapacityMax;
@@ -147,7 +147,7 @@ public static class HeifGainMap
         var baseLinear = baseRgb.ToLinearRgbaFloat(out var encoding);
 
         var mapRgb = HeifDecoder.Decode(file, info.Map);
-        if (!HasOwnTransforms(mapImage))
+        if (apple && !HasOwnTransforms(mapImage))
             mapRgb = TurnLikeBase(mapRgb, baseImage);
         var mapChannels = apple || mapImage.ChromaFormat == HevcChromaFormat.Monochrome || metadata.ChannelCount == 1 ? 1 : 3;
         var mapCodes = NormaliseMap(mapRgb, mapChannels);
@@ -182,19 +182,21 @@ public static class HeifGainMap
     }
 
     /// <summary>
-    /// Whether the map has the base's orientation. A map with transformative properties of its own (<c>clap</c>, <c>irot</c>,
-    /// <c>imir</c>) is compared on its display size against the base's. A map with none (Apple's auxiliary map is stored in
-    /// the sensor's orientation, with no <c>irot</c> even when the primary has one) is taken to be stored like the base, so
-    /// it is compared on stored sizes, and <see cref="Decode(ReadOnlySpan{byte}, HeifFile, HeifGainMapInfo, double?)"/>
-    /// turns it the way the base is turned. The reconstruction resamples the map onto the base, so a map in another
+    /// Whether the map has the base's orientation. In the ISO <c>tmap</c> dialect a derived image's inputs are the items as
+    /// displayed, so the map is compared on its display size against the base's. Apple's auxiliary map
+    /// (<see cref="HeifGainMapDialect.AppleAux"/>) is the exception: with transformative properties of its own (<c>clap</c>,
+    /// <c>irot</c>, <c>imir</c>) it is compared on its display size too, but one with none is stored in the sensor's
+    /// orientation, with no <c>irot</c> even when the primary has one, so it is taken to be stored like the base, compared
+    /// on stored sizes, and <see cref="Decode(ReadOnlySpan{byte}, HeifFile, HeifGainMapInfo, double?)"/> turns it the way the
+    /// base is turned. The reconstruction resamples the map onto the base, so a map in another
     /// orientation (portrait against a landscape base, say) would be stretched across the picture with no sign of it. Only
     /// the orientation is checked, not the exact aspect ratio: maps are resampled onto the base whatever their size (a 4:3
     /// map on a wider base is accepted, as the grid-base tests pin), and a square, or a shape within
     /// <see cref="SquareTolerance"/> pixels of one, on either side has no orientation to disagree with.
     /// </summary>
-    internal static bool MapMatchesBaseShape(HeifImage baseImage, HeifImage mapImage)
+    internal static bool MapMatchesBaseShape(HeifImage baseImage, HeifImage mapImage, HeifGainMapDialect dialect)
     {
-        var inherits = !HasOwnTransforms(mapImage);
+        var inherits = dialect == HeifGainMapDialect.AppleAux && !HasOwnTransforms(mapImage);
         var (bw, bh) = inherits ? ((int)baseImage.Width, (int)baseImage.Height) : HeifImageDecoder.DisplaySize(baseImage, null);
         var (mw, mh) = inherits ? ((int)mapImage.Width, (int)mapImage.Height) : HeifImageDecoder.DisplaySize(mapImage, null);
         if (bw <= 0 || bh <= 0 || mw <= 0 || mh <= 0) return false;
