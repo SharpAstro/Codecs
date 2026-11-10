@@ -71,6 +71,25 @@ public sealed class TgaRefusalTests
     }
 
     [Fact]
+    public void FooterBytes_AreNotPixelData_WhenAnRleImageIsShort()
+    {
+        // 2x2 at 24 bits RLE needs at least one packet (1 + 3 bytes); 3 are present, then a 26-byte footer. Untrimmed,
+        // the footer would satisfy the up-front size check; trimmed, the check refuses it as truncated.
+        byte[] footer = [.. new byte[8], .. new byte[8], .. "TRUEVISION-XFILE."u8.ToArray(), 0];
+        Refused(Build(10, 2, 2, 24, 0x20, [.. Run(4, 1, 2), .. footer])).Message.ShouldContain("truncated");
+    }
+
+    [Fact]
+    public void FooterBytes_AreNotPixelData_WhenAnRleImageIsComplete()
+    {
+        // A whole RLE image followed by a footer decodes exactly as it does without one.
+        byte[] footer = [.. new byte[8], .. new byte[8], .. "TRUEVISION-XFILE."u8.ToArray(), 0];
+        byte[] pixels = Run(4, 1, 2, 3);
+        TgaReader.Decode(Build(10, 2, 2, 24, 0x20, [.. pixels, .. footer])).Rgba
+            .ShouldBe(TgaReader.Decode(Build(10, 2, 2, 24, 0x20, pixels)).Rgba);
+    }
+
+    [Fact]
     public void TruncatedHeader_IsRefused()
     {
         Refused(new byte[17]);

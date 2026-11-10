@@ -97,9 +97,11 @@ public static class TgaReader
     public const long MaximumPixels = 1L << 26;
 
     private const int HeaderSize = 18;
-    private const int FooterSize = 26;
 
-    private static ReadOnlySpan<byte> FooterSignature => "TRUEVISION-XFILE.\0"u8;
+    /// <summary>The TGA 2.0 footer: 26 bytes, the last 18 of them <see cref="FooterSignature"/>. One definition, shared with <see cref="TgaImageDecoder"/>.</summary>
+    internal const int FooterSize = 26;
+
+    internal static ReadOnlySpan<byte> FooterSignature => "TRUEVISION-XFILE.\0"u8;
 
     /// <summary>Reads and checks the header. Returns false for anything <see cref="Decode"/> would refuse in it.</summary>
     public static bool TryReadInfo(ReadOnlySpan<byte> data, out TgaInfo info)
@@ -129,7 +131,11 @@ public static class TgaReader
         int bytesPerSample = info.BitsPerPixel == 8 ? 1 : (info.BitsPerPixel + 7) / 8;
         int dataOffset = HeaderSize + idLength + mapBytes;
         // A TGA 2.0 footer (26 bytes, ending in the signature) is not pixel data: leave it out of the size check,
-        // or a raw image up to 26 bytes short would decode with the footer bytes read as pixels.
+        // or a raw image up to 26 bytes short would decode with the footer bytes read as pixels. Only the fixed 26
+        // bytes are trimmed, deliberately: the footer's extension-area and developer-area offsets are not read, so a
+        // file carrying those areas before its footer still has them counted as pixel bytes. That only matters for a
+        // file already short of its pixels (the size check is a lower bound, and the decode reads exactly the pixels
+        // it needs from the front), and reading the offsets would let a corrupt footer change which files decode.
         ReadOnlySpan<byte> pixels = data[dataOffset..];
         if (pixels.Length >= FooterSize && pixels[^FooterSignature.Length..].SequenceEqual(FooterSignature))
         {
