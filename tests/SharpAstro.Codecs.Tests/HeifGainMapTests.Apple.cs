@@ -90,7 +90,7 @@ public partial class HeifGainMapTests
     private static byte[] Xmp(string capacityMax) =>
         Encoding.UTF8.GetBytes($"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:hdrgm=\"http://ns.adobe.com/hdr-gain-map/1.0/\" hdrgm:Version=\"1.0\" hdrgm:HDRCapacityMax=\"{capacityMax}\"/></rdf:RDF></x:xmpmeta>");
 
-    private sealed class AppleOptions
+    internal sealed class AppleOptions
     {
         public string Urn { get; set; } = AppleUrn;
         public byte[]? Exif { get; set; }
@@ -164,7 +164,7 @@ public partial class HeifGainMapTests
         return Math.Pow(2.0, Math.Max(stops, 0.0));
     }
 
-    private static byte[] AppleFile(double maker33 = 2, double maker48 = 0, Action<AppleOptions>? configure = null) =>
+    internal static byte[] AppleFile(double maker33 = 2, double maker48 = 0, Action<AppleOptions>? configure = null) =>
         BuildApple(Base256, Mono8, o => { o.Exif = ExifWithMakerNote(maker33, maker48); configure?.Invoke(o); });
 
     // ---- structure ---------------------------------------------------------------------------------

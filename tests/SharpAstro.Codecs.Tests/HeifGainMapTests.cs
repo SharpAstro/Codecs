@@ -25,7 +25,7 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
 
     // ---- the metadata the files carry --------------------------------------------------------------
 
-    private static GainMapMetadata Scalar() => new()
+    internal static GainMapMetadata Scalar() => new()
     {
         GainMapMin = 0.5,
         GainMapMax = 6,
@@ -54,13 +54,13 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
     };
 
     /// <summary>The <c>tmap</c> item's data: a version byte (0) and the ISO/TS 21496-1 payload.</summary>
-    private static byte[] TmapData(GainMapMetadata metadata, bool common = true, byte version = 0) =>
+    internal static byte[] TmapData(GainMapMetadata metadata, bool common = true, byte version = 0) =>
         [version, .. Iso21496MetadataTests.Write(metadata, common)];
 
     // ---- building files ----------------------------------------------------------------------------
 
     /// <summary>One HEVC image item: a fixture, its displayed size (or a declared one that is not), and an nclx.</summary>
-    private sealed record ImageSpec(string Fixture, byte[]? Nclx = null, (uint W, uint H)? DeclaredSize = null)
+    internal sealed record ImageSpec(string Fixture, byte[]? Nclx = null, (uint W, uint H)? DeclaredSize = null)
     {
         /// <summary>A 3 x 2 grid of the same fixture's pictures, output as large as the tiles together.</summary>
         public bool Grid { get; init; }
@@ -109,7 +109,7 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
         if (spec.Nclx is not null) builder.Associate(id, "colr", spec.Nclx);
     }
 
-    private sealed class FileOptions
+    internal sealed class FileOptions
     {
         public bool TmapIsPrimary { get; set; }
         public byte[]? TmapBytes { get; set; }
@@ -123,7 +123,7 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
     /// A gain-map file. Layout A (default): the base is the primary, the tmap beside it in an altr group with it.
     /// Layout B: the tmap is the primary and the base is hidden, in the altr group.
     /// </summary>
-    private static byte[] Build(ImageSpec baseSpec, ImageSpec mapSpec, GainMapMetadata? metadata = null, Action<FileOptions>? configure = null)
+    internal static byte[] Build(ImageSpec baseSpec, ImageSpec mapSpec, GainMapMetadata? metadata = null, Action<FileOptions>? configure = null)
     {
         var options = new FileOptions();
         configure?.Invoke(options);
@@ -142,9 +142,9 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
         return builder.Build();
     }
 
-    private static readonly ImageSpec Base256 = new("x265-420p8-deblock", Srgb());                // 256x192, 8-bit 4:2:0
+    internal static readonly ImageSpec Base256 = new("x265-420p8-deblock", Srgb());                // 256x192, 8-bit 4:2:0
     private static readonly ImageSpec BaseGrid = new("x265-420p8-window", Srgb()) { Grid = true }; // 690x332 grid of 230x166
-    private static readonly ImageSpec Mono8 = new("x265-400p8", HeifBuilder.Nclx(2, 2, 2, true));  // 256x192, 4:0:0, nclx all unspecified, as Samsung's
+    internal static readonly ImageSpec Mono8 = new("x265-400p8", HeifBuilder.Nclx(2, 2, 2, true));  // 256x192, 4:0:0, nclx all unspecified, as Samsung's
     private static readonly ImageSpec Mono10 = new("x265-400p10", HeifBuilder.Nclx(2, 2, 2, true)); // the same at 10 bits
     private static readonly ImageSpec Colour10 = new("x265-420p10-lowqp", HeifBuilder.Nclx(1, 13, 1, true)); // 128x96, 4:2:0, 10 bits
 
