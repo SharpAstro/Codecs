@@ -16,7 +16,7 @@ public sealed class Iso21496MetadataTests
     private const uint Den = 1_000_000;
 
     /// <summary>Test-side writer: the inverse of <see cref="Iso21496Metadata.Parse"/>.</summary>
-    private static byte[] Write(GainMapMetadata metadata, bool commonDenominator, ushort minimumVersion = 0)
+    internal static byte[] Write(GainMapMetadata metadata, bool commonDenominator, ushort minimumVersion = 0)
     {
         var bytes = new List<byte>();
         void U8(byte v) => bytes.Add(v);
