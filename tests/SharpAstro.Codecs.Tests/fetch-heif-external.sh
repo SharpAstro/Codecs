@@ -11,7 +11,9 @@
 # and a test whose input can change underneath it proves nothing, so the script stops.
 #
 # A file with no URL cannot be fetched: copy it into Fixtures/heif-external/ by hand under the
-# listed name; the script still checks its hash.
+# listed name; the script still checks its hash. Such a file that is absent is reported and skipped,
+# not an error: the script exits 0 on a clean fetch, and only a download failure or a hash mismatch
+# exits non-zero.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -76,8 +78,9 @@ for entry in "${FILES[@]}"; do
     target="$OUT/$name"
     if [ ! -f "$target" ]; then
         if [ -z "$url" ]; then
-            echo "[heif external] $name: no URL, copy it into $OUT by hand" >&2
-            status=1
+            # Not a failure: the file cannot be fetched at all, and the tests that use it skip visibly when
+            # it is absent, so a clean fetch must still exit 0. A file that IS present is still hash-checked.
+            echo "[heif external] $name: no URL, skipped; copy it into $OUT by hand to run its tests (they skip without it)" >&2
             continue
         fi
         echo "[heif external] downloading $name"
@@ -100,4 +103,4 @@ for entry in "${FILES[@]}"; do
     fi
     echo "[heif external] $name ok"
 done
-exit $status
+exit "$status"

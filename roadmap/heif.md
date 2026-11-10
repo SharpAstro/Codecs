@@ -93,8 +93,12 @@ windows on the gain maps and a thumbnail. Things worth knowing:
   the picture, which is why the test bounds it at 1 code and 10 % and does not ask for exact.
 - **The 200 MP primary is not compared whole**: this decoder and libheif together would hold about 6 GB (the
   machine that ran this had 3.6 GB free). The test cuts the bottom-right 2x2 tiles into a grid file of their own
-  (output 960x976, crossing the overhang both ways) and compares that. The whole image still decodes in
-  `Primary_SizeAndDepthAgreeWithMagick` (libheif) and `Statistics_...` (this decoder, every tile).
+  (output 960x976, crossing the overhang both ways) and compares that. Nor does `HeifDecoder` ever compose the whole
+  200 MP primary in a test, on purpose: its canvas plus one picture is the 2.6 GiB residual in `HeifLimits`' remarks,
+  too much for a default test run on a shared machine. What covers the whole image instead: `Statistics_...` decodes
+  every tile of the primary through `HevcDecoder` (plane-exact against ffmpeg), and the corner grid runs the grid
+  composition, overhang and rotation path on real tiles. `Primary_SizeAndDepthAgreeWithMagick` pings the file, so
+  libheif reads only the primary's size and depth and decodes no pixels.
 - **ffmpeg is run once per 48 same-shape pictures** (`HevcOracle.DecodeFrames`, `-fps_mode passthrough`), not
   per tile, which is what makes 768 tiles take seconds.
 - **No Pixel (or other open-licence Android) file is in the set**: none with a stated licence was found
