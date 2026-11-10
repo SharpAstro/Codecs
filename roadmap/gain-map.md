@@ -9,6 +9,21 @@ an HDR one. Milestone 4 (the libultrahdr oracle harness + committed golden vecto
 and milestone 7 (ISO 21496-1 / Apple dialects) remain open. This document keeps
 the original design + validation plan for those remaining rungs.
 
+**The core is its own package (COD70, Codecs #70).** The metadata, the per-channel parameters,
+the reconstruction math and the sRGB transfer functions now live in **`SharpAstro.GainMap`**, which
+depends only on `SharpAstro.Codecs.Abstractions`, so the HEIF carrier (`SharpAstro.Heif`: ISO 21496-1
+`tmap` items and Apple auxiliary maps) can use them without pulling in JPEG.
+`SharpAstro.Jpeg.GainMap` references it and forwards `GainMapMetadata` by full name (`TypeForwardedTo`), so
+its public API is unchanged and `GainMapImage.ReconstructHdr` is byte-identical. What the core adds:
+per-channel min/max/gamma/offsets (`GainMapChannel`; the scalar metadata is the one-channel case), a
+reconstruction entry point over a base given as **linear floats** with the map as normalised codes of any bit
+depth (so a 10-bit HEIF base works), the `UseBaseColourSpace` flag recorded without converting, and
+`Iso21496Metadata.Parse`, a clean-room reader for the ISO/TS 21496-1 binary metadata structure (version
+fields, both fraction encodings, 1 or 3 channels, backward direction; `InvalidDataException` for truncated,
+zero-denominator, unknown-minimum-version and non-finite or out-of-range payloads). The writer is test-only
+(`Iso21496MetadataTests`). Its layout is pinned by hand-written byte vectors, but no third-party ISO payload
+is committed yet: validating against libultrahdr/Android output is part of milestone 4 and 7.
+
 ## Why this feature
 
 The 3.5 facade enforces a deliberate contract: HDR content (float samples, PQ/HLG-tagged
@@ -195,7 +210,8 @@ self-consistency.
   photographic* tone mapping. Astro masters still need the consumer's
   percentile/asinh stretch to produce the SDR rendition in the first place — `Compute`
   consumes that result; it does not invent it.
-- **HEIC/AVIF carriers** of the same gain-map payload: out of scope (no HEIF container
-  reader in the family).
+- **HEIC carriers** of the same gain-map payload are no longer out of scope: `SharpAstro.Heif` reads the
+  container, and the shared core is `SharpAstro.GainMap` (see the status note above). The HEIF-side wiring
+  is Codecs #70's later legs. **AVIF** remains out of scope (no AV1 decoder in the family).
 - **Full XMP engine**: out of scope — targeted parsing of the two namespaces only.
 - **JPEG XT** (ISO 18477 layered HDR JPEG): effectively undeployed; not pursued.
