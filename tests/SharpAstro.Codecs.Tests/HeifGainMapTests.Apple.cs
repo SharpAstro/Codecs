@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using SharpAstro.Codecs.Abstractions;
 using SharpAstro.Heif;
 using Shouldly;
 
