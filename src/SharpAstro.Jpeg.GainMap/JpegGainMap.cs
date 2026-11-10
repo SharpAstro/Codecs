@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using SharpAstro.Codecs.Abstractions;
+using SharpAstro.GainMap;
 
 namespace SharpAstro.Jpeg;
 

@@ -30,6 +30,9 @@
 
   <ItemGroup>
     <ProjectReference Include="../SharpAstro.Codecs.Abstractions/SharpAstro.Codecs.Abstractions.csproj" />
+    <!-- The metadata + reconstruction core lives in SharpAstro.GainMap so HEIF can use it without JPEG.
+         GainMapMetadata is forwarded from here (see TypeForwards.cs). -->
+    <ProjectReference Include="../SharpAstro.GainMap/SharpAstro.GainMap.csproj" />
     <ProjectReference Include="../SharpAstro.Jpeg/SharpAstro.Jpeg.csproj" />
   </ItemGroup>
 
