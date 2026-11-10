@@ -130,7 +130,7 @@ public static class HeifGainMap
         if (mapPixels > basePixels)
             throw new InvalidDataException($"The gain map {info.Map.Id} ({mapImage.Width}x{mapImage.Height}) is larger than its base image {info.Base.Id} ({baseImage.Width}x{baseImage.Height}).");
         if (!MapMatchesBaseShape(baseImage, mapImage))
-            throw new InvalidDataException($"The gain map {info.Map.Id} ({mapImage.Width}x{mapImage.Height}) does not have its base image {info.Base.Id}'s shape ({baseImage.Width}x{baseImage.Height}): a map stored in another orientation is refused, not stretched onto it.");
+            throw new InvalidDataException($"The gain map {info.Map.Id} ({mapImage.Width}x{mapImage.Height}) does not have its base image {info.Base.Id}'s orientation ({baseImage.Width}x{baseImage.Height}): a map stored in another orientation is refused, not stretched onto it.");
 
         var headroom = displayHeadroom ?? metadata.HdrCapacityMax;
         var apple = info.Dialect == HeifGainMapDialect.AppleAux;
@@ -180,20 +180,18 @@ public static class HeifGainMap
     }
 
     /// <summary>
-    /// Whether the map, after its own <c>clap</c>/<c>irot</c>, has the base's aspect ratio (after the base's own). The
-    /// reconstruction upsamples the map onto the base pixel for pixel, so a map stored in another orientation (portrait
-    /// against a landscape base, say) would be stretched across the picture with no sign of it. A real map is a
-    /// downscale of its base by a whole factor, so the ratios differ only by the rounding of a small side: a quarter
-    /// is allowed, which a 3:2 against 2:3 swap exceeds by far.
+    /// Whether the map, after its own <c>clap</c>/<c>irot</c>, has the base's orientation (after the base's own). The
+    /// reconstruction resamples the map onto the base, so a map stored in another orientation (portrait against a
+    /// landscape base, say) would be stretched across the picture with no sign of it. Only the orientation is checked,
+    /// not the exact aspect ratio: maps are resampled onto the base whatever their size (a 4:3 map on a wider base is
+    /// accepted, as the grid-base tests pin), and a square on either side has no orientation to disagree with.
     /// </summary>
     internal static bool MapMatchesBaseShape(HeifImage baseImage, HeifImage mapImage)
     {
         var (bw, bh) = HeifImageDecoder.DisplaySize(baseImage, null);
         var (mw, mh) = HeifImageDecoder.DisplaySize(mapImage, null);
         if (bw <= 0 || bh <= 0 || mw <= 0 || mh <= 0) return false;
-        // The ratios mw/bw and mh/bh, compared as cross products to stay in integers.
-        double sx = (double)mw * bh, sy = (double)mh * bw;
-        return Math.Abs(sx - sy) <= 0.25 * Math.Max(sx, sy);
+        return Math.Sign(bw - bh) * Math.Sign(mw - mh) >= 0;
     }
 
     /// <summary>

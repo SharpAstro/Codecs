@@ -434,7 +434,7 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
     {
         // The same 256x192 map, turned to 192x256 by its own irot: landscape base, portrait map.
         var file = Build(Base256, Mono8, configure: o => o.MapIrot = HeifBuilder.Irot(90));
-        Should.Throw<InvalidDataException>(() => HeifGainMap.Decode(file)).Message.ShouldContain("shape");
+        Should.Throw<InvalidDataException>(() => HeifGainMap.Decode(file)).Message.ShouldContain("orientation");
 
         // The facade does not fail on it: the file is the plain base.
         ImageCodecs.TryReadInfo(file, out var info).ShouldBeTrue();
