@@ -41,7 +41,7 @@ public sealed record JxlImage
 /// <para><b>Lossy VarDCT</b> (<see cref="JxlVarDctEncoder"/> / <see cref="JxlVarDctFrame"/>) via
 /// <see cref="EncodeRgb24Lossy"/>: 8-bit RGB with a libjxl-style Butteraugli <c>distance</c> knob
 /// (default 1.0; DCT8, XYB colour, full-resolution chroma), dimensions multiples of 8 and ≤ 16384 px.
-/// <see cref="Decode"/> auto-detects the encoding and handles both. Grayscale-lossy and arbitrary
+/// <see cref="Decode(ReadOnlySpan{byte})"/> auto-detects the encoding and handles both. Grayscale-lossy and arbitrary
 /// lossy dimensions remain follow-ups.</para>
 /// </summary>
 public static class JxlImageCodec
@@ -87,7 +87,7 @@ public static class JxlImageCodec
     /// <inheritdoc cref="Decode(ReadOnlySpan{byte})"/>
     public static JxlImage Decode(byte[] jxl) => Decode(jxl.AsSpan());
 
-    /// <summary>Reads just the headers to learn the frame encoding (+ dimensions) so <see cref="Decode"/> can dispatch.</summary>
+    /// <summary>Reads just the headers to learn the frame encoding (+ dimensions) so <see cref="Decode(ReadOnlySpan{byte})"/> can dispatch.</summary>
     private static JxlFrameEncoding PeekEncoding(byte[] containerOrCodestream, out int width, out int height)
     {
         byte[] cs = JxlContainer.ExtractCodestream(containerOrCodestream);
