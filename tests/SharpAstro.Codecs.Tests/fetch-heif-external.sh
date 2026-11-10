@@ -43,6 +43,12 @@ FILES=(
     # from the photographer. They are still kept out of git (sizes, and the Canon files' rule
     # that nothing third-party lives here), and are pinned by commit so the URL cannot move.
 
+    # Which file serves which gain-map dialect (HeifGainMapRealFileTests, and the facade): the two Apple files are
+    # the Apple aux dialect (auxl + auxC urn:com:apple:photo:2020:aux:hdrgainmap), samsung-tmap-aux-ycbcr.heic is the
+    # ISO/TS 21496-1 'tmap' dialect. samsung-200mp-hdrgainmap.heic has only Samsung's aux URN, which is not read, so
+    # it is the "gain map present but not used" case. No iOS 18 'tmap' HEIC with a stated licence was found that a
+    # script can fetch; add one here (URL + SHA-256) when one turns up, the real-file tests take the name from a table.
+
     # Apple iPhone 13 Pro HDR photo with Apple's auxiliary HDR gain map
     # (auxC urn:com:apple:photo:2020:aux:hdrgainmap), ftyp 'heic'. The sample of johncf/apple-hdr-heic
     # (tests/data/hdr-sample.heic), MIT, (c) 2024 John Charankattu; stored in Git LFS, so the URL is
