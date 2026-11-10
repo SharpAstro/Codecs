@@ -74,6 +74,12 @@ public sealed class HeifItem
     public override string ToString() => $"item {Id} '{Type}'";
 }
 
+/// <summary>
+/// One entity group of the <c>grpl</c> box (14496-12 8.15.3): its grouping type (<c>altr</c>: the entities are
+/// alternatives of each other, a reader shows the first it supports), its ID and the entity (item) IDs in order.
+/// </summary>
+public sealed record HeifEntityGroup(string Type, uint GroupId, IReadOnlyList<uint> EntityIds);
+
 /// <summary>A property associated with an item, and whether a reader must understand it to show the item.</summary>
 public readonly record struct HeifPropertyAssociation(HeifProperty Property, bool Essential);
 

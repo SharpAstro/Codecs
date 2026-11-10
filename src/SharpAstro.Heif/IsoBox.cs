@@ -16,6 +16,7 @@ internal static class FourCc
     public const uint Idat = 0x69646174; // 'idat'
     public const uint Iref = 0x69726566; // 'iref'
     public const uint Iprp = 0x69707270; // 'iprp'
+    public const uint Grpl = 0x6772706C; // 'grpl'
     public const uint Ipco = 0x6970636F; // 'ipco'
     public const uint Ipma = 0x69706D61; // 'ipma'
     public const uint Ispe = 0x69737065; // 'ispe'

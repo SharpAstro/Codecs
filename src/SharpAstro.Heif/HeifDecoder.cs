@@ -482,20 +482,20 @@ public static class HeifDecoder
     }
 }
 
-/// <summary>The transformative properties (23008-12 6.5.10-6.5.12) on an interleaved RGB canvas.</summary>
+/// <summary>The transformative properties (23008-12 6.5.10-6.5.12) on an interleaved canvas of <c>channels</c> samples a pixel (3 for the decoder's R'G'B' codes, 4 for a gain map's RGBA floats).</summary>
 internal static class Transforms
 {
     /// <summary>
     /// <c>clap</c> (14496-12 12.1.4): a window of the given size centred on the image centre plus the offsets.
     /// The left edge is <c>(width - 1) / 2 + horizOff - (cleanWidth - 1) / 2</c>, rounded to a whole pixel.
     /// </summary>
-    public static (ushort[] Canvas, int Width, int Height) Crop(ushort[] canvas, int width, int height, HeifCleanAperture clap)
+    public static (T[] Canvas, int Width, int Height) Crop<T>(T[] canvas, int width, int height, HeifCleanAperture clap, int channels = 3)
     {
         var (x0, y0, w, h) = CleanAperture(width, height, clap);
 
-        var cropped = new ushort[(long)w * h * 3];
+        var cropped = new T[(long)w * h * channels];
         for (var y = 0; y < h; y++)
-            canvas.AsSpan((int)(((long)(y0 + y) * width + x0) * 3), w * 3).CopyTo(cropped.AsSpan(y * w * 3));
+            canvas.AsSpan((int)(((long)(y0 + y) * width + x0) * channels), w * channels).CopyTo(cropped.AsSpan(y * w * channels));
         return (cropped, w, h);
     }
 
@@ -522,48 +522,47 @@ internal static class Transforms
     }
 
     /// <summary><c>irot</c>: <paramref name="degrees"/> ANTICLOCKWISE.</summary>
-    public static (ushort[] Canvas, int Width, int Height) Rotate(ushort[] canvas, int width, int height, int degrees)
+    public static (T[] Canvas, int Width, int Height) Rotate<T>(T[] canvas, int width, int height, int degrees, int channels = 3)
     {
         if (degrees == 180)
         {
             var pixels = width * height;
             for (int i = 0, j = pixels - 1; i < j; i++, j--)
-                for (var c = 0; c < 3; c++)
-                    (canvas[3 * i + c], canvas[3 * j + c]) = (canvas[3 * j + c], canvas[3 * i + c]);
+                for (var c = 0; c < channels; c++)
+                    (canvas[channels * i + c], canvas[channels * j + c]) = (canvas[channels * j + c], canvas[channels * i + c]);
             return (canvas, width, height);
         }
 
-        var rotated = new ushort[canvas.Length];
+        var rotated = new T[canvas.Length];
         for (var y = 0; y < height; y++)
         {
             for (var x = 0; x < width; x++)
             {
                 // 90 anticlockwise: (x, y) -> (y, width - 1 - x) in a height x width image; 270 is the other way.
                 var (nx, ny) = degrees == 90 ? (y, width - 1 - x) : (height - 1 - y, x);
-                var from = 3 * (y * width + x);
-                var to = 3 * (ny * height + nx);
-                rotated[to] = canvas[from];
-                rotated[to + 1] = canvas[from + 1];
-                rotated[to + 2] = canvas[from + 2];
+                var from = channels * (y * width + x);
+                var to = channels * (ny * height + nx);
+                for (var c = 0; c < channels; c++)
+                    rotated[to + c] = canvas[from + c];
             }
         }
         return (rotated, height, width);
     }
 
     /// <summary><c>imir</c>: <see cref="HeifMirrorAxis.Horizontal"/> (1) swaps left and right, <see cref="HeifMirrorAxis.Vertical"/> (0) top and bottom.</summary>
-    public static void Mirror(ushort[] canvas, int width, int height, HeifMirrorAxis axis)
+    public static void Mirror<T>(T[] canvas, int width, int height, HeifMirrorAxis axis, int channels = 3)
     {
         if (axis == HeifMirrorAxis.Horizontal)
         {
             for (var y = 0; y < height; y++)
                 for (int l = 0, r = width - 1; l < r; l++, r--)
-                    for (var c = 0; c < 3; c++)
-                        (canvas[3 * (y * width + l) + c], canvas[3 * (y * width + r) + c]) = (canvas[3 * (y * width + r) + c], canvas[3 * (y * width + l) + c]);
+                    for (var c = 0; c < channels; c++)
+                        (canvas[channels * (y * width + l) + c], canvas[channels * (y * width + r) + c]) = (canvas[channels * (y * width + r) + c], canvas[channels * (y * width + l) + c]);
         }
         else
         {
-            var row = width * 3;
-            var scratch = new ushort[row];
+            var row = width * channels;
+            var scratch = new T[row];
             for (int t = 0, b = height - 1; t < b; t++, b--)
             {
                 canvas.AsSpan(t * row, row).CopyTo(scratch);
