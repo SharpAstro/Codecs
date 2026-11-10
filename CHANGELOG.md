@@ -22,6 +22,31 @@ short was decoded with footer bytes as its last pixels instead of being refused 
 before the size check, for RLE as well as raw. `ImageCodecs.CanDecode`'s summary now says that TGA is recognised by its
 footer, so it needs the whole stream.
 
+## 3.34
+
+**New package: `SharpAstro.GainMap`, the format-independent gain-map core; HEIC gain maps decode as HDR through the facade** (Codecs #70).
+
+- **`SharpAstro.GainMap`** holds what `SharpAstro.Jpeg.GainMap` used to keep to itself: `GainMapMetadata`, the reconstruction maths
+  and the sRGB/Rec.709 transfer functions, so the HEIF carrier can use them without depending on JPEG. It adds per-channel
+  parameters (`GainMapChannel`; the scalar form is the one-channel case), a reconstruction over a base given as linear floats
+  with the map as codes of any bit depth (a 10-bit HEIF base works), and `Iso21496Metadata.Parse`, a clean-room reader for the
+  ISO/TS 21496-1 binary metadata (the writer is test-only). `SharpAstro.Jpeg.GainMap` references it and forwards
+  `GainMapMetadata` by full name: its public API and outputs are unchanged (byte-identical `ReconstructHdr`).
+- **`SharpAstro.Heif` reads gain maps in both carriers.** `HeifFile.GainMapOf` finds an ISO/TS 21496-1 gain map in a `tmap`
+  derived-image item (the base is the primary or the `tmap` is) or Apple's auxiliary image (`auxl` + `auxC`
+  `urn:com:apple:photo:2020:aux:hdrgainmap`, headroom from the Exif `MakerNote` or XMP, best-effort and from Apple's public article;
+  a file with both gives the `tmap`). `HeifGainMap.Decode` reconstructs to linear HDR floats at any display headroom.
+- **Through the facade, as for a gain-map JPEG.** For a HEIC whose primary has a gain map `HeifImageDecoder.TryDecodeRgbaFloat` and
+  `ImageCodecs.TryDecode(...).ToFloats()` return the reconstruction at the authored headroom (linear, display-referred,
+  `1.0` = SDR white = 203 cd/m² as for PQ, the base's primaries; RGBA, alpha 1); `TryDecode` returns a `HeifGainMapDecodedImage`
+  (4 Float32 channels) whose `Source` reconstructs at other headrooms and decodes the base. `TryDecodeIntoRgba8` and `ToRgba8`
+  still return the SDR base, and a plain HEIF is unchanged. A gain map that cannot be used (malformed or unsupported, the
+  backward direction, a base over `HeifLimits.MaxGainMapBasePixels`, damaged HEVC data) leaves the plain base, never an error.
+  When the `tmap` is the primary the 8-bit tiers show its base with the `tmap`'s own `clap`/`irot`/`imir`, which they used to refuse.
+- **Real files.** `fetch-heif-external.sh` fetches the open-licence iPhone 13 Pro (Apple aux) and Samsung (`tmap`) HEICs and
+  `HeifGainMapRealFileTests` runs them (skipping visibly when absent): the gain map is found, the base is within the libheif
+  tolerance, the reconstruction is finite and above SDR white, and headroom 1 is the linearised base.
+
 ## 3.33
 
 **New package: `SharpAstro.Heif` reads HEIF/HEIC stills, with a clean-room HEVC intra decoder** (Codecs #66). It is
