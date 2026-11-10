@@ -7,6 +7,9 @@ namespace SharpAstro.Codecs.Tests;
 /// <summary>Files the reader refuses: each is an <see cref="InvalidDataException"/>, never a clamped or guessed image.</summary>
 public sealed class TgaRefusalTests
 {
+    /// <summary>A TGA 2.0 footer, exactly 26 bytes: the two area offsets, then the 18-byte signature.</summary>
+    private static readonly byte[] Footer26 = [.. new byte[8], .. "TRUEVISION-XFILE."u8.ToArray(), 0];
+
     private static InvalidDataException Refused(byte[] tga) =>
         Should.Throw<InvalidDataException>(() => TgaReader.Decode(tga));
 
@@ -75,17 +78,15 @@ public sealed class TgaRefusalTests
     {
         // 2x2 at 24 bits RLE needs at least one packet (1 + 3 bytes); 3 are present, then a 26-byte footer. Untrimmed,
         // the footer would satisfy the up-front size check; trimmed, the check refuses it as truncated.
-        byte[] footer = [.. new byte[8], .. new byte[8], .. "TRUEVISION-XFILE."u8.ToArray(), 0];
-        Refused(Build(10, 2, 2, 24, 0x20, [.. Run(4, 1, 2), .. footer])).Message.ShouldContain("truncated");
+        Refused(Build(10, 2, 2, 24, 0x20, [.. Run(4, 1, 2), .. Footer26])).Message.ShouldContain("truncated");
     }
 
     [Fact]
     public void FooterBytes_AreNotPixelData_WhenAnRleImageIsComplete()
     {
         // A whole RLE image followed by a footer decodes exactly as it does without one.
-        byte[] footer = [.. new byte[8], .. new byte[8], .. "TRUEVISION-XFILE."u8.ToArray(), 0];
         byte[] pixels = Run(4, 1, 2, 3);
-        TgaReader.Decode(Build(10, 2, 2, 24, 0x20, [.. pixels, .. footer])).Rgba
+        TgaReader.Decode(Build(10, 2, 2, 24, 0x20, [.. pixels, .. Footer26])).Rgba
             .ShouldBe(TgaReader.Decode(Build(10, 2, 2, 24, 0x20, pixels)).Rgba);
     }
 
