@@ -159,7 +159,9 @@ public class HeifGainMapTests(ITestOutputHelper output)
         var info = heif.GainMapOf(file, heif.PrimaryItem).ShouldNotBeNull();
         info.Layout.ShouldBe(HeifGainMapLayout.BaseIsPrimary);
         (info.Tmap.Id, info.Base.Id, info.Map.Id).ShouldBe((TmapId, BaseId, MapId));
-        info.Alternatives.ShouldNotBeNull().ShouldBe(new HeifEntityGroup("altr", GroupId, [TmapId, BaseId]), "the group is read, with its order");
+        var group = info.Alternatives.ShouldNotBeNull();
+        (group.Type, group.GroupId).ShouldBe(("altr", GroupId));
+        group.EntityIds.ShouldBe([TmapId, BaseId], "the group is read, with its order");
         info.Metadata.ChannelCount.ShouldBe(1);
         info.Metadata.GetChannel(0).Gamma.ShouldBe(1.4, 1e-5);
         info.Metadata.HdrCapacityMax.ShouldBe(8, 1e-5);
