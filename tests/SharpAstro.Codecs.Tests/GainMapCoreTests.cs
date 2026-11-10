@@ -208,4 +208,47 @@ public sealed class GainMapCoreTests
         Should.Throw<ArgumentException>(() => GainMapReconstructor.ReconstructFromLinear(new float[5], 2, 1, 3, new float[1], 1, 1, 1, meta, 4.0));
         Should.Throw<ArgumentException>(() => GainMapReconstructor.ReconstructFromLinear(new float[6], 2, 1, 3, new float[1], 2, 1, 1, meta, 4.0));
     }
+
+    // ---- Apple's linear-gain form --------------------------------------------------------------------
+
+    private static float[] Apple(float[] baseLinear, float[] map, double headroom, double display) =>
+        Floats(GainMapReconstructor.ReconstructAppleFromLinear(baseLinear, 1, 1, 3, map, 1, 1, 1, headroom, display));
+
+    [Fact]
+    public void Apple_IsBaseTimesOnePlusHeadroomMinusOneTimesLinearisedGain()
+    {
+        // One pixel: code 0 gives no gain, code 1 the whole headroom (BT.709 of 1 is 1), and a middle code goes through
+        // the BT.709 curve: 0.5 -> ((0.5 + 0.0992968) / 1.0992968)^(1/0.45).
+        float[] baseLinear = [0.2f, 0.4f, 0.8f];
+        Apple(baseLinear, [0f], 4, 4).ShouldBe(baseLinear);
+        var full = Apple(baseLinear, [1f], 4, 4);
+        for (var c = 0; c < 3; c++) full[c].ShouldBe(baseLinear[c] * 4, 1e-6);
+        var g = Math.Pow((0.5 + 0.0992968268094429) / 1.0992968268094429, 1 / 0.45);
+        var mid = Apple(baseLinear, [0.5f], 4, 4);
+        for (var c = 0; c < 3; c++) mid[c].ShouldBe((float)(baseLinear[c] * (1 + 3 * g)), 1e-6);
+    }
+
+    [Fact]
+    public void Apple_DisplayHeadroomIsClampedIntoOneToTheAuthored()
+    {
+        float[] baseLinear = [0.25f, 0.5f, 1f];
+        float[] map = [1f];
+        // 1 (SDR) gives the base exactly; below 1 is the same; above the authored is the authored.
+        Apple(baseLinear, map, 4, 1).ShouldBe(baseLinear);
+        Apple(baseLinear, map, 4, 0.5).ShouldBe(baseLinear);
+        Apple(baseLinear, map, 4, 100).ShouldBe(Apple(baseLinear, map, 4, 4));
+        // Half way: H' = 2.5, so a full code multiplies by 2.5.
+        Apple(baseLinear, map, 4, 2.5)[2].ShouldBe(2.5f, 1e-6);
+    }
+
+    [Fact]
+    public void Apple_RefusesAnUnusableHeadroomAndShortInputs()
+    {
+        float[] one = [1f];
+        Should.Throw<ArgumentOutOfRangeException>(() => Apple(new float[3], one, 1, 1));
+        Should.Throw<ArgumentOutOfRangeException>(() => Apple(new float[3], one, double.PositiveInfinity, 1));
+        Should.Throw<ArgumentOutOfRangeException>(() => Apple(new float[3], one, 2, 0));
+        Should.Throw<ArgumentException>(() => Apple(new float[2], one, 2, 2));
+        Should.Throw<ArgumentException>(() => Apple(new float[3], new float[0], 2, 2));
+    }
 }

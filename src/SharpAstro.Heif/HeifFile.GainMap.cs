@@ -23,18 +23,29 @@ public enum HeifGainMapLayout
 }
 
 /// <summary>
-/// A gain map found in a HEIF file by <see cref="HeifFile.GainMapOf"/>: the <c>tmap</c> derived image item (23008-12,
-/// the tone-map derived image), the two items its <c>dimg</c> references name, in order (the base image, then the
-/// gain map), and the ISO/TS 21496-1 metadata that is the <c>tmap</c> item's own data.
+/// A gain map found in a HEIF file by <see cref="HeifFile.GainMapOf"/>, in one of two carriers (<see cref="Dialect"/>).
+/// <para>
+/// <see cref="HeifGainMapDialect.IsoTmap"/>: the <c>tmap</c> derived image item (23008-12, the tone-map derived image), the
+/// two items its <c>dimg</c> references name, in order (the base image, then the gain map), and the ISO/TS 21496-1 metadata
+/// that is the <c>tmap</c> item's own data.
+/// </para>
+/// <para>
+/// <see cref="HeifGainMapDialect.AppleAux"/>: no <c>tmap</c>; the base is the image asked about, the map is its Apple
+/// gain-map auxiliary image, and <see cref="Metadata"/> is a one-channel summary of the Apple headroom (gain range 1 to the
+/// headroom, no offsets), kept so a caller reading only the metadata sees the authored range. The details are in <see cref="Apple"/>.
+/// </para>
 /// </summary>
-/// <param name="Tmap">The <c>tmap</c> item.</param>
+/// <param name="Tmap">The <c>tmap</c> item; null for <see cref="HeifGainMapDialect.AppleAux"/>.</param>
 /// <param name="Base">The base image: the first <c>dimg</c> input, an <c>hvc1</c> or <c>grid</c> item.</param>
-/// <param name="Map">The gain-map image: the second <c>dimg</c> input, an <c>hvc1</c> or <c>grid</c> item (often 4:0:0).</param>
+/// <param name="Map">The gain-map image: the second <c>dimg</c> input (often 4:0:0), or Apple's auxiliary item; an <c>hvc1</c> or <c>grid</c> item.</param>
 /// <param name="Metadata">The parsed metadata: per-channel parameters, the headrooms, the direction.</param>
 /// <param name="Layout">Which of the three arrangements the file uses.</param>
 /// <param name="Alternatives">The <c>altr</c> group holding both the <c>tmap</c> and the base, or null when there is none.</param>
+/// <param name="Dialect">Which carrier the map was found in. A file with both uses the <c>tmap</c>.</param>
+/// <param name="Apple">The Apple-specific part, non-null exactly for <see cref="HeifGainMapDialect.AppleAux"/>.</param>
 public sealed record HeifGainMapInfo(
-    HeifItem Tmap, HeifItem Base, HeifItem Map, GainMapMetadata Metadata, HeifGainMapLayout Layout, HeifEntityGroup? Alternatives);
+    HeifItem? Tmap, HeifItem Base, HeifItem Map, GainMapMetadata Metadata, HeifGainMapLayout Layout, HeifEntityGroup? Alternatives,
+    HeifGainMapDialect Dialect = HeifGainMapDialect.IsoTmap, HeifAppleGainMap? Apple = null);
 
 public sealed partial class HeifFile
 {
@@ -54,8 +65,17 @@ public sealed partial class HeifFile
     /// <item><description><b>The primary is the <c>tmap</c></b>, its first input the base (hidden, or in the
     /// <c>altr</c> group): found because the primary is itself a <c>tmap</c>.</description></item>
     /// </list>
-    /// Apple's older files carry the map only as an <c>auxl</c> auxiliary image (<see cref="HeifAuxiliaryType"/>)
-    /// with proprietary metadata and no <c>tmap</c>; they have none, here.
+    /// <para>
+    /// <b>Apple's older files</b> carry the map only as an <c>auxl</c> auxiliary image of the item, typed by its
+    /// <c>auxC</c> property (<see cref="HeifAuxiliaryType"/>) as <see cref="HeifAppleGainMap.AuxiliaryUrn"/>, with no
+    /// <c>tmap</c>. When no <c>tmap</c> is found for <paramref name="image"/>, that is looked for next
+    /// (<see cref="HeifGainMapInfo.Dialect"/> says which was found; a file with both gives the <c>tmap</c>). The headroom
+    /// is read from the image's Exif <c>MakerNote</c> or the auxiliary item's XMP (see <see cref="HeifAppleGainMap"/>, which
+    /// also says how far to trust it). Other auxiliary images (alpha <c>urn:mpeg:hevc:2015:auxid:1</c>, depth <c>:2</c>,
+    /// Samsung's or anything else) are not gain maps and are ignored. An Apple map whose headroom is missing, or is 1 or
+    /// less (no HDR effect), is no gain map here: null, and the item is its SDR picture; a headroom that is not finite or
+    /// over <see cref="HeifAppleGainMap.MaxHeadroom"/> is <see cref="InvalidDataException"/>.
+    /// </para>
     /// <para>
     /// The structure is validated: exactly two <c>dimg</c> inputs, different, neither a <c>tmap</c>, both
     /// <c>hvc1</c> or <c>grid</c> items, and metadata that parses (see <see cref="Iso21496Metadata"/>). The
@@ -83,7 +103,7 @@ public sealed partial class HeifFile
                 if (firstInput.Count > 0 && firstInput[0] == image.Id) { tmap = item; break; }
             }
         }
-        if (tmap is null) return null;
+        if (tmap is null) return AppleGainMapOf(file, image);
 
         var inputs = tmap.ReferencesOfType("dimg");
         if (inputs.Count != 2)
@@ -124,6 +144,37 @@ public sealed partial class HeifFile
             }
         }
         return new HeifGainMapInfo(tmap, baseItem, mapItem, metadata, layout, alternatives);
+    }
+
+    private HeifGainMapInfo? AppleGainMapOf(ReadOnlySpan<byte> file, HeifItem image)
+    {
+        foreach (var aux in Items)
+        {
+            if (aux.Property<HeifAuxiliaryType>() is not { Urn: HeifAppleGainMap.AuxiliaryUrn }) continue;
+            if (!aux.ReferencesOfType("auxl").Contains(image.Id)) continue;
+            if (aux.Type is not ("hvc1" or "grid"))
+                throw new NotSupportedException($"The Apple gain map {aux.Id} is a '{aux.Type}' item; only 'hvc1' and 'grid' images are handled.");
+            if (aux.Id == image.Id) continue;
+
+            if (HeifAppleGainMap.FindHeadroom(this, file, image, aux) is not { } found) return null;
+            var (headroom, source) = found;
+            if (!(headroom > 1)) return null;
+
+            var metadata = new GainMapMetadata
+            {
+                GainMapMin = 1,
+                GainMapMax = headroom,
+                Gamma = 1,
+                OffsetSdr = 0,
+                OffsetHdr = 0,
+                HdrCapacityMin = 1,
+                HdrCapacityMax = headroom,
+            };
+            var layout = image.Id == PrimaryItemId ? HeifGainMapLayout.BaseIsPrimary : HeifGainMapLayout.Other;
+            return new HeifGainMapInfo(null, image, aux, metadata, layout, null, HeifGainMapDialect.AppleAux,
+                new HeifAppleGainMap(aux, headroom, source));
+        }
+        return null;
     }
 
     /// <summary>The gain map of the primary item, or null. See <see cref="GainMapOf"/>.</summary>
