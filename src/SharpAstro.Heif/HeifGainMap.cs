@@ -172,23 +172,41 @@ public static class HeifGainMap
         // The tmap's own transformative properties, in the order it lists them, after the inputs' own (which the
         // decodes above applied).
         int width = baseRgb.Width, height = baseRgb.Height;
-        foreach (var association in info.Tmap?.Properties ?? [])
+        (rgba, width, height) = ApplyTmapTransforms(rgba, width, height, info.Tmap, 4);
+
+        return new HeifGainMapImage(width, height, rgba, encoding, baseRgb.IccProfile, metadata, headroom, weight, info);
+    }
+
+    /// <summary>
+    /// The SDR base of a gain map as R'G'B' codes, with the <c>tmap</c> item's own transformative properties applied after the
+    /// base's (as the reconstruction does), so both tiers show the same picture when the <c>tmap</c> is the primary item.
+    /// </summary>
+    internal static HeifRgbImage DecodeBase(ReadOnlySpan<byte> file, HeifGainMapInfo info)
+    {
+        var baseRgb = HeifDecoder.Decode(file, info.Base);
+        if (info.Tmap is null || !info.Tmap.Properties.Any(a => a.Property is HeifCleanAperture or HeifRotation or HeifMirror)) return baseRgb;
+        var (samples, width, height) = ApplyTmapTransforms(baseRgb.Samples, baseRgb.Width, baseRgb.Height, info.Tmap, 3);
+        return new HeifRgbImage(width, height, baseRgb.BitDepth, samples, baseRgb.ColorEncoding, baseRgb.IccProfile);
+    }
+
+    private static (T[] Pixels, int Width, int Height) ApplyTmapTransforms<T>(T[] pixels, int width, int height, HeifItem? tmap, int channels)
+    {
+        foreach (var association in tmap?.Properties ?? [])
         {
             switch (association.Property)
             {
                 case HeifCleanAperture clap:
-                    (rgba, width, height) = Transforms.Crop(rgba, width, height, clap, 4);
+                    (pixels, width, height) = Transforms.Crop(pixels, width, height, clap, channels);
                     break;
                 case HeifRotation { Degrees: not 0 } rotation:
-                    (rgba, width, height) = Transforms.Rotate(rgba, width, height, rotation.Degrees, 4);
+                    (pixels, width, height) = Transforms.Rotate(pixels, width, height, rotation.Degrees, channels);
                     break;
                 case HeifMirror mirror:
-                    Transforms.Mirror(rgba, width, height, mirror.Axis, 4);
+                    Transforms.Mirror(pixels, width, height, mirror.Axis, channels);
                     break;
             }
         }
-
-        return new HeifGainMapImage(width, height, rgba, encoding, baseRgb.IccProfile, metadata, headroom, weight, info);
+        return (pixels, width, height);
     }
 
     /// <summary>

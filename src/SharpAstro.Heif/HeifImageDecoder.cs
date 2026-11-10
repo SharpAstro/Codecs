@@ -15,6 +15,15 @@ namespace SharpAstro.Heif;
 /// are encoded for an HDR display and have no canonical 8-bit projection (PNG's adapter refuses them alike);
 /// <see cref="TryDecodeRgbaFloat"/> is the HDR projection, on the scale PNG's float projection uses.
 /// </para>
+/// <para>
+/// <b>A gain map.</b> When the primary image has one (an ISO/TS 21496-1 <c>tmap</c> or Apple's auxiliary gain map, see
+/// <see cref="HeifFile.GainMapOf"/>) the float tier is the HDR reconstruction at the authored headroom through
+/// <see cref="HeifGainMap"/> (<c>1.0</c> = SDR white, 203 cd/m² as for PQ): <see cref="TryDecodeRgbaFloat"/>, and
+/// <see cref="TryDecode"/> as a <see cref="HeifGainMapDecodedImage"/> of four Float32 channels whose
+/// <see cref="HeifGainMapDecodedImage.Source"/> reconstructs at other headrooms. The 8-bit tier,
+/// <see cref="TryDecodeIntoRgba8"/>, stays the SDR base. A gain map that cannot be used (malformed, in the backward
+/// direction, over a limit, its HEVC data damaged) is not an error: the file is handled as the plain HEIF it also is.
+/// </para>
 /// </summary>
 public sealed class HeifImageDecoder : IImageDecoder
 {
@@ -31,8 +40,14 @@ public sealed class HeifImageDecoder : IImageDecoder
         try
         {
             var heif = HeifReader.Read(data);
-            var image = heif.DescribePrimary(data);
-            var (width, height) = DisplaySize(image);
+            if (HeifGainMapSource.Find(heif, data, reconstructable: true) is { } gainMap)
+            {
+                var (hdrWidth, hdrHeight) = DisplaySize(heif.Describe(data, gainMap.Base), gainMap.Tmap);
+                info = new ImageInfo(hdrWidth, hdrHeight, 4, SampleFormat.Float32);
+                return true;
+            }
+            var image = PlainImage(heif, data);
+            var (width, height) = DisplaySize(image, null);
             info = new ImageInfo(width, height, 3, SampleFormat.UInt16);
             return true;
         }
@@ -46,6 +61,19 @@ public sealed class HeifImageDecoder : IImageDecoder
     public static bool TryDecode(ReadOnlySpan<byte> data, [NotNullWhen(true)] out IDecodedImage? image)
     {
         image = null;
+        // A gain map is reconstructed here, not on first read, so that one that cannot be (damaged HEVC data) leaves the
+        // plain base below, as it does for TryDecodeRgbaFloat.
+        if (HeifGainMapSource.TryCreate(data, out var source))
+        {
+            try
+            {
+                image = new HeifGainMapDecodedImage(source, source.Reconstruct());
+                return true;
+            }
+            catch (Exception e) when (e is InvalidDataException or NotSupportedException or OutOfMemoryException)
+            {
+            }
+        }
         if (!TryDecodeRgb(data, out var rgb)) return false;
         var max = (1 << rgb.BitDepth) - 1;
         byte[] pixels;
@@ -71,16 +99,24 @@ public sealed class HeifImageDecoder : IImageDecoder
     public static bool TryDecodeIntoRgba8(ReadOnlySpan<byte> data, Span<byte> rgbaDestination)
     {
         if (!TryDecodeRgb(data, out var rgb)) return false;
+        return rgbaDestination.Length >= (long)rgb.Width * rgb.Height * 4 && ToRgba8(rgb, rgbaDestination);
+    }
+
+    /// <summary>
+    /// The codes of <paramref name="rgb"/> scaled to 8 bits, alpha 255, into <paramref name="destination"/> (long enough).
+    /// False, writing nothing, for PQ and HLG.
+    /// </summary>
+    internal static bool ToRgba8(HeifRgbImage rgb, Span<byte> destination)
+    {
         if (rgb.ColorEncoding.Transfer is TransferFunction.Pq or TransferFunction.Hlg) return false;
-        if (rgbaDestination.Length < (long)rgb.Width * rgb.Height * 4) return false;
         var max = (1 << rgb.BitDepth) - 1;
         var pixels = rgb.Width * rgb.Height;
         for (var p = 0; p < pixels; p++)
         {
-            rgbaDestination[4 * p] = (byte)((rgb.Samples[3 * p] * 255 + max / 2) / max);
-            rgbaDestination[4 * p + 1] = (byte)((rgb.Samples[3 * p + 1] * 255 + max / 2) / max);
-            rgbaDestination[4 * p + 2] = (byte)((rgb.Samples[3 * p + 2] * 255 + max / 2) / max);
-            rgbaDestination[4 * p + 3] = 255;
+            destination[4 * p] = (byte)((rgb.Samples[3 * p] * 255 + max / 2) / max);
+            destination[4 * p + 1] = (byte)((rgb.Samples[3 * p + 1] * 255 + max / 2) / max);
+            destination[4 * p + 2] = (byte)((rgb.Samples[3 * p + 2] * 255 + max / 2) / max);
+            destination[4 * p + 3] = 255;
         }
         return true;
     }
@@ -96,6 +132,20 @@ public sealed class HeifImageDecoder : IImageDecoder
         rgba = null;
         encoding = null;
         width = height = 0;
+        try
+        {
+            var heif = HeifReader.Read(data);
+            if (HeifGainMapSource.Find(heif, data, reconstructable: true) is { } gainMap)
+            {
+                var hdr = HeifGainMap.Decode(data, heif, gainMap);
+                (rgba, width, height, encoding) = (hdr.Rgba, hdr.Width, hdr.Height, hdr.ColorEncoding);
+                return true;
+            }
+        }
+        catch (Exception e) when (e is InvalidDataException or NotSupportedException or OutOfMemoryException)
+        {
+            // The plain image below.
+        }
         if (!TryDecodeRgb(data, out var rgb)) return false;
         try
         {
@@ -115,6 +165,15 @@ public sealed class HeifImageDecoder : IImageDecoder
         rgb = null;
         try
         {
+            var heif = HeifReader.Read(data);
+            // A tmap primary is the HDR rendition itself, which this decoder cannot decode as an image: the plain tiers
+            // show its base, with the tmap's own transformative properties (what a gain-map-unaware reader shows).
+            if (heif.PrimaryItem.Type == "tmap")
+            {
+                if (HeifGainMapSource.Find(heif, data, reconstructable: false) is not { } gainMap) return false;
+                rgb = HeifGainMap.DecodeBase(data, gainMap);
+                return true;
+            }
             rgb = HeifDecoder.Decode(data);
             return true;
         }
@@ -124,11 +183,23 @@ public sealed class HeifImageDecoder : IImageDecoder
         }
     }
 
-    /// <summary>The size after the item's <c>clap</c> and <c>irot</c>, in its order, as <see cref="HeifDecoder.Decode"/> produces it.</summary>
-    private static (int Width, int Height) DisplaySize(HeifImage image)
+    /// <summary>The primary image, or for a <c>tmap</c> primary the base it derives from.</summary>
+    private static HeifImage PlainImage(HeifFile heif, ReadOnlySpan<byte> data)
+    {
+        if (heif.PrimaryItem.Type != "tmap") return heif.DescribePrimary(data);
+        var info = HeifGainMapSource.Find(heif, data, reconstructable: false)
+            ?? throw new InvalidDataException("The primary 'tmap' item has no usable gain map.");
+        return heif.Describe(data, info.Base);
+    }
+
+    /// <summary>
+    /// The size after the item's <c>clap</c> and <c>irot</c>, in its order, as <see cref="HeifDecoder.Decode"/> produces it,
+    /// then those of <paramref name="tmap"/> (a gain map's own, applied after the base's).
+    /// </summary>
+    internal static (int Width, int Height) DisplaySize(HeifImage image, HeifItem? tmap)
     {
         int width = (int)image.Width, height = (int)image.Height;
-        foreach (var association in image.Item.Properties)
+        foreach (var association in image.Item.Properties.Concat(tmap?.Properties ?? []))
         {
             switch (association.Property)
             {
