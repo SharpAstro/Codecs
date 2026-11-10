@@ -627,6 +627,18 @@ internal static class HeifProperties
             case FourCc.HvcC:
                 return ReadHevcConfiguration(body);
 
+            case FourCc.AuxC:
+            {
+                // 23008-12 6.5.8: version/flags, a null-terminated URN, then type-specific subtype bytes.
+                // A URN with no terminator is malformed: kept as an unknown property rather than guessed at.
+                var r = new BigEndianReader(body, "auxC");
+                r.Skip(4);
+                var rest = r.Bytes(r.Remaining);
+                var end = rest.IndexOf((byte)0);
+                if (end < 0) return new HeifUnknownProperty("auxC", box.BodyLength);
+                return new HeifAuxiliaryType(System.Text.Encoding.UTF8.GetString(rest[..end]), rest[(end + 1)..].ToArray());
+            }
+
             default:
                 return new HeifUnknownProperty(FourCc.ToString(box.Type), box.BodyLength);
         }

@@ -23,6 +23,7 @@ internal static class FourCc
     public const uint Colr = 0x636F6C72; // 'colr'
     public const uint Pixi = 0x70697869; // 'pixi'
     public const uint Irot = 0x69726F74; // 'irot'
+    public const uint AuxC = 0x61757843; // 'auxC'
     public const uint Imir = 0x696D6972; // 'imir'
     public const uint Clap = 0x636C6170; // 'clap'
     public const uint Uuid = 0x75756964; // 'uuid'
