@@ -112,7 +112,9 @@ public class HeifPhoneFileTests(ITestOutputHelper output)
 
     /// <summary>
     /// Size and depth against libheif. libheif applies <c>irot</c>, which this reader reports separately, so the
-    /// Samsung 200 MP file (rotated 270) comes back from Magick with its sides swapped.
+    /// Samsung 200 MP file (rotated 270) comes back from Magick with its sides swapped. The file is only pinged, so
+    /// libheif reads the primary's handle (size, bit depth) and decodes no pixels: a full read of the 200 MP file
+    /// would hold about 800 MB of libheif's planes and its RGBA just to be asked for two numbers.
     /// </summary>
     [Theory]
     [MemberData(nameof(Names))]
@@ -122,7 +124,8 @@ public class HeifPhoneFileTests(ITestOutputHelper output)
         var file = HeifCanonFileTests.Load(name);
         var image = HeifReader.Read(file).DescribePrimary(file);
 
-        using var magick = new MagickImage(file, MagickFormat.Heic);
+        using var magick = new MagickImage();
+        magick.Ping(file, new MagickReadSettings { Format = MagickFormat.Heic });
         var swapped = phone.Rotation is 90 or 270;
         ((uint)magick.Width, (uint)magick.Height).ShouldBe(swapped ? (image.Height, image.Width) : (image.Width, image.Height));
         ((int)magick.Depth).ShouldBe(image.BitDepth);
