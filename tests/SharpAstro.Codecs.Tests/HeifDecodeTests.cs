@@ -313,34 +313,51 @@ public class HeifDecodeTests(ITestOutputHelper output)
     /// <summary>Our codes against libheif's, which Magick stores as code &lt;&lt; (16 - bits) above 8 bits and code * 257 at 8.</summary>
     private void AssertMatchesLibheif(string what, byte[] heif, HeifRgbImage rgb, bool sameSize = false, int tolerance = 0, double maxShare = 0)
     {
+        var (differing, max, first, total) = MeasureAgainstLibheif(what, heif, rgb, sameSize);
+        output.WriteLine($"{what}: {rgb.Width}x{rgb.Height} {rgb.BitDepth}-bit, {differing} samples differ from libheif (max {max})");
+        if (max > tolerance || differing > maxShare * total)
+            Assert.Fail($"{what}: {differing} of {total} samples differ from libheif, by up to {max} (allowed {tolerance}, on up to {maxShare:P0}); the first at ({first % rgb.Width}, {first / rgb.Width}).");
+    }
+
+    /// <summary>
+    /// How many of <paramref name="rgb"/>'s samples differ from libheif's decode of <paramref name="heif"/>, and
+    /// by how much at most (shared with the phone-file tests, which hold what it measures to their own bounds).
+    /// libheif's pixels are read a band of rows at a time, so a very large image is not held twice.
+    /// </summary>
+    internal static (long Differing, int Max, int First, long Total) MeasureAgainstLibheif(string what, byte[] heif, HeifRgbImage rgb, bool sameSize = false)
+    {
         using var magick = new MagickImage(heif, MagickFormat.Heic);
         if (sameSize) ((int)magick.Width, (int)magick.Height).ShouldBe((rgb.Width, rgb.Height), $"{what}: libheif's size");
         magick.Width.ShouldBeGreaterThanOrEqualTo((uint)rgb.Width);
         magick.Height.ShouldBeGreaterThanOrEqualTo((uint)rgb.Height);
-        var pixels = magick.GetPixelsUnsafe().ToArray()!;
         var channels = (int)magick.ChannelCount;
         var stride = (int)magick.Width;
-        int differing = 0, first = -1, max = 0;
-        for (var y = 0; y < rgb.Height; y++)
+        long differing = 0;
+        int first = -1, max = 0;
+        const int band = 128;
+        using var pixelsOf = magick.GetPixelsUnsafe();
+        for (var y0 = 0; y0 < rgb.Height; y0 += band)
         {
-            for (var x = 0; x < rgb.Width; x++)
+            var rows = Math.Min(band, rgb.Height - y0);
+            var pixels = pixelsOf.GetArea(0, y0, (int)magick.Width, rows)!;
+            for (var y = 0; y < rows; y++)
             {
-                for (var c = 0; c < 3; c++)
+                for (var x = 0; x < rgb.Width; x++)
                 {
-                    var value = (int)Math.Round(pixels[(y * stride + x) * channels + c]); // the Q16-HDRI build stores floats
-                    var theirs = rgb.BitDepth == 8 ? value / 257 : value >> (16 - rgb.BitDepth);
-                    var ours = rgb.Samples[3 * (y * rgb.Width + x) + c];
-                    if (theirs == ours) continue;
-                    differing++;
-                    max = Math.Max(max, Math.Abs(theirs - ours));
-                    if (first < 0) first = y * rgb.Width + x;
+                    for (var c = 0; c < 3; c++)
+                    {
+                        var value = (int)Math.Round(pixels[(y * stride + x) * channels + c]); // the Q16-HDRI build stores floats
+                        var theirs = rgb.BitDepth == 8 ? value / 257 : value >> (16 - rgb.BitDepth);
+                        var ours = rgb.Samples[3 * ((y0 + y) * rgb.Width + x) + c];
+                        if (theirs == ours) continue;
+                        differing++;
+                        max = Math.Max(max, Math.Abs(theirs - ours));
+                        if (first < 0) first = (y0 + y) * rgb.Width + x;
+                    }
                 }
             }
         }
-        output.WriteLine($"{what}: {rgb.Width}x{rgb.Height} {rgb.BitDepth}-bit, {differing} samples differ from libheif (max {max})");
-        var total = rgb.Width * rgb.Height * 3;
-        if (max > tolerance || differing > maxShare * total)
-            Assert.Fail($"{what}: {differing} of {total} samples differ from libheif, by up to {max} (allowed {tolerance}, on up to {maxShare:P0}); the first at ({first % rgb.Width}, {first / rgb.Width}).");
+        return (differing, max, first, (long)rgb.Width * rgb.Height * 3);
     }
 
     private static (byte[] Heif, int Width, int Height) Wrap(string fixture, byte[]? colr)
@@ -352,7 +369,7 @@ public class HeifDecodeTests(ITestOutputHelper output)
         return (HeifBuilder.WrapHevcPicture(HvcC(configuration), item, (uint)width, (uint)height, colr, null), width, height);
     }
 
-    private static byte[] HvcC(HevcDecoderConfiguration c) =>
+    internal static byte[] HvcC(HevcDecoderConfiguration c) =>
         HeifBuilder.HvcC((int)c.ChromaFormat, c.BitDepthLuma, c.BitDepthChroma, c.LengthSize, c.ProfileIdc, c.LevelIdc,
             [.. c.NalUnitArrays.Select(a => (a.NalUnitType, a.NalUnits.ToArray()))]);
 

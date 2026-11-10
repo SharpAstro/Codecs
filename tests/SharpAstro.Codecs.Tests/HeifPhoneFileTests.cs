@@ -365,6 +365,196 @@ public class HeifPhoneFileTests(ITestOutputHelper output)
         output.WriteLine($"tmap item data: {Convert.ToHexString(heif.ReadItemData(file, tmap))}");
     }
 
+    // ---- Decoding: every coded picture against ffmpeg, the composed primary against libheif ----------
+
+    /// <summary>Every HEVC picture in the file: the primary's tiles, thumbnails, and the auxiliary (gain map, depth) images.</summary>
+    private static List<HeifItem> CodedPictures(HeifFile heif) => [.. heif.Items.Where(i => i.Type == "hvc1")];
+
+    private static string Modes(long[] counts) =>
+        string.Join(" ", counts.Select((c, m) => (c, m)).Where(p => p.c > 0).Select(p => $"{p.m}:{p.c}"));
+
+    /// <summary>What a decode exercised, as <c>HevcFixtureTests</c> prints it, so the phone files read beside the x265 ones.</summary>
+    private static string Report(HevcDecodeStatistics s) => string.Join('\n',
+        $"  luma modes ({s.LumaModes.Count(c => c > 0)}): {Modes(s.LumaModes)}",
+        $"  chroma modes ({s.ChromaModes.Count(c => c > 0)}): {Modes(s.ChromaModes)}; remapped CUs {s.RemappedChromaModes}",
+        $"  coded TB sizes: {string.Join(" ", s.CodedTransformSizes.Select((c, l) => (c, l)).Where(p => p.c > 0).Select(p => $"{1 << p.l}:{p.c}"))}",
+        $"  NxN {s.NxNUnits}, non-zero QP deltas {s.NonZeroQpDeltas}, strong smoothing {s.StrongSmoothing}, slices {s.Slices}",
+        $"  deblocking: strong {s.DeblockStrong}, weak {s.DeblockWeak} (p1/q1 too {s.DeblockWeakSecondSample}), skipped {s.DeblockSkipped}, chroma {s.DeblockChroma}",
+        $"  beta Q: {string.Join(" ", s.BetaIndices.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}; tc Q: {string.Join(" ", s.TcIndices.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}",
+        $"  SAO: band {s.SaoBand} (positions {string.Join(" ", s.SaoBandPositions.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q))}), edge classes {string.Join("/", s.SaoEdgeClasses)}, merged left {s.SaoMergeLeft} up {s.SaoMergeUp}, largest offset {s.SaoLargestOffset}",
+        $"  wavefront rows {s.WavefrontRows}, substreams by entry point {s.SubstreamsByEntryPoint}, tile starts {s.TileStarts}, dependent segments {s.DependentSegments}",
+        $"  signs hidden {s.SignsHidden}, transform skip {s.TransformSkipLuma + s.TransformSkipChroma}, lossless CUs {s.BypassUnits}, PCM {s.PcmUnits}, chroma QP indices {string.Join(" ", s.ChromaQpIndices.Select((c, q) => (c, q)).Where(p => p.c > 0).Select(p => p.q - 12))}");
+
+    /// <summary>
+    /// Every HEVC picture in each phone file decodes plane for plane to what ffmpeg's decoder produces, with no
+    /// tolerance: all the primary's tiles (768 of them in the 200 MP file), the thumbnails, and the gain and
+    /// depth maps (4:0:0 for Apple, 4:2:0 for Samsung). A picture's conformance window, if it has one, is
+    /// cropped from ours as ffmpeg crops it, so a window is allowed rather than assumed absent. Tiles are
+    /// handed to ffmpeg in batches of one shape, one process per batch.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Names))]
+    public void EveryCodedPicture_MatchesFfmpeg(string name)
+    {
+        var file = HeifCanonFileTests.Load(name);
+        HevcOracle.RequireFfmpeg();
+        var heif = HeifReader.Read(file);
+        var pictures = CodedPictures(heif);
+
+        const int batchSize = 48;
+        var pending = new Dictionary<(int, int, int, int), List<(string What, HevcPicture Picture, byte[] AnnexB)>>();
+        var compared = 0;
+        var windows = new HashSet<(int, int, int, int)>();
+
+        void Flush(List<(string What, HevcPicture Picture, byte[] AnnexB)> batch)
+        {
+            if (batch.Count == 0) return;
+            var theirs = HevcOracle.DecodeFrames([.. batch.SelectMany(b => b.AnnexB)], batch[0].Picture, batch.Count);
+            for (var i = 0; i < batch.Count; i++)
+            {
+                var (y, cb, cr) = HevcFixtureTests.Crop(batch[i].Picture);
+                var width = batch[i].Picture.Width - batch[i].Picture.ConformanceWindow.Left - batch[i].Picture.ConformanceWindow.Right;
+                var chromaWidth = batch[i].Picture.ChromaFormatIdc == 0 ? 1 : width / 2;
+                Compare(batch[i].What, "Y", y, theirs[i].Luma, width);
+                Compare(batch[i].What, "Cb", cb, theirs[i].Cb, chromaWidth);
+                Compare(batch[i].What, "Cr", cr, theirs[i].Cr, chromaWidth);
+                compared++;
+            }
+            batch.Clear();
+        }
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        foreach (var item in pictures)
+        {
+            var coding = heif.Describe(file, item).Coding;
+            var data = heif.ReadItemData(file, item);
+            var picture = HevcDecoder.Decode(coding, data);
+            windows.Add(picture.ConformanceWindow);
+            var key = (picture.Width, picture.Height, picture.ChromaFormatIdc, picture.BitDepthLuma);
+            if (!pending.TryGetValue(key, out var batch)) pending[key] = batch = [];
+            batch.Add((item.ToString(), picture, HevcOracle.AnnexB(coding, data)));
+            if (batch.Count == batchSize) Flush(batch);
+        }
+        foreach (var batch in pending.Values) Flush(batch);
+
+        output.WriteLine($"{name}: {compared} pictures plane-exact against ffmpeg in {watch.Elapsed.TotalSeconds:0.0} s; " +
+                         $"shapes {string.Join(", ", pending.Keys.Select(k => $"{k.Item1}x{k.Item2} chroma {k.Item3}"))}; conformance windows {string.Join(", ", windows)}");
+        compared.ShouldBe(pictures.Count);
+    }
+
+    private static void Compare(string what, string plane, ushort[] ours, ushort[] theirs, int width)
+    {
+        ours.Length.ShouldBe(theirs.Length, $"{what} {plane} size");
+        var differing = 0;
+        var first = -1;
+        for (var i = 0; i < ours.Length; i++)
+        {
+            if (ours[i] == theirs[i]) continue;
+            if (first < 0) first = i;
+            differing++;
+        }
+        if (differing == 0) return;
+        Assert.Fail($"{what} {plane}: {differing} of {ours.Length} samples differ; the first at ({first % width}, {first / width}): " +
+                    $"ours {ours[first]}, ffmpeg {theirs[first]}.");
+    }
+
+    /// <summary>
+    /// What the phone streams exercise, as <see cref="HevcDecodeStatistics"/> counts it, printed for the record
+    /// (roadmap/heif.md quotes it) and pinned where it is a fact about the format and not about one photo.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Names))]
+    public void Statistics_OfThePrimarysTiles_ShowWhatPhonesExercise(string name)
+    {
+        var phone = Pinned(name);
+        var file = HeifCanonFileTests.Load(name);
+        var heif = HeifReader.Read(file);
+        var image = heif.DescribePrimary(file);
+
+        var s = new HevcDecodeStatistics();
+        foreach (var id in image.Grid!.TileItemIds)
+        {
+            var tile = heif.GetItem(id)!;
+            HevcDecoder.Decode(heif.Describe(file, tile).Coding, heif.ReadItemData(file, tile), s);
+        }
+        output.WriteLine($"{name} ({phone.Device}): {image.Grid.TileItemIds.Count} tiles");
+        output.WriteLine(Report(s));
+
+        s.Slices.ShouldBe(image.Grid.TileItemIds.Count, "one slice per tile");
+        s.DependentSegments.ShouldBe(0);
+        s.TileStarts.ShouldBe(0);
+        s.BypassUnits.ShouldBe(0);
+        s.PcmUnits.ShouldBe(0);
+        s.TransformSkipLuma.ShouldBe(0);
+        s.TransformSkipChroma.ShouldBe(0);
+        s.CodedTransformSizes.Sum().ShouldBeGreaterThan(0);
+
+        // The Canon and x265 fixtures never reach all of these together: SAO and deblocking on 4:2:0 8-bit.
+        (s.SaoBand + s.SaoEdgeClasses.Sum()).ShouldBeGreaterThan(0);
+        (s.DeblockStrong + s.DeblockWeak).ShouldBeGreaterThan(0);
+        s.DeblockChroma.ShouldBeGreaterThan(0);
+        s.LumaModes.Count(c => c > 0).ShouldBe(35, "every luma mode, planar and DC included, is exercised by a phone picture");
+        (s.WavefrontRows > 0).ShouldBe(phone.Wpp);
+        (s.SignsHidden > 0).ShouldBe(phone.SignHiding);
+        (s.NonZeroQpDeltas > 0).ShouldBe(phone.CuQpDelta);
+    }
+
+    /// <summary>
+    /// A small grid cut from the bottom-right of the primary's: the last <paramref name="rows"/> x <paramref name="columns"/>
+    /// tiles, with the output size the overhang leaves them (the file's own, less the tiles left out). Same
+    /// tiles, same hvcC, same ICC profile, no rotation. It stands in for a primary too large to hold twice: the
+    /// 200 MP file would take about 6 GB between this decoder and libheif.
+    /// </summary>
+    private static byte[] CornerGrid(byte[] file, HeifFile heif, HeifImage image, int rows, int columns)
+    {
+        var grid = image.Grid!;
+        int row0 = grid.Rows - rows, column0 = grid.Columns - columns;
+        var outputWidth = image.Width - (uint)(column0 * image.TileWidth);
+        var outputHeight = image.Height - (uint)(row0 * image.TileHeight);
+
+        var builder = new HeifBuilder();
+        builder.AddItem(new HeifBuilder.Item(1, "grid", HeifBuilder.GridLayout(rows, columns, outputWidth, outputHeight)));
+        var ids = new List<uint>();
+        uint next = 10;
+        for (var r = row0; r < grid.Rows; r++)
+        {
+            for (var c = column0; c < grid.Columns; c++)
+            {
+                var tile = heif.GetItem(grid.TileItemIds[r * grid.Columns + c])!;
+                builder.AddItem(new HeifBuilder.Item(next, "hvc1", heif.ReadItemData(file, tile), Hidden: true));
+                ids.Add(next++);
+            }
+        }
+        builder.Reference("dimg", 1, [.. ids]);
+        var hvcc = builder.Property("hvcC", HeifDecodeTests.HvcC(heif.Describe(file, heif.GetItem(grid.TileItemIds[0])!).Coding));
+        var size = builder.Property("ispe", HeifBuilder.Ispe(image.TileWidth, image.TileHeight));
+        foreach (var id in ids) builder.Associate(id, hvcc, essential: true).Associate(id, size);
+        builder.Associate(1, "ispe", HeifBuilder.Ispe(outputWidth, outputHeight));
+        if (image.Icc is not null) builder.Associate(1, "colr", HeifBuilder.Icc(image.Icc.Profile));
+        return builder.Build();
+    }
+
+    /// <summary>The file libheif is asked about: the file itself, or for the 200 MP file a corner of it (see <see cref="CornerGrid"/>).</summary>
+    private static (byte[] Heif, string What) ForLibheif(string name)
+    {
+        var file = HeifCanonFileTests.Load(name);
+        if (name != "samsung-200mp-hdrgainmap.heic") return (file, name);
+        var heif = HeifReader.Read(file);
+        return (CornerGrid(file, heif, heif.DescribePrimary(file), rows: 2, columns: 2), name + " (bottom-right 2x2 tiles, overhanging both ways)");
+    }
+
+    [Theory]
+    [MemberData(nameof(Names))]
+    public void Composed_AgainstLibheif_Measure(string name)
+    {
+        var (heif, what) = ForLibheif(name);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var rgb = HeifDecoder.Decode(heif);
+        var decoded = watch.Elapsed;
+        var (differing, max, first, total) = HeifDecodeTests.MeasureAgainstLibheif(what, heif, rgb, sameSize: true);
+        output.WriteLine($"{what}: {rgb.Width}x{rgb.Height} {rgb.BitDepth}-bit, ours in {decoded.TotalMilliseconds:0} ms; {differing} of {total} samples differ from libheif ({(double)differing / total:P3}), max {max}, first {first}");
+    }
+
     [Fact]
     public void Xiaomi_HasNoAuxiliaryItemsAndNoColourSignalling()
     {
