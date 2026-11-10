@@ -610,9 +610,10 @@ files, libheif is an oracle for the base image only.
 | B, `TmapIsPrimary` (23008-12's own arrangement) | the `tmap` | the primary | hidden, or in the `altr` group | the item is itself a `tmap` |
 | `Other` | neither | anywhere | anywhere | either of the two, asked for by item |
 
-Not handled: Apple's older files, whose map is only an `auxl` auxiliary image (`urn:com:apple:photo:2020:aux:hdrgainmap`)
-with proprietary metadata and no `tmap`; and Samsung's `urn:com:samsung:photo:2024:aux:hdrgainmap` alone. They report no
-gain map (`GainMapOf` returns null) and decode as their SDR base, as before.
+Apple's older files, whose map is only an `auxl` auxiliary image (`urn:com:apple:photo:2020:aux:hdrgainmap`) with
+proprietary metadata and no `tmap`, are the second dialect (`HeifGainMapDialect.AppleAux`, read-only and best-effort;
+the formula and its sources are in `roadmap/gain-map.md`). Not handled: Samsung's `urn:com:samsung:photo:2024:aux:hdrgainmap`
+alone. It reports no gain map (`GainMapOf` returns null) and decodes as its SDR base, as before.
 
 **The `tmap` item's data is a version byte (0) and then the ISO 21496-1 payload** (`minimum_version` u16 ...). That is what
 the Samsung file holds (62 bytes: `00`, `0000 0000`, flags `40`, then the 7 fractions of one channel: headrooms 0 and
@@ -653,6 +654,31 @@ structure, which `HeifPhoneFileTests` pins and which `GainMapOf` reads (see belo
 | gamma ignored in the core | 10: every formula case at full and partial headroom |
 | map normalised by 255 whatever its depth | 6: the 10-bit mono and both colour 10-bit cases, full and partial |
 | no upsampling (map sampled at the base's pixel coordinates) | 6: the grid-base case and both colour-map cases, full and partial (the same-size cases cannot see it, by design) |
+
+### Through the facade (3.34)
+
+`HeifImageDecoder` uses the above, so a gain-map HEIC decodes as HDR the way a gain-map JPEG does:
+
+| Entry | Gain map in the primary | Plain HEIF |
+|---|---|---|
+| `TryDecodeRgbaFloat` | the reconstruction at the authored headroom (`HdrCapacityMax`; Apple's headroom): linear, `1.0` = SDR white = 203 cd/m² as for PQ, the base's primaries, alpha 1 | the image linearised, as before |
+| `TryDecode` | a `HeifGainMapDecodedImage` (4 Float32 channels, linear, display-referred; `Source` reconstructs at another headroom and decodes the base) | a UInt16 `RasterImage`, as before |
+| `TryReadInfo` | width, height, 4, Float32 | width, height, 3, UInt16 |
+| `TryDecodeIntoRgba8`, `ToRgba8` | the SDR base (refused as before for a PQ or HLG base) | the image, as before |
+
+- **A gain map that cannot be used is not an error**: `GainMapOf` refusing the file (malformed, unknown `tmap` version, a non-`hvc1`
+  input), the backward direction, a base over `MaxGainMapBasePixels` or a map larger than its base (all checked from the headers, in
+  `HeifGainMapSource.Find`), or HEVC data that will not decode, leave the file handled as the plain HEIF it also is, in every tier.
+  `TryDecode` reconstructs eagerly for that reason (a `Try` method returns false or the plain base, it does not throw on first read),
+  so `TryDecode(...).ToRgba8()` pays for the HDR; a caller who wants only 8 bits uses `TryDecodeIntoRgba8`.
+- **The `tmap` as the primary** (layout B) used to fail `HeifDecoder.Decode` in the plain tiers. They now show its base with the
+  `tmap`'s own `clap`/`irot`/`imir` (the float tier already applied them), so both tiers have the same size
+  (`WhenTheTmapIsThePrimary_BothTiersWork_AndShowTheSameRotatedPicture`).
+- **Channels differ from the JPEG gain map's 3**: the float path here is the RGBA of `TryDecodeRgbaFloat`, handed out without a copy.
+- **Real files** (`HeifGainMapRealFileTests`): the iPhone hdr-sample (Apple aux) and Samsung's `tmap` file are found, the base is
+  within 1 code of libheif, the reconstruction is finite and peaks above 1, headroom 1 is the linearised base. The iPhone portrait
+  file's aux item has no headroom (key 48 missing), so it is the plain case. No iOS 18 `tmap` file with a licence a script can
+  fetch was found; Samsung's is the only real `tmap` here.
 
 ## Code shared with the other codecs
 

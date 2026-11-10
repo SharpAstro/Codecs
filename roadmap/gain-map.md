@@ -6,8 +6,9 @@ and 8 landed (read + reconstruct + assemble + generate as
 facade), verified against Chromium via a headless differential check: the assembled
 file renders identically to the base under an SDR colour profile and diverges under
 an HDR one. Milestone 4 (the libultrahdr oracle harness + committed golden vectors)
-and milestone 7 (ISO 21496-1 / Apple dialects) remain open. This document keeps
-the original design + validation plan for those remaining rungs.
+remains open; milestone 7 (ISO 21496-1 / Apple dialects) shipped for HEIC in 3.34 (the JPEG-side
+ISO payload and the write side remain). This document keeps the original design + validation plan
+for the open rungs.
 
 **The core is its own package (COD70, Codecs #70).** The metadata, the per-channel parameters,
 the reconstruction math and the sRGB transfer functions now live in **`SharpAstro.GainMap`**, which
@@ -197,8 +198,14 @@ self-consistency.
 6. ✅ `Compute`: gain-map generation from an HDR/SDR pair — the astro publishing
    tier. Ships without a bundled tone map (the SDR rendition is the caller's
    policy); a labelled Reinhard convenience remains an option for later.
-7. ⬜ ISO 21496-1 binary metadata (read alongside XMP; write once Android 15-era
-   readers are the baseline). Apple dialect read-only, best-effort, last.
+7. 🟡 ISO 21496-1 binary metadata and the Apple dialect. **Shipped in 3.34 for HEIC** (Codecs #70, four legs):
+   the core's `Iso21496Metadata.Parse` (clean-room reader, test-side writer), `HeifFile.GainMapOf` /
+   `HeifGainMap.Decode` for the `tmap` item and for Apple's auxiliary map (read-only, best-effort, below), and the
+   facade wiring: `ImageCodecs.TryDecode(heic).ToFloats()` is the HDR at the authored headroom, the 8-bit tier the
+   SDR base (`HeifGainMapFacadeTests`). Real phone files through the facade: `HeifGainMapRealFileTests` (the iPhone
+   13 Pro sample and Samsung's `tmap` file; fetched, skipped when absent). **Still open:** reading the ISO payload
+   from a JPEG's APP2 (`urn:iso:std:iso:ts:21496:-1`) beside the XMP, writing ISO metadata, and a third-party
+   ISO payload from libultrahdr/Android as a validation vector (milestone 4).
 8. ✅ Facade integration (`SharpAstro.Codecs`): `GainMapImageDecoder` +
    `GainMapDecodedImage` — `ImageCodecs.TryDecode(...).ToFloats()` reconstructs HDR,
    the 8-bit path stays the SDR base. Transparent for consumers referencing only the
@@ -235,9 +242,14 @@ libheif, libultrahdr or exiftool.
   (gain range 1 to the headroom, no offsets).
 - **Missing or absurd headroom**: no headroom anywhere, or one of 1 or less (no HDR effect): not a gain map (`GainMapOf` is
   null, the item is its SDR picture). Not finite or over 256 (8 stops; phones write under 4): `InvalidDataException`.
-- **Caveat**: checked against files built to the article's description (x265 pictures, hand-built Exif), not against an
-  iPhone file; none is in the repository. Whether Apple's own renderers agree with the article is not established (a
-  third-party report says macOS Photos may not).
+- **Caveat**: checked against files built to the article's description (x265 pictures, hand-built Exif), and, since
+  3.34, run on a real iPhone 13 Pro file (`apple-iphone13pro-hdr-sample.heic`, fetched, not committed): its map is
+  found, its headroom read from the MakerNote, and the reconstruction peaks above SDR white. Whether Apple's own
+  renderers agree with the article is not established (a third-party report says macOS Photos may not).
+  **The second iPhone file does not carry a usable headroom**: the portrait pug (`pillow_heif`'s) has the aux item
+  but a MakerNote with key 33 and no key 48 and no XMP capacity, so it is, by the rule above, not a gain map and is
+  the plain base in every tier. (Treating a missing key 48 as 0 would give a headroom, 3.5 for that file's key 33;
+  nothing in the article says to, so it is not done, and `AnAppleGainMapItemWithNoHeadroom_IsThePlainBase` pins it.)
 
 ## Non-goals / caveats
 
@@ -246,7 +258,7 @@ libheif, libultrahdr or exiftool.
   percentile/asinh stretch to produce the SDR rendition in the first place — `Compute`
   consumes that result; it does not invent it.
 - **HEIC carriers** of the same gain-map payload are no longer out of scope: `SharpAstro.Heif` reads the
-  container, and the shared core is `SharpAstro.GainMap` (see the status note above). The HEIF-side wiring
-  is Codecs #70's later legs. **AVIF** remains out of scope (no AV1 decoder in the family).
+  container, the shared core is `SharpAstro.GainMap` (see the status note above) and the wiring shipped in 3.34
+  (`HeifImageDecoder`: float tier HDR, 8-bit tier the base). **AVIF** remains out of scope (no AV1 decoder in the family).
 - **Full XMP engine**: out of scope — targeted parsing of the two namespaces only.
 - **JPEG XT** (ISO 18477 layered HDR JPEG): effectively undeployed; not pursued.
