@@ -12,7 +12,7 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
 - **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Heif` (HEIF/HEVC stills: grids, transforms, PQ as linear floats; see `roadmap/heif.md`), `Exif`,
-  `Color.Icc`, `Jpeg.IccInjector`, `Jpeg.GainMap` (Ultra HDR read/write; facade-registered
+  `Color.Icc`, `Jpeg.IccInjector`, `GainMap` (the format-independent gain-map core: per-channel metadata, linear-float reconstruction, ISO/TS 21496-1 metadata reader; shared by the JPEG and HEIF carriers, which is why HEIF does not depend on JPEG), `Jpeg.GainMap` (Ultra HDR read/write; delegates to `GainMap`; facade-registered
   *ahead of* the plain JPEG decoder).
 
 `SharpAstro.Jpeg`'s full-scale decode was built as a faithful port of the stb_image (StbImageSharp)
