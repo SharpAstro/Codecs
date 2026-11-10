@@ -80,7 +80,7 @@ windows on the gain maps and a thumbnail. Things worth knowing:
 
 - **Nothing was refused and nothing mismatched.** No decoder change came out of the leg. The one thing the reader
   declines is `Describe` of a `tmap` item (`NotSupportedException`, "only 'hvc1' and 'grid' images are described"),
-  pinned by `Samsung_Tmap_HasAnIso21496TmapItemBesideAGridPrimary`; lifting it is the HDR gain-map work (#70), not a
+  pinned by `Samsung_Tmap_HasAnIso21496TmapItemBesideAGridPrimary` (`Describe` still declines it; the gain-map reader, `GainMapOf`, is described under "Gain maps in HEIF" below); lifting it is the HDR gain-map work (#70), not a
   decoder defect: the primary of every file here decodes to the SDR base with the tmap, depth and gain-map items present.
 - **Windows and overhang are handled, not assumed absent.** The pictures here carry conformance windows
   (`(0,12,0,6)`, `(0,0,0,20)`, `(0,0,0,8)`, `(0,0,0,18)`), the oracle crops ffmpeg's output the same way, and the
@@ -594,6 +594,65 @@ the misses led to the table fixtures and to two refusals; four cannot be caught 
 | SAO band position not wrapped past band 31 | cannot be: x265 never writes positions 29-31 |
 | chroma deblocking QP with the slice offset added | cannot be: x265 writes no slice chroma offsets |
 | transform edges recorded off the 8x8 grid | cannot be, and is not a bug: the filters visit the 8x8 grid only, so the extra marks are never read |
+
+## Gain maps in HEIF: the `tmap` item (issue #70)
+
+`HeifFile.GainMapOf(file, item)` finds an ISO/TS 21496-1 gain map and `HeifGainMap.Decode` reconstructs it, through the
+shared `SharpAstro.GainMap` core (the metadata type, the reader of the binary structure and the maths are the JPEG
+carrier's as well, so HEIF does not depend on JPEG). Clean-room as everything here: the structure is read from the
+files, libheif is an oracle for the base image only.
+
+**Layouts found** (both from the primary item, or from either of the `tmap` and its base):
+
+| Layout | Primary | `tmap` | Base | Found by |
+|---|---|---|---|---|
+| A, `BaseIsPrimary` (Samsung's `aux_YCbCr.heic`: tmap 38, `dimg` 33 37, `altr` group 42 = 38, 33) | the base | visible or hidden, beside it, usually in an `altr` group with the base | visible | scanning for a `tmap` whose first `dimg` input is the item |
+| B, `TmapIsPrimary` (23008-12's own arrangement) | the `tmap` | the primary | hidden, or in the `altr` group | the item is itself a `tmap` |
+| `Other` | neither | anywhere | anywhere | either of the two, asked for by item |
+
+Not handled: Apple's older files, whose map is only an `auxl` auxiliary image (`urn:com:apple:photo:2020:aux:hdrgainmap`)
+with proprietary metadata and no `tmap`; and Samsung's `urn:com:samsung:photo:2024:aux:hdrgainmap` alone. They report no
+gain map (`GainMapOf` returns null) and decode as their SDR base, as before.
+
+**The `tmap` item's data is a version byte (0) and then the ISO 21496-1 payload** (`minimum_version` u16 ...). That is what
+the Samsung file holds (62 bytes: `00`, `0000 0000`, flags `40`, then the 7 fractions of one channel: headrooms 0 and
+2.3 log2, min 0, max 2.3, gamma 1, offsets 0). A different leading byte is refused as `NotSupportedException`, not read
+as something else; if a second writer's files turn out to differ, this is the one assumption to revisit. The data is
+refused over 4096 bytes before it is copied.
+
+**What `GainMapOf` validates** (`InvalidDataException` unless stated): exactly two `dimg` inputs (the reader already refuses
+one that names an undeclared item), different, neither a `tmap`; both `hvc1` or `grid` (`NotSupportedException`
+otherwise); the metadata parses. `HeifGainMap.Decode` then checks, before anything is decoded, the base against
+`HeifLimits.MaxGainMapBasePixels` (2^26: the reconstruction holds the codes, the linear floats, the core's RGB and the
+RGBA result, about 44 bytes a pixel, so a 200 MP phone image is refused rather than needing 9 GB), the map against
+`MaxImagePixels` (by `Describe`) and against the base's own pixel count; and the backward direction is
+`NotSupportedException` (the core only reconstructs the SDR-base form).
+
+**Reconstruction.** The base is converted to R'G'B' as any image is and linearised by its own `nclx` (an unstated
+transfer is sRGB; an ICC profile is not applied, the primaries are reported), on the scale of `TryDecodeRgbaFloat`.
+The map's codes are divided by the maximum of its own bit depth (a 10-bit map's 1023, not 255), upsampled by the core
+(centre-aligned bilinear, as libultrahdr does it) to the base's size, and drive all three channels when the map is
+4:0:0 or the metadata single-channel (a colour map's G' then, equal to Y' for the neutral chroma such maps have).
+Headroom defaults to the full authored one; a headroom of 1 gives the linearised base bit for bit. The `tmap` item's own
+`clap`/`irot`/`imir` are applied to the float result after the inputs' own (`Transforms` is generic over the sample
+type and channel count for that).
+
+**Validation.** `HeifGainMapTests` builds `tmap` files with `HeifBuilder` from the committed x265 fixtures (a 4:2:0 8-bit
+base, a 3x2 grid base, 4:0:0 maps at 8 and 10 bits, a 4:2:0 10-bit colour map with three-channel metadata). W = 0 is
+compared EXACTLY with `HeifRgbImage.ToLinearRgbaFloat`; full and partial headroom against `Expected`, a per-pixel
+transcription of the formula in double (its own sRGB curve, bilinear, gamma and log2: no code of the core), within
+2e-5 relative; the base against libheif through Magick.NET. What is **not** validated against a third party: the
+reconstruction itself (no tool here applies a `tmap`), so it rests on the formula and on the real Samsung file's
+structure, which `HeifPhoneFileTests` pins and which `GainMapOf` reads (see below).
+
+**Mutation check.** Deliberate bugs, one at a time, against `HeifGainMapTests`; all four of the leg's list were caught.
+
+| Deliberate bug | Caught by |
+|---|---|
+| `dimg` inputs swapped (the map taken as the base) | 14 tests: every formula case, the exact-W=0 cases, both layouts, the size refusals |
+| gamma ignored in the core | 10: every formula case at full and partial headroom |
+| map normalised by 255 whatever its depth | 6: the 10-bit mono and both colour 10-bit cases, full and partial |
+| no upsampling (map sampled at the base's pixel coordinates) | 6: the grid-base case and both colour-map cases, full and partial (the same-size cases cannot see it, by design) |
 
 ## Code shared with the other codecs
 

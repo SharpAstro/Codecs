@@ -210,6 +210,34 @@ public class HeifGainMapTests(ITestOutputHelper output)
         Should.Throw<InvalidDataException>(() => HeifGainMap.Decode(file)).Message.ShouldContain("no gain map");
     }
 
+    /// <summary>
+    /// The real file the layout and the version byte come from (fetched, as the other phone files are; skipped without it):
+    /// Samsung's tmap 38 over the grid 33 and the gain-map grid 37, in the altr group 42 with the base.
+    /// </summary>
+    [Fact]
+    public void Samsung_RealFile_IsReadAndReconstructed()
+    {
+        var file = HeifCanonFileTests.Load("samsung-tmap-aux-ycbcr.heic");
+        var heif = HeifReader.Read(file);
+        var info = heif.GainMapOfPrimary(file).ShouldNotBeNull();
+        info.Layout.ShouldBe(HeifGainMapLayout.BaseIsPrimary);
+        (info.Tmap.Id, info.Base.Id, info.Map.Id).ShouldBe((38u, 33u, 37u));
+        var group = info.Alternatives.ShouldNotBeNull();
+        group.GroupId.ShouldBe(42u);
+        group.EntityIds.ShouldBe([38u, 33u]);
+        info.Metadata.ChannelCount.ShouldBe(1);
+        info.Metadata.HdrCapacityMin.ShouldBe(1, 1e-9);
+        info.Metadata.HdrCapacityMax.ShouldBe(Math.Pow(2, 9646899.0 / 4194304), 1e-6);   // 2.3 stops
+        var channel = info.Metadata.GetChannel(0);
+        (channel.GainMapMin, channel.Gamma, channel.OffsetSdr, channel.OffsetHdr).ShouldBe((1.0, 1.0, 0.0, 0.0));
+        channel.GainMapMax.ShouldBe(info.Metadata.HdrCapacityMax, 1e-9);
+
+        var hdr = HeifGainMap.Decode(file);
+        output.WriteLine($"{hdr.Width}x{hdr.Height}, headroom {hdr.DisplayHeadroom:0.00}, peak {hdr.Rgba.Where((_, i) => i % 4 != 3).Max():0.000}");
+        (hdr.Width, hdr.Height).ShouldBe((4000, 1848));
+        hdr.Rgba.Where((_, i) => i % 4 != 3).Max().ShouldBeGreaterThan(1f);
+    }
+
     // ---- exact: W = 0 is the base, linearised ------------------------------------------------------
 
     [Theory]
