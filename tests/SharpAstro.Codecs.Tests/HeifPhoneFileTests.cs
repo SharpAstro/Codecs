@@ -274,7 +274,7 @@ public class HeifPhoneFileTests(ITestOutputHelper output)
         output.WriteLine("apple gain map:");
         output.WriteLine(survey.Report());
         survey.Sps.ChromaFormatIdc.ShouldBe(0);
-        (survey.Sps.BitDepthLuma, survey.Sps.Width, survey.Sps.Height).ShouldBe((8, 768, 448)); // coded at 32-aligned size, shown as 756x426
+        (survey.Sps.BitDepthLuma, survey.Sps.Width, survey.Sps.Height).ShouldBe((8, 768, 432)); // coded at a multiple of the 8-sample min CB (756 -> 768, 426 -> 432), shown as 756x426
     }
 
     [Fact]
