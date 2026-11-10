@@ -167,6 +167,38 @@ public sealed class HeifGainMapFacadeTests
         }
     }
 
+    /// <summary>
+    /// The tmap's own clap + irot + imir, in both layouts: <c>TryReadInfo</c>, the HDR tier and the 8-bit tier (the static
+    /// path and the decoded image's) all describe one picture of one size. The layout with the base as the primary used to
+    /// leave the static 8-bit path unrotated, so it disagreed with the other three.
+    /// </summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheTmapsClapIrotAndImir_GiveEveryTierTheSameSize(bool tmapIsPrimary)
+    {
+        var file = HeifGainMapTests.Build(HeifGainMapTests.Base256, HeifGainMapTests.Mono8, configure: o =>
+        {
+            o.TmapIsPrimary = tmapIsPrimary;
+            o.TmapProperties.Add(("clap", HeifBuilder.Clap(200, 120)));
+            o.TmapProperties.Add(("irot", HeifBuilder.Irot(90)));
+            o.TmapProperties.Add(("imir", HeifBuilder.Imir(1)));
+        });
+
+        // 256x192 cropped to 200x120, then turned 90 degrees: 120x200.
+        ImageCodecs.TryReadInfo(file, out var info).ShouldBeTrue();
+        info.ShouldBe(new ImageInfo(120, 200, 4, SampleFormat.Float32));
+        ImageCodecs.TryDecode(file, out var image).ShouldBeTrue();
+        (image!.Width, image.Height).ShouldBe((120, 200));
+        image.ToFloats().Length.ShouldBe(120 * 200 * 4);
+        HeifImageDecoder.TryDecodeRgbaFloat(file, out var floats, out var fw, out var fh, out _).ShouldBeTrue();
+        (fw, fh, floats!.Length).ShouldBe((120, 200, 120 * 200 * 4));
+
+        var rgba8 = new byte[120 * 200 * 4];
+        ImageCodecs.TryDecodeIntoRgba8(file, rgba8).ShouldBeTrue();
+        image.ToRgba8().ShouldBe(rgba8);
+    }
+
     // ------------------------------------------------------------- what falls back to the plain base
 
     [Fact]

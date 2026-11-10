@@ -95,6 +95,17 @@ public sealed class GainMapCoreTests
     };
 
     [Theory]
+    [InlineData(double.NaN, 0.0)]
+    [InlineData(0.0, double.NaN)]
+    [InlineData(-0.01, 0.0)]
+    [InlineData(0.0, -0.01)]
+    public void Validate_RefusesANegativeOrNaNOffset_LikeTheChannelDoes(double sdr, double hdr)
+    {
+        var meta = new GainMapMetadata { GainMapMin = 1.0, GainMapMax = 4.0, HdrCapacityMax = 4.0, OffsetSdr = sdr, OffsetHdr = hdr };
+        Should.Throw<InvalidOperationException>(meta.Validate);
+    }
+
+    [Theory]
     [MemberData(nameof(Shapes))]
     public void Srgb8Path_IsByteIdenticalToTheOriginalLoop(int w, int h, int bc, int mw, int mh, int mc, double gamma, double headroom)
     {
