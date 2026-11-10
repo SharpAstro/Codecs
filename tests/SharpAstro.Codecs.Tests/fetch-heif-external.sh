@@ -34,6 +34,40 @@ FILES=(
     # photo 1108665959 (https://www.dpreview.com/samples/2123927289/canon-eos-r6-sample-gallery);
     # DPReview blocks scripted downloads, so no URL here. 18,885,714 bytes.
     "canon-r6-hdrpq.cr3||71346bedb7211061d785aac237fe529753fec51b87b7c83b5b518291b3339519"
+
+    # ---- Phone HEICs (issue #73; the gain-map ones also serve #70) ----------------------------
+    # Unlike the Canon files these have a stated licence, but only the source repository's: each
+    # is a test image committed to a repository under an open licence, with no per-file statement
+    # from the photographer. They are still kept out of git (sizes, and the Canon files' rule
+    # that nothing third-party lives here), and are pinned by commit so the URL cannot move.
+
+    # Apple iPhone 13 Pro HDR photo with Apple's auxiliary HDR gain map
+    # (auxC urn:com:apple:photo:2020:aux:hdrgainmap), ftyp 'heic'. The sample of johncf/apple-hdr-heic
+    # (tests/data/hdr-sample.heic), MIT, (c) 2024 John Charankattu; stored in Git LFS, so the URL is
+    # the media host, not raw. 238,982 bytes.
+    "apple-iphone13pro-hdr-sample.heic|https://media.githubusercontent.com/media/johncf/apple-hdr-heic/e64716c29abc91a3b40543d7c47fb0f526608982/tests/data/hdr-sample.heic|c690fa4ecc6ae71ee9a926de869a95835a5d41e764ccbc200647e2fb9d0800cc"
+
+    # Apple iPhone 13 Pro portrait-mode photo ("pug"): HDR gain map aux image plus a depth aux
+    # image (urn:mpeg:hevc:2015:auxid:2), ftyp 'heic'. pillow_heif tests/images/heif_other/pug.heic
+    # (commit "pug portrait with built-in depth and aux image"), BSD-3-Clause repository
+    # (Pillow-Heif contributors). 1,299,081 bytes.
+    "apple-iphone13pro-portrait-pug.heic|https://raw.githubusercontent.com/bigcat88/pillow_heif/558ee2bfbe85a64b4371bcc1bc067883c5f9573d/tests/images/heif_other/pug.heic|1ddce96766efbfa0f6bdf634bdab26bdeff831393df8d67f4cdc7b7a7afebc67"
+
+    # Samsung Galaxy 200 MP photo with Samsung's HDR gain map aux image
+    # (urn:com:samsung:photo:2024:aux:hdrgainmap), ftyp 'heic'. pillow_heif
+    # tests/images/heif_special/200MP.heic, BSD-3-Clause repository. 2,407,522 bytes.
+    "samsung-200mp-hdrgainmap.heic|https://raw.githubusercontent.com/bigcat88/pillow_heif/558ee2bfbe85a64b4371bcc1bc067883c5f9573d/tests/images/heif_special/200MP.heic|4dd7209010986a50b1049e54de47ae2188faef6d548213a9799e11fae1a317c6"
+
+    # Samsung Galaxy photo with a gain map aux image AND an ISO 21496-1 'tmap' item (the file's
+    # strings name both the Samsung aux type and 'tmap'), ftyp 'heic'. pillow_heif
+    # tests/images/heif_special/aux_YCbCr.heic (added for YCbCr aux images, PR #355), BSD-3-Clause
+    # repository. 1,172,244 bytes.
+    "samsung-tmap-aux-ycbcr.heic|https://raw.githubusercontent.com/bigcat88/pillow_heif/558ee2bfbe85a64b4371bcc1bc067883c5f9573d/tests/images/heif_special/aux_YCbCr.heic|8deae321c3b6424f97ab5d57d022e0a79ac35278149c0de7796261b8981f50b0"
+
+    # Xiaomi (Android) HEIC, ftyp 'heic' with 'mif1' compatible. pillow_heif
+    # tests/images/heif_special/xiaomi.heic (kept for the large Xiaomi Exif block, pillow_heif #92),
+    # BSD-3-Clause repository. 896,013 bytes.
+    "xiaomi-android.heic|https://raw.githubusercontent.com/bigcat88/pillow_heif/558ee2bfbe85a64b4371bcc1bc067883c5f9573d/tests/images/heif_special/xiaomi.heic|cb5c7d9131931df4abd9bfe1c3de47617b68d1fae54a1c367fc5981ffea6aeed"
 )
 
 status=0
