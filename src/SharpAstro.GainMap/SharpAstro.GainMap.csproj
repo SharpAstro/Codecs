@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+    <!-- Why the gain-map core is its own package: the metadata and the reconstruction math are
+         shared by the JPEG carrier (SharpAstro.Jpeg.GainMap) and the HEIF carrier
+         (SharpAstro.Heif, ISO 21496-1 tmap / Apple auxiliary maps), and HEIF must not depend on
+         JPEG. SharpAstro.Jpeg.GainMap forwards the types that used to live in it
+         (GainMapMetadata, same full name) so existing consumers stay source- and binary-compatible.
+         Provenance: Adobe hdrgm 1.0 and ISO/TS 21496-1, read clean-room from the specification
+         text. libultrahdr, libheif and Skia are oracle BINARIES only, never sources (this repo is
+         Unlicense). -->
+
+    <PackageId>SharpAstro.GainMap</PackageId>
+    <Product>SharpAstro.GainMap</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>Format-independent gain-map core: per-channel gain-map metadata (Adobe hdrgm 1.0 / ISO/TS 21496-1 vocabulary), the display-adaptive HDR reconstruction math over a base of any bit depth given as linear floats, and the sRGB transfer functions. Shared by SharpAstro.Jpeg.GainMap and SharpAstro.Heif. Pure-managed, AOT-compatible.</Description>
+    <PackageTags>gain-map gainmap ultrahdr hdr iso21496 aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../UNLICENSE" Pack="true" PackagePath="/" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../SharpAstro.Codecs.Abstractions/SharpAstro.Codecs.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="SharpAstro.Codecs.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,12 +1,14 @@
-namespace SharpAstro.Jpeg;
+namespace SharpAstro.GainMap;
 
 /// <summary>
 /// The IEC 61966-2-1 sRGB transfer functions. Gain-map math is defined on
 /// <em>linear</em> light, and both renditions of a gain-map JPEG are ordinary
 /// display-referred sRGB — so every pixel passes through the EOTF on the way
 /// into the math and (for the SDR side of generation) the OETF on the way out.
+/// Public (it was internal to the JPEG package) because InternalsVisibleTo cannot
+/// cross two separately shipped packages.
 /// </summary>
-internal static class SrgbTransfer
+public static class SrgbTransfer
 {
     /// <summary>EOTF (decode): sRGB-encoded [0,1] to linear [0,1].</summary>
     public static double Eotf(double encoded) =>
