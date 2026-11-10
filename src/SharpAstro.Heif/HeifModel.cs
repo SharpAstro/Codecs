@@ -130,6 +130,13 @@ public sealed record HeifCleanAperture(
     int HorizontalOffsetN, uint HorizontalOffsetD, int VerticalOffsetN, uint VerticalOffsetD)
     : HeifProperty("clap");
 
+/// <summary>
+/// <c>auxC</c>: what an auxiliary image item (one with an <c>auxl</c> reference to its master) is, by URN:
+/// <c>urn:mpeg:hevc:2015:auxid:1</c> alpha, <c>:2</c> depth, Apple's <c>urn:com:apple:photo:2020:aux:hdrgainmap</c>,
+/// Samsung's <c>urn:com:samsung:photo:2024:aux:hdrgainmap</c>. The subtype bytes are the URN's own and kept raw.
+/// </summary>
+public sealed record HeifAuxiliaryType(string Urn, byte[] Subtype) : HeifProperty("auxC");
+
 /// <summary>A property this reader does not interpret, kept so its presence (and essential flag) stays visible.</summary>
 public sealed record HeifUnknownProperty(string BoxType, int Length) : HeifProperty(BoxType);
 
