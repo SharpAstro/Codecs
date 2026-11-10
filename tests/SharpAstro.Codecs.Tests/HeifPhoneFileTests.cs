@@ -489,14 +489,25 @@ public class HeifPhoneFileTests(ITestOutputHelper output)
         s.TransformSkipChroma.ShouldBe(0);
         s.CodedTransformSizes.Sum().ShouldBeGreaterThan(0);
 
-        // The Canon and x265 fixtures never reach all of these together: SAO and deblocking on 4:2:0 8-bit.
-        (s.SaoBand + s.SaoEdgeClasses.Sum()).ShouldBeGreaterThan(0);
+        // What a phone stream exercises that the Canon and x265 fixtures do not reach together: SAO and deblocking at
+        // 8-bit 4:2:0, and every luma mode but, for Xiaomi, mode 34 (the last angle, never chosen in its 24 tiles).
+        // Samsung's tmap file switches SAO off in its slices although its SPS enables it.
+        (s.SaoBand + s.SaoEdgeClasses.Sum() > 0).ShouldBe(name != "samsung-tmap-aux-ycbcr.heic");
         (s.DeblockStrong + s.DeblockWeak).ShouldBeGreaterThan(0);
         s.DeblockChroma.ShouldBeGreaterThan(0);
-        s.LumaModes.Count(c => c > 0).ShouldBe(35, "every luma mode, planar and DC included, is exercised by a phone picture");
+        s.LumaModes.Count(c => c > 0).ShouldBeGreaterThanOrEqualTo(34);
+        s.LumaModes[0].ShouldBeGreaterThan(0, "planar");
+        s.LumaModes[1].ShouldBeGreaterThan(0, "DC");
         (s.WavefrontRows > 0).ShouldBe(phone.Wpp);
+        s.SubstreamsByEntryPoint.ShouldBe(s.WavefrontRows);
         (s.SignsHidden > 0).ShouldBe(phone.SignHiding);
-        (s.NonZeroQpDeltas > 0).ShouldBe(phone.CuQpDelta);
+        if (!phone.CuQpDelta) s.NonZeroQpDeltas.ShouldBe(0); // enabled does not mean used: Samsung's tmap file enables it and codes only zeros
+
+        // CheckCodedSize's grid bound: the tiles code only a little over the output (the bound is 4x plus a CTB).
+        var coded = (long)image.Grid.TileItemIds.Count * image.TileWidth * image.TileHeight;
+        var ratio = (double)coded / ((long)image.Width * image.Height);
+        output.WriteLine($"{name}: tiles code {coded} samples for {(long)image.Width * image.Height} shown ({ratio:0.000}x)");
+        ratio.ShouldBeLessThan(1.1);
     }
 
     /// <summary>
@@ -543,9 +554,17 @@ public class HeifPhoneFileTests(ITestOutputHelper output)
         return (CornerGrid(file, heif, heif.DescribePrimary(file), rows: 2, columns: 2), name + " (bottom-right 2x2 tiles, overhanging both ways)");
     }
 
+    /// <summary>
+    /// The composed primary against libheif (Magick.NET), the tolerant half: every phone picture is 8-bit 4:2:0, where
+    /// libheif takes integer shortcuts of its own (see <see cref="HeifDecoder"/>), so it is held to the measured
+    /// bound and not to equality. Measured: never more than 1 code apart, on 0.017 % (iPhone portrait) to 6.9 % (the
+    /// Samsung 200 MP corner) of samples. The exact whole-image comparisons are in <c>HeifDecodeTests</c> (full-range
+    /// 4:2:2, the Canon format). The 200 MP primary goes through its bottom-right corner (<see cref="CornerGrid"/>),
+    /// which still crosses the grid's overhang on both axes. Each file decodes with its gain/depth maps present.
+    /// </summary>
     [Theory]
     [MemberData(nameof(Names))]
-    public void Composed_AgainstLibheif_Measure(string name)
+    public void Composed_IsWithinOneCodeOfLibheif(string name)
     {
         var (heif, what) = ForLibheif(name);
         var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -553,6 +572,32 @@ public class HeifPhoneFileTests(ITestOutputHelper output)
         var decoded = watch.Elapsed;
         var (differing, max, first, total) = HeifDecodeTests.MeasureAgainstLibheif(what, heif, rgb, sameSize: true);
         output.WriteLine($"{what}: {rgb.Width}x{rgb.Height} {rgb.BitDepth}-bit, ours in {decoded.TotalMilliseconds:0} ms; {differing} of {total} samples differ from libheif ({(double)differing / total:P3}), max {max}, first {first}");
+        max.ShouldBeLessThanOrEqualTo(1, $"{what}: the largest difference from libheif");
+        ((double)differing / total).ShouldBeLessThan(0.10, $"{what}: the share of samples that differ");
+    }
+
+    /// <summary>
+    /// Samsung's thumbnails, each wrapped as a one-picture file for libheif. The tmap file's is coded 512x256 with a
+    /// conformance window of 20 rows at the bottom and shown as 512x236: both libheif and this decoder crop to the
+    /// window (libheif's size is compared), so the window is allowed, not assumed absent.
+    /// </summary>
+    [Theory]
+    [InlineData("samsung-200mp-hdrgainmap.heic")]
+    [InlineData("samsung-tmap-aux-ycbcr.heic")]
+    public void Thumbnail_IsWithinOneCodeOfLibheif(string name)
+    {
+        var file = HeifCanonFileTests.Load(name);
+        var heif = HeifReader.Read(file);
+        var thumbnail = heif.ThumbnailsOf(heif.PrimaryItem).Single();
+        var described = heif.Describe(file, thumbnail);
+        var wrapped = HeifBuilder.WrapHevcPicture(HeifDecodeTests.HvcC(described.Coding), heif.ReadItemData(file, thumbnail), described.Width, described.Height, null, null);
+
+        var rgb = HeifDecoder.Decode(wrapped);
+        (rgb.Width, rgb.Height).ShouldBe(((int)described.Width, (int)described.Height));
+        var (differing, max, first, total) = HeifDecodeTests.MeasureAgainstLibheif(name + " thumbnail", wrapped, rgb, sameSize: true);
+        output.WriteLine($"{name} thumbnail: {rgb.Width}x{rgb.Height}, {differing} of {total} samples differ from libheif ({(double)differing / total:P3}), max {max}, first {first}");
+        max.ShouldBeLessThanOrEqualTo(1);
+        ((double)differing / total).ShouldBeLessThan(0.10);
     }
 
     [Fact]
