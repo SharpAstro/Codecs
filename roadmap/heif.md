@@ -638,6 +638,8 @@ Headroom defaults to the full authored one; a headroom of 1 gives the linearised
 `clap`/`irot`/`imir` are applied to the float result after the inputs' own (`Transforms` is generic over the sample
 type and channel count for that).
 
+**Map orientation.** Only Apple's auxiliary map is taken to be stored like its base: with no `clap`/`irot`/`imir` of its own it is compared on stored sizes and turned by the base's `irot`/`imir` (an iPhone portrait photo: landscape-stored primary with `irot`, unrotated aux map). A `tmap`'s inputs are items as displayed, so its map is compared on display size and never turned. The base's `clap` is left out of the turn, so a map with no transforms is resampled by its whole extent onto a cropped base: an approximation, small for a small crop. The square tolerance is a fixed 2 pixels, for rounding between a base and a map at a fraction of its size.
+
 **Validation.** `HeifGainMapTests` builds `tmap` files with `HeifBuilder` from the committed x265 fixtures (a 4:2:0 8-bit
 base, a 3x2 grid base, 4:0:0 maps at 8 and 10 bits, a 4:2:0 10-bit colour map with three-channel metadata). W = 0 is
 compared EXACTLY with `HeifRgbImage.ToLinearRgbaFloat`; full and partial headroom against `Expected`, a per-pixel

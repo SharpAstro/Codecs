@@ -99,6 +99,10 @@ public partial class HeifGainMapTests
         public bool AlphaAndDepthFirst { get; set; }
         public string AuxType { get; set; } = "hvc1";
         public uint AuxRefersTo { get; set; } = BaseId;
+        /// <summary>An <c>irot</c> on the primary (item 1), as Apple writes for a portrait photo.</summary>
+        public byte[]? BaseIrot { get; set; }
+        /// <summary>An <c>irot</c> on the aux map (item 2); Apple writes none.</summary>
+        public byte[]? MapIrot { get; set; }
     }
 
     /// <summary>
@@ -133,6 +137,8 @@ public partial class HeifGainMapTests
             builder.AddItem(new HeifBuilder.Item(AppleAuxId, o.AuxType, new byte[8], Hidden: true));
         }
         builder.Associate(AppleAuxId, "auxC", AuxC(o.Urn));
+        if (o.BaseIrot is not null) builder.Associate(BaseId, "irot", o.BaseIrot, essential: true);
+        if (o.MapIrot is not null) builder.Associate(AppleAuxId, "irot", o.MapIrot, essential: true);
         builder.Reference("auxl", AppleAuxId, o.AuxRefersTo);
 
         if (o.Exif is not null)
@@ -454,5 +460,40 @@ public partial class HeifGainMapTests
         // The tmap path's rule applies to Apple's map too: here the map declares more pixels than its base.
         var file = BuildApple(Base256, Mono8 with { DeclaredSize = (400, 400) }, o => o.Exif = ExifWithMakerNote(2, 0));
         Should.Throw<InvalidDataException>(() => HeifGainMap.Decode(file)).Message.ShouldContain("larger than its base");
+    }
+
+    // ---- Apple's portrait layout: a rotated primary, an unrotated aux map -------------------------
+
+    [Fact]
+    public void ApplesPortraitLayout_AnAuxMapWithNoIrotOnARotatedPrimary_IsTurnedLikeTheBase_AndReconstructs()
+    {
+        // Landscape-stored primary with an irot, an unrotated landscape aux map (stored in the sensor's orientation).
+        var apple = AppleFile(configure: o => o.BaseIrot = HeifBuilder.Irot(90));
+        var heif = HeifReader.Read(apple);
+        heif.GainMapOfPrimary(apple)!.Dialect.ShouldBe(HeifGainMapDialect.AppleAux);
+
+        var image = HeifGainMap.Decode(apple);
+        (image.Width, image.Height).ShouldBe((192, 256));
+
+        // The map is turned with the base: the same picture as an aux map that carries the irot itself.
+        var explicitly = HeifGainMap.Decode(AppleFile(configure: o => { o.BaseIrot = HeifBuilder.Irot(90); o.MapIrot = HeifBuilder.Irot(90); }));
+        (explicitly.Width, explicitly.Height).ShouldBe((192, 256));
+        image.Rgba.ShouldBe(explicitly.Rgba);
+
+        // And through the facade it is HDR at the turned size, not the silent SDR fallback.
+        ImageCodecs.TryReadInfo(apple, out var info).ShouldBeTrue();
+        info.ShouldBe(new ImageInfo(192, 256, 4, SampleFormat.Float32));
+    }
+
+    [Fact]
+    public void AnAuxMapStoredInTheOtherOrientationThanARotatedPrimary_IsStillRefused()
+    {
+        // A portrait-stored map under a landscape-stored primary cannot be the sensor-orientation map, rotated or not.
+        var file = BuildApple(Base256, new ImageSpec("x265-400p8", HeifBuilder.Nclx(2, 2, 2, true), (192, 256)),
+            o => { o.Exif = ExifWithMakerNote(2, 0); o.BaseIrot = HeifBuilder.Irot(90); });
+        var heif = HeifReader.Read(file);
+        var info = heif.GainMapOfPrimary(file)!;
+        info.Dialect.ShouldBe(HeifGainMapDialect.AppleAux);
+        HeifGainMap.MapMatchesBaseShape(heif.Describe(file, info.Base), heif.Describe(file, info.Map), info.Dialect).ShouldBeFalse();
     }
 }

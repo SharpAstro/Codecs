@@ -453,30 +453,33 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public void ApplesPortraitLayout_AMapWithNoIrotOnARotatedBase_IsTurnedLikeTheBase_AndReconstructs()
+    public void ATmapsMapWithNoIrotOnARotatedBase_IsInTheBasesDisplayedOrientation_AndReconstructs()
     {
-        // Landscape-stored primary with an irot, an unrotated landscape map (the map is stored in the sensor's orientation).
-        var apple = Build(Base256, Mono8, configure: o => o.BaseIrot = HeifBuilder.Irot(90));
-        var image = HeifGainMap.Decode(apple);
-        (image.Width, image.Height).ShouldBe((192, 256));
-
-        // The map is turned with the base: the same picture as a map that carries the irot itself.
-        var explicitly = HeifGainMap.Decode(Build(Base256, Mono8, configure: o => { o.BaseIrot = HeifBuilder.Irot(90); o.MapIrot = HeifBuilder.Irot(90); }));
-        image.Rgba.ShouldBe(explicitly.Rgba);
-
-        // And through the facade it is HDR, not the silent SDR fallback.
-        ImageCodecs.TryReadInfo(apple, out var info).ShouldBeTrue();
-        info.ShouldBe(new ImageInfo(192, 256, 4, SampleFormat.Float32));
-    }
-
-    [Fact]
-    public void AMapWithNoIrotOnARotatedBase_StoredInTheOtherOrientation_IsStillRefused()
-    {
-        // A portrait-stored map under a landscape-stored base cannot be the base's sensor-orientation map, rotated or not.
+        // In a derived image the inputs are the items as displayed: the base (256x192 stored, irot 90) shows 192x256, and
+        // a 192x256 map with no irot is already that orientation. It is not an Apple sensor-orientation map, so it is not turned.
         var file = Build(Base256, new ImageSpec("x265-400p8", HeifBuilder.Nclx(2, 2, 2, true), (192, 256)),
             configure: o => o.BaseIrot = HeifBuilder.Irot(90));
         var heif = HeifReader.Read(file);
-        HeifGainMap.MapMatchesBaseShape(heif.Describe(file, heif.GetItem(BaseId)!), heif.Describe(file, heif.GetItem(MapId)!)).ShouldBeFalse();
+        var info = heif.GainMapOfPrimary(file)!;
+        info.Dialect.ShouldBe(HeifGainMapDialect.IsoTmap);
+        HeifGainMap.MapMatchesBaseShape(heif.Describe(file, info.Base), heif.Describe(file, info.Map), info.Dialect).ShouldBeTrue();
+
+        var image = HeifGainMap.Decode(file);
+        (image.Width, image.Height).ShouldBe((192, 256));
+        ImageCodecs.TryReadInfo(file, out var read).ShouldBeTrue();
+        read.ShouldBe(new ImageInfo(192, 256, 4, SampleFormat.Float32));
+    }
+
+    [Fact]
+    public void ATmapsMapStoredLandscapeWithNoIrotOnARotatedBase_IsRefused()
+    {
+        // The tmap dialect compares display sizes: a landscape map under a base displayed as portrait is the other orientation
+        // (only Apple's auxiliary map is taken to be stored like the base).
+        var file = Build(Base256, Mono8, configure: o => o.BaseIrot = HeifBuilder.Irot(90));
+        var heif = HeifReader.Read(file);
+        var info = heif.GainMapOfPrimary(file)!;
+        info.Dialect.ShouldBe(HeifGainMapDialect.IsoTmap);
+        HeifGainMap.MapMatchesBaseShape(heif.Describe(file, info.Base), heif.Describe(file, info.Map), info.Dialect).ShouldBeFalse();
     }
 
     [Theory]
@@ -491,7 +494,7 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
     {
         var file = Build(new ImageSpec("x265-420p8-deblock", Srgb(), (baseW, baseH)), new ImageSpec("x265-400p8", HeifBuilder.Nclx(2, 2, 2, true), (mapW, mapH)));
         var heif = HeifReader.Read(file);
-        HeifGainMap.MapMatchesBaseShape(heif.Describe(file, heif.GetItem(BaseId)!), heif.Describe(file, heif.GetItem(MapId)!)).ShouldBe(accepted);
+        HeifGainMap.MapMatchesBaseShape(heif.Describe(file, heif.GetItem(BaseId)!), heif.Describe(file, heif.GetItem(MapId)!), HeifGainMapDialect.IsoTmap).ShouldBe(accepted);
     }
 
     // ---- libheif on the base -----------------------------------------------------------------------
