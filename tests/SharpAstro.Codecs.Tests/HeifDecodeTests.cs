@@ -339,7 +339,7 @@ public class HeifDecodeTests(ITestOutputHelper output)
         for (var y0 = 0; y0 < rgb.Height; y0 += band)
         {
             var rows = Math.Min(band, rgb.Height - y0);
-            var pixels = pixelsOf.GetArea(0, y0, (int)magick.Width, rows)!;
+            var pixels = pixelsOf.GetArea(0, y0, magick.Width, (uint)rows)!;
             for (var y = 0; y < rows; y++)
             {
                 for (var x = 0; x < rgb.Width; x++)
