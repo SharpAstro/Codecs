@@ -97,6 +97,9 @@ public static class TgaReader
     public const long MaximumPixels = 1L << 26;
 
     private const int HeaderSize = 18;
+    private const int FooterSize = 26;
+
+    private static ReadOnlySpan<byte> FooterSignature => "TRUEVISION-XFILE.\0"u8;
 
     /// <summary>Reads and checks the header. Returns false for anything <see cref="Decode"/> would refuse in it.</summary>
     public static bool TryReadInfo(ReadOnlySpan<byte> data, out TgaInfo info)
@@ -125,7 +128,13 @@ public static class TgaReader
         long pixelCount = (long)w * h;
         int bytesPerSample = info.BitsPerPixel == 8 ? 1 : (info.BitsPerPixel + 7) / 8;
         int dataOffset = HeaderSize + idLength + mapBytes;
+        // A TGA 2.0 footer (26 bytes, ending in the signature) is not pixel data: leave it out of the size check,
+        // or a raw image up to 26 bytes short would decode with the footer bytes read as pixels.
         ReadOnlySpan<byte> pixels = data[dataOffset..];
+        if (pixels.Length >= FooterSize && pixels[^FooterSignature.Length..].SequenceEqual(FooterSignature))
+        {
+            pixels = pixels[..^FooterSize];
+        }
 
         // Check the pixel data's size before allocating the raster, so a short file cannot buy a big
         // allocation. A raw image needs exactly this much. An RLE packet covers at most 128 pixels for

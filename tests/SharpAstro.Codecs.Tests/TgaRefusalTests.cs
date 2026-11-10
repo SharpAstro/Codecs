@@ -63,6 +63,14 @@ public sealed class TgaRefusalTests
     }
 
     [Fact]
+    public void FooterBytes_AreNotPixelData_WhenTheImageIsShort()
+    {
+        // 2x2 at 24 bits needs 12 bytes; 8 present, then a 26-byte TGA 2.0 footer. The footer must not fill the gap.
+        byte[] footer = [.. new byte[8], .. new byte[8], .. "TRUEVISION-XFILE."u8.ToArray(), 0];
+        Refused(Build(2, 2, 2, 24, 0x20, footer)).Message.ShouldContain("truncated");
+    }
+
+    [Fact]
     public void TruncatedHeader_IsRefused()
     {
         Refused(new byte[17]);
