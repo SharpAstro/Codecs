@@ -44,10 +44,14 @@ public sealed class HeifGainMapImage
     /// <summary>The display headroom (a linear ratio to SDR white) the gain was applied for.</summary>
     public double DisplayHeadroom { get; }
 
-    /// <summary>The weight <c>W</c> in [0, 1] that headroom gave the gain: 0 is the linearised base, 1 the full authored boost.</summary>
+    /// <summary>
+    /// The weight <c>W</c> in [0, 1] that headroom gave the gain: 0 is the linearised base, 1 the full authored boost. For
+    /// the ISO form it is the log-space position of the display headroom between the metadata's two capacities; for Apple's
+    /// it is <c>(H' - 1) / (H - 1)</c>, the share of the authored boost applied, <c>H' = clamp(display, 1, H)</c>.
+    /// </summary>
     public double Weight { get; }
 
-    /// <summary>The <c>tmap</c> item and its inputs.</summary>
+    /// <summary>The gain map as found: the <c>tmap</c> item and its inputs, or Apple's auxiliary item (<see cref="HeifGainMapInfo.Dialect"/>).</summary>
     public HeifGainMapInfo Info { get; }
 }
 
@@ -69,6 +73,14 @@ public sealed class HeifGainMapImage
 /// <b>Headroom.</b> <c>displayHeadroom</c> is the display's peak as a linear ratio to SDR white (4 = two stops).
 /// The default is the full authored headroom, <see cref="GainMapMetadata.HdrCapacityMax"/>, so the whole gain is
 /// applied; the SDR headroom 1 gives the linearised base exactly (no <c>+offset - offset</c> noise).
+/// </para>
+/// <para>
+/// <b>Apple's dialect</b> (<see cref="HeifGainMapDialect.AppleAux"/>, an <c>auxl</c> gain-map item with no <c>tmap</c>) goes
+/// through <see cref="GainMapReconstructor.ReconstructAppleFromLinear"/>: the map's 8-bit codes are divided by 255,
+/// upsampled, linearised by the Rec.709 curve and applied as <c>sdr * (1 + (H' - 1) * g)</c>, with <c>H'</c> the display
+/// headroom clamped to [1, authored headroom] (the default display headroom is the authored one). Best-effort, from
+/// Apple's public article; see <see cref="HeifAppleGainMap"/>. There is no <c>tmap</c> to carry transformative properties, so
+/// none is applied beyond the inputs' own.
 /// </para>
 /// <para>
 /// <b>Refused</b>, before anything is decoded: a base over <see cref="HeifLimits.MaxGainMapBasePixels"/>, a map over
@@ -95,7 +107,7 @@ public static class HeifGainMap
         var heif = HeifReader.Read(file);
         var target = item ?? heif.PrimaryItem;
         var info = heif.GainMapOf(file, target)
-            ?? throw new InvalidDataException($"{target} has no gain map: no 'tmap' item derives from it, and it is not one.");
+            ?? throw new InvalidDataException($"{target} has no gain map: no 'tmap' item derives from it, it is not one, and it has no Apple gain-map auxiliary image with a usable headroom.");
         return Decode(file, heif, info, displayHeadroom);
     }
 
@@ -107,7 +119,7 @@ public static class HeifGainMap
         CheckHeadroom(displayHeadroom);
         var metadata = info.Metadata;
         if (metadata.BaseRenditionIsHdr)
-            throw new NotSupportedException($"The 'tmap' item {info.Tmap.Id} is in the backward direction (its base is the HDR rendition); only the SDR-base form is reconstructed.");
+            throw new NotSupportedException($"The 'tmap' item {info.Tmap?.Id} is in the backward direction (its base is the HDR rendition); only the SDR-base form is reconstructed.");
 
         // Sizes first, from the declared headers, before a plane is allocated or a slice read.
         var baseImage = heif.Describe(file, info.Base);
@@ -119,7 +131,12 @@ public static class HeifGainMap
             throw new InvalidDataException($"The gain map {info.Map.Id} ({mapImage.Width}x{mapImage.Height}) is larger than its base image {info.Base.Id} ({baseImage.Width}x{baseImage.Height}).");
 
         var headroom = displayHeadroom ?? metadata.HdrCapacityMax;
-        var weight = metadata.Weight(headroom);
+        var apple = info.Dialect == HeifGainMapDialect.AppleAux;
+        // The Apple form's weight is the share of the authored boost the display takes (its headroom H' = clamp(display, 1, H)
+        // gives 1 + (H' - 1) g: linear, not the ISO form's log-space ramp).
+        var weight = apple && info.Apple is { } details
+            ? (Math.Clamp(headroom, 1, details.Headroom) - 1) / (details.Headroom - 1)
+            : metadata.Weight(headroom);
 
         var baseRgb = HeifDecoder.Decode(file, info.Base);
         if (baseRgb.ColorEncoding.Transfer == TransferFunction.Unspecified)
@@ -128,13 +145,18 @@ public static class HeifGainMap
         var baseLinear = baseRgb.ToLinearRgbaFloat(out var encoding);
 
         var mapRgb = HeifDecoder.Decode(file, info.Map);
-        var mapChannels = mapImage.ChromaFormat == HevcChromaFormat.Monochrome || metadata.ChannelCount == 1 ? 1 : 3;
+        var mapChannels = apple || mapImage.ChromaFormat == HevcChromaFormat.Monochrome || metadata.ChannelCount == 1 ? 1 : 3;
         var mapCodes = NormaliseMap(mapRgb, mapChannels);
 
-        var reconstructed = GainMapReconstructor.ReconstructFromLinear(
-            baseLinear, baseRgb.Width, baseRgb.Height, 4,
-            mapCodes, mapRgb.Width, mapRgb.Height, mapChannels,
-            metadata, headroom);
+        var reconstructed = apple
+            ? GainMapReconstructor.ReconstructAppleFromLinear(
+                baseLinear, baseRgb.Width, baseRgb.Height, 4,
+                mapCodes, mapRgb.Width, mapRgb.Height, mapChannels,
+                info.Apple!.Headroom, headroom)
+            : GainMapReconstructor.ReconstructFromLinear(
+                baseLinear, baseRgb.Width, baseRgb.Height, 4,
+                mapCodes, mapRgb.Width, mapRgb.Height, mapChannels,
+                metadata, headroom);
 
         // RGB floats from the core into RGBA (alpha 1), in the base's own array where it fits (it does: the same pixel count).
         var rgb = MemoryMarshal.Cast<byte, float>(reconstructed.Pixels);
@@ -150,7 +172,7 @@ public static class HeifGainMap
         // The tmap's own transformative properties, in the order it lists them, after the inputs' own (which the
         // decodes above applied).
         int width = baseRgb.Width, height = baseRgb.Height;
-        foreach (var association in info.Tmap.Properties)
+        foreach (var association in info.Tmap?.Properties ?? [])
         {
             switch (association.Property)
             {

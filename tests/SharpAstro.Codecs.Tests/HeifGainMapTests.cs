@@ -19,7 +19,7 @@ namespace SharpAstro.Codecs.Tests;
 /// the base's decode against libheif (Magick.NET) where it can be compared.
 /// </para>
 /// </summary>
-public class HeifGainMapTests(ITestOutputHelper output)
+public partial class HeifGainMapTests(ITestOutputHelper output)
 {
     private const uint BaseId = 1, MapId = 2, TmapId = 3, GroupId = 50;
 
@@ -158,7 +158,7 @@ public class HeifGainMapTests(ITestOutputHelper output)
 
         var info = heif.GainMapOf(file, heif.PrimaryItem).ShouldNotBeNull();
         info.Layout.ShouldBe(HeifGainMapLayout.BaseIsPrimary);
-        (info.Tmap.Id, info.Base.Id, info.Map.Id).ShouldBe((TmapId, BaseId, MapId));
+        (info.Tmap!.Id, info.Base.Id, info.Map.Id).ShouldBe((TmapId, BaseId, MapId));
         var group = info.Alternatives.ShouldNotBeNull();
         (group.Type, group.GroupId).ShouldBe(("altr", GroupId));
         group.EntityIds.ShouldBe([TmapId, BaseId], "the group is read, with its order");
@@ -169,7 +169,7 @@ public class HeifGainMapTests(ITestOutputHelper output)
         // From the tmap itself: the same answer. From the map, a hidden gain-map image: none.
         heif.GainMapOf(file, heif.GetItem(TmapId)!).ShouldNotBeNull().Base.Id.ShouldBe(BaseId);
         heif.GainMapOf(file, heif.GetItem(MapId)!).ShouldBeNull();
-        heif.GainMapOfPrimary(file).ShouldNotBeNull().Tmap.Id.ShouldBe(TmapId);
+        heif.GainMapOfPrimary(file).ShouldNotBeNull().Tmap!.Id.ShouldBe(TmapId);
     }
 
     [Fact]
@@ -185,7 +185,7 @@ public class HeifGainMapTests(ITestOutputHelper output)
         (info.Base.Id, info.Map.Id).ShouldBe((BaseId, MapId));
         info.Alternatives.ShouldNotBeNull().EntityIds.ShouldBe([TmapId, BaseId]);
         // The base as a plain item finds the same tmap.
-        heif.GainMapOf(file, heif.GetItem(BaseId)!).ShouldNotBeNull().Tmap.Id.ShouldBe(TmapId);
+        heif.GainMapOf(file, heif.GetItem(BaseId)!).ShouldNotBeNull().Tmap!.Id.ShouldBe(TmapId);
 
         // And the whole decode starts from the primary, which is the tmap.
         var hdr = HeifGainMap.Decode(file);
@@ -221,7 +221,7 @@ public class HeifGainMapTests(ITestOutputHelper output)
         var heif = HeifReader.Read(file);
         var info = heif.GainMapOfPrimary(file).ShouldNotBeNull();
         info.Layout.ShouldBe(HeifGainMapLayout.BaseIsPrimary);
-        (info.Tmap.Id, info.Base.Id, info.Map.Id).ShouldBe((38u, 33u, 37u));
+        (info.Tmap!.Id, info.Base.Id, info.Map.Id).ShouldBe((38u, 33u, 37u));
         var group = info.Alternatives.ShouldNotBeNull();
         group.GroupId.ShouldBe(42u);
         group.EntityIds.ShouldBe([38u, 33u]);

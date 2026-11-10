@@ -48,6 +48,87 @@ public static class GainMapReconstructor
         Reconstruct(new LinearBase(baseLinear), width, height, baseChannels,
             new MapNormalised(mapNormalised), mapWidth, mapHeight, mapChannels, metadata, displayHeadroom);
 
+    /// <summary>
+    /// Apple's HDR gain-map form (the one iPhone HEICs carry as an <c>auxl</c> auxiliary image, before ISO/TS 21496-1),
+    /// from a linear-float base and a map given as codes normalised to [0, 1]. The base is linear light, 1.0 = SDR white.
+    /// Per pixel and channel, with the map's codes bilinearly upsampled (centre aligned) to the base's size FIRST and
+    /// linearised after (Apple's order: "resize ... then linearize"):
+    /// <c>g = Rec709ToLinear(code)</c>, <c>H' = clamp(displayHeadroom, 1, headroom)</c>,
+    /// <c>HDR = base · (1 + (H' − 1) · g)</c>.
+    /// <para>
+    /// The core of it is Apple's own (<c>hdr_rgb = sdr_rgb * (1.0 + (headroom - 1.0) * gainmap)</c>, with the map
+    /// linearised by the Rec.709 curve; headroom from <c>HeifAppleGainMap.HeadroomFromStops</c>). It differs from
+    /// <see cref="ReconstructFromLinear"/> in being <b>linear</b> in the map (not <c>2^(log-gain)</c>), with no offsets,
+    /// and in how a display is accommodated, which Apple's page does not describe: this clamps the display headroom
+    /// into [1, <paramref name="headroom"/>] and uses it as the headroom, so a display of 1 gives the base exactly
+    /// (<c>base · 1</c>) and one at or above the authored headroom the whole effect. That clamp is this package's
+    /// choice (the result never exceeds the display's peak, as Apple states for the authored one), not Apple's.
+    /// </para>
+    /// </summary>
+    /// <param name="headroom">The authored headroom, a linear ratio to SDR white, above 1.</param>
+    /// <param name="displayHeadroom">The display's headroom, a linear ratio to SDR white.</param>
+    /// <returns>RGB <see cref="SampleFormat.Float32"/>, linear, display-referred, 1.0 = SDR white.</returns>
+    public static RasterImage ReconstructAppleFromLinear(
+        ReadOnlySpan<float> baseLinear, int width, int height, int baseChannels,
+        ReadOnlySpan<float> mapNormalised, int mapWidth, int mapHeight, int mapChannels,
+        double headroom, double displayHeadroom)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(displayHeadroom);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(mapWidth);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(mapHeight);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(baseChannels);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(mapChannels);
+        if (!(headroom > 1) || !double.IsFinite(headroom))
+            throw new ArgumentOutOfRangeException(nameof(headroom), headroom, "The authored headroom is a finite ratio above 1.");
+        if (baseLinear.Length < (long)width * height * baseChannels)
+            throw new ArgumentException("Base is smaller than width * height * channels.", nameof(baseLinear));
+        if (mapNormalised.Length < (long)mapWidth * mapHeight * mapChannels)
+            throw new ArgumentException("Gain map is smaller than width * height * channels.", nameof(mapNormalised));
+
+        var applied = Math.Clamp(displayHeadroom, 1, headroom) - 1;
+        var baseG = Math.Min(1, baseChannels - 1);
+        var baseB = Math.Min(2, baseChannels - 1);
+        var usableMapChannels = mapChannels >= 3 ? 3 : 1;
+
+        var outBytes = new byte[width * height * 3 * sizeof(float)];
+        var output = MemoryMarshal.Cast<byte, float>(outBytes.AsSpan());
+        var encoding = new ColorEncoding { Transfer = TransferFunction.Linear, Float = FloatSemantics.DisplayReferred };
+
+        for (var y = 0; y < height; y++)
+        {
+            var v = (y + 0.5) * mapHeight / height - 0.5;
+            var y0 = Math.Clamp((int)Math.Floor(v), 0, mapHeight - 1);
+            var y1 = Math.Min(y0 + 1, mapHeight - 1);
+            var fy = Math.Clamp(v - y0, 0, 1);
+
+            for (var x = 0; x < width; x++)
+            {
+                var u = (x + 0.5) * mapWidth / width - 0.5;
+                var x0 = Math.Clamp((int)Math.Floor(u), 0, mapWidth - 1);
+                var x1 = Math.Min(x0 + 1, mapWidth - 1);
+                var fx = Math.Clamp(u - x0, 0, 1);
+
+                var row0 = y0 * mapWidth;
+                var row1 = y1 * mapWidth;
+                var baseIndex = (y * width + x) * baseChannels;
+                var outIndex = (y * width + x) * 3;
+                for (var c = 0; c < 3; c++)
+                {
+                    var mc = c < usableMapChannels ? c : 0;
+                    var code = (mapNormalised[(row0 + x0) * mapChannels + mc] * (1 - fx) + mapNormalised[(row0 + x1) * mapChannels + mc] * fx) * (1 - fy)
+                             + (mapNormalised[(row1 + x0) * mapChannels + mc] * (1 - fx) + mapNormalised[(row1 + x1) * mapChannels + mc] * fx) * fy;
+                    var gain = Rec709Transfer.ToLinear(Math.Clamp(code, 0, 1));
+                    var sdr = baseLinear[baseIndex + (c == 0 ? 0 : c == 1 ? baseG : baseB)];
+                    output[outIndex + c] = (float)(sdr * (1 + applied * gain));
+                }
+            }
+        }
+
+        return new RasterImage(width, height, 3, SampleFormat.Float32, outBytes, null, encoding);
+    }
+
     private static RasterImage Reconstruct<TBase, TMap>(
         TBase source, int width, int height, int baseChannels,
         TMap map, int mapWidth, int mapHeight, int mapChannels,
