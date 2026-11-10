@@ -1060,6 +1060,13 @@ alpha mask) BMP, written from Microsoft's header documentation, not from stb_ima
 [`roadmap/heif.md`](roadmap/heif.md) has the envelope, the rungs and both mutation tables. What a person
 touching it should know:
 
+- **Phone HEICs go through the same oracles** (`HeifPhoneFileTests`, roadmap/heif.md "Phone files"): five
+  fetched files, 8-bit 4:2:0 grids of 512x512 tiles (Apple with an 4:0:0 gain map and depth map, Samsung with a
+  4:2:0 gain map grid and an ISO 21496-1 `tmap`, Xiaomi bare). Every coded picture (817 in the 200 MP file) is
+  plane-exact against ffmpeg, the composed RGB within 1 code of libheif (the 8-bit 4:2:0 tolerance, kept apart
+  from the exact 4:2:2 ones), and what each exercises is printed from `HevcDecodeStatistics`. The 200 MP primary
+  is compared through a bottom-right corner grid because the whole would hold ~6 GB with libheif. Nothing was
+  refused or mismatched; `Describe` of a `tmap` item is the one declined thing, and it is #70's.
 - **The Canon files are not enough, and the decoder can tell you so.** Their encoder uses DC and every fourth
   angle, never planar, and chroma modes the 4:2:2 remap leaves alone; a Table 8-3 with two wrong entries
   matched ffmpeg on all 25 Canon pictures. The x265 fixtures (`Fixtures/hevc`, `Oracle/heif/make-fixtures.sh`,
@@ -1178,8 +1185,10 @@ decode/encode and WebP still/animation -- and two JXR header tests), given a dev
 oracle present. They previously differed — local 4, CI 56 — purely because a dev box has
 `Oracle/bin/` populated and CI built nothing.
 
-The Canon HEIF/CR3 tests (`HeifCanonFileTests`, `HevcDecoderOracleTests`) are a separate case: their
-INPUT is fetched, not their oracle (`fetch-heif-external.sh`; third-party files with no licence), so
+The Canon HEIF/CR3 tests (`HeifCanonFileTests`, `HevcDecoderOracleTests`) and the phone-file tests
+(`HeifPhoneFileTests`: two iPhone 13 Pro, two Samsung Galaxy and a Xiaomi HEIC, open-licence files from test
+repositories) are a separate case: their INPUT is fetched, not their oracle (`fetch-heif-external.sh`; the
+Canon files have no licence, the phone files only their source repository's), so
 they `Assert.SkipUnless` the file and skip in CI under `REQUIRE_ORACLES` too. CI's skip count is the 6
 above plus those.
 

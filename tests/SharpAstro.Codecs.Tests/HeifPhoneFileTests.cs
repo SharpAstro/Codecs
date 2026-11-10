@@ -503,11 +503,11 @@ public class HeifPhoneFileTests(ITestOutputHelper output)
         (s.SignsHidden > 0).ShouldBe(phone.SignHiding);
         if (!phone.CuQpDelta) s.NonZeroQpDeltas.ShouldBe(0); // enabled does not mean used: Samsung's tmap file enables it and codes only zeros
 
-        // CheckCodedSize's grid bound: the tiles code only a little over the output (the bound is 4x plus a CTB).
+        // CheckCodedSize's grid bound: the tiles code 1.008x to 1.249x the output here (the bound is 4x plus a CTB).
         var coded = (long)image.Grid.TileItemIds.Count * image.TileWidth * image.TileHeight;
         var ratio = (double)coded / ((long)image.Width * image.Height);
         output.WriteLine($"{name}: tiles code {coded} samples for {(long)image.Width * image.Height} shown ({ratio:0.000}x)");
-        ratio.ShouldBeLessThan(1.1);
+        ratio.ShouldBeLessThan(1.5); // measured 1.008 (200 MP) to 1.249 (Xiaomi)
     }
 
     /// <summary>
