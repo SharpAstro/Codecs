@@ -147,6 +147,8 @@ public static class HeifGainMap
         var baseLinear = baseRgb.ToLinearRgbaFloat(out var encoding);
 
         var mapRgb = HeifDecoder.Decode(file, info.Map);
+        if (!HasOwnTransforms(mapImage))
+            mapRgb = TurnLikeBase(mapRgb, baseImage);
         var mapChannels = apple || mapImage.ChromaFormat == HevcChromaFormat.Monochrome || metadata.ChannelCount == 1 ? 1 : 3;
         var mapCodes = NormaliseMap(mapRgb, mapChannels);
 
@@ -180,18 +182,59 @@ public static class HeifGainMap
     }
 
     /// <summary>
-    /// Whether the map, after its own <c>clap</c>/<c>irot</c>, has the base's orientation (after the base's own). The
-    /// reconstruction resamples the map onto the base, so a map stored in another orientation (portrait against a
-    /// landscape base, say) would be stretched across the picture with no sign of it. Only the orientation is checked,
-    /// not the exact aspect ratio: maps are resampled onto the base whatever their size (a 4:3 map on a wider base is
-    /// accepted, as the grid-base tests pin), and a square on either side has no orientation to disagree with.
+    /// Whether the map has the base's orientation. A map with transformative properties of its own (<c>clap</c>, <c>irot</c>,
+    /// <c>imir</c>) is compared on its display size against the base's. A map with none (Apple's auxiliary map is stored in
+    /// the sensor's orientation, with no <c>irot</c> even when the primary has one) is taken to be stored like the base, so
+    /// it is compared on stored sizes, and <see cref="Decode(ReadOnlySpan{byte}, HeifFile, HeifGainMapInfo, double?)"/>
+    /// turns it the way the base is turned. The reconstruction resamples the map onto the base, so a map in another
+    /// orientation (portrait against a landscape base, say) would be stretched across the picture with no sign of it. Only
+    /// the orientation is checked, not the exact aspect ratio: maps are resampled onto the base whatever their size (a 4:3
+    /// map on a wider base is accepted, as the grid-base tests pin), and a square, or a shape within
+    /// <see cref="SquareTolerance"/> pixels of one, on either side has no orientation to disagree with.
     /// </summary>
     internal static bool MapMatchesBaseShape(HeifImage baseImage, HeifImage mapImage)
     {
-        var (bw, bh) = HeifImageDecoder.DisplaySize(baseImage, null);
-        var (mw, mh) = HeifImageDecoder.DisplaySize(mapImage, null);
+        var inherits = !HasOwnTransforms(mapImage);
+        var (bw, bh) = inherits ? ((int)baseImage.Width, (int)baseImage.Height) : HeifImageDecoder.DisplaySize(baseImage, null);
+        var (mw, mh) = inherits ? ((int)mapImage.Width, (int)mapImage.Height) : HeifImageDecoder.DisplaySize(mapImage, null);
         if (bw <= 0 || bh <= 0 || mw <= 0 || mh <= 0) return false;
-        return Math.Sign(bw - bh) * Math.Sign(mw - mh) >= 0;
+        return Orientation(bw, bh) * Orientation(mw, mh) >= 0;
+    }
+
+    /// <summary>How far from square, in pixels, a picture may be and still count as square: a base of 3001x3000 and a map of 750x751 differ by rounding, not orientation.</summary>
+    private const int SquareTolerance = 2;
+
+    /// <summary>-1 portrait, 0 square (within <see cref="SquareTolerance"/>), 1 landscape.</summary>
+    private static int Orientation(int width, int height) => Math.Abs(width - height) <= SquareTolerance ? 0 : Math.Sign(width - height);
+
+    private static bool HasOwnTransforms(HeifImage image) =>
+        image.Item.Properties.Any(a => a.Property is HeifCleanAperture or HeifRotation or HeifMirror);
+
+    /// <summary>
+    /// A map with no transforms of its own, turned by the base's <c>irot</c> and <c>imir</c> (in the order it lists them) so it
+    /// lies on the base's displayed picture. The base's <c>clap</c> is left out: a clean aperture is in the base's own pixels,
+    /// and the resample onto the cropped base takes the map's whole extent, as it does for any smaller map.
+    /// </summary>
+    private static HeifRgbImage TurnLikeBase(HeifRgbImage map, HeifImage baseImage)
+    {
+        var samples = map.Samples;
+        int width = map.Width, height = map.Height;
+        var turned = false;
+        foreach (var association in baseImage.Item.Properties)
+        {
+            switch (association.Property)
+            {
+                case HeifRotation { Degrees: not 0 } rotation:
+                    (samples, width, height) = Transforms.Rotate(samples, width, height, rotation.Degrees, 3);
+                    turned = true;
+                    break;
+                case HeifMirror mirror:
+                    Transforms.Mirror(samples, width, height, mirror.Axis, 3);
+                    turned = true;
+                    break;
+            }
+        }
+        return turned ? new HeifRgbImage(width, height, map.BitDepth, samples, map.ColorEncoding, map.IccProfile) : map;
     }
 
     /// <summary>
