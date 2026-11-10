@@ -202,8 +202,8 @@ public static class ImageCodecs
     }
 
     /// <summary>
-    /// True if any registered codec recognises the stream's leading bytes. Does not
-    /// validate the full payload - a positive result only means the signature matched.
+    /// True if any registered codec recognises the stream (most by its leading bytes; TGA by its footer, so it
+    /// needs the whole stream). Does not validate the full payload - a positive result only means the signature matched.
     /// </summary>
     public static bool CanDecode(ReadOnlySpan<byte> data)
     {

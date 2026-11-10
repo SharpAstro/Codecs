@@ -14,6 +14,14 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## Unreleased
+
+**Fixed: `SharpAstro.Tga` no longer reads the TGA 2.0 footer as pixel data** (Codecs #72). `TgaReader.Decode` left the footer
+(26 bytes ending in `TRUEVISION-XFILE.\0`) in the pixel span when it checked the data's size, so a raw image up to 26 bytes
+short was decoded with footer bytes as its last pixels instead of being refused as truncated. The footer is now trimmed
+before the size check, for RLE as well as raw. `ImageCodecs.CanDecode`'s summary now says that TGA is recognised by its
+footer, so it needs the whole stream.
+
 ## 3.33
 
 **New package: `SharpAstro.Heif` reads HEIF/HEIC stills, with a clean-room HEVC intra decoder** (Codecs #66). It is
