@@ -85,21 +85,18 @@ public static class Iso21496Metadata
                 throw new InvalidDataException("ISO 21496-1 metadata has a zero common denominator.");
         }
 
-        double Unsigned() => common ? Fraction(reader.U32(), sharedDenominator) : Fraction(reader.U32(), reader.U32());
-        double Signed() => common ? Fraction(reader.I32(), sharedDenominator) : Fraction(reader.I32(), reader.U32());
-
-        var baselineHeadroom = Unsigned();
-        var alternateHeadroom = Unsigned();
+        var baselineHeadroom = Unsigned(ref reader, common, sharedDenominator);
+        var alternateHeadroom = Unsigned(ref reader, common, sharedDenominator);
 
         var count = multichannel ? 3 : 1;
         var channels = new GainMapChannel[count];
         for (var c = 0; c < count; c++)
         {
-            var min = Signed();
-            var max = Signed();
-            var gamma = Unsigned();
-            var offsetBaseline = Signed();
-            var offsetAlternate = Signed();
+            var min = Signed(ref reader, common, sharedDenominator);
+            var max = Signed(ref reader, common, sharedDenominator);
+            var gamma = Unsigned(ref reader, common, sharedDenominator);
+            var offsetBaseline = Signed(ref reader, common, sharedDenominator);
+            var offsetAlternate = Signed(ref reader, common, sharedDenominator);
             channels[c] = new GainMapChannel(Exp2(min), Exp2(max), gamma, offsetBaseline, offsetAlternate);
         }
 
@@ -130,6 +127,18 @@ public static class Iso21496Metadata
         }
 
         return metadata;
+    }
+
+    private static double Unsigned(ref Reader reader, bool common, uint sharedDenominator)
+    {
+        var numerator = reader.U32();
+        return Fraction(numerator, common ? sharedDenominator : reader.U32());
+    }
+
+    private static double Signed(ref Reader reader, bool common, uint sharedDenominator)
+    {
+        var numerator = reader.I32();
+        return Fraction(numerator, common ? sharedDenominator : reader.U32());
     }
 
     private static double Fraction(long numerator, uint denominator)
