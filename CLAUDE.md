@@ -11,7 +11,7 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
   Consumers reference this one package instead of cherry-picking individual codecs.
 - **`SharpAstro.Codecs.Abstractions`** — the base: `IImageDecoder` (static-abstract sniff +
   fidelity/zero-copy decode) plus `IDecodedImage` / `RasterImage`.
-- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Heif` (HEIF/HEVC stills: grids, transforms, PQ as linear floats; see `roadmap/heif.md`), `Exif`,
+- **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Heif` (HEIF/HEVC stills: grids, transforms, PQ as linear floats, gain maps reconstructed to HDR floats through `GainMap`; see `roadmap/heif.md`), `Exif`,
   `Color.Icc`, `Jpeg.IccInjector`, `GainMap` (the format-independent gain-map core: per-channel metadata, linear-float reconstruction, ISO/TS 21496-1 metadata reader; shared by the JPEG and HEIF carriers, which is why HEIF does not depend on JPEG), `Jpeg.GainMap` (Ultra HDR read/write; delegates to `GainMap`; facade-registered
   *ahead of* the plain JPEG decoder).
 
@@ -1087,6 +1087,14 @@ touching it should know:
 - **HDR output, not a tone map**: PQ to the facade's float tier (1.0 = 203 cd/m², as
   `PngImageDecoder.TryDecodeRgbaFloat`), from `HdrTransfer`, which now lives in Abstractions for PNG and HEIF
   both. The display side is SdlVulkan.Renderer #165 (an scRGB swapchain, no SDR cost).
+- **Gain maps (3.34, #70)**: an ISO/TS 21496-1 `tmap` item or Apple's `auxl` map (read-only, best-effort, from Apple's public
+  article; the `tmap` wins when both are there) is found by `HeifFile.GainMapOf` and reconstructed by `HeifGainMap` through the
+  shared `SharpAstro.GainMap` core. Through the facade `TryDecodeRgbaFloat` / `TryDecode(...).ToFloats()` are the HDR at the
+  authored headroom (`HeifGainMapDecodedImage`, 4 Float32 channels, `Source` for other headrooms) and `TryDecodeIntoRgba8` /
+  `ToRgba8` stay the SDR base. A gain map that cannot be used (malformed, backward direction, over a limit, damaged HEVC)
+  leaves the plain base, never an error, and `TryDecode` reconstructs eagerly to keep that promise. An Apple map without a
+  headroom (the iPhone portrait file: MakerNote key 48 missing) is deliberately not a gain map. Real files:
+  `HeifGainMapRealFileTests`; synthetic: `HeifGainMapTests` (formula), `HeifGainMapFacadeTests` (tiers). See `roadmap/heif.md`.
 - **The YCbCr conversion is H.273's and libheif agrees exactly for full-range 4:2:2** (every Canon picture,
   the whole R7 grid). Narrow range and 4:2:0 at 8 bits are within 2 codes of libheif, which takes integer
   shortcuts there; those tests are a tolerance, kept apart from the exact ones. libheif also transforms the

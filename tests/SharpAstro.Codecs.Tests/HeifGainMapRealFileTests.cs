@@ -39,8 +39,10 @@ public class HeifGainMapRealFileTests(ITestOutputHelper output)
 
         ImageCodecs.TryDecode(file, out var image).ShouldBeTrue();
         image.ShouldBeOfType<RasterImage>().SampleFormat.ShouldBe(SampleFormat.UInt16);
-        HeifImageDecoder.TryDecodeRgbaFloat(file, out var rgba, out _, out _, out _).ShouldBeTrue();
-        rgba!.Where((_, i) => i % 4 != 3).Max().ShouldBeLessThanOrEqualTo(1f);
+        // (Its float tier is false as it always was: the file has an ICC profile and no nclx, so no transfer to linearise by.)
+        ImageCodecs.TryReadInfo(file, out var info).ShouldBeTrue();
+        info.SampleFormat.ShouldBe(SampleFormat.UInt16);
+        ImageCodecs.TryDecodeIntoRgba8(file, new byte[info.Width * info.Height * 4]).ShouldBeTrue();
     }
 
     private static double SrgbToLinear(double v) => v <= 0.04045 ? v / 12.92 : Math.Pow((v + 0.055) / 1.055, 2.4);
