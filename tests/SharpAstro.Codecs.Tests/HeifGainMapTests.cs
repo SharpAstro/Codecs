@@ -457,8 +457,13 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
     {
         // In a derived image the inputs are the items as displayed: the base (256x192 stored, irot 90) shows 192x256, and
         // a 192x256 map with no irot is already that orientation. It is not an Apple sensor-orientation map, so it is not turned.
-        var file = Build(Base256, new ImageSpec("x265-400p8", HeifBuilder.Nclx(2, 2, 2, true), (192, 256)),
-            configure: o => o.BaseIrot = HeifBuilder.Irot(90));
+        // A really portrait-coded map is needed (the decode checks the coded size): the tall fixture, a 4:2:0 map the
+        // single-channel metadata reads as one channel.
+        var tall = new ImageSpec("x265-420p8-wpp-tall-flat", HeifBuilder.Nclx(2, 2, 2, true));
+        var (mapW, mapH) = Displayed(tall.Fixture);
+        mapH.ShouldBeGreaterThan(mapW);
+        (mapW * mapH).ShouldBeLessThanOrEqualTo(256u * 192u);
+        var file = Build(Base256, tall, configure: o => o.BaseIrot = HeifBuilder.Irot(90));
         var heif = HeifReader.Read(file);
         var info = heif.GainMapOfPrimary(file)!;
         info.Dialect.ShouldBe(HeifGainMapDialect.IsoTmap);
