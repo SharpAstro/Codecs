@@ -204,6 +204,41 @@ self-consistency.
    the 8-bit path stays the SDR base. Transparent for consumers referencing only the
    `Codecs` facade; plain JPEGs unaffected (`GainMapFacadeTests`).
 
+## Apple's HDR gain map in HEIC (read-only, best-effort)
+
+`SharpAstro.Heif` reads Apple's older carrier when a file has no `tmap`: an auxiliary image item with an `auxl`
+reference to the image and an `auxC` property of `urn:com:apple:photo:2020:aux:hdrgainmap`
+(`HeifFile.GainMapOf`, dialect `HeifGainMapDialect.AppleAux`; a file with both carriers gives the `tmap`).
+Alpha (`urn:mpeg:hevc:2015:auxid:1`) and depth (`:2`) auxiliary items and other vendors' URNs are not gain maps and are
+ignored. Every constant below is from **Apple's public article**, "Applying Apple HDR effect to your photos"
+(`developer.apple.com/documentation/appkit/applying-apple-hdr-effect-to-your-photos`); nothing is transcribed from
+libheif, libultrahdr or exiftool.
+
+- **The map**: 8-bit, single-channel, a quarter of the image's resolution, "untagged and formatted as linear data ...
+  encoded using the Rec.709 transfer function": so its codes are divided by 255, resized to the image, and linearised by
+  inverting BT.709 (`Rec709Transfer.ToLinear` in the core).
+- **Headroom** (a linear ratio to SDR white), from the image's Exif `MakerNote` keys 33 and 48 (32-bit floats):
+  `maker33 < 1`: `stops = maker48 <= 0.01 ? -20*maker48 + 1.8 : -0.101*maker48 + 1.601`; otherwise
+  `stops = maker48 <= 0.01 ? -70*maker48 + 3.0 : -0.303*maker48 + 2.303`; `headroom = 2^max(stops, 0)`
+  (`HeifAppleGainMap.HeadroomFromStops`). The article also names an `HDRGainMapVersion` metadata key as the validity check;
+  it is **not required** here (a map with a headroom is reconstructed).
+- **Where the keys are**: Exif `MakerNote` (0x927C): `Apple iOS `, a 2-byte version, a byte-order mark, an IFD at offset 14,
+  value offsets counted from the start of the note. The article says "32-bit float"; the raw Exif type is not stated, so
+  RATIONAL, SRATIONAL, FLOAT and DOUBLE are all read. As a fallback the aux item's XMP `hdrgm:HDRCapacityMax` (log2 of the
+  headroom, the Adobe vocabulary) is accepted; the MakerNote wins when both are present.
+- **The formula**, on linear values: `hdr_rgb = sdr_rgb * (1.0 + (headroom - 1.0) * gainmap)`, the result peaking at the
+  headroom. It is *linear* in the map, which the ISO/Adobe form (`2^(log-gain)`) is not, so it needs its own core entry
+  point (`GainMapReconstructor.ReconstructAppleFromLinear`), not a metadata mapping onto the existing one.
+- **Not in the article, chosen here**: a display with less headroom than the image uses `H' = clamp(display, 1, headroom)`
+  in place of the headroom (display 1 gives the base exactly, display at or above the authored the full effect);
+  `HeifGainMapImage.Weight` is `(H' - 1) / (headroom - 1)`. `HeifGainMapInfo.Metadata` for the Apple dialect is a summary
+  (gain range 1 to the headroom, no offsets).
+- **Missing or absurd headroom**: no headroom anywhere, or one of 1 or less (no HDR effect): not a gain map (`GainMapOf` is
+  null, the item is its SDR picture). Not finite or over 256 (8 stops; phones write under 4): `InvalidDataException`.
+- **Caveat**: checked against files built to the article's description (x265 pictures, hand-built Exif), not against an
+  iPhone file; none is in the repository. Whether Apple's own renderers agree with the article is not established (a
+  third-party report says macOS Photos may not).
+
 ## Non-goals / caveats
 
 - **Not a substitute for scene-referred stretch.** Gain maps record a *display-referred
