@@ -79,7 +79,8 @@ public sealed record PngWriteOptions
     /// <para>The caller asserts the image is opaque: the alpha samples are not examined, because
     /// discovering a transparent pixel halfway through a multi-second encode is no more useful than
     /// not having looked. When the source is already packed RGB, use
-    /// <see cref="PngWriter.EncodeRgb8"/> / <see cref="PngWriter.EncodeRgb16"/> instead.</para>
+    /// <see cref="PngWriter.EncodeRgb8(ReadOnlySpan{byte}, int, int, ReadOnlySpan{byte})"/> /
+    /// <see cref="PngWriter.EncodeRgb16(ReadOnlySpan{ushort}, int, int, ReadOnlySpan{byte})"/> instead.</para>
     /// </remarks>
     public bool DiscardAlpha { get; init; }
 

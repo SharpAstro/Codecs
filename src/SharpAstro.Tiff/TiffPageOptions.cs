@@ -1,7 +1,7 @@
 namespace SharpAstro.Tiff;
 
 /// <summary>
-/// Per-page options for <see cref="TiffWriter.AddPageAsync"/>.
+/// Per-page options for <see cref="TiffWriter.AddPageAsync(IImageSource, TiffPageOptions, CancellationToken)"/>.
 /// </summary>
 public sealed record TiffPageOptions
 {
