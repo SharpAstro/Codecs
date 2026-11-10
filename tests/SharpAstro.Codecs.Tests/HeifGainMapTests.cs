@@ -452,6 +452,48 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
         (image.Width, image.Height).ShouldBe((192, 256));
     }
 
+    [Fact]
+    public void ApplesPortraitLayout_AMapWithNoIrotOnARotatedBase_IsTurnedLikeTheBase_AndReconstructs()
+    {
+        // Landscape-stored primary with an irot, an unrotated landscape map (the map is stored in the sensor's orientation).
+        var apple = Build(Base256, Mono8, configure: o => o.BaseIrot = HeifBuilder.Irot(90));
+        var image = HeifGainMap.Decode(apple);
+        (image.Width, image.Height).ShouldBe((192, 256));
+
+        // The map is turned with the base: the same picture as a map that carries the irot itself.
+        var explicitly = HeifGainMap.Decode(Build(Base256, Mono8, configure: o => { o.BaseIrot = HeifBuilder.Irot(90); o.MapIrot = HeifBuilder.Irot(90); }));
+        image.Rgba.ShouldBe(explicitly.Rgba);
+
+        // And through the facade it is HDR, not the silent SDR fallback.
+        ImageCodecs.TryReadInfo(apple, out var info).ShouldBeTrue();
+        info.ShouldBe(new ImageInfo(192, 256, 4, SampleFormat.Float32));
+    }
+
+    [Fact]
+    public void AMapWithNoIrotOnARotatedBase_StoredInTheOtherOrientation_IsStillRefused()
+    {
+        // A portrait-stored map under a landscape-stored base cannot be the base's sensor-orientation map, rotated or not.
+        var file = Build(Base256, new ImageSpec("x265-400p8", HeifBuilder.Nclx(2, 2, 2, true), (192, 256)),
+            configure: o => o.BaseIrot = HeifBuilder.Irot(90));
+        var heif = HeifReader.Read(file);
+        HeifGainMap.MapMatchesBaseShape(heif.Describe(file, heif.GetItem(BaseId)!), heif.Describe(file, heif.GetItem(MapId)!)).ShouldBeFalse();
+    }
+
+    [Theory]
+    [InlineData(3001, 3000, 750, 751, true)]   // a pixel either side of square
+    [InlineData(3000, 3001, 751, 750, true)]
+    [InlineData(3002, 3000, 750, 752, true)]   // two pixels
+    [InlineData(3000, 3000, 750, 752, true)]
+    [InlineData(3010, 3000, 750, 760, false)]  // a truly opposite orientation
+    [InlineData(4000, 3000, 750, 1000, false)]
+    [InlineData(4000, 3000, 1000, 750, true)]
+    public void TheShapeCheck_ToleratesAPixelOrTwoAtTheSquareBoundary(uint baseW, uint baseH, uint mapW, uint mapH, bool accepted)
+    {
+        var file = Build(new ImageSpec("x265-420p8-deblock", Srgb(), (baseW, baseH)), new ImageSpec("x265-400p8", HeifBuilder.Nclx(2, 2, 2, true), (mapW, mapH)));
+        var heif = HeifReader.Read(file);
+        HeifGainMap.MapMatchesBaseShape(heif.Describe(file, heif.GetItem(BaseId)!), heif.Describe(file, heif.GetItem(MapId)!)).ShouldBe(accepted);
+    }
+
     // ---- libheif on the base -----------------------------------------------------------------------
 
     /// <summary>

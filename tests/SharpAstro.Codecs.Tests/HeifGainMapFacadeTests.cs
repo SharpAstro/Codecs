@@ -224,6 +224,28 @@ public sealed class HeifGainMapFacadeTests
         }
     }
 
+    /// <summary>
+    /// The fallback where the primary is a tmap whose map cannot be reconstructed (backward direction) and the tmap carries
+    /// an irot: the plain tier shows the base turned by the tmap's irot, and every route reports that one size.
+    /// </summary>
+    [Fact]
+    public void APrimaryTmapThatCannotBeReconstructed_WithAnIrot_GivesEveryRouteTheTurnedSize()
+    {
+        var file = HeifGainMapTests.Build(HeifGainMapTests.Base256, HeifGainMapTests.Mono8,
+            HeifGainMapTests.Scalar() with { BaseRenditionIsHdr = true },
+            o => { o.TmapIsPrimary = true; o.TmapIrot = HeifBuilder.Irot(90); });
+
+        // The 256x192 base, turned 90 degrees by the tmap: 192x256, 8-bit-tier format, not the HDR floats.
+        ImageCodecs.TryReadInfo(file, out var info).ShouldBeTrue();
+        info.ShouldBe(new ImageInfo(192, 256, 3, SampleFormat.UInt16));
+        var rgba8 = new byte[192 * 256 * 4];
+        ImageCodecs.TryDecodeIntoRgba8(file, rgba8).ShouldBeTrue();
+        ImageCodecs.TryDecode(file, out var image).ShouldBeTrue();
+        image.ShouldBeOfType<RasterImage>();
+        (image!.Width, image.Height).ShouldBe((192, 256));
+        image.ToRgba8().ShouldBe(rgba8);
+    }
+
     [Fact]
     public void AMapLargerThanItsBase_LeavesThePlainBase_NotAnException()
     {
