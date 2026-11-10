@@ -129,6 +129,8 @@ public static class HeifGainMap
             throw new InvalidDataException($"The gain map's base image {info.Base.Id} declares {baseImage.Width}x{baseImage.Height}, over the {HeifLimits.MaxGainMapBasePixels}-pixel limit for a reconstruction.");
         if (mapPixels > basePixels)
             throw new InvalidDataException($"The gain map {info.Map.Id} ({mapImage.Width}x{mapImage.Height}) is larger than its base image {info.Base.Id} ({baseImage.Width}x{baseImage.Height}).");
+        if (!MapMatchesBaseShape(baseImage, mapImage))
+            throw new InvalidDataException($"The gain map {info.Map.Id} ({mapImage.Width}x{mapImage.Height}) does not have its base image {info.Base.Id}'s shape ({baseImage.Width}x{baseImage.Height}): a map stored in another orientation is refused, not stretched onto it.");
 
         var headroom = displayHeadroom ?? metadata.HdrCapacityMax;
         var apple = info.Dialect == HeifGainMapDialect.AppleAux;
@@ -175,6 +177,23 @@ public static class HeifGainMap
         (rgba, width, height) = ApplyTmapTransforms(rgba, width, height, info.Tmap, 4);
 
         return new HeifGainMapImage(width, height, rgba, encoding, baseRgb.IccProfile, metadata, headroom, weight, info);
+    }
+
+    /// <summary>
+    /// Whether the map, after its own <c>clap</c>/<c>irot</c>, has the base's aspect ratio (after the base's own). The
+    /// reconstruction upsamples the map onto the base pixel for pixel, so a map stored in another orientation (portrait
+    /// against a landscape base, say) would be stretched across the picture with no sign of it. A real map is a
+    /// downscale of its base by a whole factor, so the ratios differ only by the rounding of a small side: a quarter
+    /// is allowed, which a 3:2 against 2:3 swap exceeds by far.
+    /// </summary>
+    internal static bool MapMatchesBaseShape(HeifImage baseImage, HeifImage mapImage)
+    {
+        var (bw, bh) = HeifImageDecoder.DisplaySize(baseImage, null);
+        var (mw, mh) = HeifImageDecoder.DisplaySize(mapImage, null);
+        if (bw <= 0 || bh <= 0 || mw <= 0 || mh <= 0) return false;
+        // The ratios mw/bw and mh/bh, compared as cross products to stay in integers.
+        double sx = (double)mw * bh, sy = (double)mh * bw;
+        return Math.Abs(sx - sy) <= 0.25 * Math.Max(sx, sy);
     }
 
     /// <summary>

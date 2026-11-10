@@ -115,7 +115,7 @@ public sealed record GainMapMetadata
             throw new InvalidOperationException($"Gain map bounds must satisfy 0 < GainMapMin <= GainMapMax (got {GainMapMin}..{GainMapMax}).");
         if (!(Gamma > 0))
             throw new InvalidOperationException($"Gamma must be positive (got {Gamma}).");
-        if (OffsetSdr < 0 || OffsetHdr < 0)
+        if (!(OffsetSdr >= 0) || !(OffsetHdr >= 0))
             throw new InvalidOperationException($"Offsets must be non-negative (got SDR {OffsetSdr}, HDR {OffsetHdr}).");
         if (!(HdrCapacityMin >= 1) || !(HdrCapacityMax > HdrCapacityMin))
             throw new InvalidOperationException($"Capacity must satisfy 1 <= HdrCapacityMin < HdrCapacityMax (got {HdrCapacityMin}..{HdrCapacityMax}).");

@@ -116,6 +116,12 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
         public uint[]? Dimg { get; set; }
         public bool Altr { get; set; } = true;
         public byte[]? TmapIrot { get; set; }
+        /// <summary>More transformative properties on the tmap, in order, after <see cref="TmapIrot"/>: (type, body).</summary>
+        public List<(string Type, byte[] Body)> TmapProperties { get; } = [];
+        /// <summary>An <c>irot</c> body on the gain-map image itself (a map stored in another orientation).</summary>
+        public byte[]? MapIrot { get; set; }
+        /// <summary>An <c>irot</c> body on the base image itself.</summary>
+        public byte[]? BaseIrot { get; set; }
         public bool NoTmap { get; set; }
     }
 
@@ -130,6 +136,8 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
         var builder = new HeifBuilder { PrimaryItemId = options.TmapIsPrimary ? TmapId : BaseId, IlocVersion = 1 };
         AddImage(builder, BaseId, baseSpec, hidden: options.TmapIsPrimary, firstTileId: 10);
         AddImage(builder, MapId, mapSpec, hidden: true, firstTileId: 20);
+        if (options.BaseIrot is not null) builder.Associate(BaseId, "irot", options.BaseIrot, essential: true);
+        if (options.MapIrot is not null) builder.Associate(MapId, "irot", options.MapIrot, essential: true);
         if (!options.NoTmap)
         {
             builder.AddItem(new HeifBuilder.Item(TmapId, "tmap", options.TmapBytes ?? TmapData(metadata ?? Scalar())));
@@ -137,6 +145,7 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
             var (bw, bh) = baseSpec.DeclaredSize ?? (baseSpec.Grid ? (Displayed(baseSpec.Fixture).W * 3, Displayed(baseSpec.Fixture).H * 2) : Displayed(baseSpec.Fixture));
             builder.Associate(TmapId, "ispe", HeifBuilder.Ispe(bw, bh));
             if (options.TmapIrot is not null) builder.Associate(TmapId, "irot", options.TmapIrot, essential: true);
+            foreach (var (type, body) in options.TmapProperties) builder.Associate(TmapId, type, body, essential: type != "imir");
             if (options.Altr) builder.EntityGroup("altr", GroupId, TmapId, BaseId);
         }
         return builder.Build();
@@ -416,6 +425,31 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
                 for (var c = 0; c < 4; c++) rotated.Rgba[to + c].ShouldBe(plain.Rgba[from + c]);
             }
         }
+    }
+
+    // ---- the map's shape ---------------------------------------------------------------------------
+
+    [Fact]
+    public void AMapInAnotherOrientationThanItsBase_IsRefused_NotStretched()
+    {
+        // The same 256x192 map, turned to 192x256 by its own irot: landscape base, portrait map.
+        var file = Build(Base256, Mono8, configure: o => o.MapIrot = HeifBuilder.Irot(90));
+        Should.Throw<InvalidDataException>(() => HeifGainMap.Decode(file)).Message.ShouldContain("shape");
+
+        // The facade does not fail on it: the file is the plain base.
+        ImageCodecs.TryReadInfo(file, out var info).ShouldBeTrue();
+        info.ShouldBe(new ImageInfo(256, 192, 3, SampleFormat.UInt16));
+        ImageCodecs.TryDecode(file, out var image).ShouldBeTrue();
+        image.ShouldBeOfType<RasterImage>();
+    }
+
+    [Fact]
+    public void AMapTurnedTheSameWayAsItsBase_IsAccepted()
+    {
+        // Both turned by their own irot: portrait base, portrait map. The check is on the shape the pictures end up with.
+        var file = Build(Base256, Mono8, configure: o => { o.MapIrot = HeifBuilder.Irot(90); o.BaseIrot = HeifBuilder.Irot(90); });
+        var image = HeifGainMap.Decode(file);
+        (image.Width, image.Height).ShouldBe((192, 256));
     }
 
     // ---- libheif on the base -----------------------------------------------------------------------

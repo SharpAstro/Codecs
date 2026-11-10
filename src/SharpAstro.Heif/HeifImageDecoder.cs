@@ -46,8 +46,8 @@ public sealed class HeifImageDecoder : IImageDecoder
                 info = new ImageInfo(hdrWidth, hdrHeight, 4, SampleFormat.Float32);
                 return true;
             }
-            var image = PlainImage(heif, data);
-            var (width, height) = DisplaySize(image, null);
+            var (image, tmap) = PlainImage(heif, data);
+            var (width, height) = DisplaySize(image, tmap);
             info = new ImageInfo(width, height, 3, SampleFormat.UInt16);
             return true;
         }
@@ -167,11 +167,18 @@ public sealed class HeifImageDecoder : IImageDecoder
         {
             var heif = HeifReader.Read(data);
             // A tmap primary is the HDR rendition itself, which this decoder cannot decode as an image: the plain tiers
-            // show its base, with the tmap's own transformative properties (what a gain-map-unaware reader shows).
+            // show its base, with the tmap's own transformative properties (what a gain-map-unaware reader shows). The same
+            // holds when the base is the primary and a tmap beside it carries its own clap/irot/imir: the HDR tier and
+            // HeifGainMapDecodedImage.ToRgba8 apply them, so this tier does too and the tiers show one picture.
             if (heif.PrimaryItem.Type == "tmap")
             {
                 if (HeifGainMapSource.Find(heif, data, reconstructable: false) is not { } gainMap) return false;
                 rgb = HeifGainMap.DecodeBase(data, gainMap);
+                return true;
+            }
+            if (HeifGainMapSource.Find(heif, data, reconstructable: false) is { Tmap: not null } beside)
+            {
+                rgb = HeifGainMap.DecodeBase(data, beside);
                 return true;
             }
             rgb = HeifDecoder.Decode(data);
@@ -183,13 +190,19 @@ public sealed class HeifImageDecoder : IImageDecoder
         }
     }
 
-    /// <summary>The primary image, or for a <c>tmap</c> primary the base it derives from.</summary>
-    private static HeifImage PlainImage(HeifFile heif, ReadOnlySpan<byte> data)
+    /// <summary>
+    /// The primary image, or for a <c>tmap</c> primary the base it derives from, with the <c>tmap</c> whose own transformative
+    /// properties the plain 8-bit tier applies after the base's (null when there is none).
+    /// </summary>
+    private static (HeifImage Image, HeifItem? Tmap) PlainImage(HeifFile heif, ReadOnlySpan<byte> data)
     {
-        if (heif.PrimaryItem.Type != "tmap") return heif.DescribePrimary(data);
-        var info = HeifGainMapSource.Find(heif, data, reconstructable: false)
-            ?? throw new InvalidDataException("The primary 'tmap' item has no usable gain map.");
-        return heif.Describe(data, info.Base);
+        var info = HeifGainMapSource.Find(heif, data, reconstructable: false);
+        if (heif.PrimaryItem.Type == "tmap")
+        {
+            if (info is null) throw new InvalidDataException("The primary 'tmap' item has no usable gain map.");
+            return (heif.Describe(data, info.Base), info.Tmap);
+        }
+        return (heif.DescribePrimary(data), info?.Tmap);
     }
 
     /// <summary>

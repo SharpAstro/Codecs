@@ -69,7 +69,7 @@ public sealed class HeifGainMapSource
             var baseImage = heif.Describe(file, info.Base);
             var mapImage = heif.Describe(file, info.Map);
             long basePixels = (long)baseImage.Width * baseImage.Height, mapPixels = (long)mapImage.Width * mapImage.Height;
-            return basePixels > HeifLimits.MaxGainMapBasePixels || mapPixels > basePixels ? null : info;
+            return basePixels > HeifLimits.MaxGainMapBasePixels || mapPixels > basePixels || !HeifGainMap.MapMatchesBaseShape(baseImage, mapImage) ? null : info;
         }
         catch (Exception e) when (e is InvalidDataException or NotSupportedException)
         {
