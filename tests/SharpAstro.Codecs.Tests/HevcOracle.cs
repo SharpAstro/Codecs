@@ -49,7 +49,16 @@ internal static class HevcOracle
     }
 
     /// <summary>ffmpeg's decode of <paramref name="annexB"/> as planes, cropped by the conformance window as ffmpeg crops.</summary>
-    public static (ushort[] Luma, ushort[] Cb, ushort[] Cr) Decode(byte[] annexB, HevcPicture shape)
+    public static (ushort[] Luma, ushort[] Cb, ushort[] Cr) Decode(byte[] annexB, HevcPicture shape) =>
+        DecodeFrames(annexB, shape, 1)[0];
+
+    /// <summary>
+    /// ffmpeg's decode of an Annex B stream of <paramref name="frames"/> consecutive pictures that all have
+    /// the shape of <paramref name="shape"/> (the pictures of a grid's tiles, each an IDR with its own copy of
+    /// the parameter sets), one run for all of them: a 200 MP phone grid has 768 tiles and a process per tile
+    /// would cost more than the decode. Timestamps are ignored (passthrough), so no frame is dropped or doubled.
+    /// </summary>
+    public static List<(ushort[] Luma, ushort[] Cb, ushort[] Cr)> DecodeFrames(byte[] annexB, HevcPicture shape, int frames)
     {
         var ffmpeg = RequireFfmpeg();
         var format = (shape.ChromaFormatIdc switch { 0 => "gray", 1 => "yuv420p", 2 => "yuv422p", _ => "yuv444p" })
@@ -64,7 +73,7 @@ internal static class HevcOracle
             File.WriteAllBytes(input, annexB);
             var start = new ProcessStartInfo(ffmpeg)
             {
-                ArgumentList = { "-hide_banner", "-v", "error", "-f", "hevc", "-i", input, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", format, "-y", output },
+                ArgumentList = { "-hide_banner", "-v", "error", "-f", "hevc", "-i", input, "-fps_mode", "passthrough", "-frames:v", frames.ToString(), "-f", "rawvideo", "-pix_fmt", format, "-y", output },
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
@@ -83,14 +92,21 @@ internal static class HevcOracle
             var height = shape.Height - window.Top - window.Bottom;
             var (subW, subH) = shape.ChromaFormatIdc switch { 1 => (2, 2), 2 => (2, 1), _ => (1, 1) };
             var chromaSamples = shape.ChromaFormatIdc == 0 ? 0 : width / subW * (height / subH);
-            var expected = (width * height + 2 * chromaSamples) * bytesPerSample;
+            var frameSamples = width * height + 2 * chromaSamples;
+            var expected = (long)frames * frameSamples * bytesPerSample;
             if (raw.Length != expected)
-                throw new InvalidOperationException($"ffmpeg wrote {raw.Length} bytes as {format}; {width}x{height} needs {expected}.");
+                throw new InvalidOperationException($"ffmpeg wrote {raw.Length} bytes as {format}; {frames} frame(s) of {width}x{height} need {expected}.");
 
-            var samples = new ushort[raw.Length / bytesPerSample];
-            for (var i = 0; i < samples.Length; i++)
-                samples[i] = bytesPerSample == 1 ? raw[i] : (ushort)(raw[2 * i] | raw[2 * i + 1] << 8);
-            return (samples[..(width * height)], samples[(width * height)..(width * height + chromaSamples)], samples[(width * height + chromaSamples)..]);
+            var result = new List<(ushort[], ushort[], ushort[])>(frames);
+            var samples = new ushort[frameSamples];
+            for (var f = 0; f < frames; f++)
+            {
+                var offset = (long)f * frameSamples * bytesPerSample;
+                for (var i = 0; i < samples.Length; i++)
+                    samples[i] = bytesPerSample == 1 ? raw[offset + i] : (ushort)(raw[offset + 2 * i] | raw[offset + 2 * i + 1] << 8);
+                result.Add((samples[..(width * height)], samples[(width * height)..(width * height + chromaSamples)], samples[(width * height + chromaSamples)..]));
+            }
+            return result;
         }
         finally
         {
