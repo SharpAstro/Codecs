@@ -20,9 +20,28 @@ public class HeifGainMapRealFileTests(ITestOutputHelper output)
     public static TheoryData<string, HeifGainMapDialect> Files => new()
     {
         { "apple-iphone13pro-hdr-sample.heic", HeifGainMapDialect.AppleAux },
-        { "apple-iphone13pro-portrait-pug.heic", HeifGainMapDialect.AppleAux },
         { "samsung-tmap-aux-ycbcr.heic", HeifGainMapDialect.IsoTmap },
     };
+
+    /// <summary>
+    /// The iPhone portrait file has Apple's gain-map auxiliary item (item 52) but its Exif <c>MakerNote</c> carries key 33
+    /// (0.879) and no key 48, and its XMP has no <c>HDRCapacityMax</c>: the article's formula needs both keys, so there is no
+    /// headroom, which is "not a gain map" by design (see <c>roadmap/gain-map.md</c>), and the file stays the plain HEIF it
+    /// also is, in every tier. Pinned so that a reader that starts guessing a missing key 48 changes this visibly.
+    /// </summary>
+    [Fact]
+    public void AnAppleGainMapItemWithNoHeadroom_IsThePlainBase()
+    {
+        var file = HeifCanonFileTests.Load("apple-iphone13pro-portrait-pug.heic");
+        var heif = HeifReader.Read(file);
+        heif.Items.Count(i => i.Property<HeifAuxiliaryType>() is { Urn: HeifAppleGainMap.AuxiliaryUrn }).ShouldBe(1);
+        heif.GainMapOfPrimary(file).ShouldBeNull();
+
+        ImageCodecs.TryDecode(file, out var image).ShouldBeTrue();
+        image.ShouldBeOfType<RasterImage>().SampleFormat.ShouldBe(SampleFormat.UInt16);
+        HeifImageDecoder.TryDecodeRgbaFloat(file, out var rgba, out _, out _, out _).ShouldBeTrue();
+        rgba!.Where((_, i) => i % 4 != 3).Max().ShouldBeLessThanOrEqualTo(1f);
+    }
 
     private static double SrgbToLinear(double v) => v <= 0.04045 ? v / 12.92 : Math.Pow((v + 0.055) / 1.055, 2.4);
 
