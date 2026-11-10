@@ -85,9 +85,13 @@ public static class HeifReader
         if (Single(meta, FourCc.Iprp, required: false) is { } iprp)
             ReadItemProperties(file, iprp, byId);
 
+        var groups = Single(meta, FourCc.Grpl, required: false) is { } grpl
+            ? ReadEntityGroups(file, grpl, byId)
+            : (IReadOnlyList<HeifEntityGroup>)Array.Empty<HeifEntityGroup>();
+
         var idat = Single(meta, FourCc.Idat, required: false);
         return new HeifFile(majorBrand, compatibleBrands, primaryId, items, byId,
-            idat is { } d ? (d.BodyStart, d.BodyLength) : null);
+            idat is { } d ? (d.BodyStart, d.BodyLength) : null, groups);
     }
 
     private static IsoBox? Single(List<IsoBox> boxes, uint type, bool required)
@@ -255,6 +259,34 @@ public static class HeifReader
         }
     }
 
+    // ---- grpl (14496-12 8.15.3, 23008-12 6.8) --------------------------------------------------------
+
+    /// <summary>
+    /// The entity groups of <c>grpl</c>: each child box is a full box (its type is the grouping type, <c>altr</c> for
+    /// alternatives) holding a group ID and the IDs of the entities in it. Only groups of items are kept
+    /// meaningful here: an ID that is not an item (a track, in a file with both) is left in the list as it is.
+    /// </summary>
+    private static List<HeifEntityGroup> ReadEntityGroups(ReadOnlySpan<byte> file, IsoBox grpl, Dictionary<uint, HeifItem> items)
+    {
+        var groups = new List<HeifEntityGroup>();
+        foreach (var box in IsoBoxes.Children(file, grpl))
+        {
+            var type = FourCc.ToString(box.Type);
+            IsoBoxes.FullBoxHeader(file, box);
+            var reader = new BigEndianReader(box.Body(file), type);
+            reader.Skip(4);
+            var groupId = reader.U32();
+            var count = reader.U32();
+            // Every entity costs four bytes of input, so a declared count is checked against what is left.
+            if (count > reader.Remaining / 4)
+                throw new InvalidDataException($"A '{type}' entity group declares {count} entities but has room for {reader.Remaining / 4}.");
+            var ids = new uint[count];
+            for (var i = 0; i < ids.Length; i++) ids[i] = reader.U32();
+            groups.Add(new HeifEntityGroup(type, groupId, ids));
+        }
+        return groups;
+    }
+
     // ---- iprp / ipco / ipma (23008-12 9.3) --------------------------------------------------------
 
     private static void ReadItemProperties(ReadOnlySpan<byte> file, IsoBox iprp, Dictionary<uint, HeifItem> items)
@@ -309,14 +341,15 @@ public static class HeifReader
 }
 
 /// <summary>A HEIF file's item structure, as read by <see cref="HeifReader.Read"/>.</summary>
-public sealed class HeifFile
+public sealed partial class HeifFile
 {
     private readonly Dictionary<uint, HeifItem> _byId;
     private readonly (int Start, int Length)? _idat;
 
     internal HeifFile(string majorBrand, IReadOnlyList<string> compatibleBrands, uint primaryItemId,
-        IReadOnlyList<HeifItem> items, Dictionary<uint, HeifItem> byId, (int, int)? idat)
+        IReadOnlyList<HeifItem> items, Dictionary<uint, HeifItem> byId, (int, int)? idat, IReadOnlyList<HeifEntityGroup> entityGroups)
     {
+        EntityGroups = entityGroups;
         MajorBrand = majorBrand;
         CompatibleBrands = compatibleBrands;
         PrimaryItemId = primaryItemId;
@@ -335,6 +368,9 @@ public sealed class HeifFile
     public IReadOnlyList<HeifItem> Items { get; }
 
     public HeifItem PrimaryItem => _byId[PrimaryItemId];
+
+    /// <summary>The <c>grpl</c> entity groups, in file order (alternatives, <c>altr</c>, among them); empty when the file has none.</summary>
+    public IReadOnlyList<HeifEntityGroup> EntityGroups { get; }
 
     public HeifItem? GetItem(uint id) => _byId.GetValueOrDefault(id);
 

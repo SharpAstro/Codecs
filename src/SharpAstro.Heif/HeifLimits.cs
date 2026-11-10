@@ -46,4 +46,14 @@ public static class HeifLimits
     /// 16888. HEIF splits anything bigger into a grid.
     /// </summary>
     public const int MaxCodedDimension = 16888;
+
+    /// <summary>
+    /// The most pixels the base image of a gain map may declare for <see cref="HeifGainMap"/> to reconstruct it: 2^26
+    /// (67 Mpixels: the R7's 32 Mpixels, 50 and 48 Mpixel phones, not a 200 Mpixel one). The reconstruction holds the base's
+    /// R'G'B' codes (6 bytes a pixel), then its linear floats (16) beside the reconstructed RGB (12) and the RGBA
+    /// result (16), so a base at this limit peaks near 3 GiB and one at the image limit would be 4 times that and
+    /// overflow the core's 32-bit size arithmetic. The gain map itself is held to <see cref="MaxImagePixels"/> and
+    /// to the base's own area (a map larger than its image is not a map of it).
+    /// </summary>
+    public const long MaxGainMapBasePixels = 1L << 26;
 }

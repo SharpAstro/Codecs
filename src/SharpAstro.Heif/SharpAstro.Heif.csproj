@@ -37,6 +37,9 @@
     <!-- The CICP enums (ColorPrimaries / TransferFunction / MatrixCoefficients) that an nclx
          colour box carries, and later the IImageDecoder contract. -->
     <ProjectReference Include="..\SharpAstro.Codecs.Abstractions\SharpAstro.Codecs.Abstractions.csproj" />
+    <!-- The gain-map metadata and reconstruction math (ISO/TS 21496-1), shared with the JPEG carrier so that HEIF
+         does not depend on JPEG. HeifGainMap is the HEIF side: it finds the tmap item and its inputs. -->
+    <ProjectReference Include="..\SharpAstro.GainMap\SharpAstro.GainMap.csproj" />
   </ItemGroup>
 
   <ItemGroup>
