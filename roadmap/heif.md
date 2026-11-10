@@ -55,6 +55,52 @@ Every one of the 24 pictures in the two files says the same thing, and
   says the real size. The R7's tiles are coded exactly at their `ispe`. libheif as Magick.NET 14.13.1
   bundles it does not crop to `ispe` and returns the coded size; this reader will crop.
 
+## Phone files (issue #73)
+
+Five phone HEICs, fetched like the Canon files (`fetch-heif-external.sh`; sources and pins are in that script,
+each from a test repository under an open licence), pinned by `HeifPhoneFileTests` and decoded through the
+same oracles as the Canon files: every coded picture **plane-exact against ffmpeg** (`EveryCodedPicture_MatchesFfmpeg`),
+the composed RGB **within one code of libheif** (`Composed_IsWithinOneCodeOfLibheif`, the tolerant half, apart from
+the exact full-range 4:2:2 comparisons in `HeifDecodeTests`), and each file's `HevcDecodeStatistics` printed
+(`Statistics_OfThePrimarysTiles_ShowWhatPhonesExercise`). All the primaries are 8-bit 4:2:0 `grid`s of 512x512
+tiles with an ICC profile (Apple 536 bytes, Samsung 632, Xiaomi none), no `nclx`, one slice per tile, intra only.
+
+| File | Layout | What its streams exercise | Result |
+|---|---|---|---|
+| `apple-iphone13pro-hdr-sample.heic` | 1512x850, 2x3 tiles, Main Still Picture, WPP, scaling lists, `cu_qp_delta`; Apple gain map as one 4:0:0 picture (768x432 coded, conformance window 12 right / 6 bottom, shown 756x426, `clap` 756x425) | all 35 luma modes (NxN 2743), SAO edge offset only, 90 WPP rows decoded by entry point, deblocking strong and weak | 7 pictures plane-exact; libheif max 1 code, 1.7 % of samples |
+| `apple-iphone13pro-portrait-pug.heic` | 4032x3024, 6x8 tiles (the 4096x3072 grid overhangs by 64 and 48), same profile; gain map 2016x1512 and depth map 768x576, both 4:0:0 with an 8-row window | as above at scale: 22,562 NxN units, 720 WPP rows, SAO edge only, `cu_qp_delta` in 11,694 units | 50 pictures plane-exact; libheif max 1, 0.017 % |
+| `samsung-200mp-hdrgainmap.heic` | 16320x12240 (`irot` 270), 24x32 = 768 tiles coding 16384x12288 (1.008x the output), Main profile; gain map a 6x8 grid of 4:2:0; thumbnail 512x384 | 1.9 M strong and 2.3 M weak deblocking edges, SAO band and edge, no WPP, no QP deltas, no sign hiding | 817 pictures plane-exact (6.9 s, ffmpeg run once per 48 tiles); libheif max 1 on a bottom-right 2x2 corner grid (6.9 %), see below |
+| `samsung-tmap-aux-ycbcr.heic` | 4000x1848, 4x8 tiles, Main Still Picture; gain map a 1x2 grid; an ISO 21496-1 `tmap` item beside the grid primary; thumbnail 512x236 coded 512x256 (window 20 rows) | **sign data hiding** (223,441 hidden signs, which Canon and Apple never use), `cu_qp_delta` enabled but only zeros coded, SAO off in the slices although the SPS enables it | 35 pictures plane-exact; libheif max 1, 1.2 % (the thumbnail, window included, is compared apart) |
+| `xiaomi-android.heic` | 2592x1944, 4x6 tiles, no colour box at all, Exif over 64 KiB | SAO band offset (68) and merges; every luma mode but 34 | 24 pictures plane-exact; libheif max 1, 0.8 % |
+
+What the phones add to what the Canon and x265 files reach (counted by `HevcDecodeStatistics`, so a change that
+stops reaching it shows as a failed pin): planar and all angles at 8-bit 4:2:0 with NxN prediction, SAO and
+deblocking on real photographs, WPP with entry points (Apple), sign hiding (Samsung tmap), and conformance
+windows on the gain maps and a thumbnail. Things worth knowing:
+
+- **Nothing was refused and nothing mismatched.** No decoder change came out of the leg. The one thing the reader
+  declines is `Describe` of a `tmap` item (`NotSupportedException`, "only 'hvc1' and 'grid' images are described"),
+  pinned by `Samsung_Tmap_HasAnIso21496TmapItemBesideAGridPrimary`; lifting it is the HDR gain-map work (#70), not a
+  decoder defect: the primary of every file here decodes to the SDR base with the tmap, depth and gain-map items present.
+- **Windows and overhang are handled, not assumed absent.** The pictures here carry conformance windows
+  (`(0,12,0,6)`, `(0,0,0,20)`, `(0,0,0,8)`, `(0,0,0,18)`), the oracle crops ffmpeg's output the same way, and the
+  grids overhang by up to a tile less a sample; `CheckCodedSize`'s grid bound (4x the output plus a CTB) is far
+  from tight here (every grid codes between 1.008x (the 200 MP file) and 1.249x (Xiaomi) its output).
+- **libheif crops a grid to its output size and a single picture to its window**, unlike the Canon CR3 previews
+  (no window, coded larger than `ispe`), where it returns the coded size; the phone comparisons therefore assert
+  libheif's size equals ours.
+- **The libheif difference is the known 8-bit 4:2:0 one**, at most 1 code, on 0.017-6.9 % of samples; the share depends on
+  the picture, which is why the test bounds it at 1 code and 10 % and does not ask for exact.
+- **The 200 MP primary is not compared whole**: this decoder and libheif together would hold about 6 GB (the
+  machine that ran this had 3.6 GB free). The test cuts the bottom-right 2x2 tiles into a grid file of their own
+  (output 960x976, crossing the overhang both ways) and compares that. The whole image still decodes in
+  `Primary_SizeAndDepthAgreeWithMagick` (libheif) and `Statistics_...` (this decoder, every tile).
+- **ffmpeg is run once per 48 same-shape pictures** (`HevcOracle.DecodeFrames`, `-fps_mode passthrough`), not
+  per tile, which is what makes 768 tiles take seconds.
+- **No Pixel (or other open-licence Android) file is in the set**: none with a stated licence was found
+  (the Samsung and Xiaomi files are the Android coverage). Adding one is a row in `fetch-heif-external.sh`
+  and one in `HeifPhoneFileTests.Phones`.
+
 ## Rungs
 
 Staged as JPEG 2000 was, by feature axis: one correct pixel needs the whole pipeline, so the first
