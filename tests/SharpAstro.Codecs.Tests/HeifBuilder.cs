@@ -22,6 +22,7 @@ internal sealed class HeifBuilder
     private readonly List<(string Type, uint From, uint[] To)> _references = [];
     private readonly List<(string Type, byte[] Body)> _properties = [];
     private readonly List<(uint Item, int Property, bool Essential)> _associations = [];
+    private readonly List<(string Type, uint GroupId, uint[] Entities)> _groups = [];
 
     public string MajorBrand { get; set; } = "heic";
     public string[] CompatibleBrands { get; set; } = ["mif1", "heic"];
@@ -39,6 +40,9 @@ internal sealed class HeifBuilder
     public HeifBuilder Reference(string type, uint from, params uint[] to) { _references.Add((type, from, to)); return this; }
 
     /// <summary>Adds a property box to <c>ipco</c> and returns its 1-based index.</summary>
+    /// <summary>Adds an entity group (<c>grpl</c> child, 14496-12 8.15.3) such as <c>altr</c>.</summary>
+    public HeifBuilder EntityGroup(string type, uint groupId, params uint[] entities) { _groups.Add((type, groupId, entities)); return this; }
+
     public int Property(string type, byte[] body) { _properties.Add((type, body)); return _properties.Count; }
 
     public HeifBuilder Associate(uint item, int property, bool essential = false) { _associations.Add((item, property, essential)); return this; }
@@ -133,6 +137,9 @@ internal sealed class HeifBuilder
         var boxes = new List<byte[]> { hdlr, pitm, iinf, Iloc(mdatStart) };
         if (_references.Count > 0) boxes.Add(Iref());
         if (_properties.Count > 0) boxes.Add(Iprp());
+        if (_groups.Count > 0)
+            boxes.Add(Box("grpl", Concat(_groups.Select(g => FullBox(g.Type, 0, 0, Concat(
+                U32(g.GroupId), U32((uint)g.Entities.Length), Concat(g.Entities.Select(U32).ToArray())))).ToArray())));
         if (idat.Length > 0) boxes.Add(Box("idat", idat));
         return FullBox("meta", 0, 0, Concat(boxes.ToArray()));
     }
