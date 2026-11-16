@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsAotCompatible>true</IsAotCompatible>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageId>SharpAstro.Vector</PackageId>
+    <Product>SharpAstro.Vector</Product>
+    <Authors>SharpAstro</Authors>
+    <Description>A format-neutral vector scene for .NET: paths (move/line/quad/cubic/close), fills, strokes, transforms and opacity groups, plus the IPathSink a renderer replays them into. Holds no rasteriser and no font code: readers such as SharpAstro.Svg produce a scene, the caller draws it. AOT-compatible, zero dependencies.</Description>
+    <PackageTags>vector path scene svg graphics aot</PackageTags>
+    <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/SharpAstro/Codecs</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>UNLICENSE</PackageLicenseFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\UNLICENSE" Pack="true" PackagePath="\" Link="UNLICENSE" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+</Project>
