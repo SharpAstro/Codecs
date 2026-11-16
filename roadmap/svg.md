@@ -46,9 +46,9 @@ resvg, librsvg and browser sources are not read; renderers are used as programs 
 | 1 | Root size / viewBox / preserveAspectRatio; `g`, `a`; `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`; `transform`; solid fill and stroke, every stroke property; opacity; `display`, `visibility`; presentation attributes and the `style` attribute; SVGZ; limits | shipped 3.35 |
 | 2 | `defs`, `use`, `symbol`, nested `svg`; `linearGradient` / `radialGradient` (with `href` inheritance and `gradientTransform`); `<style>` sheets with the selectors real files use; limits that follow `use` | shipped 3.36 |
 | 3 | `clipPath`, `mask`, the clip of nested viewports, `image` (decoded by the caller or the facade), markers, `paint-order`, `pattern`; a stroker in the test rasteriser | open |
-| 4a | The one scene rasteriser: `SharpAstro.Fonts.Scenes.SceneRasterizer` (fills, strokes, gradients, layers), held against the browser with strokes | written, Fonts.Lib 1.18 |
+| 4a | The one scene rasteriser: `SharpAstro.Fonts.Scenes.SceneRasterizer` (fills, strokes, gradients, layers), held against the browser with strokes | shipped, Fonts.Lib 1.18 |
 | 4b | Fonts.Lib reads the OpenType `SVG ` table through this package | open, in Fonts.Lib |
-| D | SVG in DIR.Lib: `IconBaker.Bake(VectorScene, size)`, `VectorIcon` (read once, rasterise once a size), `bake-icons --svg` | written, DIR.Lib 11.70 |
+| D | SVG in DIR.Lib: `IconBaker.Bake(VectorScene, size)`, `VectorIcon` (read once, rasterise once a size), `bake-icons --svg` and `--scenes` | shipped, DIR.Lib 11.78 |
 | 5 | `text` / `tspan` as text runs, then per-character positioning, then `textPath` | open |
 | 6 | Filters, blend modes | open, only if asked for |
 
@@ -78,6 +78,11 @@ bytes ──SvgReader (Codecs)──► VectorScene ──SceneRasterizer (Fonts
   build time and writes the masks as generated constants.
 - **A scene keeps its own box** where a glyph's ink is centred: the icons of a set share one grid (a 24-unit viewBox with
   its own margins), and that grid is what aligns them.
+
+**Shipped 2026-11-17** as Codecs 3.36.1891, Fonts.Lib 1.18.1081 and DIR.Lib 11.78.7641. Rasterising, from
+`SceneRasterizerBenchmarks` in Fonts.Lib (`--job short`, arm64): an outline icon's coverage in 29 us at 20 px and 157 us
+at 64 px, a colour drawing with two gradients in 1.4 ms at 256 px, 1,000 filled curves in 31 ms at 512 px. In DIR.Lib,
+`VectorIconRenderTests` draws SVG icons through a real widget and renderer and keeps a baseline capture of a toolbar.
 
 **Measured** (arm64, 2026-11-16; `SvgReadBenchmarks`, `--job short`, before and after in one sitting):
 
@@ -148,12 +153,33 @@ Writing it out as versioned binary (verbs, coordinates, paints, transforms) give
 a few percent of the cost of a read. It is a cache and bake format owned here, like the SDF glyph disk cache in DIR.Lib,
 not an interchange format.
 
-- **TinyVG and IconVG** are existing compact binary icon formats. They are worth reading only if files must be exchanged
-  with other tools; neither has the tooling SVG has.
-- **Lottie** is the JSON one. It is an animation format, verbose for a still picture, and a rung of its own if animated
-  icons are wanted.
+### The formats that were weighed, and the decision
+
+The request named "the JSON based one" as a guess. That is **Lottie**, and it was looked at rather than set aside:
+
+- **What it is.** A JSON export of After Effects animations: layers, each with shapes (paths as vertex and tangent
+  arrays, ellipses, rectangles), fills, strokes, gradients and transforms, where any property may be keyframed.
+- **Would a still picture fit the scene?** Yes. One frame of a shape layer maps onto paths, fills, strokes, gradients
+  and groups, which is what a `VectorScene` holds. A reader for un-animated Lottie would be a modest piece of work.
+- **Is it compact?** No. The same clock icon (a circle, two lines, a dot, a 2-unit round stroke), written by hand as the
+  smallest Lottie document that says it: **574 bytes against 294 for the SVG**, and 239 against 203 gzipped. Every
+  number is wrapped in `{"a":0,"k":...}` so that it could be animated. (Hand-written from the format's documentation
+  and checked only as JSON; no Lottie player was run on it.)
+- **Is it efficient?** It is JSON, so it needs a parser and a pass much like SVG's. Nothing suggests it would read
+  faster than SVG, and it was not measured.
+- **What it is for** is animation, which a `VectorScene` does not have. Reading Lottie properly means adding time to the
+  model, and that is a rung of its own.
+
+So Lottie answers neither half of "more compact/efficient" for still drawings. The others:
+
+- **TinyVG and IconVG** are compact binary icon formats with quantised, variable-length coordinates, and so really are
+  small. They are worth reading only if files must be exchanged with other tools; neither has the tooling SVG has.
 - **Generated constants** (what `bake-icons` writes) are the most compact of all for an app's fixed icons, because
   nothing is loaded.
+- **The scene's own binary form** (`VectorSceneFile`, above) is the efficient one.
+
+**Decided by the maintainer (2026-11-17): the binary scene is enough.** No Lottie, no second, smaller encoding. If
+animated icons are ever wanted, Lottie is where to look, as its own rung.
 
 In DIR.Lib `VectorIcon.Load` takes either form (it looks at the first four bytes), `VectorIcon.ToSceneFile()` writes
 one, and `bake-icons --scenes <dir>` writes one a `--svg`, for an app that wants its drawings in colour and at any size
