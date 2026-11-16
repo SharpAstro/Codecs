@@ -8,7 +8,7 @@
     <PackageId>SharpAstro.Svg</PackageId>
     <Product>SharpAstro.Svg</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure C# SVG reader for .NET that resolves a document into a SharpAstro.Vector scene (paths, fills, strokes, transforms, opacity groups) and leaves drawing to the caller: no rasteriser, no font code, not a pixel decoder. Written from the W3C SVG specifications. This release reads paths, basic shapes, transforms, the viewBox, solid paints and stroke properties, and reports everything it does not read.</Description>
+    <Description>Pure C# SVG reader for .NET that resolves a document into a SharpAstro.Vector scene (paths, fills, strokes, transforms, opacity groups) and leaves drawing to the caller: no rasteriser, no font code, not a pixel decoder. Written from the W3C SVG specifications. Reads paths, basic shapes, transforms, viewports, use and symbol, solid and gradient paints, stroke properties and style sheets, and reports everything it does not read.</Description>
     <PackageTags>svg svgz vector path parser scene aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

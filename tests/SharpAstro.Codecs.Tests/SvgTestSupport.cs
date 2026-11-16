@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Numerics;
 using System.Text;
 using SharpAstro.Svg;
-using SharpAstro.Vector;
+using SharpAstro.VectorGraphics;
 using Shouldly;
 
 namespace SharpAstro.Codecs.Tests;

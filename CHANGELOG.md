@@ -14,6 +14,50 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.36
+
+**`SharpAstro.Svg` rung 2: `use`, `symbol`, nested `svg`, gradients and style sheets.** The scene model gains gradient paints,
+and everything new was held against a headless browser.
+
+- **`SharpAstro.Vector`** gains `LinearGradientPaint` and `RadialGradientPaint` (two circles, the same model as an OpenType COLR
+  radial gradient), `GradientStop`, `GradientExtend`, and `VectorPath.TryGetBounds` (the bounds of the curves, not of their control
+  points). A gradient carries its own transform from gradient space to the shape's coordinates.
+- **`use`, `symbol` and nested `svg`.** A `use` is expanded where it stands, with `href` or `xlink:href`; what it draws inherits
+  from the `use`. `symbol` and nested `svg` are viewports with their own `viewBox` mapping and their own size for percentages.
+  Every instance of one `path` shares one `VectorPath`. A `use` that leads back to itself draws nothing and is reported.
+- **Gradients.** `linearGradient` and `radialGradient` with bounding-box or user-space units, `gradientTransform`, `spreadMethod`,
+  focal point and focal radius, `stop-color` / `stop-opacity`, and inheritance through `href`. The cases that are not a gradient
+  come out as what they are: one stop or a zero-length vector is a solid colour, no stops is nothing, and a gradient that cannot be
+  applied to a shape (a box with no height, a transform with no inverse) gives way to its fallback colour.
+- **Style sheets.** `<style>` is read: type, `*`, class, id and attribute selectors, four structural pseudo-classes, all four
+  combinators, specificity, source order and `!important`, in the right order against presentation attributes and the `style`
+  attribute. `@media` with plain media types is decided; other selectors and at-rules that could change the picture are reported.
+- **Limits follow `use`.** `MaxElements`, `MaxDepth` and `MaxPathVerbs` now count every instance a `use` makes, so a 3 KB document
+  of nested `use` elements asking for 2^40 rectangles is refused; `MaxSelectorTests` (new, 2^27) bounds what applying a sheet costs.
+- **Breaking against 3.35: the namespace of the `SharpAstro.Vector` package is now `SharpAstro.VectorGraphics`** (the package id is
+  unchanged). A namespace called `SharpAstro.Vector` hides `System.Numerics.Vector` from every consumer whose own namespace
+  starts with `SharpAstro.`: `Vector.IsHardwareAccelerated` stops compiling the moment the package is referenced, which is what
+  happened to Fonts.Lib's SIMD code. Change `using SharpAstro.Vector;` to `using SharpAstro.VectorGraphics;`. 3.35 was the only
+  release with the old name.
+- **Changed from 3.35:** `<style>`, `use`, nested `svg` and gradient references are no longer reported as unsupported. A paint
+  reference to a missing element is now `Invalid` (it was `Unsupported`); the clip of a nested viewport is reported when content
+  reaches outside it.
+- **`VectorSceneFile`: a scene as binary, for loading without reading SVG.** `Write` / `Read` in `SharpAstro.Vector`. Measured, it
+  loads 15 to 50 times faster than the SVG is read (an icon in 0.3 us against 4 to 5, a 2 MB drawing in about 1 ms against 41 to 45)
+  and allocates a third to a tenth as much. **It is not reliably smaller**: 0.6 times the SVG's size for a sprite of repeated
+  symbols, 1.4 to 1.6 times for an icon or a large drawing. The bytes are checked: counts against the input left, verbs, tags,
+  nesting; a truncated or damaged file is an `InvalidDataException`.
+- **Reading allocates less than half of what it did.** Measured with the new `SvgReadBenchmarks`, before and after in one sitting:
+  an icon 23.9 KB -> 9.8 KB, a 200-symbol sprite 1.82 MB -> 1.00 MB, a 2 MB drawing of 5,000 paths 26.7 MB -> 11.1 MB. Times
+  moved less than the benchmark's own error (4 to 5 us, about 1 ms, 41 to 52 ms). `PathBuilder` gains `Clear()`.
+- **The clip of a nested viewport is reported only for strokes that really reach it**: a stroke's reach is worked out from the
+  corners its path has, where it was half the width times the miter limit everywhere, which flagged every round outline icon.
+- **Checked against a browser.** Twelve more documents are compared with headless Chrome or Edge (28 in all): mean difference
+  0.00 to 0.80 of 255. Three things were learnt from it and are now what the reader does: a focal point outside the circle is
+  kept, not clamped; a gradient transform with no inverse falls back; and of two groups that use each other, each is drawn once
+  with the other inside it. ImageMagick's renderer gets ten of these documents wrong, so they are not compared with it.
+  Thirty-two deliberate bugs were tried: thirty were caught at once, and the two that were not led to a fix and a test.
+
 ## 3.35
 
 **New packages: `SharpAstro.Vector`, a format-neutral vector scene, and `SharpAstro.Svg`, which reads SVG into one.** Neither

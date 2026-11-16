@@ -1,4 +1,4 @@
-namespace SharpAstro.Vector;
+namespace SharpAstro.VectorGraphics;
 
 /// <summary>
 /// Receives a path as absolute segments. The same five calls a glyph outline is made of, so one renderer
@@ -84,6 +84,100 @@ public sealed class VectorPath
         _ => 0,
     };
 
+    /// <summary>
+    /// The smallest rectangle that holds the path's segments: the curves themselves, not their control points. False when
+    /// the path has no segment. A subpath that is only a move does not count.
+    /// </summary>
+    public bool TryGetBounds(out VectorRect bounds)
+    {
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity, maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
+        ReadOnlySpan<float> c = _coordinates;
+        Span<double> roots = stackalloc double[4];
+        double x = 0, y = 0;
+        int i = 0;
+        foreach (PathVerb verb in _verbs)
+        {
+            switch (verb)
+            {
+                case PathVerb.Move:
+                    x = c[i];
+                    y = c[i + 1];
+                    break;
+                case PathVerb.Line:
+                    Include(x, y);
+                    x = c[i];
+                    y = c[i + 1];
+                    Include(x, y);
+                    break;
+                case PathVerb.Quad:
+                {
+                    double x1 = c[i], y1 = c[i + 1], x2 = c[i + 2], y2 = c[i + 3];
+                    Include(x, y);
+                    Include(x2, y2);
+                    // Where the derivative is zero on each axis: t = (p0 - p1) / (p0 - 2 p1 + p2).
+                    double dx = x - 2 * x1 + x2, dy = y - 2 * y1 + y2;
+                    if (dx != 0 && (x - x1) / dx is > 0 and < 1 and var tx) Include(QuadAt(x, x1, x2, tx), QuadAt(y, y1, y2, tx));
+                    if (dy != 0 && (y - y1) / dy is > 0 and < 1 and var ty) Include(QuadAt(x, x1, x2, ty), QuadAt(y, y1, y2, ty));
+                    x = x2;
+                    y = y2;
+                    break;
+                }
+                case PathVerb.Cubic:
+                {
+                    double x1 = c[i], y1 = c[i + 1], x2 = c[i + 2], y2 = c[i + 3], x3 = c[i + 4], y3 = c[i + 5];
+                    Include(x, y);
+                    Include(x3, y3);
+                    int n = Extrema(x, x1, x2, x3, roots);
+                    n += Extrema(y, y1, y2, y3, roots[n..]);
+                    for (int k = 0; k < n; k++) Include(CubicAt(x, x1, x2, x3, roots[k]), CubicAt(y, y1, y2, y3, roots[k]));
+                    x = x3;
+                    y = y3;
+                    break;
+                }
+            }
+            i += CoordinateCount(verb);
+        }
+
+        bounds = default;
+        if (minX > maxX) return false;
+        bounds = new VectorRect((float)minX, (float)minY, (float)(maxX - minX), (float)(maxY - minY));
+        return true;
+
+        void Include(double px, double py)
+        {
+            if (px < minX) minX = px;
+            if (px > maxX) maxX = px;
+            if (py < minY) minY = py;
+            if (py > maxY) maxY = py;
+        }
+    }
+
+    private static double QuadAt(double p0, double p1, double p2, double t) => (1 - t) * (1 - t) * p0 + 2 * (1 - t) * t * p1 + t * t * p2;
+
+    private static double CubicAt(double p0, double p1, double p2, double p3, double t)
+    {
+        double u = 1 - t;
+        return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+    }
+
+    /// <summary>The roots in (0, 1) of a cubic's derivative on one axis: a t^2 + b t + c, up to a factor of 3.</summary>
+    private static int Extrema(double p0, double p1, double p2, double p3, Span<double> roots)
+    {
+        double a = p3 - 3 * p2 + 3 * p1 - p0, b = 2 * (p2 - 2 * p1 + p0), k = p1 - p0;
+        int n = 0;
+        if (Math.Abs(a) < 1e-12)
+        {
+            if (b != 0 && -k / b is > 0 and < 1 and var t) roots[n++] = t;
+            return n;
+        }
+        double discriminant = b * b - 4 * a * k;
+        if (discriminant < 0) return 0;
+        double root = Math.Sqrt(discriminant);
+        if ((-b + root) / (2 * a) is > 0 and < 1 and var t1) roots[n++] = t1;
+        if ((-b - root) / (2 * a) is > 0 and < 1 and var t2) roots[n++] = t2;
+        return n;
+    }
+
     /// <summary>Plays the path into a sink, verb by verb.</summary>
     public void Replay(IPathSink sink)
     {
@@ -132,19 +226,35 @@ public sealed class PathBuilder : IPathSink
     /// <inheritdoc/>
     public void QuadTo(float cx, float cy, float x, float y)
     {
+        // One Add a coordinate: an AddRange of a collection expression allocates an array for every segment.
         _verbs.Add(PathVerb.Quad);
-        _coordinates.AddRange([cx, cy, x, y]);
+        _coordinates.Add(cx);
+        _coordinates.Add(cy);
+        _coordinates.Add(x);
+        _coordinates.Add(y);
     }
 
     /// <inheritdoc/>
     public void CubicTo(float c1x, float c1y, float c2x, float c2y, float x, float y)
     {
         _verbs.Add(PathVerb.Cubic);
-        _coordinates.AddRange([c1x, c1y, c2x, c2y, x, y]);
+        _coordinates.Add(c1x);
+        _coordinates.Add(c1y);
+        _coordinates.Add(c2x);
+        _coordinates.Add(c2y);
+        _coordinates.Add(x);
+        _coordinates.Add(y);
     }
 
     /// <inheritdoc/>
     public void Close() => _verbs.Add(PathVerb.Close);
+
+    /// <summary>Empties the builder, keeping its storage, so that one builder can build many paths.</summary>
+    public void Clear()
+    {
+        _verbs.Clear();
+        _coordinates.Clear();
+    }
 
     /// <summary>The path built so far. The builder can go on being used; the returned path does not change.</summary>
     public VectorPath ToPath() => _verbs.Count == 0 ? VectorPath.Empty : new VectorPath([.. _verbs], [.. _coordinates]);

@@ -2,10 +2,10 @@ using System.Numerics;
 using System.Text;
 using ImageMagick;
 using SharpAstro.Svg;
-using SharpAstro.Vector;
+using SharpAstro.VectorGraphics;
 using Shouldly;
 using static SharpAstro.Codecs.Tests.SvgTestSupport;
-using FillRule = SharpAstro.Vector.FillRule;
+using FillRule = SharpAstro.VectorGraphics.FillRule;
 
 namespace SharpAstro.Codecs.Tests;
 
@@ -230,8 +230,7 @@ public sealed class SvgRenderOracleTests
                 var shape = (VectorShape)node;
                 shape.Stroke.ShouldBeNull("the test rasteriser only fills");
                 VectorFill fill = shape.Fill.ShouldNotBeNull();
-                Rgba32 colour = ((SolidPaint)fill.Paint).Color;
-                float alpha = colour.A / 255f * fill.Opacity;
+                Func<Vector2, Vector4> colourAt = Evaluator(fill.Paint, shape.Transform);
                 List<List<Vector2>> polygons = Flatten(shape.Path, shape.Transform);
 
                 float minY = float.MaxValue, maxY = float.MinValue, minX = float.MaxValue, maxX = float.MinValue;
@@ -245,23 +244,111 @@ public sealed class SvgRenderOracleTests
                 {
                     for (int x = x0; x <= x1; x++)
                     {
-                        int inside = 0;
+                        // The pixel's colour is the mean of its samples, premultiplied, a sample outside the shape being nothing.
+                        Vector4 sum = default;
                         for (int s = 0; s < Grid * Grid; s++)
                         {
                             var sample = new Vector2(x + (s % Grid + 0.5f) / Grid, y + (s / Grid + 0.5f) / Grid);
                             int winding = polygons.Sum(polygon => Winding(polygon, sample));
-                            if (fill.Rule == FillRule.NonZero ? winding != 0 : (winding & 1) != 0) inside++;
+                            if (fill.Rule == FillRule.NonZero ? winding == 0 : (winding & 1) == 0) continue;
+                            Vector4 colour = colourAt(sample);
+                            float a = colour.W * fill.Opacity;
+                            sum += new Vector4(colour.X * a, colour.Y * a, colour.Z * a, a);
                         }
-                        if (inside == 0) continue;
-                        float a = alpha * inside / (Grid * Grid);
+                        if (sum.W == 0) continue;
+                        sum /= Grid * Grid;
                         int i = (y * width + x) * 4;
-                        canvas[i] = colour.R / 255f * a + canvas[i] * (1 - a);
-                        canvas[i + 1] = colour.G / 255f * a + canvas[i + 1] * (1 - a);
-                        canvas[i + 2] = colour.B / 255f * a + canvas[i + 2] * (1 - a);
-                        canvas[i + 3] = a + canvas[i + 3] * (1 - a);
+                        canvas[i] = sum.X + canvas[i] * (1 - sum.W);
+                        canvas[i + 1] = sum.Y + canvas[i + 1] * (1 - sum.W);
+                        canvas[i + 2] = sum.Z + canvas[i + 2] * (1 - sum.W);
+                        canvas[i + 3] = sum.W + canvas[i + 3] * (1 - sum.W);
                     }
                 }
             }
+        }
+
+        /// <summary>The paint as a function of a point of the picture: RGBA, 0 to 1, not premultiplied.</summary>
+        private static Func<Vector2, Vector4> Evaluator(VectorPaint paint, Matrix3x2 shapeTransform)
+        {
+            switch (paint)
+            {
+                case SolidPaint solid:
+                {
+                    Vector4 colour = ToVector(solid.Color);
+                    return _ => colour;
+                }
+                case LinearGradientPaint linear:
+                {
+                    // Gradient space -> the shape's coordinates -> the picture; a point of the picture goes back the other way.
+                    Matrix3x2.Invert(linear.Transform * shapeTransform, out Matrix3x2 toGradient).ShouldBeTrue();
+                    Vector2 start = new(linear.X1, linear.Y1), along = new Vector2(linear.X2, linear.Y2) - start;
+                    float lengthSquared = along.LengthSquared();
+                    return p => ColourAt(linear.Stops, linear.Extend, Vector2.Dot(Vector2.Transform(p, toGradient) - start, along) / lengthSquared);
+                }
+                case RadialGradientPaint radial:
+                {
+                    Matrix3x2.Invert(radial.Transform * shapeTransform, out Matrix3x2 toGradient).ShouldBeTrue();
+                    return p => TwoCircles(Vector2.Transform(p, toGradient), radial) is { } t
+                        ? ColourAt(radial.Stops, radial.Extend, t)
+                        : default;
+                }
+                default:
+                    throw new NotSupportedException(paint.GetType().Name);
+            }
+        }
+
+        private static Vector4 ToVector(Rgba32 c) => new(c.R / 255f, c.G / 255f, c.B / 255f, c.A / 255f);
+
+        /// <summary>
+        /// Where a point is between the two circles: the largest t for which it lies on the circle with centre
+        /// lerp(c0, c1, t) and radius lerp(r0, r1, t) >= 0. Null where no such circle passes through it.
+        /// </summary>
+        private static float? TwoCircles(Vector2 p, RadialGradientPaint g)
+        {
+            Vector2 c0 = new(g.StartX, g.StartY), cd = new Vector2(g.EndX, g.EndY) - c0, pd = p - c0;
+            double r0 = g.StartRadius, dr = g.EndRadius - g.StartRadius;
+            // (pd - t cd)^2 = (r0 + t dr)^2  ->  a t^2 - 2 b t + c = 0
+            double a = Vector2.Dot(cd, cd) - dr * dr, b = Vector2.Dot(pd, cd) + r0 * dr, c = Vector2.Dot(pd, pd) - r0 * r0;
+            // The focal point on the end circle makes this linear; in floats "on" is only nearly so.
+            if (Math.Abs(a) < 1e-6 * (Vector2.Dot(cd, cd) + dr * dr))
+            {
+                if (Math.Abs(b) < 1e-12) return null;
+                double only = c / (2 * b);
+                return r0 + only * dr >= 0 ? (float)only : null;
+            }
+            double discriminant = b * b - a * c;
+            if (discriminant < 0) return null;
+            double root = Math.Sqrt(discriminant), t1 = (b + root) / a, t2 = (b - root) / a;
+            double larger = Math.Max(t1, t2), smaller = Math.Min(t1, t2);
+            if (r0 + larger * dr >= 0) return (float)larger;
+            if (r0 + smaller * dr >= 0) return (float)smaller;
+            return null;
+        }
+
+        /// <summary>The colour at an offset: the extend rule first, then a straight blend between the two stops around it.</summary>
+        private static Vector4 ColourAt(System.Collections.Immutable.ImmutableArray<GradientStop> stops, GradientExtend extend, float t)
+        {
+            switch (extend)
+            {
+                case GradientExtend.Repeat:
+                    t -= MathF.Floor(t);
+                    break;
+                case GradientExtend.Reflect:
+                    t = MathF.Abs(t) % 2;
+                    if (t > 1) t = 2 - t;
+                    break;
+                default:
+                    t = Math.Clamp(t, 0, 1);
+                    break;
+            }
+            if (t < stops[0].Offset) return ToVector(stops[0].Color);
+            for (int i = 1; i < stops.Length; i++)
+            {
+                if (t >= stops[i].Offset) continue;
+                float span = stops[i].Offset - stops[i - 1].Offset;
+                return Vector4.Lerp(ToVector(stops[i - 1].Color), ToVector(stops[i].Color), (t - stops[i - 1].Offset) / span);
+            }
+            return ToVector(stops[^1].Color);
         }
 
         /// <summary>How many times the closed polygon winds round the point, signed.</summary>

@@ -1,7 +1,7 @@
 using System.Collections.Immutable;
 using System.Numerics;
 
-namespace SharpAstro.Vector;
+namespace SharpAstro.VectorGraphics;
 
 /// <summary>
 /// An sRGB colour, 8 bits a channel, alpha not premultiplied. The same shape as SharpAstro.Fonts' <c>Rgba32</c>, so that
@@ -9,7 +9,10 @@ namespace SharpAstro.Vector;
 /// </summary>
 public readonly record struct Rgba32(byte R, byte G, byte B, byte A = 255);
 
-/// <summary>What an area is painted with. <see cref="SolidPaint"/> is the only kind so far.</summary>
+/// <summary>
+/// What an area is painted with: a <see cref="SolidPaint"/>, a <see cref="LinearGradientPaint"/> or a
+/// <see cref="RadialGradientPaint"/>. A renderer that meets a kind it does not know should say so, not guess.
+/// </summary>
 public abstract record VectorPaint;
 
 /// <summary>One colour everywhere.</summary>

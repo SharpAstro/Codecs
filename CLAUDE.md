@@ -1134,6 +1134,10 @@ rungs. What a person touching it should know:
   them. Reading to a scene needs none of it, and it means text will be handed to the caller as runs and drawn by the
   text code the caller already has, so there is never a second text renderer. Do not add a rasteriser or font parsing
   to these two packages.
+- **The package is `SharpAstro.Vector`, its namespace is `SharpAstro.VectorGraphics`, and that mismatch is deliberate.** A
+  namespace `SharpAstro.Vector` hides `System.Numerics.Vector` from every consumer in a `SharpAstro.*` namespace
+  (`Vector.IsHardwareAccelerated` binds to the namespace and fails). 3.35 shipped it that way; Fonts.Lib's SIMD code
+  stopped compiling the moment it referenced the package. Never name a namespace here after a BCL type.
 - **`SharpAstro.Vector` is not named after SVG on purpose**: another vector format can emit the same scene. Its
   `IPathSink` and `Rgba32` match Fonts.Lib's `IGlyphSink` and `Rgba32` in shape, so Fonts.Lib can drop its copies when
   it takes the package.
@@ -1163,6 +1167,36 @@ rungs. What a person touching it should know:
     to leave and then ends its process tree. Waiting on the exit alone made every browser test fail at once.
 - **Mutation-checked** (17 deliberate bugs, all caught). The first run missed S and T control-point mirroring because
   the test paths were symmetric: keep such paths asymmetric.
+
+Rung 2 (3.36) added `use`, `symbol`, nested `svg`, gradients and `<style>` sheets; `roadmap/svg.md` ("What rung 2
+settled") has the reasons. The ones that bite:
+
+- **`use` is amplification, and every limit follows it.** `MaxElements`, `MaxDepth` and `MaxPathVerbs` are charged
+  for every instance (`Charge` in `SvgSceneBuilder.Walk`); 3 KB of nested `use` asks for 2^40 rectangles. Never run
+  the suite with that count turned off: the doubling test would walk them. `MaxSelectorTests` bounds applying a sheet,
+  whose cost is elements times rules, and one unmatched descendant selector alone can cost half a million tests.
+- **A paint server is a reference until a shape uses it** (`SvgPaintKind.Server`), because bounding-box units need the
+  shape's box. `TryGradient` returning false means "cannot be applied to this shape" and selects the fallback colour;
+  true with a null paint means the gradient itself is nothing (no stops). Do not merge the two.
+- **Three behaviours are the browser's, measured, where the specification reads otherwise or says nothing**: a focal
+  point outside the circle is kept; a `gradientTransform` with no inverse uses the fallback; a `use` is circular when
+  its target is an ancestor of it or of any `use` it is inside of (so two groups that use each other are each drawn
+  once with the other inside). The `use-cycles`, `radial-focal` and `gradient-fallbacks` oracle documents hold them.
+- **Selectors match an element where it stands in the document; inheritance comes from the `use`.** The cascade is
+  cached per element, so `Cascade` must not depend on where the element is being drawn.
+- **`<!-- -->` inside `<style>` is an XML comment unless it is in CDATA**: the rules in it are gone, in a browser too.
+- **A read is for once a document, and `SvgReadBenchmarks` is how a change to the reader is judged** (`--filter '*SvgRead*'
+  --job short --inProcess`): an icon is about 5 us and 9.8 KB, a 2 MB drawing about 41 ms and 11 MB. Trust its ALLOCATED
+  column; a short job's times have error bars as wide as most differences. Three allocation traps were real here: a
+  collection expression passed to `AddRange` (an array a call), a dictionary per element, and a non-seekable stream
+  wrapper that made the XML reader allocate its full buffers for a 300-byte icon.
+- **`VectorSceneFile` is fast, not small, and the numbers say so** (`roadmap/svg.md`): 15 to 50 times faster to load than the
+  SVG is to read, 0.6 to 1.6 times its size. Do not describe it as compact. Its reader is the only place in these two
+  packages that takes untrusted BINARY: every count is checked against the bytes left before allocating, and the tests
+  cut the file at every length and flip every byte. A new field means a new `Version`.
+- **Rung 2 has no ImageMagick layer.** Its renderer gets ten of the twelve rung 2 documents wrong, so without a
+  browser those features are covered structurally only. CI has one.
+- **Mutation-checked** (32 more: 30 caught at once; the other two led to the cycle fix and a missing test).
 
 ## Oracle harnesses (all codecs)
 

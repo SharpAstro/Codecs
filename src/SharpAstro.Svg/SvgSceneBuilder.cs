@@ -1,13 +1,25 @@
 using System.Collections.Frozen;
 using System.Collections.Immutable;
-using SharpAstro.Vector;
+using System.Numerics;
+using SharpAstro.VectorGraphics;
 
 namespace SharpAstro.Svg;
 
-internal enum SvgPaintKind : byte { None, Color, CurrentColor }
+internal enum SvgPaintKind : byte { None, Color, CurrentColor, Server }
 
-/// <summary>A <c>fill</c> or <c>stroke</c> value. <c>currentColor</c> stays a keyword so that it inherits as one.</summary>
-internal readonly record struct SvgPaint(SvgPaintKind Kind, Rgba32 Color);
+/// <summary>
+/// A <c>fill</c> or <c>stroke</c> value. <c>currentColor</c> stays a keyword so that it inherits as one, and a paint
+/// server stays a reference, because what it paints depends on the shape that uses it. For a server, <paramref name="Color"/>
+/// and <paramref name="Fallback"/> are what is used when the server cannot be.
+/// </summary>
+internal readonly record struct SvgPaint(SvgPaintKind Kind, Rgba32 Color, SvgElement? Server = null, SvgPaintKind Fallback = SvgPaintKind.None);
+
+/// <summary>The size percentages resolve against: the nearest viewport's, in its own user units.</summary>
+internal readonly record struct SvgViewport(double Width, double Height)
+{
+    /// <summary>What a percentage that is neither horizontal nor vertical is of: sqrt((w^2 + h^2) / 2).</summary>
+    public double Diagonal => Math.Sqrt((Width * Width + Height * Height) / 2);
+}
 
 /// <summary>The computed values of the properties this reader acts on, for one element.</summary>
 internal struct SvgStyle
@@ -27,6 +39,7 @@ internal struct SvgStyle
     // Not inherited.
     public double Opacity;
     public bool Display;
+    public bool? OverflowVisible;
 
     /// <summary>The initial values: black fill, no stroke, a 1-wide butt/miter stroke when one is asked for, 16 px text.</summary>
     public static SvgStyle Initial => new()
@@ -45,32 +58,41 @@ internal struct SvgStyle
     };
 }
 
-/// <summary>Walks the element tree and emits the scene: styles cascaded, transforms multiplied out, shapes turned into paths.</summary>
-internal sealed class SvgSceneBuilder(SvgReadOptions options)
+/// <summary>
+/// Walks the element tree and emits the scene: styles cascaded, transforms multiplied out, shapes turned into paths,
+/// <c>use</c> followed and paint servers resolved against the shape that uses them.
+/// </summary>
+internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tree)
 {
-    /// <summary>The properties read from presentation attributes and from <c>style</c>.</summary>
+    /// <summary>The properties read from presentation attributes, style sheets and <c>style</c>.</summary>
     private static readonly FrozenSet<string> Properties = FrozenSet.ToFrozenSet(
     [
         "fill", "stroke", "fill-rule", "fill-opacity", "stroke-opacity", "opacity", "stroke-width", "stroke-linecap",
         "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset", "color", "visibility", "display",
-        "font-size", "clip-path", "mask", "filter", "marker", "marker-start", "marker-mid", "marker-end", "mix-blend-mode",
-        "paint-order", "vector-effect", "transform-origin",
+        "font-size", "overflow", "stop-color", "stop-opacity", "clip-path", "mask", "filter", "marker", "marker-start",
+        "marker-mid", "marker-end", "mix-blend-mode", "paint-order", "vector-effect", "transform-origin",
     ], StringComparer.Ordinal);
 
     /// <summary>Elements that are never drawn where they stand. What refers to them is reported where the reference is.</summary>
     private static readonly FrozenSet<string> NeverRendered = FrozenSet.ToFrozenSet(
     [
-        "defs", "title", "desc", "metadata", "symbol", "marker", "clipPath", "mask", "pattern", "linearGradient",
-        "radialGradient", "filter", "view", "cursor",
+        "defs", "title", "desc", "metadata", "style", "symbol", "marker", "clipPath", "mask", "pattern", "linearGradient",
+        "radialGradient", "stop", "filter", "view", "cursor",
     ], StringComparer.Ordinal);
 
     private readonly Dictionary<(SvgIssueKind Kind, string What), int> _issues = [];
-    private readonly List<(string Name, string Value)> _declarations = [];
-    private double _percentWidth, _percentHeight, _percentDiagonal;
-    private long _verbs;
+    private readonly HashSet<SvgElement> _active = [];
+    private readonly List<SvgElement> _uses = [];
+    private readonly PathBuilder _builder = new();
+    private VectorFill? _lastFill;
+    private VectorStroke? _lastStroke;
+    private long _verbs, _visits;
 
-    public SvgDocument Build(SvgElement root)
+    public SvgDocument Build()
     {
+        SvgElement root = tree.Root;
+        ReadStyleSheets();
+
         bool hasViewBox = false;
         double vbX = 0, vbY = 0, vbW = 0, vbH = 0;
         if (root.Get("viewBox") is { } viewBoxText)
@@ -103,10 +125,16 @@ internal sealed class SvgSceneBuilder(SvgReadOptions options)
             {
                 toPicture = ViewBoxTransform(root.Get("preserveAspectRatio"), vbX, vbY, vbW, vbH, width, height);
             }
-            _percentWidth = hasViewBox ? vbW : width;
-            _percentHeight = hasViewBox ? vbH : height;
-            _percentDiagonal = Math.Sqrt((_percentWidth * _percentWidth + _percentHeight * _percentHeight) / 2);
-            Walk(root, SvgStyle.Initial, toPicture, nodes, isRoot: true);
+            var viewport = hasViewBox ? new SvgViewport(vbW, vbH) : new SvgViewport(width, height);
+            if (Enter(root, SvgStyle.Initial, toPicture, viewport, isRoot: true, out SvgStyle style, out SvgAffine matrix))
+            {
+                List<VectorNode> target = BeginLayer(style, nodes);
+                foreach (SvgElement child in root.Children)
+                {
+                    Walk(child, style, matrix, viewport, target, 1);
+                }
+                EndLayer(target, nodes, style, root.Get("id"));
+            }
         }
 
         ImmutableArray<SvgIssue> issues =
@@ -126,7 +154,7 @@ internal sealed class SvgSceneBuilder(SvgReadOptions options)
         _issues[(kind, what)] = _issues.GetValueOrDefault((kind, what)) + 1;
     }
 
-    // ---- The root's size ----------------------------------------------------------------------------------------
+    // ---- Sizes and viewports ------------------------------------------------------------------------------------
 
     /// <summary>The root's width or height in pixels, or null when the document leaves it to its surroundings.</summary>
     private double? RootLength(SvgElement root, string attribute, float? viewport)
@@ -157,7 +185,7 @@ internal sealed class SvgSceneBuilder(SvgReadOptions options)
         return s.AtEnd && w >= 0 && h >= 0;
     }
 
-    /// <summary>The map from <c>viewBox</c> units to the picture, as <c>preserveAspectRatio</c> places it.</summary>
+    /// <summary>The map from <c>viewBox</c> units to a viewport of the given size, as <c>preserveAspectRatio</c> places it.</summary>
     private SvgAffine ViewBoxTransform(string? preserve, double vbX, double vbY, double vbW, double vbH, double width, double height)
     {
         double alignX = 0.5, alignY = 0.5;
@@ -209,18 +237,31 @@ internal sealed class SvgSceneBuilder(SvgReadOptions options)
 
     // ---- The tree -----------------------------------------------------------------------------------------------
 
-    private void Walk(SvgElement element, in SvgStyle parent, SvgAffine outer, List<VectorNode> output, bool isRoot = false)
+    /// <summary>
+    /// Every element drawn is counted, and so is every instance a <c>use</c> makes of one: a few nested <c>use</c>
+    /// elements can ask for far more than the document holds, and running out of input is no limit on that.
+    /// </summary>
+    private void Charge(int depth)
     {
-        string name = element.Name;
-        bool container = isRoot || name is "g" or "a";
-        if (!container && name is not ("path" or "rect" or "circle" or "ellipse" or "line" or "polyline" or "polygon"))
+        if (++_visits > options.MaxElements)
         {
-            if (!NeverRendered.Contains(name)) Issue(SvgIssueKind.Unsupported, $"<{name}> element");
-            return;
+            throw new InvalidDataException($"The SVG draws more than {options.MaxElements} elements once its use elements are followed.");
         }
+        if (depth >= options.MaxDepth)
+        {
+            throw new InvalidDataException($"The SVG nests elements more than {options.MaxDepth} deep once its use elements are followed.");
+        }
+    }
 
-        SvgStyle style = ComputeStyle(element, parent);
-        if (!style.Display) return;
+    /// <summary>
+    /// What every drawn element starts with: its style, and its transform on top of what is above it. False when the
+    /// element and everything in it is not drawn.
+    /// </summary>
+    private bool Enter(SvgElement element, in SvgStyle parent, SvgAffine outer, in SvgViewport viewport, bool isRoot, out SvgStyle style, out SvgAffine matrix)
+    {
+        matrix = outer;
+        style = ComputeStyle(element, parent, viewport);
+        if (!style.Display) return false;
 
         SvgAffine local = SvgAffine.Identity;
         if (element.Get("transform") is { } transformText && !SvgAffine.TryParse(transformText, out local))
@@ -229,84 +270,406 @@ internal sealed class SvgSceneBuilder(SvgReadOptions options)
             local = SvgAffine.Identity;
         }
         // A transform on the outermost svg applies outside its viewBox mapping; everywhere else it nests inside.
-        SvgAffine matrix = isRoot ? local * outer : outer * local;
+        matrix = isRoot ? local * outer : outer * local;
         // A transform that cannot be inverted (scale(0), say) turns the element off.
-        if (!matrix.IsFinite || matrix.Determinant == 0) return;
-        if (style.Opacity <= 0) return;
+        return matrix.IsFinite && matrix.Determinant != 0 && style.Opacity > 0;
+    }
 
-        if (container)
+    /// <summary>Opacity on a container is the one thing here that needs a layer: its children may overlap.</summary>
+    private static List<VectorNode> BeginLayer(in SvgStyle style, List<VectorNode> output) => style.Opacity < 1 ? [] : output;
+
+    private static void EndLayer(List<VectorNode> target, List<VectorNode> output, in SvgStyle style, string? id)
+    {
+        if (!ReferenceEquals(target, output) && target.Count > 0)
         {
-            // Opacity on a container is the one thing here that needs a layer: its children may overlap.
-            List<VectorNode> target = style.Opacity < 1 ? [] : output;
-            foreach (SvgElement child in element.Children)
+            output.Add(new VectorGroup { Opacity = (float)style.Opacity, Children = [.. target], Id = id });
+        }
+    }
+
+    private void Walk(SvgElement element, in SvgStyle parent, SvgAffine outer, in SvgViewport viewport, List<VectorNode> output, int depth)
+    {
+        Charge(depth);
+        switch (element.Name)
+        {
+            case "g" or "a":
             {
-                Walk(child, style, matrix, target);
+                if (!Enter(element, parent, outer, viewport, false, out SvgStyle style, out SvgAffine matrix)) return;
+                List<VectorNode> target = BeginLayer(style, output);
+                foreach (SvgElement child in element.Children)
+                {
+                    Walk(child, style, matrix, viewport, target, depth + 1);
+                }
+                EndLayer(target, output, style, element.Get("id"));
+                return;
             }
-            if (!ReferenceEquals(target, output) && target.Count > 0)
+
+            case "svg":
+                Viewport(element, parent, outer, viewport, output, depth, symbol: false, null, null);
+                return;
+
+            case "use":
+                Use(element, parent, outer, viewport, output, depth);
+                return;
+
+            case "path" or "rect" or "circle" or "ellipse" or "line" or "polyline" or "polygon":
             {
-                output.Add(new VectorGroup { Opacity = (float)style.Opacity, Children = [.. target], Id = element.Get("id") });
+                if (Enter(element, parent, outer, viewport, false, out SvgStyle style, out SvgAffine matrix))
+                {
+                    Shape(element, style, matrix, viewport, output);
+                }
+                return;
             }
+
+            default:
+                if (!NeverRendered.Contains(element.Name)) Issue(SvgIssueKind.Unsupported, $"<{element.Name}> element");
+                return;
+        }
+    }
+
+    /// <summary>
+    /// A nested <c>svg</c>, or a <c>symbol</c> a <c>use</c> points at: a new viewport, with its own <c>viewBox</c> mapping
+    /// and its own size for percentages. The width and height a <c>use</c> gives win over the element's own.
+    /// </summary>
+    private void Viewport(SvgElement element, in SvgStyle parent, SvgAffine outer, in SvgViewport viewport, List<VectorNode> output, int depth,
+        bool symbol, double? useWidth, double? useHeight)
+    {
+        if (!Enter(element, parent, outer, viewport, false, out SvgStyle style, out SvgAffine matrix)) return;
+        double fontSize = style.FontSize;
+        double x = symbol ? 0 : Length(element, "x", viewport.Width, fontSize);
+        double y = symbol ? 0 : Length(element, "y", viewport.Height, fontSize);
+        double w = useWidth ?? ViewportSize(element, "width", viewport.Width, fontSize);
+        double h = useHeight ?? ViewportSize(element, "height", viewport.Height, fontSize);
+        if (w <= 0 || h <= 0) return;
+
+        var inner = new SvgAffine(1, 0, 0, 1, x, y);
+        var innerViewport = new SvgViewport(w, h);
+        if (element.Get("viewBox") is { } viewBoxText)
+        {
+            if (TryParseViewBox(viewBoxText, out double vbX, out double vbY, out double vbW, out double vbH))
+            {
+                if (vbW <= 0 || vbH <= 0) return;
+                inner *= ViewBoxTransform(element.Get("preserveAspectRatio"), vbX, vbY, vbW, vbH, w, h);
+                innerViewport = new SvgViewport(vbW, vbH);
+            }
+            else
+            {
+                Issue(SvgIssueKind.Invalid, "viewBox");
+            }
+        }
+
+        List<VectorNode> target = BeginLayer(style, output);
+        int first = target.Count;
+        foreach (SvgElement child in element.Children)
+        {
+            Walk(child, style, matrix * inner, innerViewport, target, depth + 1);
+        }
+        // These viewports clip what leaves them unless overflow says otherwise. Clipping is not in the scene yet, so
+        // say so, but only when something really does reach outside: most symbols stay inside their box.
+        if (style.OverflowVisible != true && ReachesOutside(target, first, matrix, x, y, w, h))
+        {
+            Issue(SvgIssueKind.Unsupported, "clipping to a nested viewport (overflow)");
+        }
+        EndLayer(target, output, style, element.Get("id"));
+    }
+
+    /// <summary>A width or height that defaults to the whole of what it is a percentage of. Below zero is an error and draws nothing.</summary>
+    private double ViewportSize(SvgElement element, string attribute, double percentBase, double fontSize)
+    {
+        if (element.Get(attribute) is not { } text || text.AsSpan().Trim() is "auto") return percentBase;
+        if (!SvgLength.TryParse(text, out SvgLength length))
+        {
+            Issue(SvgIssueKind.Invalid, attribute);
+            return percentBase;
+        }
+        if (length.Value < 0) Issue(SvgIssueKind.Invalid, attribute);
+        return length.Resolve(fontSize, percentBase);
+    }
+
+    /// <summary>
+    /// Whether any of the nodes from <paramref name="first"/> on may draw outside the rectangle, which is in the
+    /// coordinates <paramref name="matrix"/> maps to the picture. Shapes are taken as their bounding box grown by the most
+    /// their stroke can add, so this can say yes for a shape that only comes close.
+    /// </summary>
+    private static bool ReachesOutside(List<VectorNode> nodes, int first, SvgAffine matrix, double x, double y, double w, double h)
+    {
+        if (!Matrix3x2.Invert(matrix.ToMatrix(), out Matrix3x2 toViewport)) return false;
+        float slack = (float)(1e-3 * (Math.Max(w, h) + 1));
+        float left = (float)x - slack, top = (float)y - slack, right = (float)(x + w) + slack, bottom = (float)(y + h) + slack;
+        for (int i = first; i < nodes.Count; i++)
+        {
+            if (Outside(nodes[i])) return true;
+        }
+        return false;
+
+        bool Outside(VectorNode node)
+        {
+            if (node is VectorGroup group)
+            {
+                foreach (VectorNode child in group.Children)
+                {
+                    if (Outside(child)) return true;
+                }
+                return false;
+            }
+
+            var shape = (VectorShape)node;
+            if (!shape.Path.TryGetBounds(out VectorRect bounds)) return false;
+            float grow = shape.Stroke is { } stroke ? StrokeReach(shape.Path, stroke) : 0;
+            Matrix3x2 map = shape.Transform * toViewport;
+            ReadOnlySpan<Vector2> corners =
+            [
+                new(bounds.X - grow, bounds.Y - grow), new(bounds.Right + grow, bounds.Y - grow),
+                new(bounds.X - grow, bounds.Bottom + grow), new(bounds.Right + grow, bounds.Bottom + grow),
+            ];
+            foreach (Vector2 corner in corners)
+            {
+                Vector2 p = Vector2.Transform(corner, map);
+                if (p.X < left || p.X > right || p.Y < top || p.Y > bottom) return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// How far a stroke can reach beyond its path, at most: half its width, more where a miter is drawn at a corner
+    /// and by a square cap. Worked out from the corners the path really has, because the blunt answer (half the width
+    /// times the miter limit, everywhere) says that a round icon with a thin stroke leaves a box it sits well inside.
+    /// </summary>
+    private static float StrokeReach(VectorPath path, VectorStroke stroke)
+    {
+        float half = stroke.Width / 2;
+        float most = 1f;
+        ReadOnlySpan<float> c = path.Coordinates;
+        Vector2 point = default, start = default, startTangent = default, endTangent = default;
+        bool open = false, first = true, anyOpenEnd = false;
+        int i = 0;
+
+        void Corner(Vector2 arriving, Vector2 leaving)
+        {
+            if (stroke.Join != LineJoin.Miter || arriving == default || leaving == default) return;
+            float cos = Vector2.Dot(Vector2.Normalize(arriving), Vector2.Normalize(leaving));
+            // Miter length over stroke width is 1 / cos(half the turn); past the limit the corner is bevelled.
+            float ratio = MathF.Sqrt(2f / MathF.Max(1e-6f, 1f + cos));
+            if (ratio <= stroke.MiterLimit) most = MathF.Max(most, ratio);
+        }
+
+        void Segment(Vector2 leaving, Vector2 arriving)
+        {
+            if (first) startTangent = leaving;
+            else Corner(endTangent, leaving);
+            endTangent = arriving;
+            first = false;
+        }
+
+        foreach (PathVerb verb in path.Verbs)
+        {
+            switch (verb)
+            {
+                case PathVerb.Move:
+                    anyOpenEnd |= open && !first;
+                    point = start = new Vector2(c[i], c[i + 1]);
+                    open = true;
+                    first = true;
+                    break;
+                case PathVerb.Line:
+                {
+                    var to = new Vector2(c[i], c[i + 1]);
+                    if (to != point) Segment(to - point, to - point);
+                    point = to;
+                    break;
+                }
+                case PathVerb.Quad:
+                {
+                    Vector2 q = new(c[i], c[i + 1]), to = new(c[i + 2], c[i + 3]);
+                    Segment(q != point ? q - point : to - point, to != q ? to - q : to - point);
+                    point = to;
+                    break;
+                }
+                case PathVerb.Cubic:
+                {
+                    Vector2 q1 = new(c[i], c[i + 1]), q2 = new(c[i + 2], c[i + 3]), to = new(c[i + 4], c[i + 5]);
+                    Vector2 leaving = q1 != point ? q1 - point : q2 != point ? q2 - point : to - point;
+                    Vector2 arriving = to != q2 ? to - q2 : to != q1 ? to - q1 : to - point;
+                    Segment(leaving, arriving);
+                    point = to;
+                    break;
+                }
+                default:
+                    if (!first)
+                    {
+                        // The closing line, if there is one, and the corner where the subpath meets its start.
+                        if (point != start) Segment(start - point, start - point);
+                        Corner(endTangent, startTangent);
+                    }
+                    point = start;
+                    open = false;
+                    first = true;
+                    break;
+            }
+            i += VectorPath.CoordinateCount(verb);
+        }
+        anyOpenEnd |= open && !first;
+
+        // A square cap reaches half the width beyond the end and half to each side: the diagonal.
+        if (anyOpenEnd && stroke.Cap == LineCap.Square) most = MathF.Max(most, 1.4143f);
+        return half * most;
+    }
+
+    /// <summary>
+    /// <c>use</c>: the element it names, drawn here as if it were the content of a group that carries the
+    /// <c>use</c> element's own properties and transform, moved by its <c>x</c> and <c>y</c>.
+    /// </summary>
+    private void Use(SvgElement element, in SvgStyle parent, SvgAffine outer, in SvgViewport viewport, List<VectorNode> output, int depth)
+    {
+        if (!Enter(element, parent, outer, viewport, false, out SvgStyle style, out SvgAffine matrix)) return;
+        if (element.Get("href") is not { } href || (href = href.Trim()).Length == 0) return;
+        if (href[0] != '#')
+        {
+            Issue(SvgIssueKind.Unsupported, "use of an element in another document");
+            return;
+        }
+        if (!tree.Ids.TryGetValue(href[1..], out SvgElement? target))
+        {
+            Issue(SvgIssueKind.Invalid, "use: no element with that id");
+            return;
+        }
+        // A use that leads back to itself is an error and draws nothing. "Back" is: to an element already being
+        // instantiated, or to an ancestor of this use or of any use we are inside of. The second half is what a
+        // browser does and it matters for what is left: of two groups that use each other, each is drawn once with
+        // the other inside it, and no further.
+        bool circular = _active.Contains(target);
+        for (int i = _uses.Count; i >= 0 && !circular; i--)
+        {
+            for (SvgElement? ancestor = i == _uses.Count ? element : _uses[i]; ancestor is not null && !circular; ancestor = ancestor.Parent)
+            {
+                circular = ReferenceEquals(ancestor, target);
+            }
+        }
+        if (circular)
+        {
+            Issue(SvgIssueKind.Invalid, "use: circular reference");
             return;
         }
 
-        Shape(element, style, matrix, output);
+        double fontSize = style.FontSize;
+        matrix *= new SvgAffine(1, 0, 0, 1, Length(element, "x", viewport.Width, fontSize), Length(element, "y", viewport.Height, fontSize));
+
+        List<VectorNode> target_ = BeginLayer(style, output);
+        _active.Add(target);
+        _uses.Add(element);
+        try
+        {
+            if (target.Name is "symbol" or "svg")
+            {
+                Charge(depth + 1);
+                Viewport(target, style, matrix, viewport, target_, depth + 1, target.Name == "symbol",
+                    UseSize(element, "width", viewport.Width, fontSize), UseSize(element, "height", viewport.Height, fontSize));
+            }
+            else
+            {
+                Walk(target, style, matrix, viewport, target_, depth + 1);
+            }
+        }
+        finally
+        {
+            _active.Remove(target);
+            _uses.RemoveAt(_uses.Count - 1);
+        }
+        EndLayer(target_, output, style, element.Get("id"));
     }
 
-    private void Shape(SvgElement element, in SvgStyle style, SvgAffine matrix, List<VectorNode> output)
+    /// <summary>The width or height a <c>use</c> gives the viewport it instantiates, or null when it gives none.</summary>
+    private double? UseSize(SvgElement element, string attribute, double percentBase, double fontSize)
     {
-        var builder = new PathBuilder();
+        if (element.Get(attribute) is not { } text || text.AsSpan().Trim() is "auto") return null;
+        if (!SvgLength.TryParse(text, out SvgLength length))
+        {
+            Issue(SvgIssueKind.Invalid, attribute);
+            return null;
+        }
+        if (length.Value < 0) Issue(SvgIssueKind.Invalid, attribute);
+        return length.Resolve(fontSize, percentBase);
+    }
+
+    private void Shape(SvgElement element, in SvgStyle style, SvgAffine matrix, in SvgViewport viewport, List<VectorNode> output)
+    {
         bool fillable = true;
         double fontSize = style.FontSize;
+        VectorPath path;
         switch (element.Name)
         {
             case "path":
-                if (element.Get("d") is not { } data) return;
-                if (!SvgGeometry.ParsePath(data, builder)) Issue(SvgIssueKind.Invalid, "path data");
+                // Path data and point lists do not depend on where the element is drawn, so one path serves every
+                // instance a use makes of it.
+                if (element.Path is null)
+                {
+                    _builder.Clear();
+                    if (element.Get("d") is { } d && !SvgGeometry.ParsePath(d, _builder)) Issue(SvgIssueKind.Invalid, "path data");
+                    element.Path = _builder.ToPath();
+                }
+                path = element.Path;
                 break;
 
-            case "rect":
+            case "polyline" or "polygon":
+                if (element.Path is null)
+                {
+                    _builder.Clear();
+                    if (element.Get("points") is { } points && !SvgGeometry.Polyline(points, element.Name == "polygon", _builder))
+                    {
+                        Issue(SvgIssueKind.Invalid, "points");
+                    }
+                    element.Path = _builder.ToPath();
+                }
+                path = element.Path;
+                break;
+
+            default:
             {
-                double x = Length(element, "x", _percentWidth, fontSize), y = Length(element, "y", _percentHeight, fontSize);
-                double w = Length(element, "width", _percentWidth, fontSize), h = Length(element, "height", _percentHeight, fontSize);
-                if (w < 0 || h < 0) Issue(SvgIssueKind.Invalid, "negative rect size");
-                if (w <= 0 || h <= 0) return;
-                double? rx = Radius(element, "rx", _percentWidth, fontSize), ry = Radius(element, "ry", _percentHeight, fontSize);
-                SvgGeometry.Rectangle(builder, x, y, w, h, Math.Min(rx ?? ry ?? 0, w / 2), Math.Min(ry ?? rx ?? 0, h / 2));
+                PathBuilder builder = _builder;
+                builder.Clear();
+                switch (element.Name)
+                {
+                    case "rect":
+                    {
+                        double x = Length(element, "x", viewport.Width, fontSize), y = Length(element, "y", viewport.Height, fontSize);
+                        double w = Length(element, "width", viewport.Width, fontSize), h = Length(element, "height", viewport.Height, fontSize);
+                        if (w < 0 || h < 0) Issue(SvgIssueKind.Invalid, "negative rect size");
+                        if (w <= 0 || h <= 0) return;
+                        double? rx = Radius(element, "rx", viewport.Width, fontSize), ry = Radius(element, "ry", viewport.Height, fontSize);
+                        SvgGeometry.Rectangle(builder, x, y, w, h, Math.Min(rx ?? ry ?? 0, w / 2), Math.Min(ry ?? rx ?? 0, h / 2));
+                        break;
+                    }
+
+                    case "circle":
+                    {
+                        double r = Length(element, "r", viewport.Diagonal, fontSize);
+                        if (r < 0) Issue(SvgIssueKind.Invalid, "negative radius");
+                        if (r <= 0) return;
+                        SvgGeometry.Ellipse(builder, Length(element, "cx", viewport.Width, fontSize), Length(element, "cy", viewport.Height, fontSize), r, r);
+                        break;
+                    }
+
+                    case "ellipse":
+                    {
+                        double? rx = Radius(element, "rx", viewport.Width, fontSize), ry = Radius(element, "ry", viewport.Height, fontSize);
+                        double rxValue = rx ?? ry ?? 0, ryValue = ry ?? rx ?? 0;
+                        if (rxValue <= 0 || ryValue <= 0) return;
+                        SvgGeometry.Ellipse(builder, Length(element, "cx", viewport.Width, fontSize), Length(element, "cy", viewport.Height, fontSize), rxValue, ryValue);
+                        break;
+                    }
+
+                    default: // line
+                        // A line has no interior, so it is never filled.
+                        fillable = false;
+                        builder.MoveTo((float)Length(element, "x1", viewport.Width, fontSize), (float)Length(element, "y1", viewport.Height, fontSize));
+                        builder.LineTo((float)Length(element, "x2", viewport.Width, fontSize), (float)Length(element, "y2", viewport.Height, fontSize));
+                        break;
+                }
+                path = builder.ToPath();
                 break;
             }
-
-            case "circle":
-            {
-                double r = Length(element, "r", _percentDiagonal, fontSize);
-                if (r < 0) Issue(SvgIssueKind.Invalid, "negative radius");
-                if (r <= 0) return;
-                SvgGeometry.Ellipse(builder, Length(element, "cx", _percentWidth, fontSize), Length(element, "cy", _percentHeight, fontSize), r, r);
-                break;
-            }
-
-            case "ellipse":
-            {
-                double? rx = Radius(element, "rx", _percentWidth, fontSize), ry = Radius(element, "ry", _percentHeight, fontSize);
-                double rxValue = rx ?? ry ?? 0, ryValue = ry ?? rx ?? 0;
-                if (rxValue <= 0 || ryValue <= 0) return;
-                SvgGeometry.Ellipse(builder, Length(element, "cx", _percentWidth, fontSize), Length(element, "cy", _percentHeight, fontSize), rxValue, ryValue);
-                break;
-            }
-
-            case "line":
-                // A line has no interior, so it is never filled.
-                fillable = false;
-                builder.MoveTo((float)Length(element, "x1", _percentWidth, fontSize), (float)Length(element, "y1", _percentHeight, fontSize));
-                builder.LineTo((float)Length(element, "x2", _percentWidth, fontSize), (float)Length(element, "y2", _percentHeight, fontSize));
-                break;
-
-            default: // polyline, polygon
-                if (element.Get("points") is not { } points) return;
-                if (!SvgGeometry.Polyline(points, element.Name == "polygon", builder)) Issue(SvgIssueKind.Invalid, "points");
-                break;
         }
 
-        VectorPath path = builder.ToPath();
         if (path.IsEmpty) return;
         foreach (float coordinate in path.Coordinates)
         {
@@ -323,8 +686,8 @@ internal sealed class SvgSceneBuilder(SvgReadOptions options)
         }
         if (!style.Visible) return;
 
-        VectorFill? fill = fillable ? MakeFill(style) : null;
-        VectorStroke? stroke = MakeStroke(style);
+        VectorFill? fill = fillable ? MakeFill(style, path, viewport) : null;
+        VectorStroke? stroke = MakeStroke(style, path, viewport);
         if (fill is null && stroke is null) return;
 
         string? id = element.Get("id");
@@ -342,15 +705,17 @@ internal sealed class SvgSceneBuilder(SvgReadOptions options)
         output.Add(new VectorShape { Path = path, Transform = matrix.ToMatrix(), Fill = fill, Stroke = stroke, Id = id });
     }
 
-    private static VectorFill? MakeFill(in SvgStyle style)
+    private VectorFill? MakeFill(in SvgStyle style, VectorPath path, in SvgViewport viewport)
     {
-        if (Resolve(style.Fill, style) is not { } color || style.FillOpacity <= 0) return null;
-        return new VectorFill(new SolidPaint(color), (float)style.FillOpacity, style.FillRule);
+        if (style.FillOpacity <= 0 || ResolvePaint(style.Fill, style, path, viewport) is not { } paint) return null;
+        // A drawing has few fills and many shapes: the one before is very often this one again.
+        if (_lastFill is { } last && last.Opacity == (float)style.FillOpacity && last.Rule == style.FillRule && SamePaint(last.Paint, paint)) return last;
+        return _lastFill = new VectorFill(paint, (float)style.FillOpacity, style.FillRule);
     }
 
-    private static VectorStroke? MakeStroke(in SvgStyle style)
+    private VectorStroke? MakeStroke(in SvgStyle style, VectorPath path, in SvgViewport viewport)
     {
-        if (Resolve(style.Stroke, style) is not { } color || style.StrokeOpacity <= 0 || style.StrokeWidth <= 0) return null;
+        if (style.StrokeOpacity <= 0 || style.StrokeWidth <= 0 || ResolvePaint(style.Stroke, style, path, viewport) is not { } paint) return null;
 
         ImmutableArray<float> dashes = [];
         if (style.Dashes is { Length: > 0 } pattern && pattern.Sum() > 0)
@@ -360,22 +725,19 @@ internal sealed class SvgSceneBuilder(SvgReadOptions options)
                 ? [.. pattern.Select(d => (float)d)]
                 : [.. pattern.Concat(pattern).Select(d => (float)d)];
         }
-        return new VectorStroke(new SolidPaint(color), (float)style.StrokeOpacity, (float)style.StrokeWidth, style.Cap, style.Join,
+        if (_lastStroke is { } last && dashes.IsEmpty && last.Dashes.IsEmpty && last.Opacity == (float)style.StrokeOpacity
+            && last.Width == (float)style.StrokeWidth && last.Cap == style.Cap && last.Join == style.Join
+            && last.MiterLimit == (float)style.MiterLimit && last.DashOffset == (float)style.DashOffset && SamePaint(last.Paint, paint))
+        {
+            return last;
+        }
+        return _lastStroke = new VectorStroke(paint, (float)style.StrokeOpacity, (float)style.StrokeWidth, style.Cap, style.Join,
             (float)style.MiterLimit, dashes, (float)style.DashOffset);
     }
 
-    /// <summary>The colour a paint draws with, or null when it draws nothing.</summary>
-    private static Rgba32? Resolve(SvgPaint paint, in SvgStyle style)
-    {
-        Rgba32 color;
-        switch (paint.Kind)
-        {
-            case SvgPaintKind.Color: color = paint.Color; break;
-            case SvgPaintKind.CurrentColor: color = style.Color; break;
-            default: return null;
-        }
-        return color.A == 0 ? null : color;
-    }
+    /// <summary>The same object, or two solid paints of one colour. A gradient is only ever the same when it is the same object.</summary>
+    private static bool SamePaint(VectorPaint a, VectorPaint b) =>
+        ReferenceEquals(a, b) || (a is SolidPaint x && b is SolidPaint y && x.Color == y.Color);
 
     private double Length(SvgElement element, string attribute, double percentBase, double fontSize)
     {
@@ -392,257 +754,5 @@ internal sealed class SvgSceneBuilder(SvgReadOptions options)
         if (SvgLength.TryParse(text, out SvgLength length) && length.Value >= 0) return length.Resolve(fontSize, percentBase);
         Issue(SvgIssueKind.Invalid, attribute);
         return null;
-    }
-
-    // ---- Style --------------------------------------------------------------------------------------------------
-
-    private SvgStyle ComputeStyle(SvgElement element, in SvgStyle parent)
-    {
-        SvgStyle style = parent;
-        style.Opacity = 1;
-        style.Display = true;
-
-        // Presentation attributes first, then the style attribute, which wins.
-        _declarations.Clear();
-        foreach (KeyValuePair<string, string> attribute in element.Attributes)
-        {
-            if (Properties.Contains(attribute.Key)) _declarations.Add((attribute.Key, attribute.Value));
-        }
-        if (element.Get("style") is { } css) ParseDeclarations(css, _declarations);
-        if (_declarations.Count == 0) return style;
-
-        // font-size before the rest: em lengths on this element are in its own font size.
-        foreach ((string name, string value) in _declarations)
-        {
-            if (name != "font-size") continue;
-            ReadOnlySpan<char> v = value.AsSpan().Trim();
-            if (v.Equals("inherit", StringComparison.OrdinalIgnoreCase)) style.FontSize = parent.FontSize;
-            else if (SvgLength.TryParse(v, out SvgLength size) && size.Value >= 0) style.FontSize = size.Resolve(parent.FontSize, parent.FontSize);
-        }
-        foreach ((string name, string value) in _declarations)
-        {
-            if (name != "font-size") Apply(ref style, parent, name, value);
-        }
-        return style;
-    }
-
-    /// <summary>The declarations of a <c>style</c> attribute that this reader acts on, in order.</summary>
-    private static void ParseDeclarations(string css, List<(string Name, string Value)> declarations)
-    {
-        // Comments out first.
-        for (int open = css.IndexOf("/*", StringComparison.Ordinal); open >= 0; open = css.IndexOf("/*", open, StringComparison.Ordinal))
-        {
-            int close = css.IndexOf("*/", open + 2, StringComparison.Ordinal);
-            css = close < 0 ? css[..open] : string.Concat(css.AsSpan(0, open), " ", css.AsSpan(close + 2));
-        }
-
-        int start = 0, depth = 0;
-        char quote = '\0';
-        for (int i = 0; i <= css.Length; i++)
-        {
-            char c = i < css.Length ? css[i] : ';';
-            if (i < css.Length)
-            {
-                if (quote != '\0')
-                {
-                    if (c == quote) quote = '\0';
-                    continue;
-                }
-                if (c is '"' or '\'') { quote = c; continue; }
-                if (c == '(') { depth++; continue; }
-                if (c == ')') { depth = Math.Max(0, depth - 1); continue; }
-                if (c != ';' || depth > 0) continue;
-            }
-
-            ReadOnlySpan<char> declaration = css.AsSpan(start, i - start);
-            start = i + 1;
-            int colon = declaration.IndexOf(':');
-            if (colon <= 0) continue;
-            string name = declaration[..colon].Trim().ToString().ToLowerInvariant();
-            ReadOnlySpan<char> value = declaration[(colon + 1)..].Trim();
-            if (value.EndsWith("!important", StringComparison.OrdinalIgnoreCase)) value = value[..^10].TrimEnd();
-            if (Properties.Contains(name) || name == "transform") declarations.Add((name, value.ToString()));
-        }
-    }
-
-    private void Apply(ref SvgStyle s, in SvgStyle parent, string name, string raw)
-    {
-        ReadOnlySpan<char> v = raw.AsSpan().Trim();
-        if (v.Equals("inherit", StringComparison.OrdinalIgnoreCase))
-        {
-            CopyFromParent(ref s, parent, name);
-            return;
-        }
-
-        switch (name)
-        {
-            case "fill":
-                if (TryPaint(v, out SvgPaint fill)) s.Fill = fill; else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "stroke":
-                if (TryPaint(v, out SvgPaint stroke)) s.Stroke = stroke; else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "color":
-                if (v.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) break; // on color itself this means inherit
-                if (SvgColor.TryParse(v, out Rgba32 color)) s.Color = color; else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "fill-rule":
-                if (v is "nonzero") s.FillRule = FillRule.NonZero;
-                else if (v is "evenodd") s.FillRule = FillRule.EvenOdd;
-                else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "fill-opacity":
-                if (TryOpacity(v, out double fillOpacity)) s.FillOpacity = fillOpacity; else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "stroke-opacity":
-                if (TryOpacity(v, out double strokeOpacity)) s.StrokeOpacity = strokeOpacity; else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "opacity":
-                if (TryOpacity(v, out double opacity)) s.Opacity = opacity; else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "stroke-width":
-                if (SvgLength.TryParse(v, out SvgLength width) && width.Value >= 0) s.StrokeWidth = width.Resolve(s.FontSize, _percentDiagonal);
-                else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "stroke-linecap":
-                if (v is "butt") s.Cap = LineCap.Butt;
-                else if (v is "round") s.Cap = LineCap.Round;
-                else if (v is "square") s.Cap = LineCap.Square;
-                else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "stroke-linejoin":
-                if (v is "miter") s.Join = LineJoin.Miter;
-                else if (v is "round") s.Join = LineJoin.Round;
-                else if (v is "bevel") s.Join = LineJoin.Bevel;
-                else if (v is "miter-clip" or "arcs")
-                {
-                    Issue(SvgIssueKind.Unsupported, $"stroke-linejoin: {v}");
-                    s.Join = LineJoin.Miter;
-                }
-                else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "stroke-miterlimit":
-            {
-                var scanner = new SvgScanner(v);
-                if (scanner.TryNumber(out double limit) && scanner.AtEnd && limit >= 1) s.MiterLimit = limit;
-                else Issue(SvgIssueKind.Invalid, name);
-                break;
-            }
-            case "stroke-dasharray":
-                if (v is "none") s.Dashes = null;
-                else if (TryDashes(v, s.FontSize, out double[]? dashes)) s.Dashes = dashes;
-                else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "stroke-dashoffset":
-                if (SvgLength.TryParse(v, out SvgLength offset)) s.DashOffset = offset.Resolve(s.FontSize, _percentDiagonal);
-                else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "visibility":
-                if (v is "visible") s.Visible = true;
-                else if (v is "hidden" or "collapse") s.Visible = false;
-                else Issue(SvgIssueKind.Invalid, name);
-                break;
-            case "display":
-                s.Display = v is not "none";
-                break;
-
-            // Read far enough to know the scene is missing something.
-            case "clip-path" or "mask" or "filter" or "marker" or "marker-start" or "marker-mid" or "marker-end" or "vector-effect":
-                if (v is not "none") Issue(SvgIssueKind.Unsupported, name);
-                break;
-            case "mix-blend-mode" or "paint-order":
-                if (v is not "normal") Issue(SvgIssueKind.Unsupported, name);
-                break;
-            case "transform":
-                Issue(SvgIssueKind.Unsupported, "transform in a style attribute");
-                break;
-            case "transform-origin":
-                Issue(SvgIssueKind.Unsupported, name);
-                break;
-        }
-    }
-
-    private static void CopyFromParent(ref SvgStyle s, in SvgStyle parent, string name)
-    {
-        switch (name)
-        {
-            case "fill": s.Fill = parent.Fill; break;
-            case "stroke": s.Stroke = parent.Stroke; break;
-            case "color": s.Color = parent.Color; break;
-            case "fill-rule": s.FillRule = parent.FillRule; break;
-            case "fill-opacity": s.FillOpacity = parent.FillOpacity; break;
-            case "stroke-opacity": s.StrokeOpacity = parent.StrokeOpacity; break;
-            case "opacity": s.Opacity = parent.Opacity; break;
-            case "stroke-width": s.StrokeWidth = parent.StrokeWidth; break;
-            case "stroke-linecap": s.Cap = parent.Cap; break;
-            case "stroke-linejoin": s.Join = parent.Join; break;
-            case "stroke-miterlimit": s.MiterLimit = parent.MiterLimit; break;
-            case "stroke-dasharray": s.Dashes = parent.Dashes; break;
-            case "stroke-dashoffset": s.DashOffset = parent.DashOffset; break;
-            case "visibility": s.Visible = parent.Visible; break;
-            case "display": s.Display = parent.Display; break;
-        }
-    }
-
-    /// <summary>
-    /// A paint. A reference to a paint server is not followed yet: it is reported, and the fallback after it is
-    /// used, or nothing.
-    /// </summary>
-    private bool TryPaint(ReadOnlySpan<char> v, out SvgPaint paint)
-    {
-        paint = new SvgPaint(SvgPaintKind.None, default);
-        if (v is "none") return true;
-        if (v.Equals("currentColor", StringComparison.OrdinalIgnoreCase))
-        {
-            paint = new SvgPaint(SvgPaintKind.CurrentColor, default);
-            return true;
-        }
-        if (v.StartsWith("url(", StringComparison.OrdinalIgnoreCase))
-        {
-            Issue(SvgIssueKind.Unsupported, "paint server (gradient or pattern)");
-            int close = v.IndexOf(')');
-            ReadOnlySpan<char> fallback = close < 0 ? default : v[(close + 1)..].Trim();
-            if (fallback.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) paint = new SvgPaint(SvgPaintKind.CurrentColor, default);
-            else if (SvgColor.TryParse(fallback, out Rgba32 fallbackColor)) paint = new SvgPaint(SvgPaintKind.Color, fallbackColor);
-            return true;
-        }
-        if (v is "context-fill" or "context-stroke")
-        {
-            Issue(SvgIssueKind.Unsupported, v.ToString());
-            return true;
-        }
-        if (!SvgColor.TryParse(v, out Rgba32 color)) return false;
-        paint = new SvgPaint(SvgPaintKind.Color, color);
-        return true;
-    }
-
-    private static bool TryOpacity(ReadOnlySpan<char> v, out double opacity)
-    {
-        var scanner = new SvgScanner(v);
-        if (!scanner.TryNumber(out opacity)) return false;
-        if (scanner.Peek == '%')
-        {
-            scanner.Advance();
-            opacity /= 100.0;
-        }
-        opacity = Math.Clamp(opacity, 0, 1);
-        return scanner.AtEnd;
-    }
-
-    private bool TryDashes(ReadOnlySpan<char> v, double fontSize, out double[]? dashes)
-    {
-        dashes = null;
-        var values = new List<double>();
-        var scanner = new SvgScanner(v);
-        scanner.SkipWhitespace();
-        while (!scanner.AtEnd)
-        {
-            if (!SvgLength.TryScan(ref scanner, out SvgLength length) || length.Value < 0) return false;
-            values.Add(length.Resolve(fontSize, _percentDiagonal));
-            scanner.SkipCommaWhitespace();
-        }
-        if (values.Count == 0) return false;
-        dashes = [.. values];
-        return true;
     }
 }
