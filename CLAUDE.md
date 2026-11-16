@@ -1190,6 +1190,10 @@ settled") has the reasons. The ones that bite:
   column; a short job's times have error bars as wide as most differences. Three allocation traps were real here: a
   collection expression passed to `AddRange` (an array a call), a dictionary per element, and a non-seekable stream
   wrapper that made the XML reader allocate its full buffers for a 300-byte icon.
+- **`VectorSceneFile` is fast, not small, and the numbers say so** (`roadmap/svg.md`): 15 to 50 times faster to load than the
+  SVG is to read, 0.6 to 1.6 times its size. Do not describe it as compact. Its reader is the only place in these two
+  packages that takes untrusted BINARY: every count is checked against the bytes left before allocating, and the tests
+  cut the file at every length and flip every byte. A new field means a new `Version`.
 - **Rung 2 has no ImageMagick layer.** Its renderer gets ten of the twelve rung 2 documents wrong, so without a
   browser those features are covered structurally only. CI has one.
 - **Mutation-checked** (32 more: 30 caught at once; the other two led to the cycle fix and a missing test).

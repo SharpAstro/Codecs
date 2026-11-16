@@ -116,9 +116,32 @@ scene itself. A hand-written XML tokeniser would cut more, and is not planned: t
   SVG focal gradient against the browser, and the emoji then checked against the browser from the same font.
 - **`SharpAstro.Vector` could not be a namespace** (see `CLAUDE.md`): it hides `System.Numerics.Vector`.
 
-## A more compact form than SVG
+## A more efficient form than SVG: `VectorSceneFile`
 
-Asked for as an option. **The choice: a binary form of the scene itself, not another vector format.**
+Asked for as an option ("more compact/efficient"). **The choice: a binary form of the scene itself, not another vector
+format. Built, and measured: it is the efficient one, and it is not the compact one.**
+
+`VectorSceneFile.Write(scene)` / `Read(bytes)` in `SharpAstro.Vector`: the magic `SAVS`, a version, a table of paths
+(equal paths stored once) and the nodes. `SvgReadBenchmarks`, one sitting, `--job short`:
+
+| Document | Read the SVG | Load the scene file | Allocated: SVG | Allocated: scene file |
+|---|---|---|---|---|
+| Icon | 3.7 to 5 us | 0.25 to 0.30 us | 9.8 KB | 1.09 KB |
+| Sprite, 200 symbols and uses | 0.93 ms | 0.029 ms | 999 KB | 86.5 KB |
+| Large, 5,000 paths | 41 to 45 ms | 0.9 to 1.2 ms | 11.1 MB | 3.89 MB |
+
+| Document | SVG bytes | Scene file bytes | SVG gzipped | Scene file gzipped |
+|---|---|---|---|---|
+| Icon | 294 | 469 | 203 | 174 |
+| Sprite | 53,268 | 30,138 | 1,930 | 2,289 |
+| Large | 2,069,246 | 2,942,524 | 625,004 | 1,111,538 |
+
+So: 15 to 50 times faster to load, and between 0.6 and 1.6 times the size. It is smaller only where shapes repeat; a
+coordinate costs four bytes, and SVG text often spends two. A form that was also small would need quantised, variable-length
+coordinates (what IconVG and TinyVG do), and is not built.
+
+The bytes are not trusted: every count is checked against the input that is left before anything is allocated for it,
+verbs and tags are validated, nesting is limited. The tests cut the file at every length and flip every byte.
 
 A `VectorScene` is already everything SVG is after the reading is done: no XML, no CSS, no units, no `use` left to follow.
 Writing it out as versioned binary (verbs, coordinates, paints, transforms) gives a file that loads by copying arrays, at
@@ -132,8 +155,9 @@ not an interchange format.
 - **Generated constants** (what `bake-icons` writes) are the most compact of all for an app's fixed icons, because
   nothing is loaded.
 
-State: decided, not built. It waits for a consumer that loads drawings at run time in numbers that make reading them
-show up; for icons the bake tool already removes the cost.
+In DIR.Lib `VectorIcon.Load` takes either form (it looks at the first four bytes), `VectorIcon.ToSceneFile()` writes
+one, and `bake-icons --scenes <dir>` writes one a `--svg`, for an app that wants its drawings in colour and at any size
+without reading SVG at start-up.
 
 ## What rung 2 settled
 

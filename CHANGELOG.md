@@ -42,6 +42,11 @@ and everything new was held against a headless browser.
 - **Changed from 3.35:** `<style>`, `use`, nested `svg` and gradient references are no longer reported as unsupported. A paint
   reference to a missing element is now `Invalid` (it was `Unsupported`); the clip of a nested viewport is reported when content
   reaches outside it.
+- **`VectorSceneFile`: a scene as binary, for loading without reading SVG.** `Write` / `Read` in `SharpAstro.Vector`. Measured, it
+  loads 15 to 50 times faster than the SVG is read (an icon in 0.3 us against 4 to 5, a 2 MB drawing in about 1 ms against 41 to 45)
+  and allocates a third to a tenth as much. **It is not reliably smaller**: 0.6 times the SVG's size for a sprite of repeated
+  symbols, 1.4 to 1.6 times for an icon or a large drawing. The bytes are checked: counts against the input left, verbs, tags,
+  nesting; a truncated or damaged file is an `InvalidDataException`.
 - **Reading allocates less than half of what it did.** Measured with the new `SvgReadBenchmarks`, before and after in one sitting:
   an icon 23.9 KB -> 9.8 KB, a 200-symbol sprite 1.82 MB -> 1.00 MB, a 2 MB drawing of 5,000 paths 26.7 MB -> 11.1 MB. Times
   moved less than the benchmark's own error (4 to 5 us, about 1 ms, 41 to 52 ms). `PathBuilder` gains `Clear()`.

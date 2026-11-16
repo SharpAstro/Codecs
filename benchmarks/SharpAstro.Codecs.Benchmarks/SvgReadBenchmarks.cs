@@ -24,7 +24,7 @@ public class SvgReadBenchmarks
 {
     private byte[] _icon = [], _sprite = [], _large = [];
 
-    [GlobalSetup]
+    [GlobalSetup(Targets = [nameof(Icon), nameof(Sprite), nameof(Large)])]
     public void Setup()
     {
         _icon = Encoding.UTF8.GetBytes(
@@ -75,6 +75,39 @@ public class SvgReadBenchmarks
             throw new InvalidOperationException($"Expected {shapes} shapes and no issues, read {document.Scene.Nodes.Length} and {document.Issues.Length}.");
         }
     }
+
+    // The same three scenes from their binary form (VectorSceneFile): what is left of a read when there is nothing to parse.
+    private byte[] _iconScene = [], _spriteScene = [], _largeScene = [];
+
+    [GlobalSetup(Targets = [nameof(IconScene), nameof(SpriteScene), nameof(LargeScene)])]
+    public void SetupScenes()
+    {
+        Setup();
+        _iconScene = SharpAstro.VectorGraphics.VectorSceneFile.Write(SvgReader.Read(_icon).Scene);
+        _spriteScene = SharpAstro.VectorGraphics.VectorSceneFile.Write(SvgReader.Read(_sprite).Scene);
+        _largeScene = SharpAstro.VectorGraphics.VectorSceneFile.Write(SvgReader.Read(_large).Scene);
+        Console.WriteLine($"// sizes, SVG -> scene file: icon {_icon.Length} -> {_iconScene.Length}, sprite {_sprite.Length} -> {_spriteScene.Length}, large {_large.Length} -> {_largeScene.Length}");
+        Console.WriteLine($"// gzipped, SVG -> scene file: icon {Gzip(_icon)} -> {Gzip(_iconScene)}, sprite {Gzip(_sprite)} -> {Gzip(_spriteScene)}, large {Gzip(_large)} -> {Gzip(_largeScene)}");
+
+        static long Gzip(byte[] data)
+        {
+            using var packed = new MemoryStream();
+            using (var gzip = new System.IO.Compression.GZipStream(packed, System.IO.Compression.CompressionLevel.SmallestSize, leaveOpen: true))
+            {
+                gzip.Write(data);
+            }
+            return packed.Length;
+        }
+    }
+
+    [Benchmark(Description = "icon, from its scene file")]
+    public int IconScene() => SharpAstro.VectorGraphics.VectorSceneFile.Read(_iconScene).Nodes.Length;
+
+    [Benchmark(Description = "sprite, from its scene file")]
+    public int SpriteScene() => SharpAstro.VectorGraphics.VectorSceneFile.Read(_spriteScene).Nodes.Length;
+
+    [Benchmark(Description = "large, from its scene file")]
+    public int LargeScene() => SharpAstro.VectorGraphics.VectorSceneFile.Read(_largeScene).Nodes.Length;
 
     [Benchmark(Description = "icon, 294 bytes")]
     public int Icon() => SvgReader.Read(_icon).Scene.Nodes.Length;
