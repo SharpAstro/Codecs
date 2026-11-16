@@ -31,6 +31,10 @@ See **[CODECS.md](CODECS.md)** for the full per-package matrix, what each codec 
 support, and how to pick the right one. A bundled **sRGB ICC** profile ships in
 `SharpAstro.Color.Icc` for embedding.
 
+**SVG is read, not rasterised.** `SharpAstro.Svg` resolves an SVG document into a `SharpAstro.Vector` scene
+(paths, fills, strokes, transforms, opacity groups) and leaves drawing to the caller, so it is not part of
+the facade. See [`roadmap/svg.md`](roadmap/svg.md) for what it reads so far.
+
 The facade decodes WebP still images and frame 0 of animated WebP. Use
 `SharpAstro.Webp.WebpDecoder.DecodeAnimation` or `WebpAnimationDecoder` to access animation frames
 and seek through the timeline.

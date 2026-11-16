@@ -2,7 +2,7 @@
 
 Release notes for the whole family: every package in this repo (the `SharpAstro.Codecs` facade plus
 `SharpAstro.Tiff` / `.Png` / `.Exif` / `.Color.Icc` / `.Jpeg` / `.Jpeg.GainMap` / `.Jxr` / `.Exr` /
-`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Radiance` / `.Pnm` / `.Tga` / `.Bmp` / `.Gif` / `.Heif`) ships at the same `Major.Minor` with a shared run-number patch, so one section
+`.Jxl` / `.Jbig2` / `.Jpeg2000` / `.Webp` / `.Radiance` / `.Pnm` / `.Tga` / `.Bmp` / `.Gif` / `.Heif` / `.Vector` / `.Svg`) ships at the same `Major.Minor` with a shared run-number patch, so one section
 covers them all.
 
 The number itself lives in exactly one place, `<VersionMajorMinor>` in `Directory.Build.props`; CI
@@ -15,6 +15,28 @@ longer holds the number) and the header comment in `Directory.Build.props`. Entr
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
 ## Unreleased
+
+**New packages: `SharpAstro.Vector`, a format-neutral vector scene, and `SharpAstro.Svg`, which reads SVG into one.** Neither
+draws: there is no rasteriser and no font code here, and SVG is **not** part of the `SharpAstro.Codecs` pixel facade. The caller
+renders the scene with what it has. The reasoning, the rungs and the validation are in [`roadmap/svg.md`](roadmap/svg.md).
+
+- **`SharpAstro.Vector`** (no dependencies): `VectorScene`, `VectorShape` (a `VectorPath` with a transform, `VectorFill`,
+  `VectorStroke`), `VectorGroup` (children composited as one layer at an opacity), `PathBuilder` / `IPathSink` (absolute move,
+  line, quad, cubic, close) and `Rgba32`.
+- **`SharpAstro.Svg`**, rung 1, written from the W3C SVG 1.1 and SVG 2 specifications: `SvgReader.Read` / `Parse` return an
+  `SvgDocument` with the scene in pixels (the `viewBox` and `preserveAspectRatio` already applied). Read: `g`, `a`, `path` (every
+  command; arcs become cubics), `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`; `transform`; solid `fill` / `stroke`
+  (hex, `rgb()`, `hsl()`, named colours, `currentColor`), `fill-rule`, the opacities and every stroke property; `display`,
+  `visibility`; presentation attributes and the `style` attribute with CSS inheritance; all the length units; SVGZ.
+- **What is not read is reported, not guessed.** Gradients and patterns, `use`, `image`, `text`, `clip-path`, `mask`, `filter`,
+  markers, `<style>` sheets and the rest are left out of the scene and listed in `SvgDocument.Issues` with a count
+  (`SvgReadOptions.ThrowOnUnsupported` makes the first one an exception). An empty list means the scene is the whole document.
+- **Input is bounded.** DTDs are ignored and no entity is expanded or fetched (a document that uses an entity it declares is
+  refused); `SvgReadOptions` limits the characters of XML after gzip, the elements, the nesting depth and the path segments.
+- **Checked against renderers that are not ours.** Sixteen documents are also compared with a headless Chrome or Edge, in one
+  launch (skipped where there is no browser). Twelve documents are drawn by ImageMagick's SVG renderer and by a plain
+  test-only rasteriser over our scene: mean difference 0.08 to 0.44 of 255, no pixel further than 72 off (fills only). Seventeen
+  deliberate bugs, one at a time, are all caught by the suite.
 
 **Fixed: `SharpAstro.Tga` no longer reads the TGA 2.0 footer as pixel data** (Codecs #72). `TgaReader.Decode` left the footer
 (26 bytes ending in `TRUEVISION-XFILE.\0`) in the pixel span when it checked the data's size, so a raw image up to 26 bytes

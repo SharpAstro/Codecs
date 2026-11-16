@@ -1,0 +1,82 @@
+using System.Collections.Immutable;
+using SharpAstro.Vector;
+
+namespace SharpAstro.Svg;
+
+/// <summary>A <c>viewBox</c>: the rectangle of user space that is mapped onto the picture.</summary>
+public readonly record struct SvgViewBox(float X, float Y, float Width, float Height);
+
+/// <summary>What kind of thing a reader left out.</summary>
+public enum SvgIssueKind
+{
+    /// <summary>Valid SVG that this reader does not read yet. The scene is drawn without it.</summary>
+    Unsupported,
+    /// <summary>Something the document got wrong. It was handled the way the specification says an error is.</summary>
+    Invalid,
+}
+
+/// <summary>One thing the scene does not show the way the document asked, and how many times it came up.</summary>
+/// <param name="Kind">Whether the reader or the document is the reason.</param>
+/// <param name="What">The element, property or value, in words.</param>
+/// <param name="Count">How many times.</param>
+public readonly record struct SvgIssue(SvgIssueKind Kind, string What, int Count);
+
+/// <summary>
+/// A read SVG document: the resolved scene, the size it was laid out at, and everything the scene leaves out.
+/// An empty <see cref="Issues"/> means the scene is the whole document.
+/// </summary>
+public sealed class SvgDocument
+{
+    internal SvgDocument(VectorScene scene, SvgViewBox? viewBox, ImmutableArray<SvgIssue> issues)
+    {
+        Scene = scene;
+        ViewBox = viewBox;
+        Issues = issues;
+    }
+
+    /// <summary>The drawing, in pixels at 96 to the inch, with the <c>viewBox</c> mapping already applied to every shape.</summary>
+    public VectorScene Scene { get; }
+
+    /// <summary>The picture's width in pixels: the root's <c>width</c>, or what it defaults to.</summary>
+    public float Width => Scene.Width;
+
+    /// <summary>The picture's height in pixels.</summary>
+    public float Height => Scene.Height;
+
+    /// <summary>The root's <c>viewBox</c>, when it has a usable one.</summary>
+    public SvgViewBox? ViewBox { get; }
+
+    /// <summary>What the scene leaves out or had to correct, most frequent first.</summary>
+    public ImmutableArray<SvgIssue> Issues { get; }
+}
+
+/// <summary>How a document is read. The limits bound work and memory by what the document declares.</summary>
+public sealed record SvgReadOptions
+{
+    /// <summary>The defaults.</summary>
+    public static SvgReadOptions Default { get; } = new();
+
+    /// <summary>
+    /// The width a root <c>width</c> that is absent or a percentage resolves against. Without it an absent width comes
+    /// from the <c>viewBox</c> (keeping its aspect ratio against a given height), or is 300.
+    /// </summary>
+    public float? ViewportWidth { get; init; }
+
+    /// <summary>As <see cref="ViewportWidth"/>, for the height; the last resort is 150.</summary>
+    public float? ViewportHeight { get; init; }
+
+    /// <summary>Throw <see cref="NotSupportedException"/> at the first <see cref="SvgIssueKind.Unsupported"/> issue, where the default is to record it.</summary>
+    public bool ThrowOnUnsupported { get; init; }
+
+    /// <summary>The most characters the XML may hold, after any gzip is undone. Default 2^26.</summary>
+    public long MaxCharacters { get; init; } = 1L << 26;
+
+    /// <summary>The most elements the document may hold. Default 2^21.</summary>
+    public int MaxElements { get; init; } = 1 << 21;
+
+    /// <summary>The deepest element nesting. Default 256.</summary>
+    public int MaxDepth { get; init; } = 256;
+
+    /// <summary>The most path verbs the scene may hold in total. Default 2^24.</summary>
+    public int MaxPathVerbs { get; init; } = 1 << 24;
+}

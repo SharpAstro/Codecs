@@ -14,6 +14,8 @@ independent NuGet shipped in lockstep (shared Major.Minor + CI run-number patch)
 - **codecs** — `Tiff`, `Png`, `Jpeg`, `Jxr`, `Exr`, `Jxl`, `Jbig2`, `Jpeg2000`, `Webp`, `Radiance`, `Gif` (decode only), `Heif` (HEIF/HEVC stills: grids, transforms, PQ as linear floats, gain maps reconstructed to HDR floats through `GainMap`; see `roadmap/heif.md`), `Exif`,
   `Color.Icc`, `Jpeg.IccInjector`, `GainMap` (the format-independent gain-map core: per-channel metadata, linear-float reconstruction, ISO/TS 21496-1 metadata reader; shared by the JPEG and HEIF carriers, which is why HEIF does not depend on JPEG), `Jpeg.GainMap` (Ultra HDR read/write; delegates to `GainMap`; facade-registered
   *ahead of* the plain JPEG decoder).
+- **vector, not pixels** — `SharpAstro.Vector` (a format-neutral scene) and `SharpAstro.Svg` (reads SVG into
+  one). Neither rasterises and neither is in the facade; see "SVG" below.
 
 `SharpAstro.Jpeg`'s full-scale decode was built as a faithful port of the stb_image (StbImageSharp)
 JPEG path (IDCT constants, upsampling kernels, fixed-point colour convert) and validated
@@ -191,7 +193,7 @@ Longer-horizon work lives in the roadmap docs under `roadmap/`: [`roadmap/jpeg-e
 (JBIG2's remaining Huffman variants), [`roadmap/jpx.md`](roadmap/jpx.md) (the JPEG 2000 rung
 table, rungs 1, 2 and 5 shipped), [`roadmap/heif.md`](roadmap/heif.md) (HEIF/HEVC rungs and the measured Canon envelope),
 [`roadmap/jxl.md`](roadmap/jxl.md) (the VarDCT decode's LOH
-allocation question, and the feature envelope the codec currently refuses), plus
+allocation question, and the feature envelope the codec currently refuses), [`roadmap/svg.md`](roadmap/svg.md) (the SVG rungs), plus
 [`JXR-FORMAT.md`](JXR-FORMAT.md) for the per-axis JXR support breakdown.
 
 ## Build & test
@@ -1121,6 +1123,47 @@ touching it should know:
   `BypassBinByBin`. The R7 went from 4.0 s to 0.27 s. Time the public decode in a lean process:
   `--heif-report` (benchmarks) holds about 1 GB of other arrays and reads the parallel decode at 0.6 s.
 
+## SVG — read into a vector scene, never rasterised here
+
+`SharpAstro.Svg` resolves an SVG document into a `SharpAstro.Vector.VectorScene` and stops. There is no rasteriser and
+no font code in this repo, and SVG is **not registered with the facade**. [`roadmap/svg.md`](roadmap/svg.md) has the
+rungs. What a person touching it should know:
+
+- **The layering is forced, and it is the point.** Codecs is the bottom layer: Fonts.Lib references `SharpAstro.Png`,
+  and the fill rasteriser, stroker and COLR paint code live in Fonts.Lib. A rasterising SVG codec here could not use
+  them. Reading to a scene needs none of it, and it means text will be handed to the caller as runs and drawn by the
+  text code the caller already has, so there is never a second text renderer. Do not add a rasteriser or font parsing
+  to these two packages.
+- **`SharpAstro.Vector` is not named after SVG on purpose**: another vector format can emit the same scene. Its
+  `IPathSink` and `Rgba32` match Fonts.Lib's `IGlyphSink` and `Rgba32` in shape, so Fonts.Lib can drop its copies when
+  it takes the package.
+- **A scene is flat except where compositing needs a layer.** Transforms are multiplied out onto each shape; a
+  `VectorGroup` appears only for opacity over more than one paint (a container, or a shape with fill and stroke).
+  Opacity on a shape with one paint is folded into that paint, which is exact.
+- **The transform arithmetic is in `SvgAffine`, in the specification's own convention** (`A * B` applies B first,
+  `x' = a x + c y + e`), and converted to `Matrix3x2` only at the end. `Matrix3x2` multiplies the other way round;
+  writing the composition in it directly is how the order gets swapped.
+- **Nothing unread is guessed.** It is left out and listed in `SvgDocument.Issues` (`Unsupported`), and what the
+  document got wrong is handled as the specification's error rules say and listed (`Invalid`): path data is drawn up
+  to the error, an invalid property is as if it were not written.
+- **Entities are never expanded** (`DtdProcessing.Ignore`, no resolver), so a document that uses one it declares is
+  refused. Some Illustrator exports do. That is a known gap, not an oversight.
+- **The pixel oracle is ImageMagick's SVG renderer over a test-only rasteriser** (`SvgRenderOracleTests`), because a
+  structural expectation repeats any misreading of the specification. It is a tolerance and fills only.
+  `SVG_ORACLE_DUMP=<dir>` writes both pictures. ImageMagick does not read `hsl()` and does not draw a visible child of
+  a hidden group; both were measured and are kept out of the oracle documents.
+- **A headless browser is the stronger pixel oracle** (`SvgBrowserOracleTests`; Chrome or Edge, found from `SVG_BROWSER`
+  or the usual install paths, through `OracleGate`). All documents go on one page and are captured in ONE launch, then
+  cut into tiles. It reads what ImageMagick does not, so those documents live there. Two things were measured:
+  - **The browser's curves are not exact.** On tight curves it was 70 to 100 levels lighter than the true ellipse at a
+    handful of pixels where we were within 6 (coverage computed independently). So that comparison lets an edge sit one
+    pixel away (`edgeSlack`) and nothing else; every mutation the ImageMagick oracle catches, it still catches.
+  - **About one launch in eight, the browser writes the whole screenshot and then never exits** (Edge 157, Windows).
+    The harness therefore waits for the "written to file" message on stderr, not for the exit, gives the browser 3 s
+    to leave and then ends its process tree. Waiting on the exit alone made every browser test fail at once.
+- **Mutation-checked** (17 deliberate bugs, all caught). The first run missed S and T control-point mirroring because
+  the test paths were symmetric: keep such paths asymmetric.
+
 ## Oracle harnesses (all codecs)
 
 There are multiple oracle mechanisms, with different acquisition stories. All of them
@@ -1139,6 +1182,8 @@ refuses to accept that silence.
 | JBIG2 **MMR** | Magick.NET (libtiff, CCITT Group 4) | Just a NuGet reference. `Group4Tiff` has libtiff encode the raster as Group 4 and unwraps the codestream — T.6 is exactly what T.88 §6.2.6 carries. Nothing to install, nothing to skip. |
 | TIFF **tiled write** | Magick.NET (libtiff) | Just a NuGet reference. `TiffWriterTiledOracleTests` has libtiff read back what `TiffWriter` emits in `TiffLayout.Tiled`. Nothing to install, nothing to skip. Kept as an oracle even though `TiffReader` reads tiles now: writer and reader agree about tile order by construction, so a round trip cannot see a consistent transpose. |
 | TIFF **tiled read** | Magick.NET (libtiff) | The same reference, run the other way: `TiffTiledReadTests` has libtiff WRITE the tiled file (`tile-geometry` + `predictor` defines) and reads it back with `TiffReader`. **The predictor is why it must be a foreign encoder** -- `TiffWriter` emits none, so nothing we write exercises Predictor 2, and inverting it at image width rather than TILE width decodes with no error into a picture that is right in its first tile column and drifts across the rest. That sabotage fails exactly the two libtiff cases and nothing else in the suite. |
+| SVG **scene** | Magick.NET (ImageMagick's SVG renderer) | Just a NuGet reference. `SvgRenderOracleTests` draws our scene with a test-only fill rasteriser and compares it with ImageMagick's rendering of the same document, within a measured tolerance. Nothing to install, nothing to skip. |
+| SVG **scene**, in a browser | headless Chrome or Edge (**binary only**) | `SvgBrowserOracleTests`. Found from `SVG_BROWSER`, then the usual install paths (Windows, macOS) or `PATH` (Linux). One launch for every document. Skips without a browser; the runner image has Chrome. |
 | GIF **decode** | Magick.NET (`Coalesce()`) | Just a NuGet reference. ImageMagick writes the animations (and `GifBuilder` hand-builds what it will not write); every frame must equal the coalesced frame byte for byte, alpha-0 RGB included. Nothing to install, nothing to skip. |
 | JBIG2 **decode** | committed jbig2enc fixtures + spec vectors | No external dependency, nothing to skip — `Fixtures/jbig2/*.jb2` (real jbig2enc output) plus the T.88 Annex H.2 MQ vector and one-hot template tests. Regenerate the fixtures with `Oracle/jbig2/make-fixtures.sh` (needs jbig2enc). |
 | JPEG 2000 **decode** | committed OpenJPEG fixtures | No external dependency, nothing to skip. A lossless 5/3 codestream reproduces its source raster **exactly**, so `Fixtures/jpeg2000/<name>.pgm` (or `.ppm`) is the expected output for `<name>.j2k` (or `.jp2`) — byte equality, no tolerance, no subprocess. Regenerate with `Oracle/jpeg2000/make-fixtures.sh`, which verifies each pair lossless before it will commit it. The lossy fixtures in `Fixtures/jpeg2000-lossy/` have no committed expected output and are compared against `opj_decompress` at run time: exactly for `lossy53-*`, within the measured tolerance for `lossy97-*`. |
@@ -1172,6 +1217,7 @@ silently-absent oracle left.
 | OpenJPEG | yes | `Oracle/jpeg2000/fetch.sh`, ~5s | skip locally, **fail** in CI |
 | libwebp (dwebp, anim_dump) | yes | `apt-get install webp` | skip locally, **fail** in CI |
 | ffmpeg (HEVC) | yes | `apt-get install ffmpeg` | skip locally, **fail** in CI |
+| Chrome / Edge (SVG) | yes | not installed by the workflow: the `ubuntu-latest` image ships Google Chrome (**not yet confirmed on a CI run**) | skip locally, **fail** in CI |
 
 **Why JXR mattered most.** Its guards used to be `if (encApp is null) { _out.WriteLine(...);
 return; }` — which makes the test **pass**. On a dev box with `Oracle/bin/` populated that is
