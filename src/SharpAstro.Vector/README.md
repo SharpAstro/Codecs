@@ -6,6 +6,8 @@ A format-neutral vector scene for .NET, with no dependencies.
 - `VectorShape`: a `VectorPath` with a transform, an optional `VectorFill` and an optional `VectorStroke`.
 - `VectorGroup`: children that must be drawn into one layer and blended at an opacity.
 - `VectorPath` / `PathBuilder` / `IPathSink`: absolute move, line, quad, cubic and close.
+- `SolidPaint`, `LinearGradientPaint`, `RadialGradientPaint` (two circles): what a fill or stroke paints with. A
+  gradient carries its stops, its extend mode and a transform from gradient space to the shape's coordinates.
 - `Rgba32`: an sRGB colour, 8 bits a channel, alpha not premultiplied.
 
 There is no rasteriser and no font code here. A reader such as `SharpAstro.Svg` produces a scene; the caller

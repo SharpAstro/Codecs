@@ -71,12 +71,21 @@ public sealed record SvgReadOptions
     /// <summary>The most characters the XML may hold, after any gzip is undone. Default 2^26.</summary>
     public long MaxCharacters { get; init; } = 1L << 26;
 
-    /// <summary>The most elements the document may hold. Default 2^21.</summary>
+    /// <summary>
+    /// The most elements the document may hold, and the most it may draw once every <c>use</c> is followed: an element
+    /// that is used a hundred times counts a hundred times. Default 2^21.
+    /// </summary>
     public int MaxElements { get; init; } = 1 << 21;
 
-    /// <summary>The deepest element nesting. Default 256.</summary>
+    /// <summary>The deepest element nesting, in the document and again once every <c>use</c> is followed. Default 256.</summary>
     public int MaxDepth { get; init; } = 256;
 
-    /// <summary>The most path verbs the scene may hold in total. Default 2^24.</summary>
+    /// <summary>The most path verbs the scene may hold in total, each instance a <c>use</c> makes counted. Default 2^24.</summary>
     public int MaxPathVerbs { get; init; } = 1 << 24;
+
+    /// <summary>
+    /// The most selector tests the style sheets may cost. Applying a sheet is elements times rules, and a document
+    /// chooses both. Default 2^27.
+    /// </summary>
+    public long MaxSelectorTests { get; init; } = 1L << 27;
 }

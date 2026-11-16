@@ -8,7 +8,7 @@
     <PackageId>SharpAstro.Vector</PackageId>
     <Product>SharpAstro.Vector</Product>
     <Authors>SharpAstro</Authors>
-    <Description>A format-neutral vector scene for .NET: paths (move/line/quad/cubic/close), fills, strokes, transforms and opacity groups, plus the IPathSink a renderer replays them into. Holds no rasteriser and no font code: readers such as SharpAstro.Svg produce a scene, the caller draws it. AOT-compatible, zero dependencies.</Description>
+    <Description>A format-neutral vector scene for .NET: paths (move/line/quad/cubic/close), solid and gradient fills and strokes, transforms and opacity groups, plus the IPathSink a renderer replays them into. Holds no rasteriser and no font code: readers such as SharpAstro.Svg produce a scene, the caller draws it. AOT-compatible, zero dependencies.</Description>
     <PackageTags>vector path scene svg graphics aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

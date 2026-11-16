@@ -14,6 +14,35 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.36
+
+**`SharpAstro.Svg` rung 2: `use`, `symbol`, nested `svg`, gradients and style sheets.** The scene model gains gradient paints,
+and everything new was held against a headless browser.
+
+- **`SharpAstro.Vector`** gains `LinearGradientPaint` and `RadialGradientPaint` (two circles, the same model as an OpenType COLR
+  radial gradient), `GradientStop`, `GradientExtend`, and `VectorPath.TryGetBounds` (the bounds of the curves, not of their control
+  points). A gradient carries its own transform from gradient space to the shape's coordinates.
+- **`use`, `symbol` and nested `svg`.** A `use` is expanded where it stands, with `href` or `xlink:href`; what it draws inherits
+  from the `use`. `symbol` and nested `svg` are viewports with their own `viewBox` mapping and their own size for percentages.
+  Every instance of one `path` shares one `VectorPath`. A `use` that leads back to itself draws nothing and is reported.
+- **Gradients.** `linearGradient` and `radialGradient` with bounding-box or user-space units, `gradientTransform`, `spreadMethod`,
+  focal point and focal radius, `stop-color` / `stop-opacity`, and inheritance through `href`. The cases that are not a gradient
+  come out as what they are: one stop or a zero-length vector is a solid colour, no stops is nothing, and a gradient that cannot be
+  applied to a shape (a box with no height, a transform with no inverse) gives way to its fallback colour.
+- **Style sheets.** `<style>` is read: type, `*`, class, id and attribute selectors, four structural pseudo-classes, all four
+  combinators, specificity, source order and `!important`, in the right order against presentation attributes and the `style`
+  attribute. `@media` with plain media types is decided; other selectors and at-rules that could change the picture are reported.
+- **Limits follow `use`.** `MaxElements`, `MaxDepth` and `MaxPathVerbs` now count every instance a `use` makes, so a 3 KB document
+  of nested `use` elements asking for 2^40 rectangles is refused; `MaxSelectorTests` (new, 2^27) bounds what applying a sheet costs.
+- **Changed from 3.35:** `<style>`, `use`, nested `svg` and gradient references are no longer reported as unsupported. A paint
+  reference to a missing element is now `Invalid` (it was `Unsupported`); the clip of a nested viewport is reported when content
+  reaches outside it.
+- **Checked against a browser.** Twelve more documents are compared with headless Chrome or Edge (28 in all): mean difference
+  0.00 to 0.80 of 255. Three things were learnt from it and are now what the reader does: a focal point outside the circle is
+  kept, not clamped; a gradient transform with no inverse falls back; and of two groups that use each other, each is drawn once
+  with the other inside it. ImageMagick's renderer gets ten of these documents wrong, so they are not compared with it.
+  Thirty-two deliberate bugs were tried: thirty were caught at once, and the two that were not led to a fix and a test.
+
 ## 3.35
 
 **New packages: `SharpAstro.Vector`, a format-neutral vector scene, and `SharpAstro.Svg`, which reads SVG into one.** Neither

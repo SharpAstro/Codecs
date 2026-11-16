@@ -134,28 +134,29 @@ public sealed class SvgReaderTests
     public void WhatIsNotReadYet_IsLeftOut_AndReportedWithItsCount()
     {
         SvgDocument document = Doc(
-            "<style>rect { fill: red }</style>" +
             "<text x=\"1\" y=\"1\">words <tspan>more</tspan></text><text>again</text>" +
-            "<use href=\"#a\"/><image href=\"a.png\"/><svg><rect width=\"1\" height=\"1\"/></svg>" +
-            "<switch><g/></switch><foreignObject><rect width=\"1\" height=\"1\"/></foreignObject>" +
+            "<image href=\"a.png\"/><switch><g/></switch><foreignObject><rect width=\"1\" height=\"1\"/></foreignObject>" +
+            "<defs><pattern id=\"p\"/></defs>" +
             RectWith("clip-path=\"url(#c)\" mask=\"url(#m)\" filter=\"url(#f)\" marker-end=\"url(#k)\" id=\"kept\"") +
             RectWith("style=\"mix-blend-mode: multiply; paint-order: stroke; vector-effect: non-scaling-stroke; transform: scale(2)\"") +
             RectWith("clip-path=\"none\" mask=\"none\" filter=\"none\" marker=\"none\" mix-blend-mode=\"normal\" paint-order=\"normal\"") +
-            RectWith("stroke=\"red\" stroke-linejoin=\"arcs\""));
+            RectWith("stroke=\"red\" stroke-linejoin=\"arcs\"") +
+            RectWith("fill=\"url(#p) green\" id=\"patterned\"") +
+            RectWith("fill=\"url(other.svg#g) blue\"") +
+            "<use href=\"other.svg#thing\"/>");
 
         // The shapes are still there, drawn without what was not read.
-        document.Scene.Nodes.Length.ShouldBe(4);
+        document.Scene.Nodes.Length.ShouldBe(6);
         document.Scene.Nodes[0].Id.ShouldBe("kept");
         ((VectorShape)document.Scene.Nodes[3]).Stroke!.Join.ShouldBe(LineJoin.Miter);
+        FillColor((VectorShape)document.Scene.Nodes[4]).ShouldBe(new Rgba32(0, 128, 0));
+        FillColor((VectorShape)document.Scene.Nodes[5]).ShouldBe(new Rgba32(0, 0, 255));
 
         document.Issues.Select(issue => issue.Kind).Distinct().ShouldBe([SvgIssueKind.Unsupported]);
         document.Issues.ToDictionary(issue => issue.What, issue => issue.Count).ShouldBe(new Dictionary<string, int>
         {
             ["<text> element"] = 2,
-            ["<style> element"] = 1,
-            ["<use> element"] = 1,
             ["<image> element"] = 1,
-            ["<svg> element"] = 1,
             ["<switch> element"] = 1,
             ["<foreignObject> element"] = 1,
             ["clip-path"] = 1,
@@ -165,24 +166,27 @@ public sealed class SvgReaderTests
             ["mix-blend-mode"] = 1,
             ["paint-order"] = 1,
             ["vector-effect"] = 1,
-            ["transform in a style attribute"] = 1,
+            ["transform in a style attribute or sheet"] = 1,
             ["stroke-linejoin: arcs"] = 1,
+            ["pattern"] = 1,
+            ["paint server in another document"] = 1,
+            ["use of an element in another document"] = 1,
         }, ignoreOrder: true);
         // Most frequent first.
         document.Issues[0].ShouldBe(new SvgIssue(SvgIssueKind.Unsupported, "<text> element", 2));
     }
 
     [Theory]
-    [InlineData("url(#g)", null)]
-    [InlineData("url(#g) none", null)]
-    [InlineData("url(#g) blue", "0,0,255")]
-    [InlineData("url( '#g' ) #0f0", "0,255,0")]
-    [InlineData("url(#g) currentColor", "255,0,0")]
-    [InlineData("context-fill", null)]
-    public void APaintServerReference_IsReported_AndItsFallbackIsUsed(string fill, string? expected)
+    [InlineData("url(#missing)", null, "paint: no element with that id")]
+    [InlineData("url(#missing) none", null, "paint: no element with that id")]
+    [InlineData("url(#missing) blue", "0,0,255", "paint: no element with that id")]
+    [InlineData("url( '#missing' ) #0f0", "0,255,0", "paint: no element with that id")]
+    [InlineData("url(\"#missing\") currentColor", "255,0,0", "paint: no element with that id")]
+    [InlineData("url(#shape) blue", "0,0,255", "paint: not a paint server")]
+    public void APaintReferenceThatCannotBeUsed_IsReported_AndItsFallbackIsUsed(string fill, string? expected, string what)
     {
-        SvgDocument document = Doc($"<rect width=\"1\" height=\"1\" color=\"red\" fill=\"{fill}\"/>");
-        document.Issues.ShouldHaveSingleItem().Kind.ShouldBe(SvgIssueKind.Unsupported);
+        SvgDocument document = Doc($"<defs><rect id=\"shape\"/></defs><rect width=\"1\" height=\"1\" color=\"red\" fill=\"{fill.Replace("\"", "&quot;")}\"/>");
+        document.Issues.ShouldHaveSingleItem().ShouldBe(new SvgIssue(SvgIssueKind.Invalid, what, 1));
         if (expected is null)
         {
             document.Scene.Nodes.ShouldBeEmpty();
@@ -199,7 +203,7 @@ public sealed class SvgReaderTests
     {
         var strict = new SvgReadOptions { ThrowOnUnsupported = true };
         Should.Throw<NotSupportedException>(() => Doc("<text>x</text>", options: strict)).Message.ShouldContain("<text> element");
-        Should.Throw<NotSupportedException>(() => Doc("<rect width=\"1\" height=\"1\" fill=\"url(#g)\"/>", options: strict));
+        Should.Throw<NotSupportedException>(() => Doc("<rect width=\"1\" height=\"1\" filter=\"url(#f)\"/>", options: strict));
         Doc("<rect width=\"1\" height=\"1\" fill=\"bogus\"/><defs><text>x</text></defs>", options: strict)
             .Issues.ShouldHaveSingleItem().Kind.ShouldBe(SvgIssueKind.Invalid);
     }

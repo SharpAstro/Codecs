@@ -1,7 +1,8 @@
 # Roadmap: SVG (`SharpAstro.Svg` on `SharpAstro.Vector`)
 
-**Status: rung 1 shipped in 3.35.** `SharpAstro.Svg` reads paths, basic shapes, transforms, the
-viewBox, solid paints and stroke properties into a `SharpAstro.Vector.VectorScene`.
+**Status: rungs 1 and 2 shipped (3.35, 3.36).** `SharpAstro.Svg` reads paths, basic shapes, transforms,
+viewports, `use` and `symbol`, solid and gradient paints, stroke properties and style sheets into a
+`SharpAstro.Vector.VectorScene`.
 
 ## The design, and why it is not a codec like the others
 
@@ -42,9 +43,9 @@ resvg, librsvg and browser sources are not read; renderers are used as programs 
 
 | Rung | What | State |
 |---|---|---|
-| 1 | Root size / viewBox / preserveAspectRatio; `g`, `a`; `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`; `transform`; solid fill and stroke, every stroke property; opacity; `display`, `visibility`; presentation attributes and the `style` attribute; SVGZ; limits | written |
-| 2 | `defs`, `use`, `symbol`, nested `svg`; `linearGradient` / `radialGradient` (with `href` inheritance and `gradientTransform`); `<style>` sheets with the selectors real files use | open |
-| 3 | `clipPath`, `mask`, `image` (decoded by the caller or the facade), markers, `paint-order`, `pattern` | open |
+| 1 | Root size / viewBox / preserveAspectRatio; `g`, `a`; `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`; `transform`; solid fill and stroke, every stroke property; opacity; `display`, `visibility`; presentation attributes and the `style` attribute; SVGZ; limits | shipped 3.35 |
+| 2 | `defs`, `use`, `symbol`, nested `svg`; `linearGradient` / `radialGradient` (with `href` inheritance and `gradientTransform`); `<style>` sheets with the selectors real files use; limits that follow `use` | shipped 3.36 |
+| 3 | `clipPath`, `mask`, the clip of nested viewports, `image` (decoded by the caller or the facade), markers, `paint-order`, `pattern`; a stroker in the test rasteriser | open |
 | 4 | Fonts.Lib reads the OpenType `SVG ` table through this package, and carries the one reference scene rasteriser | open, in Fonts.Lib |
 | 5 | `text` / `tspan` as text runs, then per-character positioning, then `textPath` | open |
 | 6 | Filters, blend modes | open, only if asked for |
@@ -52,10 +53,30 @@ resvg, librsvg and browser sources are not read; renderers are used as programs 
 **Not planned until someone asks:** deprecated features (SVG fonts: `<font>` / `<glyph>`, `tref`, `altGlyph`,
 the `cursor` element), animation, scripting.
 
-Rung 2 is where amplification starts: `use` can repeat content, so a few hundred bytes can describe a very
-large scene. The limits in `SvgReadOptions` (elements, depth, path verbs, characters) are charged against
-what a document declares, and the path-verb limit must be charged per `use` expansion, before the expansion
-is built.
+## What rung 2 settled
+
+- **Amplification is charged by what is drawn.** `use` can repeat content, so forty nested `use` elements (3 KB)
+  can ask for 2^40 rectangles. `MaxElements` counts every element visited, each instance included, and an empty
+  leaf is no way round it (nothing is drawn, but the walk would still take for ever). `MaxDepth` and
+  `MaxPathVerbs` are charged the same way. Path data and point lists are parsed once an element and every
+  instance shares the `VectorPath`.
+- **Applying a sheet has a budget** (`MaxSelectorTests`): the cost is elements times rules and a document chooses
+  both, and one descendant selector that cannot match tries every choice of ancestors (60 choose 4 for one
+  element and one rule in the test). An element's matches are kept, so a `use` does not pay again.
+- **Selectors see an element where it stands in the document; inheritance comes from the `use`.** `g rect` matches
+  a rect in a `g` in `defs` although it is drawn under no `g`.
+- **A gradient is resolved against the shape that uses it**, because bounding-box units need the box: the paint
+  on a style is a reference until then, and the box is of the curve itself (`VectorPath.TryGetBounds`), not of
+  its control points and not of the stroke.
+- **Three answers came from the browser, not from reading:** a focal point outside the circle is kept (SVG 2),
+  where SVG 1.1 pulled it onto the edge; a `gradientTransform` with no inverse uses the fallback colour; and of
+  two groups that use each other, each is drawn once with the other inside it, because a `use` is circular when
+  its target is an ancestor of it *or of any use it is inside of*.
+- **The clip of a nested viewport is not in the scene yet** (rung 3). It is reported only when content can reach
+  outside the viewport, judged by bounding boxes grown by the stroke, so it can be said of a shape that only
+  comes close.
+- **Stops interpolate in sRGB, not premultiplied**, which is what the browser draws for a stop with
+  `stop-opacity="0"` (the scene says so on the paint types).
 
 ## Validation
 
@@ -73,7 +94,9 @@ Four layers, in `tests/SharpAstro.Codecs.Tests/Svg*Tests.cs`:
    test rasteriser has no stroker.
 
 4. **Pixels against a headless browser** (`SvgBrowserOracleTests`, Chrome or Edge through `OracleGate`): the same
-   documents plus four ImageMagick cannot be trusted with (`hsl()`, a visible child of a hidden group, the newer
+   documents, four ImageMagick cannot be trusted with, and twelve for rung 2. **Rung 2 has no ImageMagick layer:**
+   its renderer got ten of those documents wrong where the browser and this reader agree (measured), so without a
+   browser rung 2 is covered structurally only. The first four are (`hsl()`, a visible child of a hidden group, the newer
    colour syntaxes, a root sized from its viewBox). One page, one launch, cut into tiles. Measured with Edge 157:
    mean difference 0.00 to 0.80 of 255 (bound 1.2; the largest is 8-bit compositing of a half-transparent layer).
    The browser's own curves are a little coarse (up to 100 levels off the true ellipse at a few pixels where we are
@@ -88,6 +111,12 @@ dropped, the style attribute losing to the presentation attribute, currentColor 
 skewX using the angle as a factor, a percentage radius taken of the width. The first run missed two (S and T):
 the test paths had the control point straight above the end point, so mirroring x changed nothing. Paths for
 such tests must be asymmetric.
+
+Rung 2: thirty-two more (use, viewports, overflow, gradients, cascade, selectors, media). Thirty were caught at
+once. Dropping the ancestor check from the cycle test was not, and looking at why showed the reader expanded
+mutual uses one level further than a browser does; and a rule about which attributes a gradient inherits had
+no test. Not run, deliberately: turning off the element count, which would make the doubling test walk 2^40
+elements.
 
 **Known limits of the oracle.** ImageMagick's renderer does not read `hsl()` and does not draw a
 `visibility="visible"` child of a hidden group; both were taken out of the oracle documents and stay covered

@@ -9,10 +9,11 @@ namespace SharpAstro.Svg;
 /// </summary>
 /// <remarks>
 /// <para>Written from the W3C SVG 1.1 and SVG 2 specifications. Read so far: the root's size, <c>viewBox</c> and
-/// <c>preserveAspectRatio</c>; <c>g</c> and <c>a</c>; <c>path</c>, <c>rect</c>, <c>circle</c>, <c>ellipse</c>,
-/// <c>line</c>, <c>polyline</c>, <c>polygon</c>; <c>transform</c>; solid fills and strokes with every stroke property;
-/// opacity; <c>display</c> and <c>visibility</c>; presentation attributes and the <c>style</c> attribute, inherited as CSS
-/// says. Everything else is left out of the scene and listed in <see cref="SvgDocument.Issues"/>.</para>
+/// <c>preserveAspectRatio</c>, and nested <c>svg</c>; <c>g</c> and <c>a</c>; <c>defs</c>, <c>use</c> and <c>symbol</c>;
+/// <c>path</c>, <c>rect</c>, <c>circle</c>, <c>ellipse</c>, <c>line</c>, <c>polyline</c>, <c>polygon</c>;
+/// <c>transform</c>; solid and gradient fills and strokes with every stroke property; opacity; <c>display</c> and
+/// <c>visibility</c>; presentation attributes, the <c>style</c> attribute and <c>style</c> sheets, cascaded and inherited
+/// as CSS says. Everything else is left out of the scene and listed in <see cref="SvgDocument.Issues"/>.</para>
 /// <para>The XML is read with DTD processing ignored and no resolver, so nothing outside the document is fetched and
 /// entities are not expanded; a document that uses an entity it declares itself is refused. A gzip stream (SVGZ) is
 /// undone first.</para>
@@ -20,6 +21,7 @@ namespace SharpAstro.Svg;
 public static class SvgReader
 {
     internal const string SvgNamespace = "http://www.w3.org/2000/svg";
+    private const string XLinkNamespace = "http://www.w3.org/1999/xlink";
 
     /// <summary>Reads a document from its bytes (plain or gzip).</summary>
     /// <exception cref="InvalidDataException">Not well-formed XML, not an SVG document, or over a limit in <paramref name="options"/>.</exception>
@@ -68,6 +70,7 @@ public static class SvgReader
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxElements, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxDepth, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPathVerbs, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxSelectorTests, 1);
         return new XmlReaderSettings
         {
             // Ignore, not Prohibit: a DOCTYPE is common in SVG 1.1 files and harmless when it is skipped.
@@ -83,24 +86,27 @@ public static class SvgReader
 
     private static SvgDocument Read(XmlReader xml, SvgReadOptions options)
     {
-        SvgElement root;
+        SvgTree tree;
         try
         {
-            root = ReadTree(xml, options);
+            tree = ReadTree(xml, options);
         }
         catch (XmlException e)
         {
             throw new InvalidDataException($"The SVG is not XML this reader accepts: {e.Message}", e);
         }
-        return new SvgSceneBuilder(options).Build(root);
+        return new SvgSceneBuilder(options, tree).Build();
     }
 
     /// <summary>
     /// The SVG elements of the document as a tree. Elements of other namespaces, and everything inside them, are not
-    /// kept; attributes are kept when they have no namespace.
+    /// kept; attributes are kept when they have no namespace, and <c>xlink:href</c> as <c>href</c> when there is no
+    /// plain one (SVG 2 lets the plain one win). The text of <c>style</c> elements is kept; no other text is.
     /// </summary>
-    private static SvgElement ReadTree(XmlReader xml, SvgReadOptions options)
+    private static SvgTree ReadTree(XmlReader xml, SvgReadOptions options)
     {
+        var ids = new Dictionary<string, SvgElement>(StringComparer.Ordinal);
+        var sheets = new List<SvgElement>();
         SvgElement? root = null;
         var open = new Stack<SvgElement?>();
         int elements = 0;
@@ -109,6 +115,11 @@ public static class SvgReader
             if (xml.NodeType == XmlNodeType.EndElement)
             {
                 open.Pop();
+                continue;
+            }
+            if (xml.NodeType is XmlNodeType.Text or XmlNodeType.CDATA or XmlNodeType.SignificantWhitespace)
+            {
+                if (open.Count > 0 && open.Peek() is { Name: "style" } style) style.Text += xml.Value;
                 continue;
             }
             if (xml.NodeType != XmlNodeType.Element) continue;
@@ -141,15 +152,22 @@ public static class SvgReader
 
             if (element is not null && xml.HasAttributes)
             {
+                string? xlinkHref = null;
                 while (xml.MoveToNextAttribute())
                 {
                     if (xml.NamespaceURI.Length == 0) element.Set(xml.LocalName, xml.Value);
+                    else if (xml.NamespaceURI == XLinkNamespace && xml.LocalName == "href") xlinkHref = xml.Value;
                 }
                 xml.MoveToElement();
+                if (xlinkHref is not null && element.Get("href") is null) element.Set("href", xlinkHref);
+                // The first element with an id keeps it, as in a browser's getElementById.
+                if (element.Get("id") is { Length: > 0 } id) ids.TryAdd(id, element);
             }
+            if (element is { Name: "style" }) sheets.Add(element);
             if (!xml.IsEmptyElement) open.Push(element);
         }
-        return root ?? throw new InvalidDataException("Not an SVG document: it has no root element.");
+        if (root is null) throw new InvalidDataException("Not an SVG document: it has no root element.");
+        return new SvgTree(root, ids, sheets);
     }
 
     /// <summary>A few bytes already taken from a stream, then the rest of it. Read-only and forward-only.</summary>
@@ -181,6 +199,9 @@ public static class SvgReader
     }
 }
 
+/// <summary>The document as read: the root, the elements by <c>id</c>, and the <c>style</c> elements in document order.</summary>
+internal sealed record SvgTree(SvgElement Root, Dictionary<string, SvgElement> Ids, List<SvgElement> StyleSheets);
+
 /// <summary>An SVG element as read: its local name, its un-namespaced attributes and its SVG children.</summary>
 internal sealed class SvgElement(string name)
 {
@@ -188,6 +209,14 @@ internal sealed class SvgElement(string name)
     private List<SvgElement>? _children;
 
     public string Name { get; } = name;
+
+    public SvgElement? Parent { get; private set; }
+
+    /// <summary>The place among the parent's children.</summary>
+    public int Index { get; private set; }
+
+    /// <summary>The character data of a <c>style</c> element.</summary>
+    public string? Text { get; set; }
 
     public IReadOnlyList<SvgElement> Children => (IReadOnlyList<SvgElement>?)_children ?? [];
 
@@ -198,5 +227,10 @@ internal sealed class SvgElement(string name)
 
     public void Set(string attribute, string value) => (_attributes ??= new Dictionary<string, string>(StringComparer.Ordinal))[attribute] = value;
 
-    public void Add(SvgElement child) => (_children ??= []).Add(child);
+    public void Add(SvgElement child)
+    {
+        child.Parent = this;
+        child.Index = (_children ??= []).Count;
+        _children.Add(child);
+    }
 }

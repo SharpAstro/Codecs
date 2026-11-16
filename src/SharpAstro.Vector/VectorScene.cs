@@ -9,7 +9,10 @@ namespace SharpAstro.Vector;
 /// </summary>
 public readonly record struct Rgba32(byte R, byte G, byte B, byte A = 255);
 
-/// <summary>What an area is painted with. <see cref="SolidPaint"/> is the only kind so far.</summary>
+/// <summary>
+/// What an area is painted with: a <see cref="SolidPaint"/>, a <see cref="LinearGradientPaint"/> or a
+/// <see cref="RadialGradientPaint"/>. A renderer that meets a kind it does not know should say so, not guess.
+/// </summary>
 public abstract record VectorPaint;
 
 /// <summary>One colour everywhere.</summary>
