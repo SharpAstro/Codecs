@@ -1,7 +1,7 @@
 using System.Collections.Immutable;
 using System.Numerics;
 
-namespace SharpAstro.Vector;
+namespace SharpAstro.VectorGraphics;
 
 /// <summary>
 /// An sRGB colour, 8 bits a channel, alpha not premultiplied. The same shape as SharpAstro.Fonts' <c>Rgba32</c>, so that

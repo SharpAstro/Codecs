@@ -1,4 +1,4 @@
-using SharpAstro.Vector;
+using SharpAstro.VectorGraphics;
 
 namespace SharpAstro.Svg;
 

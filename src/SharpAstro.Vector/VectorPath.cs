@@ -1,4 +1,4 @@
-namespace SharpAstro.Vector;
+namespace SharpAstro.VectorGraphics;
 
 /// <summary>
 /// Receives a path as absolute segments. The same five calls a glyph outline is made of, so one renderer

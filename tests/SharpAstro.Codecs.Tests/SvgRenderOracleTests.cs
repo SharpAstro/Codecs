@@ -2,10 +2,10 @@ using System.Numerics;
 using System.Text;
 using ImageMagick;
 using SharpAstro.Svg;
-using SharpAstro.Vector;
+using SharpAstro.VectorGraphics;
 using Shouldly;
 using static SharpAstro.Codecs.Tests.SvgTestSupport;
-using FillRule = SharpAstro.Vector.FillRule;
+using FillRule = SharpAstro.VectorGraphics.FillRule;
 
 namespace SharpAstro.Codecs.Tests;
 

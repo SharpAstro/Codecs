@@ -1134,6 +1134,10 @@ rungs. What a person touching it should know:
   them. Reading to a scene needs none of it, and it means text will be handed to the caller as runs and drawn by the
   text code the caller already has, so there is never a second text renderer. Do not add a rasteriser or font parsing
   to these two packages.
+- **The package is `SharpAstro.Vector`, its namespace is `SharpAstro.VectorGraphics`, and that mismatch is deliberate.** A
+  namespace `SharpAstro.Vector` hides `System.Numerics.Vector` from every consumer in a `SharpAstro.*` namespace
+  (`Vector.IsHardwareAccelerated` binds to the namespace and fails). 3.35 shipped it that way; Fonts.Lib's SIMD code
+  stopped compiling the moment it referenced the package. Never name a namespace here after a BCL type.
 - **`SharpAstro.Vector` is not named after SVG on purpose**: another vector format can emit the same scene. Its
   `IPathSink` and `Rgba32` match Fonts.Lib's `IGlyphSink` and `Rgba32` in shape, so Fonts.Lib can drop its copies when
   it takes the package.

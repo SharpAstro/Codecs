@@ -1,6 +1,7 @@
 # SharpAstro.Vector
 
-A format-neutral vector scene for .NET, with no dependencies.
+A format-neutral vector scene for .NET, with no dependencies. The namespace is `SharpAstro.VectorGraphics`
+(not `SharpAstro.Vector`, which would hide `System.Numerics.Vector` from any consumer in a `SharpAstro.*` namespace).
 
 - `VectorScene`: nodes in painting order, in a y-down coordinate system of a given width and height.
 - `VectorShape`: a `VectorPath` with a transform, an optional `VectorFill` and an optional `VectorStroke`.

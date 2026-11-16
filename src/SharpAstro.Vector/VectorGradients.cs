@@ -1,7 +1,7 @@
 using System.Collections.Immutable;
 using System.Numerics;
 
-namespace SharpAstro.Vector;
+namespace SharpAstro.VectorGraphics;
 
 /// <summary>What a gradient does outside its first and last stop.</summary>
 public enum GradientExtend : byte

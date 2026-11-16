@@ -34,6 +34,11 @@ and everything new was held against a headless browser.
   attribute. `@media` with plain media types is decided; other selectors and at-rules that could change the picture are reported.
 - **Limits follow `use`.** `MaxElements`, `MaxDepth` and `MaxPathVerbs` now count every instance a `use` makes, so a 3 KB document
   of nested `use` elements asking for 2^40 rectangles is refused; `MaxSelectorTests` (new, 2^27) bounds what applying a sheet costs.
+- **Breaking against 3.35: the namespace of the `SharpAstro.Vector` package is now `SharpAstro.VectorGraphics`** (the package id is
+  unchanged). A namespace called `SharpAstro.Vector` hides `System.Numerics.Vector` from every consumer whose own namespace
+  starts with `SharpAstro.`: `Vector.IsHardwareAccelerated` stops compiling the moment the package is referenced, which is what
+  happened to Fonts.Lib's SIMD code. Change `using SharpAstro.Vector;` to `using SharpAstro.VectorGraphics;`. 3.35 was the only
+  release with the old name.
 - **Changed from 3.35:** `<style>`, `use`, nested `svg` and gradient references are no longer reported as unsupported. A paint
   reference to a missing element is now `Invalid` (it was `Unsupported`); the clip of a nested viewport is reported when content
   reaches outside it.

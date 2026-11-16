@@ -1,7 +1,7 @@
 using System.Numerics;
 
 using SharpAstro.Svg;
-using SharpAstro.Vector;
+using SharpAstro.VectorGraphics;
 using Shouldly;
 using static SharpAstro.Codecs.Tests.SvgTestSupport;
 

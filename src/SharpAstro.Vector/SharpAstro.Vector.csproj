@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <RootNamespace>SharpAstro.VectorGraphics</RootNamespace>
     <PackageId>SharpAstro.Vector</PackageId>
     <Product>SharpAstro.Vector</Product>
     <Authors>SharpAstro</Authors>

@@ -4,7 +4,7 @@ using System.Xml;
 namespace SharpAstro.Svg;
 
 /// <summary>
-/// Reads an SVG document into a resolved <see cref="SharpAstro.Vector.VectorScene"/>. It does not draw: there is no
+/// Reads an SVG document into a resolved <see cref="SharpAstro.VectorGraphics.VectorScene"/>. It does not draw: there is no
 /// rasteriser and no font code here, and the caller renders the scene with whatever it has.
 /// </summary>
 /// <remarks>

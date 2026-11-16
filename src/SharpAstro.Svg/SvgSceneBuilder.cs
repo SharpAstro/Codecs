@@ -1,7 +1,7 @@
 using System.Collections.Frozen;
 using System.Collections.Immutable;
 using System.Numerics;
-using SharpAstro.Vector;
+using SharpAstro.VectorGraphics;
 
 namespace SharpAstro.Svg;
 

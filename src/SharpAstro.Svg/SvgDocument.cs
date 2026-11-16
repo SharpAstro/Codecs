@@ -1,5 +1,5 @@
 using System.Collections.Immutable;
-using SharpAstro.Vector;
+using SharpAstro.VectorGraphics;
 
 namespace SharpAstro.Svg;
 
