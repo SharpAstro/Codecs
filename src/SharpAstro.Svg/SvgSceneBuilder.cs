@@ -83,7 +83,9 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
     private readonly Dictionary<(SvgIssueKind Kind, string What), int> _issues = [];
     private readonly HashSet<SvgElement> _active = [];
     private readonly List<SvgElement> _uses = [];
-    private readonly Dictionary<SvgElement, VectorPath> _paths = [];
+    private readonly PathBuilder _builder = new();
+    private VectorFill? _lastFill;
+    private VectorStroke? _lastStroke;
     private long _verbs, _visits;
 
     public SvgDocument Build()
@@ -412,11 +414,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
 
             var shape = (VectorShape)node;
             if (!shape.Path.TryGetBounds(out VectorRect bounds)) return false;
-            float grow = 0;
-            if (shape.Stroke is { } stroke)
-            {
-                grow = stroke.Width / 2 * Math.Max(1.4143f, stroke.Join == LineJoin.Miter ? stroke.MiterLimit : 1);
-            }
+            float grow = shape.Stroke is { } stroke ? StrokeReach(shape.Path, stroke) : 0;
             Matrix3x2 map = shape.Transform * toViewport;
             ReadOnlySpan<Vector2> corners =
             [
@@ -430,6 +428,91 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
             }
             return false;
         }
+    }
+
+    /// <summary>
+    /// How far a stroke can reach beyond its path, at most: half its width, more where a miter is drawn at a corner
+    /// and by a square cap. Worked out from the corners the path really has, because the blunt answer (half the width
+    /// times the miter limit, everywhere) says that a round icon with a thin stroke leaves a box it sits well inside.
+    /// </summary>
+    private static float StrokeReach(VectorPath path, VectorStroke stroke)
+    {
+        float half = stroke.Width / 2;
+        float most = 1f;
+        ReadOnlySpan<float> c = path.Coordinates;
+        Vector2 point = default, start = default, startTangent = default, endTangent = default;
+        bool open = false, first = true, anyOpenEnd = false;
+        int i = 0;
+
+        void Corner(Vector2 arriving, Vector2 leaving)
+        {
+            if (stroke.Join != LineJoin.Miter || arriving == default || leaving == default) return;
+            float cos = Vector2.Dot(Vector2.Normalize(arriving), Vector2.Normalize(leaving));
+            // Miter length over stroke width is 1 / cos(half the turn); past the limit the corner is bevelled.
+            float ratio = MathF.Sqrt(2f / MathF.Max(1e-6f, 1f + cos));
+            if (ratio <= stroke.MiterLimit) most = MathF.Max(most, ratio);
+        }
+
+        void Segment(Vector2 leaving, Vector2 arriving)
+        {
+            if (first) startTangent = leaving;
+            else Corner(endTangent, leaving);
+            endTangent = arriving;
+            first = false;
+        }
+
+        foreach (PathVerb verb in path.Verbs)
+        {
+            switch (verb)
+            {
+                case PathVerb.Move:
+                    anyOpenEnd |= open && !first;
+                    point = start = new Vector2(c[i], c[i + 1]);
+                    open = true;
+                    first = true;
+                    break;
+                case PathVerb.Line:
+                {
+                    var to = new Vector2(c[i], c[i + 1]);
+                    if (to != point) Segment(to - point, to - point);
+                    point = to;
+                    break;
+                }
+                case PathVerb.Quad:
+                {
+                    Vector2 q = new(c[i], c[i + 1]), to = new(c[i + 2], c[i + 3]);
+                    Segment(q != point ? q - point : to - point, to != q ? to - q : to - point);
+                    point = to;
+                    break;
+                }
+                case PathVerb.Cubic:
+                {
+                    Vector2 q1 = new(c[i], c[i + 1]), q2 = new(c[i + 2], c[i + 3]), to = new(c[i + 4], c[i + 5]);
+                    Vector2 leaving = q1 != point ? q1 - point : q2 != point ? q2 - point : to - point;
+                    Vector2 arriving = to != q2 ? to - q2 : to != q1 ? to - q1 : to - point;
+                    Segment(leaving, arriving);
+                    point = to;
+                    break;
+                }
+                default:
+                    if (!first)
+                    {
+                        // The closing line, if there is one, and the corner where the subpath meets its start.
+                        if (point != start) Segment(start - point, start - point);
+                        Corner(endTangent, startTangent);
+                    }
+                    point = start;
+                    open = false;
+                    first = true;
+                    break;
+            }
+            i += VectorPath.CoordinateCount(verb);
+        }
+        anyOpenEnd |= open && !first;
+
+        // A square cap reaches half the width beyond the end and half to each side: the diagonal.
+        if (anyOpenEnd && stroke.Cap == LineCap.Square) most = MathF.Max(most, 1.4143f);
+        return half * most;
     }
 
     /// <summary>
@@ -518,29 +601,32 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
             case "path":
                 // Path data and point lists do not depend on where the element is drawn, so one path serves every
                 // instance a use makes of it.
-                if (!_paths.TryGetValue(element, out path!))
+                if (element.Path is null)
                 {
-                    var data = new PathBuilder();
-                    if (element.Get("d") is { } d && !SvgGeometry.ParsePath(d, data)) Issue(SvgIssueKind.Invalid, "path data");
-                    _paths[element] = path = data.ToPath();
+                    _builder.Clear();
+                    if (element.Get("d") is { } d && !SvgGeometry.ParsePath(d, _builder)) Issue(SvgIssueKind.Invalid, "path data");
+                    element.Path = _builder.ToPath();
                 }
+                path = element.Path;
                 break;
 
             case "polyline" or "polygon":
-                if (!_paths.TryGetValue(element, out path!))
+                if (element.Path is null)
                 {
-                    var data = new PathBuilder();
-                    if (element.Get("points") is { } points && !SvgGeometry.Polyline(points, element.Name == "polygon", data))
+                    _builder.Clear();
+                    if (element.Get("points") is { } points && !SvgGeometry.Polyline(points, element.Name == "polygon", _builder))
                     {
                         Issue(SvgIssueKind.Invalid, "points");
                     }
-                    _paths[element] = path = data.ToPath();
+                    element.Path = _builder.ToPath();
                 }
+                path = element.Path;
                 break;
 
             default:
             {
-                var builder = new PathBuilder();
+                PathBuilder builder = _builder;
+                builder.Clear();
                 switch (element.Name)
                 {
                     case "rect":
@@ -622,7 +708,9 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
     private VectorFill? MakeFill(in SvgStyle style, VectorPath path, in SvgViewport viewport)
     {
         if (style.FillOpacity <= 0 || ResolvePaint(style.Fill, style, path, viewport) is not { } paint) return null;
-        return new VectorFill(paint, (float)style.FillOpacity, style.FillRule);
+        // A drawing has few fills and many shapes: the one before is very often this one again.
+        if (_lastFill is { } last && last.Opacity == (float)style.FillOpacity && last.Rule == style.FillRule && SamePaint(last.Paint, paint)) return last;
+        return _lastFill = new VectorFill(paint, (float)style.FillOpacity, style.FillRule);
     }
 
     private VectorStroke? MakeStroke(in SvgStyle style, VectorPath path, in SvgViewport viewport)
@@ -637,9 +725,19 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                 ? [.. pattern.Select(d => (float)d)]
                 : [.. pattern.Concat(pattern).Select(d => (float)d)];
         }
-        return new VectorStroke(paint, (float)style.StrokeOpacity, (float)style.StrokeWidth, style.Cap, style.Join,
+        if (_lastStroke is { } last && dashes.IsEmpty && last.Dashes.IsEmpty && last.Opacity == (float)style.StrokeOpacity
+            && last.Width == (float)style.StrokeWidth && last.Cap == style.Cap && last.Join == style.Join
+            && last.MiterLimit == (float)style.MiterLimit && last.DashOffset == (float)style.DashOffset && SamePaint(last.Paint, paint))
+        {
+            return last;
+        }
+        return _lastStroke = new VectorStroke(paint, (float)style.StrokeOpacity, (float)style.StrokeWidth, style.Cap, style.Join,
             (float)style.MiterLimit, dashes, (float)style.DashOffset);
     }
+
+    /// <summary>The same object, or two solid paints of one colour. A gradient is only ever the same when it is the same object.</summary>
+    private static bool SamePaint(VectorPaint a, VectorPaint b) =>
+        ReferenceEquals(a, b) || (a is SolidPaint x && b is SolidPaint y && x.Color == y.Color);
 
     private double Length(SvgElement element, string attribute, double percentBase, double fontSize)
     {

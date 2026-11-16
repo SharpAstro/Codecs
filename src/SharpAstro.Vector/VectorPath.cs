@@ -226,19 +226,35 @@ public sealed class PathBuilder : IPathSink
     /// <inheritdoc/>
     public void QuadTo(float cx, float cy, float x, float y)
     {
+        // One Add a coordinate: an AddRange of a collection expression allocates an array for every segment.
         _verbs.Add(PathVerb.Quad);
-        _coordinates.AddRange([cx, cy, x, y]);
+        _coordinates.Add(cx);
+        _coordinates.Add(cy);
+        _coordinates.Add(x);
+        _coordinates.Add(y);
     }
 
     /// <inheritdoc/>
     public void CubicTo(float c1x, float c1y, float c2x, float c2y, float x, float y)
     {
         _verbs.Add(PathVerb.Cubic);
-        _coordinates.AddRange([c1x, c1y, c2x, c2y, x, y]);
+        _coordinates.Add(c1x);
+        _coordinates.Add(c1y);
+        _coordinates.Add(c2x);
+        _coordinates.Add(c2y);
+        _coordinates.Add(x);
+        _coordinates.Add(y);
     }
 
     /// <inheritdoc/>
     public void Close() => _verbs.Add(PathVerb.Close);
+
+    /// <summary>Empties the builder, keeping its storage, so that one builder can build many paths.</summary>
+    public void Clear()
+    {
+        _verbs.Clear();
+        _coordinates.Clear();
+    }
 
     /// <summary>The path built so far. The builder can go on being used; the returned path does not change.</summary>
     public VectorPath ToPath() => _verbs.Count == 0 ? VectorPath.Empty : new VectorPath([.. _verbs], [.. _coordinates]);

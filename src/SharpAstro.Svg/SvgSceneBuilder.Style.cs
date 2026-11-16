@@ -6,7 +6,6 @@ namespace SharpAstro.Svg;
 internal sealed partial class SvgSceneBuilder
 {
     private readonly List<SvgStyleRule> _rules = [];
-    private readonly Dictionary<SvgElement, SvgDeclaration[]> _cascades = [];
     private readonly List<SvgDeclaration> _scratch = [];
     private long _selectorTests;
 
@@ -37,7 +36,7 @@ internal sealed partial class SvgSceneBuilder
     /// </summary>
     private IReadOnlyList<SvgDeclaration> Cascade(SvgElement element)
     {
-        if (_rules.Count > 0 && _cascades.TryGetValue(element, out SvgDeclaration[]? cached)) return cached;
+        if (element.Cascade is { } cached) return cached;
 
         _scratch.Clear();
         foreach (KeyValuePair<string, string> attribute in element.Attributes)
@@ -84,7 +83,7 @@ internal sealed partial class SvgSceneBuilder
             : a.Order.CompareTo(b.Order));
 
         SvgDeclaration[] result = [.. entries.Select(entry => entry.Declaration)];
-        _cascades[element] = result;
+        element.Cascade = result;
         return result;
     }
 

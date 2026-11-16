@@ -42,6 +42,11 @@ and everything new was held against a headless browser.
 - **Changed from 3.35:** `<style>`, `use`, nested `svg` and gradient references are no longer reported as unsupported. A paint
   reference to a missing element is now `Invalid` (it was `Unsupported`); the clip of a nested viewport is reported when content
   reaches outside it.
+- **Reading allocates less than half of what it did.** Measured with the new `SvgReadBenchmarks`, before and after in one sitting:
+  an icon 23.9 KB -> 9.8 KB, a 200-symbol sprite 1.82 MB -> 1.00 MB, a 2 MB drawing of 5,000 paths 26.7 MB -> 11.1 MB. Times
+  moved less than the benchmark's own error (4 to 5 us, about 1 ms, 41 to 52 ms). `PathBuilder` gains `Clear()`.
+- **The clip of a nested viewport is reported only for strokes that really reach it**: a stroke's reach is worked out from the
+  corners its path has, where it was half the width times the miter limit everywhere, which flagged every round outline icon.
 - **Checked against a browser.** Twelve more documents are compared with headless Chrome or Edge (28 in all): mean difference
   0.00 to 0.80 of 255. Three things were learnt from it and are now what the reader does: a focal point outside the circle is
   kept, not clamped; a gradient transform with no inverse falls back; and of two groups that use each other, each is drawn once

@@ -1185,6 +1185,11 @@ settled") has the reasons. The ones that bite:
 - **Selectors match an element where it stands in the document; inheritance comes from the `use`.** The cascade is
   cached per element, so `Cascade` must not depend on where the element is being drawn.
 - **`<!-- -->` inside `<style>` is an XML comment unless it is in CDATA**: the rules in it are gone, in a browser too.
+- **A read is for once a document, and `SvgReadBenchmarks` is how a change to the reader is judged** (`--filter '*SvgRead*'
+  --job short --inProcess`): an icon is about 5 us and 9.8 KB, a 2 MB drawing about 41 ms and 11 MB. Trust its ALLOCATED
+  column; a short job's times have error bars as wide as most differences. Three allocation traps were real here: a
+  collection expression passed to `AddRange` (an array a call), a dictionary per element, and a non-seekable stream
+  wrapper that made the XML reader allocate its full buffers for a 300-byte icon.
 - **Rung 2 has no ImageMagick layer.** Its renderer gets ten of the twelve rung 2 documents wrong, so without a
   browser those features are covered structurally only. CI has one.
 - **Mutation-checked** (32 more: 30 caught at once; the other two led to the cycle fix and a missing test).

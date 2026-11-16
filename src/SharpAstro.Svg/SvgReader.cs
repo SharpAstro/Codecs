@@ -28,8 +28,18 @@ public static class SvgReader
     public static SvgDocument Read(byte[] data, SvgReadOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(data);
+        options ??= SvgReadOptions.Default;
+        // The array is all there, so it can be looked at and handed over as a stream that knows its length: the XML
+        // reader then sizes its buffers to the document, which for an icon is most of what a read allocates.
         using var stream = new MemoryStream(data, writable: false);
-        return Read(stream, options);
+        if (data.Length >= 2 && data[0] == 0x1F && data[1] == 0x8B)
+        {
+            using var gzip = new GZipStream(stream, CompressionMode.Decompress, leaveOpen: true);
+            using XmlReader zipped = XmlReader.Create(gzip, Settings(options));
+            return Read(zipped, options);
+        }
+        using XmlReader xml = XmlReader.Create(stream, Settings(options));
+        return Read(xml, options);
     }
 
     /// <summary>Reads a document from a stream (plain or gzip), from its current position. The stream is left open.</summary>
@@ -205,7 +215,10 @@ internal sealed record SvgTree(SvgElement Root, Dictionary<string, SvgElement> I
 /// <summary>An SVG element as read: its local name, its un-namespaced attributes and its SVG children.</summary>
 internal sealed class SvgElement(string name)
 {
-    private Dictionary<string, string>? _attributes;
+    // A few pairs searched in order, not a dictionary: an element has two or three attributes, and a dictionary an
+    // element was a quarter of what reading a large document allocated.
+    private KeyValuePair<string, string>[]? _attributes;
+    private int _attributeCount;
     private List<SvgElement>? _children;
 
     public string Name { get; } = name;
@@ -218,14 +231,42 @@ internal sealed class SvgElement(string name)
     /// <summary>The character data of a <c>style</c> element.</summary>
     public string? Text { get; set; }
 
+    /// <summary>The path of a <c>path</c>, <c>polyline</c> or <c>polygon</c>, once it has been drawn: every instance shares it.</summary>
+    public SharpAstro.VectorGraphics.VectorPath? Path { get; set; }
+
+    /// <summary>The declarations that apply to this element, once worked out against the style sheets.</summary>
+    public SvgDeclaration[]? Cascade { get; set; }
+
     public IReadOnlyList<SvgElement> Children => (IReadOnlyList<SvgElement>?)_children ?? [];
 
-    public IEnumerable<KeyValuePair<string, string>> Attributes => (IEnumerable<KeyValuePair<string, string>>?)_attributes ?? [];
+    public ReadOnlySpan<KeyValuePair<string, string>> Attributes => _attributes.AsSpan(0, _attributeCount);
 
     /// <summary>The attribute's text, or null when the element does not have it.</summary>
-    public string? Get(string attribute) => _attributes is not null && _attributes.TryGetValue(attribute, out string? value) ? value : null;
+    public string? Get(string attribute)
+    {
+        for (int i = 0; i < _attributeCount; i++)
+        {
+            if (_attributes![i].Key == attribute) return _attributes[i].Value;
+        }
+        return null;
+    }
 
-    public void Set(string attribute, string value) => (_attributes ??= new Dictionary<string, string>(StringComparer.Ordinal))[attribute] = value;
+    public void Set(string attribute, string value)
+    {
+        for (int i = 0; i < _attributeCount; i++)
+        {
+            if (_attributes![i].Key == attribute)
+            {
+                _attributes[i] = new KeyValuePair<string, string>(attribute, value);
+                return;
+            }
+        }
+        if (_attributes is null || _attributeCount == _attributes.Length)
+        {
+            Array.Resize(ref _attributes, _attributeCount == 0 ? 4 : _attributeCount * 2);
+        }
+        _attributes[_attributeCount++] = new KeyValuePair<string, string>(attribute, value);
+    }
 
     public void Add(SvgElement child)
     {

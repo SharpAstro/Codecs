@@ -46,12 +46,94 @@ resvg, librsvg and browser sources are not read; renderers are used as programs 
 | 1 | Root size / viewBox / preserveAspectRatio; `g`, `a`; `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`; `transform`; solid fill and stroke, every stroke property; opacity; `display`, `visibility`; presentation attributes and the `style` attribute; SVGZ; limits | shipped 3.35 |
 | 2 | `defs`, `use`, `symbol`, nested `svg`; `linearGradient` / `radialGradient` (with `href` inheritance and `gradientTransform`); `<style>` sheets with the selectors real files use; limits that follow `use` | shipped 3.36 |
 | 3 | `clipPath`, `mask`, the clip of nested viewports, `image` (decoded by the caller or the facade), markers, `paint-order`, `pattern`; a stroker in the test rasteriser | open |
-| 4 | Fonts.Lib reads the OpenType `SVG ` table through this package, and carries the one reference scene rasteriser | open, in Fonts.Lib |
+| 4a | The one scene rasteriser: `SharpAstro.Fonts.Scenes.SceneRasterizer` (fills, strokes, gradients, layers), held against the browser with strokes | written, Fonts.Lib 1.18 |
+| 4b | Fonts.Lib reads the OpenType `SVG ` table through this package | open, in Fonts.Lib |
+| D | SVG in DIR.Lib: `IconBaker.Bake(VectorScene, size)`, `VectorIcon` (read once, rasterise once a size), `bake-icons --svg` | written, DIR.Lib 11.70 |
 | 5 | `text` / `tspan` as text runs, then per-character positioning, then `textPath` | open |
 | 6 | Filters, blend modes | open, only if asked for |
 
 **Not planned until someone asks:** deprecated features (SVG fonts: `<font>` / `<glyph>`, `tref`, `altGlyph`,
 the `cursor` element), animation, scripting.
+
+## All the way to DIR.Lib: how an SVG gets drawn, and what it costs
+
+The goal set for this work: SVG reachable in DIR.Lib, considered against the icon baking that is already there, with
+performance watched and no XML parsed in a frame.
+
+```
+bytes ──SvgReader (Codecs)──► VectorScene ──SceneRasterizer (Fonts.Lib)──► coverage or RGBA
+                                   │                                              │
+                                   └── kept by VectorIcon (DIR.Lib) ──────────────┴─► kept per size, drawn every frame
+```
+
+- **Read once, rasterise once a size, keep both.** `VectorIcon.FromSvg` reads a document and keeps the scene; `Mask(size)`
+  and `Image(w, h)` rasterise on first use and keep the result. Drawing from an icon after that is a dictionary lookup
+  that allocates nothing (a test draws ten thousand frames to hold it there).
+- **It complements icon baking, it does not replace it.** `IconBaker` bakes a glyph to coverage runs drawn as rectangles,
+  for three reasons: it works where the font is not installed, the mark is one colour and takes the ink, and it is
+  identical on every host. An SVG source has all three and needs no font to contain the mark, so `IconBaker` gained a
+  second input and kept its output: `Bake(VectorScene, size)` produces the same runs, drawn by the same
+  `DrawCoverageMask`. Glyph baking and the hand-drawn `IconKind` set are untouched.
+- **For an app's own icons nothing happens at run time at all.** `bake-icons --svg Name=file.svg` reads and rasterises at
+  build time and writes the masks as generated constants.
+- **A scene keeps its own box** where a glyph's ink is centred: the icons of a set share one grid (a 24-unit viewBox with
+  its own margins), and that grid is what aligns them.
+
+**Measured** (arm64, 2026-11-16; `SvgReadBenchmarks`, `--job short`, before and after in one sitting):
+
+| Read | Time before | Time after | Allocated before | Allocated after |
+|---|---|---|---|---|
+| A 294-byte outline icon | 4.2 us | 5.1 us | 23.9 KB | 9.8 KB |
+| A sprite of 200 symbols and 200 uses, with a style sheet | 1.14 ms | 0.94 ms | 1.82 MB | 1.00 MB |
+| A 2 MB drawing of 5,000 paths | 52 ms | 41 ms | 26.7 MB | 11.1 MB |
+
+The allocation figures are exact and are the result: 59%, 45% and 58% less. **The times are not a result.** A short job is
+three iterations, and its error bars here are as wide as the differences (the icon's "before" was 4.2 +- 5.1 us), so they
+say only that nothing got slower by much. Reading an icon and baking it at 20 px takes 0.25 to 0.5 ms (a stopwatch over 100
+runs, in DIR.Lib's tests); drawing from a kept icon is a lookup and allocates nothing.
+
+What the allocation was, in the order it was found:
+
+- **An array for every curve.** `PathBuilder.CubicTo` did `AddRange([c1x, c1y, ...])`, which allocates the collection
+  expression's array each call. Six `Add`s instead.
+- **A dictionary for every element's attributes.** An element has two or three; they are now a small array searched in order.
+- **Two dictionaries keyed by element** (parsed path, cascade result) are now fields on the element.
+- **A list pair for every path being built.** One `PathBuilder` is cleared and reused.
+- **A fill and a stroke object for every shape**, where a drawing has few and repeats them: the one before is reused when it is the same.
+- **The XML reader's buffers**, which were most of an icon's 24 KB. Given a stream that knows its length it sizes them to
+  the document, so the byte-array entry no longer wraps its input in a forward-only stream.
+
+What is left is mostly the XML reader's own (its name table, the attribute strings it must hand over as UTF-16) and the
+scene itself. A hand-written XML tokeniser would cut more, and is not planned: the reader is meant to run once a document.
+
+**What building it found, in other code:**
+
+- **Fonts.Lib's stroker drew round caps and every join into the stroke.** It had only ever stroked thin SHX pen fonts.
+  It was rewritten as a union of convex pieces (a rectangle a segment, a piece a corner, a piece an open end), all wound
+  the same way, which has no inside-of-corner case to get wrong. Found by areas worked out by hand, confirmed by the browser.
+- **Fonts.Lib's radial gradient projection had a sign wrong**, mirroring every gradient whose circles do not share a
+  centre. That is COLR's as well as SVG's: Noto's storm-cloud emoji had lost the glow behind its lightning bolt. Found by an
+  SVG focal gradient against the browser, and the emoji then checked against the browser from the same font.
+- **`SharpAstro.Vector` could not be a namespace** (see `CLAUDE.md`): it hides `System.Numerics.Vector`.
+
+## A more compact form than SVG
+
+Asked for as an option. **The choice: a binary form of the scene itself, not another vector format.**
+
+A `VectorScene` is already everything SVG is after the reading is done: no XML, no CSS, no units, no `use` left to follow.
+Writing it out as versioned binary (verbs, coordinates, paints, transforms) gives a file that loads by copying arrays, at
+a few percent of the cost of a read. It is a cache and bake format owned here, like the SDF glyph disk cache in DIR.Lib,
+not an interchange format.
+
+- **TinyVG and IconVG** are existing compact binary icon formats. They are worth reading only if files must be exchanged
+  with other tools; neither has the tooling SVG has.
+- **Lottie** is the JSON one. It is an animation format, verbose for a still picture, and a rung of its own if animated
+  icons are wanted.
+- **Generated constants** (what `bake-icons` writes) are the most compact of all for an app's fixed icons, because
+  nothing is loaded.
+
+State: decided, not built. It waits for a consumer that loads drawings at run time in numbers that make reading them
+show up; for icons the bake tool already removes the cost.
 
 ## What rung 2 settled
 

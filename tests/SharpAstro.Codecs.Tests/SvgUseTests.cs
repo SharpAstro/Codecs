@@ -197,6 +197,16 @@ public sealed class SvgUseTests
     [InlineData("", "<rect x=\"15\" width=\"10\" height=\"5\"/>", true)]
     [InlineData("", "<rect x=\"1\" y=\"1\" width=\"18\" height=\"8\" stroke=\"red\" stroke-width=\"4\"/>", true)]
     [InlineData("", "<g opacity=\"0.5\"><rect y=\"-3\" width=\"5\" height=\"5\"/><rect width=\"1\" height=\"1\"/></g>", true)]
+    // A thin stroke on a round shape that sits inside: its reach is half its width, not the miter limit's worth.
+    [InlineData("", "<circle cx=\"10\" cy=\"5\" r=\"4\" fill=\"none\" stroke=\"red\" stroke-width=\"1.5\"/>", false)]
+    [InlineData("", "<rect x=\"1\" y=\"1\" width=\"18\" height=\"8\" rx=\"3\" fill=\"none\" stroke=\"red\" stroke-width=\"1.5\"/>", false)]
+    [InlineData("", "<path d=\"M2 5 H18\" stroke=\"red\" stroke-width=\"2\" stroke-linecap=\"round\"/>", false)]
+    // A right-angled corner's miter reaches 1.414 half-widths, which here is past the edge; bevelled, it is not.
+    [InlineData("", "<path d=\"M1.2 9 V1.2 H19\" fill=\"none\" stroke=\"red\" stroke-width=\"2\"/>", true)]
+    [InlineData("", "<path d=\"M1.2 9 V1.2 H19\" fill=\"none\" stroke=\"red\" stroke-width=\"2\" stroke-linejoin=\"bevel\"/>", false)]
+    // A square cap reaches further than half the width (the reach is taken in every direction, so this is the diagonal).
+    [InlineData("", "<path d=\"M1.2 5 H18\" stroke=\"red\" stroke-width=\"2\" stroke-linecap=\"square\"/>", true)]
+    [InlineData("", "<path d=\"M1.2 5 H18\" stroke=\"red\" stroke-width=\"2\"/>", false)]
     // overflow says not to clip.
     [InlineData("overflow=\"visible\"", "<rect x=\"15\" width=\"10\" height=\"5\"/>", false)]
     [InlineData("style=\"overflow: auto\"", "<rect x=\"15\" width=\"10\" height=\"5\"/>", false)]
