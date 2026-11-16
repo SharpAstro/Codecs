@@ -14,7 +14,7 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
-## Unreleased
+## 3.35
 
 **New packages: `SharpAstro.Vector`, a format-neutral vector scene, and `SharpAstro.Svg`, which reads SVG into one.** Neither
 draws: there is no rasteriser and no font code here, and SVG is **not** part of the `SharpAstro.Codecs` pixel facade. The caller

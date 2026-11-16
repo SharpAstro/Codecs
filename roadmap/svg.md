@@ -1,6 +1,6 @@
 # Roadmap: SVG (`SharpAstro.Svg` on `SharpAstro.Vector`)
 
-**Status: rung 1 written, not yet released.** `SharpAstro.Svg` reads paths, basic shapes, transforms, the
+**Status: rung 1 shipped in 3.35.** `SharpAstro.Svg` reads paths, basic shapes, transforms, the
 viewBox, solid paints and stroke properties into a `SharpAstro.Vector.VectorScene`.
 
 ## The design, and why it is not a codec like the others
