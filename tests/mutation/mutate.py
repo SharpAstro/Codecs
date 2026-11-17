@@ -44,8 +44,7 @@ def run(kind, show=False):
     if int(m.group(2)) > 0:
         if show:
             # What failed and why, as the test runner printed it (the lines from each [FAIL] to the next result).
-            for block in out.split('[FAIL]')[1:21]:
-                print('[FAIL]' + block[:1500], flush=True)
+            print(out[max(0, out.find('[FAIL]') - 200):][:20000], flush=True)
         failed = sorted(set(re.findall(r'\]\s+SharpAstro\.[\w.]+\.(\w+\.\w+)[^\n]*\[FAIL\]', out)))
         return 'CAUGHT by %s' % m.group(2), ', '.join(failed)[:300], int(m.group(4))
     return 'MISSED', '%s passed' % m.group(3), int(m.group(4))
