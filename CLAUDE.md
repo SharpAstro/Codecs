@@ -1282,6 +1282,22 @@ Rung 5 (3.39) added text; `roadmap/svg.md` ("What rung 5 settled") has the reaso
   elements, since the order of the two matters there and nowhere else.
 - **Budget**: `MaxTextCharacters`, charged for every instance a `use` makes of a text.
 
+## Mutation checks run in CI, on demand
+
+`tests/mutation/mutate.py` applies one deliberate bug at a time from a list (`tests/mutation/lists/*.py`), rebuilds,
+runs the tests and puts the file back; a bug no test sees is a missing test. Every bug is a build and a test run, so
+**never run a whole list on a working machine** (`--only <part of a name>` for one or two is fine). The whole of it is
+the `Mutation check` workflow (`.github/workflows/mutation.yml`), six shards, started from the Actions tab or by putting
+the label `mutation` on a pull request; it is not part of CI/CD and blocks nothing.
+
+- The workflow puts Fonts.Lib beside this repository (`tests/mutation/sibling.sh`; the branch is the workflow's input,
+  else the one `tests/mutation/siblings` names, else its default), because a reader bug may only show once text is drawn.
+  Fonts.Lib has its own list and the same workflow, and uses this repository's runner.
+- A bug is `(name, file, tests, old, new)`. When the code under one changes the run says NOT APPLIED and fails: update the
+  entry. A new rung's bugs are a new list, written while the code is fresh.
+- The unmutated tests run first in every shard, and the summary prints how many were skipped: a browser test that is
+  skipped catches nothing.
+
 ## Oracle harnesses (all codecs)
 
 There are multiple oracle mechanisms, with different acquisition stories. All of them
