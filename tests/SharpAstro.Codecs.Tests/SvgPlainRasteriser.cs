@@ -84,6 +84,10 @@ internal static class SvgPlainRasteriser
                     if (shape.Fill is { } fill) drawables.Add(new Filled(shape, fill));
                     if (shape.Stroke is { } stroke) drawables.Add(new Stroked(shape, stroke));
                     break;
+                case VectorText:
+                    // Text takes a font, and there is none in this repository: it is drawn, and held against a
+                    // browser, in Fonts.Lib. Here it is left out, and no oracle document of this repository has any.
+                    break;
                 default:
                     throw new NotSupportedException(node.GetType().Name);
             }

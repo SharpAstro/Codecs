@@ -14,6 +14,94 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.39
+
+**`SharpAstro.Svg` rung 5: text.** `text`, `tspan` and `textPath` are read into the scene as what they say: which
+characters, in which font, where. Nothing is laid out and no font is known here; Fonts.Lib 1.21 lays it out and draws it
+with the caller's fonts, and that is where it is held against a browser.
+
+- **`SharpAstro.Vector`**: new node `VectorText` (spans in reading order, a transform, an optional `TextLength`). A
+  `VectorTextSpan` is a string with a `VectorFont` (family names in order, size, weight, slant, stretch), a fill and a
+  stroke, `Anchor`, `Baseline`, `BaselineShift`, `ScriptRise`, letter and word spacing, the sets of lines it is under
+  (`VectorTextLine`), what the source says about single characters (`VectorTextPosition`: an absolute x or y, shifts, a
+  turn) and the path it is set along (`VectorTextPath`). **A renderer written for 3.38 must learn this node**; one that
+  refuses what it does not know will refuse a drawing with text in it.
+- **White space** is handled by the reader, since it needs no font and decides which characters there are: a tab and a line
+  end are a space, runs collapse across elements, the text's ends are trimmed; `xml:space="preserve"` and CSS
+  `white-space` keep everything.
+- **Fonts**: `font-family` (a list, quotes and generic names as written), `font-size` (lengths, percentages, the keywords),
+  `font-weight` (numbers, `bold`, `bolder`, `lighter`), `font-style`, `font-stretch`, and the `font` shorthand.
+- **Placing**: `x`, `y`, `dx`, `dy` and `rotate` as lists, one value a character, counted over the characters that are left
+  after white space and `display: none`; `text-anchor`; `letter-spacing` and `word-spacing`; `textLength` and
+  `lengthAdjust` on a `text`.
+- **Baselines**: `dominant-baseline` (eight of them), `alignment-baseline`, `baseline-shift` as a length or a percentage of
+  the font size, and `sub` / `super` carried as the size they are for.
+- **`text-decoration`**: underline, overline and line-through, as sets of lines in the paints of the element that asked for
+  them, shared by every span under them.
+- **Paints** on text as on shapes, `paint-order` included. A gradient in bounding-box units is left in the unit square and
+  marked (`FillInBox` / `StrokeInBox`), to be placed by whoever knows the box of the laid-out text.
+- **`textPath`**: along a `path` or a basic shape (with its transform) or the `textPath`'s own `path` data, with
+  `startOffset` as a length or a share of the path, and `side`.
+- **`VectorSceneFile` version 3** holds text. Versions 1 and 2 are still read.
+- **New limit:** `SvgReadOptions.MaxTextCharacters` (2^24), counted for every instance a `use` makes.
+- **Changed:** `text` no longer appears in `SvgDocument.Issues` as an unsupported element. What text can ask for and this
+  reader does not give does: vertical and right-to-left text, `font-variant`, `inline-size`, `tref`, a `textLength` on a
+  `tspan`, a colour or style of its own for a decoration, a pattern in bounding-box units on text, a clip or a mask in the
+  units of a text's box.
+- **Changed:** white space between tags is no longer dropped by the XML reader. It is kept only inside `text`, so nothing
+  else reads differently.
+- **Tests.** `SvgTextTests` holds what the scene says for a document, 60 cases. There is no font in this repository, so
+  there are no pixels of text here: the same reader is held against a headless browser in Fonts.Lib
+  (`SceneTextBrowserTests`), which is where its white-space rules, position lists and baselines were checked, and where
+  four of them were first wrong (the paint and place of a decoration, `dominant-baseline: auto` inside another baseline, a
+  `y` for a character on a path, an `x` on a `textPath`).
+- **Mutation-checked, in CI:** 40 deliberate bugs in the reader's text code and the scene file, one at a time
+  (`tests/mutation/lists/svg-text.py`). 36 were caught at once. Four were not, each for want of a test, now written: a
+  position's index counted in characters where it is a UTF-16 offset, `letter-spacing` in ems of 16 where it is ems of
+  the element's font size, a scene file whose character positions are out of order, and a scene file that gives every
+  span the first text path. One more was found to change nothing (a second check of a flag its caller reads) and was
+  replaced. Not run: the text budget switched off, whose test then reads what it was built to refuse (it shut the CI
+  runner down for want of memory).
+- **Mutation checks are a workflow now** (`.github/workflows/mutation.yml`, `tests/mutation/`): started from the Actions
+  tab or by the label `mutation` on a pull request, six shards, never part of CI/CD. Fonts.Lib has its own list and uses
+  this repository's runner.
+
+## 3.38
+
+**`SharpAstro.Svg` rung 4: entities, CSS custom properties, and what a font needs to draw the glyphs of an OpenType `SVG `
+table.** Nothing about fonts is in the reader: a glyph is asked for through three general options, and Fonts.Lib 1.20 is
+what asks.
+
+- **Entities a document declares are expanded** (the internal subset of its DOCTYPE), where 3.37 refused any document that
+  used one. Some Adobe Illustrator exports write their namespace and every style as an entity. What entities expand to is
+  bounded in total by the new `SvgReadOptions.MaxEntityCharacters` (2^22): ten nested entities of ten ask for 10^10
+  characters from 400 bytes and are refused at once.
+- **Nothing outside the document is loaded, as before.** An entity kept in another file (`SYSTEM`, `PUBLIC`) is never read:
+  it stands for nothing, and the document's issues now say so ("an entity kept in another file"), whether it is used or not.
+- **CSS custom properties and `var()`**, for every document: declared in a style sheet or a `style` attribute, inherited,
+  used in any property the reader reads (presentation attributes too), with fallbacks that may hold commas and another
+  `var()`. A property that leads back to itself is not declared; a `var()` with no value and no fallback leaves the inherited
+  value, not the declaration it beat (and is listed as an issue). What `var()` puts into values is bounded by `MaxCharacters`.
+- **`SvgReadOptions.CustomProperties`**: custom properties the surroundings define, as an ancestor of the root would.
+- **`SvgReadOptions.CurrentColor`**: what `currentColor` is where the document sets no `color`. Black when not given, as
+  before.
+- **`SvgReadOptions.ElementId`**: draw only the element with this id, as a `use` of it standing alone in the root (its own
+  transform and properties, the root's, and nothing from the groups it stands in). This is the OpenType specification's
+  definition of a glyph's picture in a document that holds several. The root asked for by its id is the whole document.
+- **`SvgReader.Read(ReadOnlyMemory<byte>)`** reads a part of a larger array without copying it.
+- **Changed:** a gradient stop's `currentColor` is the `color` it inherits where it stands in the document (its own, its
+  gradient's, an ancestor's, the caller's). Before, it was the stop's own `color` or black.
+- **Changed:** the geometry properties SVG 2 lets CSS set (`width`, `height`, `x`, `y`, `cx`, `cy`, `r`, `rx`, `ry`) are
+  still read as attributes only, but written in a `style` attribute or a sheet they are now listed in `SvgDocument.Issues`
+  as unsupported. They were passed over silently.
+- **Tests.** A `custom-properties` document joins the browser oracle (38 documents): eighteen cases of `var()`, all as the
+  browser draws them on the first run. One element by id is held equal, node for node, to the scene of the document the
+  OpenType specification writes out for it. The glyphs themselves are tested in Fonts.Lib, against Firefox and against
+  Chrome.
+- **Mutation-checked:** 19 deliberate bugs in the reader, one at a time. 17 were caught at once. Two were not, for want of a
+  test, and each has one now: a name that only ends in `var(`, and a `symbol` asked for by its id. Not run, deliberately: the
+  entity and the `var()` budgets removed, whose tests would then ask for 10^10 and 2^40 characters.
+
 ## 3.37
 
 **`SharpAstro.Svg` rung 3: clips, masks, markers, `paint-order`, images and patterns.** The scene model gains what they need,

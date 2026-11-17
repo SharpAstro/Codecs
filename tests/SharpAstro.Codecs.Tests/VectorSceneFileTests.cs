@@ -14,7 +14,8 @@ public sealed class VectorSceneFileTests
     /// <summary>
     /// One of everything a scene can hold: both gradients, strokes with dashes, groups in groups, ids, a shared path, and
     /// since version 2 a clip (with a clip on one outline and one it intersects), both kinds of mask, a pattern with a
-    /// pattern in it, an embedded image and one that is only named.
+    /// pattern in it, an embedded image and one that is only named; since version 3 text (spans in several fonts, single
+    /// characters placed and turned, a gradient in the text's own box, a pattern, lines of two elements, a superscript, a length, two spans along one path).
     /// </summary>
     private static readonly string Everything =
         "<defs><linearGradient id=\"l\" x2=\"0.25\" spreadMethod=\"reflect\" gradientTransform=\"rotate(30)\"><stop offset=\"0\" stop-color=\"#036\"/><stop offset=\"0.5\" stop-color=\"#fc0\" stop-opacity=\"0.5\"/><stop offset=\"1\" stop-color=\"#f00\"/></linearGradient>" +
@@ -33,7 +34,12 @@ public sealed class VectorSceneFileTests
         "<g id=\"clipped\" clip-path=\"url(#c)\" mask=\"url(#lum)\" opacity=\"0.9\"><rect width=\"60\" height=\"60\" fill=\"url(#tiles)\" stroke=\"url(#dots)\" stroke-width=\"3\"/></g>" +
         "<circle cx=\"30\" cy=\"30\" r=\"12\" mask=\"url(#alpha)\"/>" +
         $"<image id=\"embedded\" x=\"3\" y=\"4\" width=\"20\" height=\"10\" preserveAspectRatio=\"xMaxYMin slice\" opacity=\"0.5\" transform=\"rotate(5)\" href=\"{SvgBrowserOracleTests.Picture()}\"/>" +
-        "<image id=\"named\" width=\"8\" height=\"8\" preserveAspectRatio=\"none\" href=\"https://example.org/a%20picture.png\"/>";
+        "<image id=\"named\" width=\"8\" height=\"8\" preserveAspectRatio=\"none\" href=\"https://example.org/a%20picture.png\"/>" +
+        "<text id=\"words\" x=\"5 9\" y=\"60\" dx=\"0 0 1.5\" rotate=\"0 10 20\" textLength=\"70\" lengthAdjust=\"spacingAndGlyphs\" transform=\"rotate(3)\" " +
+        "font-family=\"'DejaVu Sans', Helvetica, sans-serif\" font-size=\"12\" font-weight=\"bold\" font-style=\"italic\" font-stretch=\"condensed\" " +
+        "fill=\"url(#l)\" stroke=\"url(#dots)\" stroke-width=\"0.5\" paint-order=\"stroke\" letter-spacing=\"0.5\" word-spacing=\"2\" text-decoration=\"underline line-through\">" +
+        "Ab \U0001F600<tspan dy=\"-3\" font-size=\"8\" fill=\"#c00\" text-anchor=\"end\" dominant-baseline=\"hanging\" baseline-shift=\"2\" visibility=\"hidden\" text-decoration=\"overline\">cd</tspan> e</text>" +
+        "<text id=\"round\" font-family=\"serif\" font-size=\"6\" text-anchor=\"middle\"><textPath href=\"#shared\" startOffset=\"25%\" side=\"right\">along <tspan fill=\"blue\">it</tspan></textPath> after<tspan baseline-shift=\"super\" font-size=\"4\">2</tspan></text>";
 
     [Fact]
     public void AScene_ComesBackExactlyAsItWasWritten()
@@ -47,6 +53,10 @@ public sealed class VectorSceneFileTests
         [
             "linear ", "radial ", "Reflect", "Repeat", "group id=outer", "group id=inner", "dashes=[4 2 1 4 2 1]", "EvenOdd", "Round", "Bevel", "Square", " Q ", " C ",
             "group id=clipped opacity=0.9", "clip\n", "within\n", "intersect\n", "outline EvenOdd", "mask Luminance", "mask Alpha", "pattern tile=", "fill(pattern tile=", "stroke(pattern tile=",
+            "text id=words", "length=70 SpacingAndGlyphs", "span \"Ab \U0001F600\" font=[DejaVu Sans, Helvetica, sans-serif] 12 w=700 Italic 75% Start Alphabetic letter=0.5 word=2",
+            "line#0(Underline, LineThrough fill(linear", "line#1(Overline fill(solid", "rise=4",
+            "in-box)", "first)", "@0(x=5 y=60)", "@1(x=9 turn=10)", "@3(turn=20)", "span \"cd\" font=[DejaVu Sans, Helvetica, sans-serif] 8 w=700 Italic 75% End Hanging shift=2",
+            " hidden line#0(", "@0(dy=-3 turn=20)", "text id=round", "along#0(", "start=0.25 of the length right)", "span \"it\"", "span \" after\"",
             "<shape id=(none)", "image id=embedded", "Slice align=1,0 opacity=0.5 type=image/png source=(none) bytes=", "image id=named", "Stretch", "source=https://example.org/a%20picture.png bytes=0",
         ])
         {
@@ -163,6 +173,49 @@ public sealed class VectorSceneFileTests
     // ---- Bytes that are not to be trusted ------------------------------------------------------------------------
 
     [Fact]
+    public void SpansOnTwoPaths_EachComeBackOnTheirOwn()
+    {
+        // The file holds each path text is set along once and a span says which: with one path in a scene, "the
+        // first" and "the right one" are the same, so this scene has two, and the second is used first.
+        VectorScene scene = Doc(
+            "<defs><path id=\"p\" d=\"M 0 10 H 90\"/><path id=\"q\" d=\"M 5 40 V 90\"/></defs>" +
+            "<text><textPath href=\"#q\">down<tspan fill=\"red\">red</tspan></textPath><textPath href=\"#p\">along</textPath></text>").Scene;
+        VectorText back = VectorSceneFile.Read(VectorSceneFile.Write(scene)).Nodes.ShouldHaveSingleItem().ShouldBeOfType<VectorText>();
+        back.Spans.Length.ShouldBe(3);
+        back.Spans[0].Path.ShouldNotBeNull().Path.TryGetBounds(out VectorRect first).ShouldBeTrue();
+        back.Spans[2].Path.ShouldNotBeNull().Path.TryGetBounds(out VectorRect second).ShouldBeTrue();
+        (first.X, first.Y, first.Height).ShouldBe((5f, 40f, 50f));
+        (second.X, second.Y, second.Width).ShouldBe((0f, 10f, 90f));
+        // And the two spans of one textPath hold one object again.
+        back.Spans[1].Path.ShouldBeSameAs(back.Spans[0].Path);
+        back.Spans[2].Path.ShouldNotBeSameAs(back.Spans[0].Path);
+        Dump(VectorSceneFile.Read(VectorSceneFile.Write(scene))).ShouldBe(Dump(scene));
+    }
+
+    [Theory]
+    [InlineData(2, 1)]      // going back
+    [InlineData(1, 1)]      // the same character twice
+    public void CharacterPositionsOutOfOrder_AreRefused(int first, int second)
+    {
+        // Whoever lays text out walks the characters and their positions together, so a file is held to the order the
+        // reader gives them in. Nothing checks a scene built by hand when it is written: the file is where it is caught.
+        var span = new VectorTextSpan
+        {
+            Text = "abc",
+            Font = new VectorFont(["T"], 10),
+            Positions = [new VectorTextPosition(first, 1, null, 0, 0, 0), new VectorTextPosition(second, 2, null, 0, 0, 0)],
+        };
+        byte[] bytes = VectorSceneFile.Write(new VectorScene(10, 10, [new VectorText { Spans = [span] }]));
+        Should.Throw<InvalidDataException>(() => VectorSceneFile.Read(bytes));
+
+        // In order, the same scene comes back.
+        var inOrder = span with { Positions = [new VectorTextPosition(1, 1, null, 0, 0, 0), new VectorTextPosition(2, 2, null, 0, 0, 0)] };
+        VectorText back = VectorSceneFile.Read(VectorSceneFile.Write(new VectorScene(10, 10, [new VectorText { Spans = [inOrder] }])))
+            .Nodes.ShouldHaveSingleItem().ShouldBeOfType<VectorText>();
+        back.Spans[0].Positions.Select(position => position.Index).ShouldBe([1, 2]);
+    }
+
+    [Fact]
     public void EveryTruncation_IsRefused_AndNeverByAnythingButInvalidData()
     {
         byte[] bytes = VectorSceneFile.Write(Doc(Everything).Scene);
@@ -221,7 +274,7 @@ public sealed class VectorSceneFileTests
     [InlineData(new byte[0], "does not start with")]
     [InlineData(new byte[] { (byte)'S', (byte)'A', (byte)'V' }, "does not start with")]
     [InlineData(new byte[] { (byte)'<', (byte)'s', (byte)'v', (byte)'g', 0, 0, 0, 0 }, "does not start with")]
-    [InlineData(new byte[] { (byte)'S', (byte)'A', (byte)'V', (byte)'S', 3, 0, 0, 0 }, "version 3")]
+    [InlineData(new byte[] { (byte)'S', (byte)'A', (byte)'V', (byte)'S', 4, 0, 0, 0 }, "version 4")]
     [InlineData(new byte[] { (byte)'S', (byte)'A', (byte)'V', (byte)'S', 0, 0, 0, 0 }, "version 0")]
     public void WhatIsNotASceneFileOfThisVersion_IsRefused(byte[] data, string message)
     {

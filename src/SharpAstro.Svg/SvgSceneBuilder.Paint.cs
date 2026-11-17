@@ -377,12 +377,30 @@ internal sealed partial class SvgSceneBuilder
 
             // stop-color and stop-opacity are properties: attribute, sheet or style, the last one standing wins.
             var color = new Rgba32(0, 0, 0);
-            Rgba32 current = new(0, 0, 0);
             double opacity = 1;
             bool currentColor = false;
+            // What the stop inherits (its colour, its custom properties) comes from where it stands in the document.
+            // Worked out only for a stop that asks, since few do, and before its declarations are gone through: working
+            // out a style reuses the list they are in.
+            bool asks = false;
             foreach (SvgDeclaration declaration in Cascade(stop))
             {
-                ReadOnlySpan<char> v = declaration.Value.AsSpan().Trim();
+                asks |= declaration.Name is "stop-color" or "stop-opacity"
+                    && (HasVar(declaration.Value) || declaration.Value.Contains("currentColor", StringComparison.OrdinalIgnoreCase));
+            }
+            SvgStyle inherited = asks ? ComputeStyle(stop, InheritedStyle(gradient, default), default) : default;
+            foreach (SvgDeclaration declaration in Cascade(stop))
+            {
+                string raw = declaration.Value;
+                if (declaration.Name is "stop-color" or "stop-opacity" && HasVar(raw) && !TrySubstitute(raw, inherited.Variables, null, 0, out raw))
+                {
+                    // Unusable once looked up: the initial value, black and opaque.
+                    Issue(SvgIssueKind.Invalid, "var() with no value and no fallback");
+                    if (declaration.Name == "stop-color") (color, currentColor) = (new Rgba32(0, 0, 0), false);
+                    else opacity = 1;
+                    continue;
+                }
+                ReadOnlySpan<char> v = raw.AsSpan().Trim();
                 switch (declaration.Name)
                 {
                     case "stop-color":
@@ -399,12 +417,9 @@ internal sealed partial class SvgSceneBuilder
                             opacity = 1;
                         }
                         break;
-                    case "color":
-                        if (SvgColor.TryParse(v, out Rgba32 own)) current = own;
-                        break;
                 }
             }
-            if (currentColor) color = current;
+            if (currentColor) color = inherited.Color;
             byte alpha = (byte)Math.Clamp(Math.Round(color.A * opacity, MidpointRounding.AwayFromZero), 0, 255);
             stops.Add(new GradientStop((float)offset, color with { A = alpha }));
         }

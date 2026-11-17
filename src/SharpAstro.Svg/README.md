@@ -64,21 +64,60 @@ honoured. `:hover` and the like never match. `@media` rules with plain media typ
 Each of these is left out of the scene and reported in `SvgDocument.Issues`
 (`SvgReadOptions.ThrowOnUnsupported` makes the first one an exception):
 
-- `text`, `switch`, `foreignObject`
+- `switch`, `foreignObject`
+- in text: vertical writing and text from right to left (drawn as horizontal, left-to-right text), `font-variant`,
+  wrapping to a width (`inline-size`), `tref`, `textLength` on a `tspan`, a colour or style of its own for a
+  `text-decoration`; a pattern, a clip or a mask in the units of a text's bounding box
 - `filter`, `mix-blend-mode`, `vector-effect`
 - an `image` with no `width` or `height` (its size would be the picture's own, which is only known once it is
   decoded), and an `image` that is itself an SVG document
 - a `clip-path` or `mask` that is not a reference to an element (`inset(...)`, a CSS mask image); text in a `clipPath`
 - `context-fill` and `context-stroke` in a marker
 - references to elements of other documents; `transform` written as a CSS property; animation
+- geometry written as a CSS property (`width`, `height`, `x`, `y`, `cx`, `cy`, `r`, `rx`, `ry` in a sheet or a
+  `style` attribute): it is read from attributes only
+- an XML entity kept in another file (`SYSTEM`, `PUBLIC`): it is never loaded and stands for nothing
 
-XML entities are not expanded and nothing outside the document is fetched; a document that relies on an entity
-it declares itself (some Adobe Illustrator exports do) is refused with `InvalidDataException`.
+Entities a document declares itself are expanded (some Adobe Illustrator exports write their namespace and every
+style as one). Nothing outside the document is fetched.
+
+## Text
+
+`text`, `tspan` and `textPath` become one `VectorText` node: spans in reading order, each a string with the font it
+asks for (`VectorFont`: family names, size, weight, slant, stretch), its paints, its anchor, baseline, spacing and
+lines, and whatever `x`, `y`, `dx`, `dy` and `rotate` say about single characters. White space is already handled.
+
+**It is not laid out, and no font is read**: this package has none. Whoever draws the scene shapes each span with its
+own fonts and places the result as the spans say. `SharpAstro.Fonts` does exactly that (`SceneText`,
+`SceneRasterizer` with `SceneRenderOptions.ShapeText`), and `DIR.Lib` supplies the machine's fonts (`SceneFonts`).
+
+## What a document takes from its surroundings
+
+`SvgReadOptions` carries three things a document cannot know by itself. Together they are what a font needs to
+draw the glyphs of an OpenType `SVG ` table, and none of them is about fonts:
+
+- `CurrentColor`: what `currentColor` is where the document sets no `color` (the colour of the text around it).
+- `CustomProperties`: CSS custom properties, as an ancestor of the root would declare them, for the document's
+  `var()` to find. A document's own declarations win.
+- `ElementId`: draw only the element with this id, as a `use` of it standing alone in the root. Its own transform and
+  properties apply and so do the root's; the groups it stands in give it nothing.
+
+```csharp
+var options = new SvgReadOptions
+{
+    ElementId = "glyph14",
+    ViewportWidth = 1000, ViewportHeight = 1000,           // the em square
+    CurrentColor = new Rgba32(32, 32, 32),
+    CustomProperties = new Dictionary<string, string> { ["--color0"] = "#c02020" },
+};
+VectorScene glyph = SvgReader.Read(documentBytes, options).Scene;   // a part of a larger array is not copied
+```
 
 ## Limits
 
-`SvgReadOptions` bounds the characters of XML (after gzip), the elements, the nesting depth, the path segments
-and the selector tests the style sheets cost. `use` can make a small document describe a very large drawing, so
+`SvgReadOptions` bounds the characters of XML (after gzip), what its entities expand to, the elements, the
+nesting depth, the path segments and the selector tests the style sheets cost. What `var()` puts into property
+values is bounded by the character limit too: a custom property can hold another twice. `use` can make a small document describe a very large drawing, so
 elements, depth and path segments are counted for every instance a `use` makes: forty lines of nested `use`
 elements asking for 2^40 rectangles are refused when the count passes `MaxElements`. The same holds for every
 marker on every vertex, every use of a mask or a clip, and every use of a pattern (a pattern is worked out once,

@@ -15,6 +15,12 @@ internal sealed partial class SvgSceneBuilder
 
     private PathBuilder? _boundsScratch;
 
+    /// <summary>Set by <see cref="BoundsOf"/> when what it measured holds text, whose box is not known here.</summary>
+    private bool _textInBounds;
+
+    /// <summary>While a clip or a mask is worked out: whether the box it would be in the units of is that of text.</summary>
+    private bool _boxOfText;
+
     /// <summary>Scratch for measuring a turned outline. Made when first needed: most documents clip and mask nothing.</summary>
     private PathBuilder _boundsBuilder => _boundsScratch ??= new PathBuilder();
 
@@ -25,7 +31,7 @@ internal sealed partial class SvgSceneBuilder
     /// </summary>
     private SvgStyle InheritedStyle(SvgElement element, in SvgViewport viewport)
     {
-        SvgStyle parent = element.Parent is { } above ? InheritedStyle(above, viewport) : SvgStyle.Initial;
+        SvgStyle parent = element.Parent is { } above ? InheritedStyle(above, viewport) : _initial;
         SvgStyle style = ComputeStyle(element, parent, viewport);
         style.Display = true;
         return style;
@@ -48,7 +54,10 @@ internal sealed partial class SvgSceneBuilder
     {
         if (!Matrix3x2.Invert(user.ToMatrix(), out Matrix3x2 toUser)) return null;
         var extent = new Extent();
+        _textInBounds = false;
         foreach (VectorNode node in nodes) Include(node, toUser, extent);
+        // With text among them the box of the rest is not the box of the whole.
+        if (_textInBounds) return null;
         return extent.Any ? new VectorRect(extent.Left, extent.Top, extent.Right - extent.Left, extent.Bottom - extent.Top) : null;
     }
 
@@ -83,6 +92,12 @@ internal sealed partial class SvgSceneBuilder
 
             case VectorImage image:
                 extent.Add(image.Bounds, image.Transform * toUser);
+                break;
+
+            case VectorText:
+                // The box of text is the box of its glyphs, and a scene has none. Whatever asks for this box in earnest
+                // (a clip or a mask in its units) is told that it is not known.
+                _textInBounds = true;
                 break;
 
             case VectorShape shape:
@@ -168,6 +183,12 @@ internal sealed partial class SvgSceneBuilder
                 case null or "userSpaceOnUse":
                     break;
                 case "objectBoundingBox":
+                    if (_boxOfText)
+                    {
+                        // Not "no region": the box is there, it is only not known here. The text is drawn unclipped.
+                        Issue(SvgIssueKind.Unsupported, "a clip in the units of a text's bounding box");
+                        return null;
+                    }
                     if (BoxUnits(box) is not { } units) return NoRegion;
                     matrix *= units;
                     break;
@@ -292,11 +313,26 @@ internal sealed partial class SvgSceneBuilder
                 default: Issue(SvgIssueKind.Invalid, "maskContentUnits"); break;
             }
             SvgAffine? units = BoxUnits(box);
-            if ((regionInBox || contentInBox) && units is null) return NoPicture;
+            bool unbounded = false;
+            if (_boxOfText && (regionInBox || contentInBox))
+            {
+                // The box is that of text, which is not known here. A picture in its units cannot be placed, and the
+                // text is drawn unmasked; an area in its units (the default) is only left out, and the picture masks.
+                Issue(SvgIssueKind.Unsupported, "a mask in the units of a text's bounding box");
+                if (contentInBox) return null;
+                unbounded = true;
+            }
+            else if ((regionInBox || contentInBox) && units is null)
+            {
+                return NoPicture;
+            }
 
             // The area the mask covers: outside it nothing is kept, whatever the content draws there.
-            double x, y, w, h;
-            if (regionInBox)
+            double x = 0, y = 0, w = 1, h = 1;
+            if (unbounded)
+            {
+            }
+            else if (regionInBox)
             {
                 VectorRect b = box!.Value;
                 x = b.X + Fraction("x", -0.1) * b.Width;
@@ -330,7 +366,7 @@ internal sealed partial class SvgSceneBuilder
                 Walk(child, style, contentMatrix, viewport, content, depth + 1);
             }
             if (content.Count == 0) return NoPicture;
-            if (ReachesOutside(content, 0, user, x, y, w, h)) ClipToRectangle(content, 0, user, x, y, w, h);
+            if (!unbounded && ReachesOutside(content, 0, user, x, y, w, h)) ClipToRectangle(content, 0, user, x, y, w, h);
 
             // A mask property on the mask element itself does nothing (measured in a browser), unlike a clip-path on a clipPath.
             return new VectorMask { Children = [.. content], Kind = kind };

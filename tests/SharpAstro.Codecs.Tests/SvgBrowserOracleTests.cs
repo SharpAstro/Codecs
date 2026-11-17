@@ -52,6 +52,7 @@ public sealed class SvgBrowserOracleTests
                 "<rect width=\"60\" height=\"30\" fill=\"#ddd\"/><circle cx=\"30\" cy=\"15\" r=\"12\" fill=\"gray\"/>");
             foreach ((string name, string root, string body) in Rung2) documents.Add(name, root, body);
             foreach ((string name, string root, string body) in Rung3) documents.Add(name, root, body);
+            foreach ((string name, string root, string body) in Rung4) documents.Add(name, root, body);
             return documents;
         }
     }
@@ -390,8 +391,48 @@ public sealed class SvgBrowserOracleTests
             """),
     ];
 
+    /// <summary>
+    /// Custom properties and <c>var()</c>, one case a 25 x 25 cell. What the document declares for itself is all a browser
+    /// can be asked about: what the surroundings give (a font's palette) arrives the same way, as an ancestor's would.
+    /// Two cells have a <c>var()</c> with nothing to find, so issues are expected.
+    /// </summary>
+    internal static readonly (string Name, string Root, string Body)[] Rung4 =
+    [
+        ("custom-properties", "width=\"150\" height=\"75\"", """
+            <style>
+            :root { --a: #c00; --o: 0.4; --w: 4 }
+            .s { --b: #06c }
+            .u { fill: var(--b, #080) }
+            #deep { --a: var(--b) }
+            .loop { --x: var(--y); --y: var(--x) }
+            .case { --A: #808 }
+            </style>
+            <defs><linearGradient id="g" style="--mid: #fd0">
+            <stop offset="0" stop-color="var(--a)"/><stop offset="0.5" stop-color="var(--mid)"/>
+            <stop offset="1" stop-color="var(--nothing, #06c)" stop-opacity="var(--o)"/></linearGradient></defs>
+            <rect x="2" y="2" width="21" height="21" fill="var(--a)"/>
+            <g class="s"><rect x="27" y="2" width="21" height="21" class="u"/></g>
+            <rect x="52" y="2" width="21" height="21" class="u"/>
+            <rect x="77" y="2" width="21" height="21" fill="red" style="fill: var(--nobody)"/>
+            <g fill="#fa0"><rect x="102" y="2" width="21" height="21" fill="red" style="fill: var(--nobody)"/></g>
+            <g class="s" id="deep"><rect x="127" y="2" width="21" height="21" fill="var(--a)"/></g>
+            <rect x="2" y="27" width="21" height="21" fill="url(#g)" style="--mid: #000; --a: #000"/>
+            <rect x="29" y="29" width="17" height="17" fill="none" stroke="var(--a)" stroke-width="var(--w)"/>
+            <g class="loop"><rect x="52" y="27" width="21" height="21" fill="var(--x, #080)"/></g>
+            <g class="case"><rect x="77" y="27" width="21" height="21" fill="var(--A, #06c)"/><rect x="77" y="27" width="10" height="21" fill="var(--a, #06c)"/></g>
+            <rect x="102" y="27" width="21" height="21" fill="#06c" opacity="var(--o)"/>
+            <g style="color: var(--a)"><rect x="127" y="27" width="21" height="21" fill="currentColor"/></g>
+            <rect x="2" y="52" width="21" height="21" fill="var(--b, var(--c, var(--a)))"/>
+            <g style="--v: 0.4"><rect x="27" y="52" width="21" height="21" fill="#080" fill-opacity="0.9" style="fill-opacity: var(--v)"/></g>
+            <rect x="52" y="52" width="21" height="21" style="--p: #06c; fill: var(--p)"/>
+            <rect x="77" y="52" width="21" height="21" fill="var(--a) "/>
+            <rect x="102" y="52" width="21" height="21" fill="var(--a, )"/>
+            <rect x="127" y="52" width="21" height="21" style="--q: var(--a); --a: #080; fill: var(--q)"/>
+            """),
+    ];
+
     /// <summary>Documents that are in error on purpose: their issues are not required to be empty.</summary>
-    private static readonly HashSet<string> InError = ["use-cycles", "rung3-edges"];
+    private static readonly HashSet<string> InError = ["use-cycles", "rung3-edges", "custom-properties"];
 
     /// <summary>The page, rendered once for the whole class.</summary>
     private static readonly Lazy<Dictionary<string, (int Width, int Height, byte[] Rgb)>> Rendered = new(RenderAll);

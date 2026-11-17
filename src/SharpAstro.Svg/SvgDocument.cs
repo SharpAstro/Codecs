@@ -68,8 +68,36 @@ public sealed record SvgReadOptions
     /// <summary>Throw <see cref="NotSupportedException"/> at the first <see cref="SvgIssueKind.Unsupported"/> issue, where the default is to record it.</summary>
     public bool ThrowOnUnsupported { get; init; }
 
+    /// <summary>
+    /// Draw only the element with this <c>id</c>, as a <c>use</c> of it standing alone in the root would: its own
+    /// properties and transform apply, its ancestors' do not, and whatever it refers to is found in the rest of the
+    /// document. This is how the OpenType <c>SVG </c> table names a glyph (<c>glyph14</c>) in a document that holds
+    /// several. When the root itself has the id the whole document is drawn. No such element is an
+    /// <see cref="SvgIssueKind.Invalid"/> issue and an empty scene.
+    /// </summary>
+    public string? ElementId { get; init; }
+
+    /// <summary>
+    /// What <c>currentColor</c> is where the document sets no <c>color</c>: the colour of the text around the
+    /// picture. Black when not given.
+    /// </summary>
+    public Rgba32 CurrentColor { get; init; } = new(0, 0, 0);
+
+    /// <summary>
+    /// CSS custom properties the surroundings define, by name with the two dashes (<c>--color0</c>), for the
+    /// document's <c>var()</c> to find. A font's palette reaches its glyphs this way. The document's own declarations
+    /// win over these, as they would over an ancestor's.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? CustomProperties { get; init; }
+
     /// <summary>The most characters the XML may hold, after any gzip is undone. Default 2^26.</summary>
     public long MaxCharacters { get; init; } = 1L << 26;
+
+    /// <summary>
+    /// The most characters the entities a document declares may expand to, in total. A document chooses how often an
+    /// entity is used and what is in it, so this, not its size, is what bounds the expansion. Default 2^22.
+    /// </summary>
+    public long MaxEntityCharacters { get; init; } = 1L << 22;
 
     /// <summary>
     /// The most elements the document may hold, and the most it may draw once every <c>use</c> is followed: an element
@@ -82,6 +110,9 @@ public sealed record SvgReadOptions
 
     /// <summary>The most path verbs the scene may hold in total, each instance a <c>use</c> makes counted. Default 2^24.</summary>
     public int MaxPathVerbs { get; init; } = 1 << 24;
+
+    /// <summary>The most characters of text the scene may hold in total, each instance a <c>use</c> makes counted. Default 2^24.</summary>
+    public long MaxTextCharacters { get; init; } = 1L << 24;
 
     /// <summary>
     /// The most selector tests the style sheets may cost. Applying a sheet is elements times rules, and a document

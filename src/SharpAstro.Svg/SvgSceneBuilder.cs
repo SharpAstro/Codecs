@@ -38,6 +38,36 @@ internal struct SvgStyle
     public FillRule ClipRule;
     public SvgElement? MarkerStart, MarkerMid, MarkerEnd;
 
+    // Text. All inherited: a tspan writes in its text's font unless it says otherwise.
+    public ImmutableArray<string> FontFamilies;
+    public int FontWeight;
+    public FontSlant FontSlant;
+    public double FontStretch;
+    public TextAnchor TextAnchor;
+    public double LetterSpacing, WordSpacing;
+    public TextBaseline Baseline;
+
+    /// <summary>
+    /// The lines drawn with the text, outermost first: one entry for each element, this one or one it is inside of,
+    /// that asked for any. An entry keeps that element's whole style, because its lines are drawn in its paints.
+    /// </summary>
+    public SvgTextLines[]? Lines;
+
+    /// <summary>How far the baseline has been raised, by this element and by those it is inside of.</summary>
+    public double BaselineShift;
+
+    /// <summary>The font sizes of the superscripts this element is in (itself included), less those of the subscripts.</summary>
+    public double ScriptRise;
+
+    /// <summary>What CSS <c>white-space</c> says about collapsing, when it says anything; otherwise <c>xml:space</c> decides.</summary>
+    public bool? PreserveWhiteSpace;
+
+    /// <summary>
+    /// The custom properties (<c>--name</c>) in force, each with its own <c>var()</c> already replaced. One dictionary
+    /// is shared down the tree until an element declares one, which copies it. Null when there are none.
+    /// </summary>
+    public Dictionary<string, string>? Variables;
+
     /// <summary>What is painted first, second and third: see <see cref="SvgSceneBuilder.NormalPaintOrder"/>.</summary>
     public byte PaintOrder;
 
@@ -46,6 +76,12 @@ internal struct SvgStyle
     public bool Display;
     public bool? OverflowVisible;
     public SvgElement? ClipPath, Mask;
+
+    /// <summary>The baseline one element alone asks for (<c>alignment-baseline</c>), over the inherited one.</summary>
+    public TextBaseline? AlignmentBaseline;
+
+    /// <summary>The lines this element itself asks for (<c>text-decoration</c>).</summary>
+    public TextDecorations OwnLines;
 
     /// <summary>The initial values: black fill, no stroke, a 1-wide butt/miter stroke when one is asked for, 16 px text.</summary>
     public static SvgStyle Initial => new()
@@ -59,10 +95,24 @@ internal struct SvgStyle
         Color = new Rgba32(0, 0, 0),
         Visible = true,
         FontSize = 16,
+        FontFamilies = [],
+        FontWeight = 400,
+        FontStretch = 100,
         PaintOrder = SvgSceneBuilder.NormalPaintOrder,
         Opacity = 1,
         Display = true,
     };
+}
+
+/// <summary>The lines one element asked for, with its style as it was, and the scene's object for them once it is made.</summary>
+internal sealed class SvgTextLines(TextDecorations kinds, in SvgStyle style)
+{
+    public TextDecorations Kinds { get; } = kinds;
+
+    public SvgStyle Style = style;
+
+    /// <summary>Made once, so that every span under these lines holds the same object.</summary>
+    public VectorTextLine? Made;
 }
 
 /// <summary>
@@ -78,6 +128,9 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset", "color", "visibility", "display",
         "font-size", "overflow", "stop-color", "stop-opacity", "clip-path", "mask", "filter", "marker", "marker-start",
         "marker-mid", "marker-end", "mix-blend-mode", "paint-order", "vector-effect", "transform-origin", "clip-rule", "mask-type",
+        "font", "font-family", "font-weight", "font-style", "font-stretch", "font-variant", "text-anchor", "letter-spacing", "word-spacing",
+        "text-decoration", "text-decoration-line", "dominant-baseline", "alignment-baseline", "baseline-shift", "writing-mode", "direction",
+        "white-space", "inline-size",
     ], StringComparer.Ordinal);
 
     /// <summary>Elements that are never drawn where they stand. What refers to them is reported where the reference is.</summary>
@@ -95,12 +148,23 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
     private VectorStroke? _lastStroke;
     private long _verbs, _visits;
 
+    /// <summary>What the root inherits: the initial values, with the colour and custom properties the caller's surroundings give.</summary>
+    private readonly SvgStyle _initial = SvgStyle.Initial with
+    {
+        Color = options.CurrentColor,
+        Variables = options.CustomProperties is { Count: > 0 } given ? new Dictionary<string, string>(given, StringComparer.Ordinal) : null,
+    };
+
+    /// <summary>How many characters <c>var()</c> may still put into values: a custom property can hold two uses of another, and so on down.</summary>
+    private long _substitution = options.MaxCharacters;
+
     /// <summary>How deep the shape being painted is: a pattern's content is walked from inside a paint, which has no depth of its own.</summary>
     private int _paintDepth;
 
     public SvgDocument Build()
     {
         SvgElement root = tree.Root;
+        if (tree.ExternalEntities) Issue(SvgIssueKind.Unsupported, "an entity kept in another file");
         ReadStyleSheets();
 
         bool hasViewBox = false;
@@ -136,12 +200,19 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                 toPicture = ViewBoxTransform(root.Get("preserveAspectRatio"), vbX, vbY, vbW, vbH, width, height);
             }
             var viewport = hasViewBox ? new SvgViewport(vbW, vbH) : new SvgViewport(width, height);
-            if (Enter(root, SvgStyle.Initial, toPicture, viewport, isRoot: true, out SvgStyle style, out SvgAffine matrix))
+            if (Enter(root, _initial, toPicture, viewport, isRoot: true, out SvgStyle style, out SvgAffine matrix))
             {
                 List<VectorNode> target = BeginLayer(style, nodes);
-                foreach (SvgElement child in root.Children)
+                if (options.ElementId is { } only && root.Get("id") != only)
                 {
-                    Walk(child, style, matrix, viewport, target, 1);
+                    Only(only, style, matrix, viewport, target);
+                }
+                else
+                {
+                    foreach (SvgElement child in root.Children)
+                    {
+                        Walk(child, style, matrix, viewport, target, 1);
+                    }
                 }
                 EndLayer(target, nodes, style, root.Get("id"), matrix, viewport, 0);
             }
@@ -153,6 +224,23 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                 .OrderByDescending(issue => issue.Count).ThenBy(issue => issue.What, StringComparer.Ordinal),
         ];
         return new SvgDocument(new VectorScene((float)width, (float)height, [.. nodes]), viewBox, issues);
+    }
+
+    /// <summary>
+    /// The one element asked for (<see cref="SvgReadOptions.ElementId"/>), drawn as a <c>use</c> of it standing alone in
+    /// the root: that is how the OpenType specification defines the picture of a glyph in a document that holds several.
+    /// </summary>
+    private void Only(string id, in SvgStyle rootStyle, SvgAffine matrix, in SvgViewport viewport, List<VectorNode> output)
+    {
+        if (!tree.Ids.ContainsKey(id))
+        {
+            Issue(SvgIssueKind.Invalid, "no element with the id asked for");
+            return;
+        }
+        var use = new SvgElement("use");
+        use.Set("href", "#" + id);
+        Charge(1);
+        Use(use, rootStyle, matrix, viewport, output, 1);
     }
 
     private void Issue(SvgIssueKind kind, string what)
@@ -308,15 +396,24 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         if (style.ClipPath is not null || style.Mask is not null)
         {
             VectorRect? box = shapePath is null ? BoundsOf(target, matrix) : shapePath.TryGetBounds(out VectorRect own) ? own : null;
-            if (style.ClipPath is { } clipElement)
+            bool outer = _boxOfText;
+            _boxOfText = shapePath is null && _textInBounds;
+            try
             {
-                clip = Clip(clipElement, matrix, box, viewport, depth + 1);
-                if (clip is { Shapes.IsEmpty: true }) return;       // a region with nothing in it: nothing is left to draw
+                if (style.ClipPath is { } clipElement)
+                {
+                    clip = Clip(clipElement, matrix, box, viewport, depth + 1);
+                    if (clip is { Shapes.IsEmpty: true }) return;       // a region with nothing in it: nothing is left to draw
+                }
+                if (style.Mask is { } maskElement)
+                {
+                    mask = Mask(maskElement, matrix, box, viewport, depth + 1);
+                    if (mask is { Children.IsEmpty: true }) return;     // a mask with no picture keeps nothing
+                }
             }
-            if (style.Mask is { } maskElement)
+            finally
             {
-                mask = Mask(maskElement, matrix, box, viewport, depth + 1);
-                if (mask is { Children.IsEmpty: true }) return;     // a mask with no picture keeps nothing
+                _boxOfText = outer;
             }
         }
         if (clip is null && mask is null && style.Opacity >= 1)
@@ -370,6 +467,10 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                 }
                 return;
             }
+
+            case "text":
+                Text(element, parent, outer, viewport, output, depth);
+                return;
 
             default:
                 if (!NeverRendered.Contains(element.Name)) Issue(SvgIssueKind.Unsupported, $"<{element.Name}> element");
@@ -468,6 +569,8 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
             VectorRect bounds;
             float grow = 0;
             Matrix3x2 map;
+            // Where text reaches is not known before it is laid out: it may reach outside.
+            if (node is VectorText) return true;
             if (node is VectorImage image)
             {
                 bounds = image.Bounds;
@@ -859,6 +962,11 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
     private VectorFill? MakeFill(in SvgStyle style, VectorPath path, in SvgViewport viewport)
     {
         if (style.FillOpacity <= 0 || ResolvePaint(style.Fill, style, path, viewport) is not { } paint) return null;
+        return MakeFill(style, paint);
+    }
+
+    private VectorFill MakeFill(in SvgStyle style, VectorPaint paint)
+    {
         // A drawing has few fills and many shapes: the one before is very often this one again.
         if (_lastFill is { } last && last.Opacity == (float)style.FillOpacity && last.Rule == style.FillRule && SamePaint(last.Paint, paint)) return last;
         return _lastFill = new VectorFill(paint, (float)style.FillOpacity, style.FillRule);
@@ -867,6 +975,11 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
     private VectorStroke? MakeStroke(in SvgStyle style, VectorPath path, in SvgViewport viewport)
     {
         if (style.StrokeOpacity <= 0 || style.StrokeWidth <= 0 || ResolvePaint(style.Stroke, style, path, viewport) is not { } paint) return null;
+        return MakeStroke(style, paint);
+    }
+
+    private VectorStroke MakeStroke(in SvgStyle style, VectorPaint paint)
+    {
 
         ImmutableArray<float> dashes = [];
         if (style.Dashes is { Length: > 0 } pattern && pattern.Sum() > 0)
