@@ -33,8 +33,6 @@ def run(kind, show=False):
     """(verdict, detail, skipped) of one test run. With `show`, failing tests' messages are printed."""
     repo, command = TESTS[kind]
     try:
-        if show:
-            command = command + ['--logger', 'console;verbosity=normal']
         p = subprocess.run(command, cwd=os.path.join(ROOT, repo), capture_output=True, text=True, timeout=TIMEOUT)
         out = p.stdout + p.stderr
     except subprocess.TimeoutExpired:
@@ -46,7 +44,15 @@ def run(kind, show=False):
     if int(m.group(2)) > 0:
         if show:
             # What failed and why, as the test runner printed it (the lines from each [FAIL] to the next result).
-            print(out[max(0, out.find('[FAIL]') - 200):][:20000], flush=True)
+            # Again, with the logger that prints each failing test's message (its summary line is another, so
+            # the verdict comes from the first run).
+            try:
+                again = subprocess.run(command + ['--logger', 'console;verbosity=normal'], cwd=os.path.join(ROOT, repo),
+                                       capture_output=True, text=True, timeout=TIMEOUT)
+                text = again.stdout + again.stderr
+                print(text[max(0, text.find('  Failed ') - 200):][:20000], flush=True)
+            except subprocess.TimeoutExpired:
+                pass
         failed = sorted(set(re.findall(r'\]\s+SharpAstro\.[\w.]+\.(\w+\.\w+)[^\n]*\[FAIL\]', out)))
         return 'CAUGHT by %s' % m.group(2), ', '.join(failed)[:300], int(m.group(4))
     return 'MISSED', '%s passed' % m.group(3), int(m.group(4))
