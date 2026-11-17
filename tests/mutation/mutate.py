@@ -33,6 +33,8 @@ def run(kind, show=False):
     """(verdict, detail, skipped) of one test run. With `show`, failing tests' messages are printed."""
     repo, command = TESTS[kind]
     try:
+        if show:
+            command = command + ['--logger', 'console;verbosity=normal']
         p = subprocess.run(command, cwd=os.path.join(ROOT, repo), capture_output=True, text=True, timeout=TIMEOUT)
         out = p.stdout + p.stderr
     except subprocess.TimeoutExpired:
