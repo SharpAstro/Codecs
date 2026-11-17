@@ -443,6 +443,14 @@ public sealed class SvgBrowserOracleTests
         }
         html.Append("</body></html>");
 
+        if (Environment.GetEnvironmentVariable("SVG_ORACLE_DUMP") is { Length: > 0 } dump)
+        {
+            // The page the browser is shown, and every document by itself, for opening in a browser with a window.
+            Directory.CreateDirectory(dump);
+            File.WriteAllText(Path.Combine(dump, "browser-page.html"), html.ToString());
+            foreach (var row in Documents) File.WriteAllText(Path.Combine(dump, row.Data.Item1 + ".svg"), Wrap(row.Data.Item3, row.Data.Item2));
+        }
+
         byte[] page = SvgBrowser.Capture(html.ToString(), pageWidth, y, out int pageHeight);
         pageHeight.ShouldBeGreaterThanOrEqualTo(y);
 
