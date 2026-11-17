@@ -86,9 +86,10 @@ M = [
  ('a box-unit pattern on text goes unreported', 'src/SharpAstro.Svg/SvgSceneBuilder.Text.cs', 'codecs',
   '            Issue(SvgIssueKind.Unsupported, "a pattern in bounding-box units on text");\n',
   ''),
- ('the characters of text are not counted', 'src/SharpAstro.Svg/SvgSceneBuilder.Text.cs', 'codecs',
-  'if ((_textCharacters += kept) > options.MaxTextCharacters)',
-  'if (kept > options.MaxTextCharacters)'),
+ # Not run: the characters of text not being counted (`if (kept > options.MaxTextCharacters)` for the line that adds
+ # them up). The test of that limit then reads the text it was built to refuse: the runner ran out of memory and was
+ # shut down (run in CI), and on a working machine it takes every core. The same holds for the entity and var()
+ # budgets (CLAUDE.md, rung 4). The limit is held by SvgTextTests' test of it, which fails by exhaustion, not by assertion.
  ('opacity on a tspan is dropped', 'src/SharpAstro.Svg/SvgSceneBuilder.Text.cs', 'both',
   '        style.FillOpacity *= style.Opacity;\n        style.StrokeOpacity *= style.Opacity;\n',
   ''),
