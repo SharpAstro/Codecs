@@ -14,6 +14,42 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.38
+
+**`SharpAstro.Svg` rung 4: entities, CSS custom properties, and what a font needs to draw the glyphs of an OpenType `SVG `
+table.** Nothing about fonts is in the reader: a glyph is asked for through three general options, and Fonts.Lib 1.20 is
+what asks.
+
+- **Entities a document declares are expanded** (the internal subset of its DOCTYPE), where 3.37 refused any document that
+  used one. Some Adobe Illustrator exports write their namespace and every style as an entity. What entities expand to is
+  bounded in total by the new `SvgReadOptions.MaxEntityCharacters` (2^22): ten nested entities of ten ask for 10^10
+  characters from 400 bytes and are refused at once.
+- **Nothing outside the document is loaded, as before.** An entity kept in another file (`SYSTEM`, `PUBLIC`) is never read:
+  it stands for nothing, and the document's issues now say so ("an entity kept in another file"), whether it is used or not.
+- **CSS custom properties and `var()`**, for every document: declared in a style sheet or a `style` attribute, inherited,
+  used in any property the reader reads (presentation attributes too), with fallbacks that may hold commas and another
+  `var()`. A property that leads back to itself is not declared; a `var()` with no value and no fallback leaves the inherited
+  value, not the declaration it beat (and is listed as an issue). What `var()` puts into values is bounded by `MaxCharacters`.
+- **`SvgReadOptions.CustomProperties`**: custom properties the surroundings define, as an ancestor of the root would.
+- **`SvgReadOptions.CurrentColor`**: what `currentColor` is where the document sets no `color`. Black when not given, as
+  before.
+- **`SvgReadOptions.ElementId`**: draw only the element with this id, as a `use` of it standing alone in the root (its own
+  transform and properties, the root's, and nothing from the groups it stands in). This is the OpenType specification's
+  definition of a glyph's picture in a document that holds several. The root asked for by its id is the whole document.
+- **`SvgReader.Read(ReadOnlyMemory<byte>)`** reads a part of a larger array without copying it.
+- **Changed:** a gradient stop's `currentColor` is the `color` it inherits where it stands in the document (its own, its
+  gradient's, an ancestor's, the caller's). Before, it was the stop's own `color` or black.
+- **Changed:** the geometry properties SVG 2 lets CSS set (`width`, `height`, `x`, `y`, `cx`, `cy`, `r`, `rx`, `ry`) are
+  still read as attributes only, but written in a `style` attribute or a sheet they are now listed in `SvgDocument.Issues`
+  as unsupported. They were passed over silently.
+- **Tests.** A `custom-properties` document joins the browser oracle (38 documents): eighteen cases of `var()`, all as the
+  browser draws them on the first run. One element by id is held equal, node for node, to the scene of the document the
+  OpenType specification writes out for it. The glyphs themselves are tested in Fonts.Lib, against Firefox and against
+  Chrome.
+- **Mutation-checked:** 19 deliberate bugs in the reader, one at a time. 17 were caught at once. Two were not, for want of a
+  test, and each has one now: a name that only ends in `var(`, and a `symbol` asked for by its id. Not run, deliberately: the
+  entity and the `var()` budgets removed, whose tests would then ask for 10^10 and 2^40 characters.
+
 ## 3.37
 
 **`SharpAstro.Svg` rung 3: clips, masks, markers, `paint-order`, images and patterns.** The scene model gains what they need,

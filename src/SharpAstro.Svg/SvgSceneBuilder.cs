@@ -38,6 +38,12 @@ internal struct SvgStyle
     public FillRule ClipRule;
     public SvgElement? MarkerStart, MarkerMid, MarkerEnd;
 
+    /// <summary>
+    /// The custom properties (<c>--name</c>) in force, each with its own <c>var()</c> already replaced. One dictionary
+    /// is shared down the tree until an element declares one, which copies it. Null when there are none.
+    /// </summary>
+    public Dictionary<string, string>? Variables;
+
     /// <summary>What is painted first, second and third: see <see cref="SvgSceneBuilder.NormalPaintOrder"/>.</summary>
     public byte PaintOrder;
 
@@ -95,12 +101,23 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
     private VectorStroke? _lastStroke;
     private long _verbs, _visits;
 
+    /// <summary>What the root inherits: the initial values, with the colour and custom properties the caller's surroundings give.</summary>
+    private readonly SvgStyle _initial = SvgStyle.Initial with
+    {
+        Color = options.CurrentColor,
+        Variables = options.CustomProperties is { Count: > 0 } given ? new Dictionary<string, string>(given, StringComparer.Ordinal) : null,
+    };
+
+    /// <summary>How many characters <c>var()</c> may still put into values: a custom property can hold two uses of another, and so on down.</summary>
+    private long _substitution = options.MaxCharacters;
+
     /// <summary>How deep the shape being painted is: a pattern's content is walked from inside a paint, which has no depth of its own.</summary>
     private int _paintDepth;
 
     public SvgDocument Build()
     {
         SvgElement root = tree.Root;
+        if (tree.ExternalEntities) Issue(SvgIssueKind.Unsupported, "an entity kept in another file");
         ReadStyleSheets();
 
         bool hasViewBox = false;
@@ -136,12 +153,19 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                 toPicture = ViewBoxTransform(root.Get("preserveAspectRatio"), vbX, vbY, vbW, vbH, width, height);
             }
             var viewport = hasViewBox ? new SvgViewport(vbW, vbH) : new SvgViewport(width, height);
-            if (Enter(root, SvgStyle.Initial, toPicture, viewport, isRoot: true, out SvgStyle style, out SvgAffine matrix))
+            if (Enter(root, _initial, toPicture, viewport, isRoot: true, out SvgStyle style, out SvgAffine matrix))
             {
                 List<VectorNode> target = BeginLayer(style, nodes);
-                foreach (SvgElement child in root.Children)
+                if (options.ElementId is { } only && root.Get("id") != only)
                 {
-                    Walk(child, style, matrix, viewport, target, 1);
+                    Only(only, style, matrix, viewport, target);
+                }
+                else
+                {
+                    foreach (SvgElement child in root.Children)
+                    {
+                        Walk(child, style, matrix, viewport, target, 1);
+                    }
                 }
                 EndLayer(target, nodes, style, root.Get("id"), matrix, viewport, 0);
             }
@@ -153,6 +177,23 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                 .OrderByDescending(issue => issue.Count).ThenBy(issue => issue.What, StringComparer.Ordinal),
         ];
         return new SvgDocument(new VectorScene((float)width, (float)height, [.. nodes]), viewBox, issues);
+    }
+
+    /// <summary>
+    /// The one element asked for (<see cref="SvgReadOptions.ElementId"/>), drawn as a <c>use</c> of it standing alone in
+    /// the root: that is how the OpenType specification defines the picture of a glyph in a document that holds several.
+    /// </summary>
+    private void Only(string id, in SvgStyle rootStyle, SvgAffine matrix, in SvgViewport viewport, List<VectorNode> output)
+    {
+        if (!tree.Ids.ContainsKey(id))
+        {
+            Issue(SvgIssueKind.Invalid, "no element with the id asked for");
+            return;
+        }
+        var use = new SvgElement("use");
+        use.Set("href", "#" + id);
+        Charge(1);
+        Use(use, rootStyle, matrix, viewport, output, 1);
     }
 
     private void Issue(SvgIssueKind kind, string what)

@@ -1150,8 +1150,9 @@ rungs. What a person touching it should know:
 - **Nothing unread is guessed.** It is left out and listed in `SvgDocument.Issues` (`Unsupported`), and what the
   document got wrong is handled as the specification's error rules say and listed (`Invalid`): path data is drawn up
   to the error, an invalid property is as if it were not written.
-- **Entities are never expanded** (`DtdProcessing.Ignore`, no resolver), so a document that uses one it declares is
-  refused. Some Illustrator exports do. That is a known gap, not an oversight.
+- **Entities a document declares are expanded since 3.38, bounded** (`DtdProcessing.Parse`, no resolver,
+  `MaxEntityCharacters`). With no resolver the XML reader puts nothing, silently, where an entity kept in another file
+  is used; `DeclaresExternalEntity` looks at the DOCTYPE so that the reader can report it. Do not give it a resolver.
 - **The pixel oracle is ImageMagick's SVG renderer over a test-only rasteriser** (`SvgRenderOracleTests`), because a
   structural expectation repeats any misreading of the specification. It is a tolerance, and its twelve documents are
   fills only (the rasteriser itself, `SvgPlainRasteriser`, draws strokes, clips, masks, patterns and images since rung 3).
@@ -1237,6 +1238,25 @@ has the reasons. The ones that bite:
 - **`VectorSceneFile` is version 2 and reads version 1** (`AVersion1File_IsStillRead` writes one by hand). A new field
   is a new version, as before, and the "cut at every length, flip every byte" tests must run over a scene that holds
   the new thing: extend `Everything` in `VectorSceneFileTests`, do not add a second scene.
+
+Rung 4 (3.38) added entities and what a font needs for the glyphs of an OpenType `SVG ` table; `roadmap/svg.md` ("What
+rung 4 settled") has the reasons. The ones that bite:
+
+- **Nothing about fonts is in the reader.** A glyph is asked for through three general options: `ElementId` (one element,
+  drawn as a `use` of it standing alone in the root, which is the OpenType specification's own definition),
+  `CurrentColor` and `CustomProperties` (a palette arrives as `--color0` and on). Fonts.Lib's `SvgGlyphRenderer` sets them.
+- **Custom properties are read for every document.** `SvgStyle.Variables` is one dictionary shared down the tree and
+  copied by an element that declares one: never write into the inherited one. A declaration's `var()` is replaced where
+  it is declared; a circle is then not declared at all; an unusable `var()` is `Unset` (inherited or initial), not "as if
+  not written". The `custom-properties` browser document holds all of it.
+- **`Cascade` hands back a list it reuses** when the document has no sheets. Working out a style inside a loop over it
+  empties it under the loop: `ReadStops` works the stop's inherited style out first for that reason.
+- **Three amplifications, three budgets**: entities (`MaxEntityCharacters`), `var()` (`MaxCharacters`, in total), and one
+  element by id, which is charged like any `use`. Do not run the suite with the entity or the `var()` budget removed:
+  their tests ask for 10^10 and 2^40 characters.
+- **Firefox is the only browser here that draws OpenType SVG glyphs, and it does four things the specification does
+  not** (no palette, black `currentColor`, no strokes, a nested glyph inheriting from its groups and ignoring the root's
+  `viewBox`). The roadmap lists them as measured. Where it and the specification disagree, the specification is followed.
 
 ## Oracle harnesses (all codecs)
 

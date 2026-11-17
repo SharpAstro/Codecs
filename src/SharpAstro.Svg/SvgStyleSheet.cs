@@ -209,7 +209,9 @@ internal static class SvgStyleSheet
         {
             int colon = declaration.IndexOf(':');
             if (colon <= 0) continue;
-            string name = declaration[..colon].Trim().ToLowerInvariant();
+            string name = declaration[..colon].Trim();
+            // Property names are not case-sensitive; the names of custom properties are.
+            if (!name.StartsWith("--", StringComparison.Ordinal)) name = name.ToLowerInvariant();
             if (!keep(name)) continue;
             ReadOnlySpan<char> value = declaration.AsSpan(colon + 1).Trim();
             bool important = false;

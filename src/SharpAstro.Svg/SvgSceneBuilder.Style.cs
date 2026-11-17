@@ -9,7 +9,15 @@ internal sealed partial class SvgSceneBuilder
     private readonly List<SvgDeclaration> _scratch = [];
     private long _selectorTests;
 
-    private static bool Keep(string property) => Properties.Contains(property) || property == "transform";
+    private static bool Keep(string property) => Properties.Contains(property) || property == "transform" || IsCustom(property) || IsGeometry(property);
+
+    /// <summary>
+    /// The geometry SVG 2 lets CSS set. It is read from attributes only, so in a sheet or a <c>style</c> attribute it
+    /// is kept just far enough to be reported: a browser would draw the shape somewhere else.
+    /// </summary>
+    private static bool IsGeometry(string property) => property is "x" or "y" or "width" or "height" or "cx" or "cy" or "r" or "rx" or "ry";
+
+    private static bool IsCustom(string property) => property.Length > 2 && property.StartsWith("--", StringComparison.Ordinal);
 
     /// <summary>The <c>style</c> elements that apply to a screen, in document order.</summary>
     private void ReadStyleSheets()
@@ -100,23 +108,150 @@ internal sealed partial class SvgSceneBuilder
         IReadOnlyList<SvgDeclaration> declarations = Cascade(element);
         if (declarations.Count == 0) return style;
 
+        // Custom properties before everything: a var() on this element finds the ones declared on it, wherever they stand.
+        for (int i = 0; i < declarations.Count; i++)
+        {
+            if (!IsCustom(declarations[i].Name)) continue;
+            style.Variables = DeclareVariables(declarations, parent.Variables);
+            break;
+        }
+
         // font-size before the rest: em lengths on this element are in its own font size.
         for (int i = 0; i < declarations.Count; i++)
         {
             if (declarations[i].Name != "font-size") continue;
-            ReadOnlySpan<char> v = declarations[i].Value.AsSpan().Trim();
+            string raw = declarations[i].Value;
+            if (HasVar(raw) && !TrySubstitute(raw, style.Variables, null, 0, out raw))
+            {
+                style.FontSize = parent.FontSize;
+                continue;
+            }
+            ReadOnlySpan<char> v = raw.AsSpan().Trim();
             if (v.Equals("inherit", StringComparison.OrdinalIgnoreCase)) style.FontSize = parent.FontSize;
             else if (SvgLength.TryParse(v, out SvgLength size) && size.Value >= 0) style.FontSize = size.Resolve(parent.FontSize, parent.FontSize);
         }
         for (int i = 0; i < declarations.Count; i++)
         {
-            if (declarations[i].Name != "font-size") Apply(ref style, parent, viewport, declarations[i].Name, declarations[i].Value);
+            string name = declarations[i].Name;
+            if (name != "font-size" && !IsCustom(name)) Apply(ref style, parent, viewport, name, declarations[i].Value);
         }
         return style;
     }
 
+    // ---- Custom properties and var() ----------------------------------------------------------------------------
+
+    private static bool HasVar(string value) => value.Contains("var(", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The custom properties in force on an element that declares some: its parent's, with its own on top. A
+    /// declaration's own <c>var()</c> is replaced here, against the element's own set (so two of them may refer to each
+    /// other in either order); one that cannot be, or that leads back to itself, is as if it were not declared at all,
+    /// not even by an ancestor.
+    /// </summary>
+    private Dictionary<string, string>? DeclareVariables(IReadOnlyList<SvgDeclaration> declarations, Dictionary<string, string>? inherited)
+    {
+        var own = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (SvgDeclaration declaration in declarations)
+        {
+            if (IsCustom(declaration.Name)) own[declaration.Name] = declaration.Value;       // least important first: the last one stands
+        }
+        var result = inherited is null ? new Dictionary<string, string>(StringComparer.Ordinal) : new Dictionary<string, string>(inherited, StringComparer.Ordinal);
+        var open = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string name in own.Keys.ToArray()) Resolve(name);
+        return result.Count == 0 ? null : result;
+
+        // The value of a name as this element sees it, or null when it has none. An own one is worked out on first use.
+        string? Resolve(string name)
+        {
+            if (!own.Remove(name, out string? raw)) return open.Contains(name) ? null : result.GetValueOrDefault(name);
+            open.Add(name);
+            bool ok = !HasVar(raw) || TrySubstitute(raw, null, Resolve, 0, out raw);
+            open.Remove(name);
+            if (ok) result[name] = raw;
+            else result.Remove(name);
+            return ok ? raw : null;
+        }
+    }
+
+    /// <summary>
+    /// Replaces every <c>var(--name)</c> and <c>var(--name, fallback)</c> in a value. False when a name has no value and
+    /// no fallback, or the text is not a <c>var()</c> at all: the declaration is then one that cannot be used.
+    /// </summary>
+    private bool TrySubstitute(string value, Dictionary<string, string>? variables, Func<string, string?>? lookup, int depth, out string result)
+    {
+        result = value;
+        if (depth > 16) return false;
+        var text = new System.Text.StringBuilder(value.Length);
+        int from = 0;
+        while (true)
+        {
+            int at = value.IndexOf("var(", from, StringComparison.OrdinalIgnoreCase);
+            // Part of a longer name is not the function.
+            while (at > 0 && (char.IsAsciiLetterOrDigit(value[at - 1]) || value[at - 1] is '-' or '_'))
+            {
+                at = value.IndexOf("var(", at + 4, StringComparison.OrdinalIgnoreCase);
+            }
+            if (at < 0) break;
+            text.Append(value, from, at - from);
+
+            int close = at + 4, nesting = 1, comma = -1;
+            for (; close < value.Length && nesting > 0; close++)
+            {
+                char c = value[close];
+                if (c == '(') nesting++;
+                else if (c == ')') nesting--;
+                else if (c == ',' && nesting == 1 && comma < 0) comma = close;
+            }
+            if (nesting != 0) return false;
+            int end = close - 1;                                                             // the closing parenthesis
+            string name = value[(at + 4)..(comma < 0 ? end : comma)].Trim();
+            if (!IsCustom(name)) return false;
+
+            string? found = lookup is not null ? lookup(name) : variables?.GetValueOrDefault(name);
+            if (found is null)
+            {
+                if (comma < 0) return false;
+                found = value[(comma + 1)..end];
+                if (HasVar(found) && !TrySubstitute(found, variables, lookup, depth + 1, out found)) return false;
+            }
+            if ((_substitution -= found.Length) < 0)
+            {
+                throw new InvalidDataException($"The SVG's var() uses put more than {options.MaxCharacters} characters into its properties.");
+            }
+            text.Append(found);
+            from = close;
+        }
+        text.Append(value, from, value.Length - from);
+        result = text.ToString();
+        return true;
+    }
+
+    /// <summary>
+    /// What a property is when its declaration turned out to be unusable only once its <c>var()</c> was looked up: the
+    /// inherited value for a property that inherits, the initial one for the rest. Not "as if it were not written":
+    /// the declarations it won over stay beaten.
+    /// </summary>
+    private static void Unset(ref SvgStyle s, in SvgStyle parent, string name)
+    {
+        switch (name)
+        {
+            case "opacity": s.Opacity = 1; break;
+            case "display": s.Display = true; break;
+            case "overflow": s.OverflowVisible = null; break;
+            case "clip-path": s.ClipPath = null; break;
+            case "mask": s.Mask = null; break;
+            default: CopyFromParent(ref s, parent, name); break;
+        }
+    }
+
     private void Apply(ref SvgStyle s, in SvgStyle parent, in SvgViewport viewport, string name, string raw)
     {
+        if (HasVar(raw) && !TrySubstitute(raw, s.Variables, null, 0, out raw))
+        {
+            Issue(SvgIssueKind.Invalid, "var() with no value and no fallback");
+            Unset(ref s, parent, name);
+            return;
+        }
         ReadOnlySpan<char> v = raw.AsSpan().Trim();
         if (v.Equals("inherit", StringComparison.OrdinalIgnoreCase))
         {
@@ -243,6 +378,10 @@ internal sealed partial class SvgSceneBuilder
                 break;
             case "transform-origin":
                 Issue(SvgIssueKind.Unsupported, name);
+                break;
+            case "x" or "y" or "width" or "height" or "cx" or "cy" or "r" or "rx" or "ry":
+                // Only a sheet or a style attribute brings these here; the attributes are read where the shape is made.
+                if (v is not "auto") Issue(SvgIssueKind.Unsupported, $"{name} as a CSS property");
                 break;
         }
     }

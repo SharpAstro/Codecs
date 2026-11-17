@@ -1,8 +1,9 @@
 # Roadmap: SVG (`SharpAstro.Svg` on `SharpAstro.Vector`)
 
-**Status: rungs 1 to 3 written (3.35, 3.36, 3.37).** `SharpAstro.Svg` reads paths, basic shapes, transforms,
-viewports, `use` and `symbol`, solid, gradient and pattern paints, stroke properties, style sheets, clips, masks,
-markers and images into a `SharpAstro.Vector.VectorScene`.
+**Status: rungs 1 to 4 written (3.35 to 3.38).** `SharpAstro.Svg` reads paths, basic shapes, transforms,
+viewports, `use` and `symbol`, solid, gradient and pattern paints, stroke properties, style sheets with custom
+properties, clips, masks, markers and images into a `SharpAstro.Vector.VectorScene`, expands the entities a document
+declares, and reads one element out of a document for a font's `SVG ` table.
 
 ## The design, and why it is not a codec like the others
 
@@ -15,7 +16,7 @@ That shape is forced by the dependency direction:
 ```
 DIR.Lib ──► Fonts.Lib ──► SharpAstro.Png (Codecs)
    │            │
-   │            └──► SharpAstro.Svg ──► SharpAstro.Vector      (planned: OpenType `SVG ` glyphs)
+   │            └──► SharpAstro.Svg ──► SharpAstro.Vector      (OpenType `SVG ` glyphs, rung 4b)
    └──► draws text runs with its own text pipeline             (planned: rung 5)
 ```
 
@@ -47,9 +48,9 @@ resvg, librsvg and browser sources are not read; renderers are used as programs 
 | 2 | `defs`, `use`, `symbol`, nested `svg`; `linearGradient` / `radialGradient` (with `href` inheritance and `gradientTransform`); `<style>` sheets with the selectors real files use; limits that follow `use` | shipped 3.36 |
 | 3 | `clipPath`, `mask`, the clip of nested viewports, `image` (carried as the file it is; decoded by the caller), markers, `paint-order`, `pattern`; a stroker in the test rasteriser; `VectorSceneFile` version 2 | written, 3.37 |
 | 3f | The rasteriser in Fonts.Lib draws what rung 3 added to the scene (clips, masks, images through a decoder the caller gives, patterns), and DIR.Lib takes it | open, in Fonts.Lib and DIR.Lib |
-| E | XML entities a document declares itself (some Adobe Illustrator exports): the internal subset read with bounded expansion, nothing external | open |
+| E | XML entities a document declares itself (some Adobe Illustrator exports): the internal subset read with bounded expansion, nothing external | written, 3.38 |
 | 4a | The one scene rasteriser: `SharpAstro.Fonts.Scenes.SceneRasterizer` (fills, strokes, gradients, layers), held against the browser with strokes | shipped, Fonts.Lib 1.18 |
-| 4b | Fonts.Lib reads the OpenType `SVG ` table through this package | open, in Fonts.Lib |
+| 4b | Fonts.Lib reads the OpenType `SVG ` table through this package. Here: one element of a document (`ElementId`), the text colour as `currentColor`, CSS custom properties and `var()` (a palette reaches a glyph that way) | written, 3.38 and Fonts.Lib 1.20 |
 | D | SVG in DIR.Lib: `IconBaker.Bake(VectorScene, size)`, `VectorIcon` (read once, rasterise once a size), `bake-icons --svg` and `--scenes` | shipped, DIR.Lib 11.78 |
 | 5 | `text` / `tspan` as text runs, then per-character positioning, then `textPath` | open |
 | 6 | Filters, blend modes | open, only if asked for |
@@ -255,6 +256,66 @@ without reading SVG at start-up.
 - **`VectorSceneFile` is version 2** and still reads version 1. Its untrusted-bytes tests (cut at every length,
   every byte flipped) now run over a scene that holds every new thing.
 
+## What rung 4 settled
+
+Two things: the entities carried over from rung 1, and what a font needs to draw the glyphs of an OpenType `SVG `
+table. The second was asked of the reader as three general options, so nothing about fonts is known here.
+
+- **Entities are the XML reader's, bounded.** The internal subset of a DOCTYPE is parsed, with no resolver, and what
+  entities expand to is limited in total (`SvgReadOptions.MaxEntityCharacters`, 2^22): ten nested entities of ten
+  ask for 10^10 characters from 400 bytes and are refused at once. An Illustrator export that writes its namespace and
+  every style as an entity now reads.
+- **An entity kept in another file is never loaded, and that is said.** Measured, because the documentation does not
+  say it: with no resolver the XML reader puts NOTHING where such an entity is used between elements, without an
+  error (in an attribute it is an error, as XML has it). So the reader looks at the DOCTYPE itself and reports a
+  `SYSTEM` or `PUBLIC` entity as unsupported, used or not. The test keeps a real file with a shape in it and requires
+  that the shape never appears.
+- **Custom properties and `var()` are read for every document**, not only for glyphs: declared in a sheet, a `style`
+  attribute or by the caller (`SvgReadOptions.CustomProperties`, which stand as an ancestor's would), inherited, used
+  in any property the reader reads, presentation attributes included. A declaration's own `var()` is replaced where it
+  is declared, against that element's own set; one that leads back to itself is then not declared at all, not even
+  by an ancestor. A property whose `var()` finds nothing and has no fallback is the inherited value (or the initial
+  one for a property that does not inherit), NOT the declaration it beat. Names keep their case. All of that is the
+  CSS specification's, and the `custom-properties` browser document (eighteen cells) agreed on its first run.
+- **What `var()` puts into values is bounded** by `MaxCharacters`, in total: a custom property can hold another twice,
+  and forty elements of that are 2^40 characters.
+- **A gradient stop inherits from where it stands**, which matters now that it can ask for `currentColor` or a custom
+  property: both come from the gradient's own ancestors (and so from the caller), never from the shape painted.
+  Before 3.38 a stop's `currentColor` was its own `color` or black.
+- **One element of a document** (`SvgReadOptions.ElementId`) **is drawn as the OpenType specification defines a
+  glyph's picture**: "as though the given element and its content were specified in a defs tag and then referenced
+  as the graphic content of an SVG document". That is a `use` of it standing alone in the root: its own transform and
+  properties apply, the root's apply (its `viewBox` mapping too), and the groups it stands in give it nothing. When the
+  root itself has the id, the whole document is drawn. The test holds the scene equal, node for node, to the scene of
+  the document the specification writes out.
+- **`SvgReader.Read(ReadOnlyMemory<byte>)`** reads a part of a larger array without copying it: a font's table holds
+  many documents.
+
+**In Fonts.Lib (1.20):** `SvgTable` finds a glyph's document (every offset checked against the table, in 64 bits),
+`SvgGlyphRenderer` reads it with the options above (the em square as the viewport, the text colour, the 'CPAL' palette
+as `--color0` and on, each `#rrggbbaa` so that an entry's alpha comes with it) and draws the scene with
+`SceneRasterizer`; `OpenTypeFont.RenderColor` tries COLR, then SVG, then bitmaps. DIR.Lib calls `RenderColor` and needed
+no change: its `ManagedFontRasterizer` returns the test font's SVG glyphs as colour glyphs as it stands (checked by hand
+against the local sources; DIR.Lib has no test of its own for it yet, and it draws them with black for `currentColor`
+and the first palette, since a glyph atlas does not know the text's colour). A document is read again for each glyph
+drawn from it; a glyph atlas keeps what it draws. Measured with a stopwatch over 2,000 runs (arm64, not a benchmark):
+about 20 us to read a glyph of a few shapes out of its document, 100 to 140 us to read it and draw it at 64 pixels.
+
+**Two oracles, because neither is enough.** Chrome and Edge do not draw OpenType SVG glyphs at all. Firefox does,
+from the font, so it checks the whole path (table, gzip, element, y axis, scale). But, measured with Firefox 160:
+
+- it defines no `--colorN` for a palette, with or without `font-palette`: every `var()` takes its fallback;
+- `currentColor` is black whatever the colour of the text;
+- it draws no stroke in a glyph, on a filled shape or alone;
+- a glyph that is not the root inherits from the groups it stands in, and the root's `viewBox` is not applied to it
+  (where the root is the glyph, a `viewBox` of another size than the em scales it, as here).
+
+The first three are things the specification requires or strongly recommends; the last is the opposite of its
+definition by `use`. So fifteen cases are held against Firefox's own drawing of the font (the capture is committed, and
+checked against a live Firefox where there is one), and all eighteen, in two text colours and two palettes, against
+headless Chrome drawing the document the specification says the glyph's picture is. All of them matched on their
+first run.
+
 ## Validation
 
 Four layers, in `tests/SharpAstro.Codecs.Tests/Svg*Tests.cs`:
@@ -316,6 +377,16 @@ for vertices; the structural tests alone see the mask's default area, a picture 
 the two scene-file fields and the pattern charge (with it removed the 2^40 test fails; it does not hang, because nothing walks the scene).
 Not run, deliberately: trusting a clip's count in the scene file, which would ask for a 16 GB array.
 
+Rung 4: nineteen more in the reader (`var()` lookup and fallback, the unset rule, the case of names, the shared
+dictionary, circles, a stop's inheritance, the three options, entities and their report, geometry written as CSS) and
+twenty in Fonts.Lib (the y axis, the em, the element picked, the viewport, the palette's index, numbering and alpha,
+the text colour, where the bitmap is put, a stroke's reach, the table's offsets, ranges, order and bounds, the order
+of the colour tables). Thirty-six were caught at once. Three were not and each got a test: a name that only ends in
+`var(`, a `symbol` asked for by its id (walking the element where it stands draws the same as using it for everything
+but a symbol), and a stroke at the edge of a glyph's bitmap, which the browser comparison's one pixel of slack had
+swallowed. Not run, deliberately: the entity and the `var()` budgets removed (their tests would ask for 10^10 and 2^40
+characters), and a glyph's bitmap not kept near its origin (a 16 GB array).
+
 **Known limits of the oracle.** ImageMagick's renderer does not read `hsl()` and does not draw a
 `visibility="visible"` child of a hidden group; both were taken out of the oracle documents and stay covered
 structurally. Strokes are held against the browser since rung 3 (in Fonts.Lib too, by its own rasteriser).
@@ -324,9 +395,11 @@ depends on what each machine has installed.
 
 ## Refused and reported
 
-- A document that uses an XML entity it declares itself is refused (`InvalidDataException`): DTD processing
-  is ignored, so entities are never expanded and nothing outside the document is fetched. Some Adobe
-  Illustrator exports rely on entities; reading the internal subset safely (bounded expansion) is open.
+- Entities a document declares itself are expanded, up to `MaxEntityCharacters` in total; over that the document
+  is refused (`InvalidDataException`), as is one that uses an entity nobody declared. Nothing outside the document is
+  fetched: an entity kept in another file stands for nothing and is reported (`Unsupported`).
+- The geometry properties SVG 2 lets a style sheet set (`width`, `height`, `x`, `y`, `cx`, `cy`, `r`, `rx`, `ry`) are
+  read as attributes only. Written in a `style` attribute or a sheet they are reported (`Unsupported`).
 - Everything valid but unread is left out of the scene and listed in `SvgDocument.Issues` as `Unsupported`;
   everything the document got wrong is handled as the specification says an error is and listed as `Invalid`.
   `SvgReadOptions.ThrowOnUnsupported` turns the first of the former into an exception.

@@ -25,7 +25,7 @@ internal sealed partial class SvgSceneBuilder
     /// </summary>
     private SvgStyle InheritedStyle(SvgElement element, in SvgViewport viewport)
     {
-        SvgStyle parent = element.Parent is { } above ? InheritedStyle(above, viewport) : SvgStyle.Initial;
+        SvgStyle parent = element.Parent is { } above ? InheritedStyle(above, viewport) : _initial;
         SvgStyle style = ComputeStyle(element, parent, viewport);
         style.Display = true;
         return style;
