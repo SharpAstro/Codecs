@@ -207,8 +207,7 @@ public sealed class SvgReaderTests
     public void WhatIsNotReadYet_IsLeftOut_AndReportedWithItsCount()
     {
         SvgDocument document = Doc(
-            "<text x=\"1\" y=\"1\">words <tspan>more</tspan></text><text>again</text>" +
-            "<image href=\"a.png\"/><switch><g/></switch><foreignObject><rect width=\"1\" height=\"1\"/></foreignObject>" +
+            "<image href=\"a.png\"/><switch><g/></switch><switch/><foreignObject><rect width=\"1\" height=\"1\"/></foreignObject>" +
             RectWith("filter=\"url(#f)\" clip-path=\"circle(4px)\" mask=\"linear-gradient(red, blue)\" id=\"kept\"") +
             RectWith("style=\"mix-blend-mode: multiply; vector-effect: non-scaling-stroke; transform: scale(2)\"") +
             RectWith("clip-path=\"none\" mask=\"none\" filter=\"none\" marker-end=\"none\" mix-blend-mode=\"normal\" paint-order=\"normal\"") +
@@ -228,9 +227,8 @@ public sealed class SvgReaderTests
         document.Issues.Select(issue => issue.Kind).Distinct().ShouldBe([SvgIssueKind.Unsupported]);
         document.Issues.ToDictionary(issue => issue.What, issue => issue.Count).ShouldBe(new Dictionary<string, int>
         {
-            ["<text> element"] = 2,
             ["image with no width or height (sized by the picture)"] = 1,
-            ["<switch> element"] = 1,
+            ["<switch> element"] = 2,
             ["<foreignObject> element"] = 1,
             ["clip-path: a value that is not a reference"] = 1,
             ["mask: a value that is not a reference"] = 1,
@@ -244,7 +242,7 @@ public sealed class SvgReaderTests
             ["use of an element in another document"] = 1,
         }, ignoreOrder: true);
         // Most frequent first.
-        document.Issues[0].ShouldBe(new SvgIssue(SvgIssueKind.Unsupported, "<text> element", 2));
+        document.Issues[0].ShouldBe(new SvgIssue(SvgIssueKind.Unsupported, "<switch> element", 2));
     }
 
     [Theory]
@@ -273,9 +271,9 @@ public sealed class SvgReaderTests
     public void ThrowOnUnsupported_MakesTheFirstUnsupportedThingAnException_ButNotAnInvalidOne()
     {
         var strict = new SvgReadOptions { ThrowOnUnsupported = true };
-        Should.Throw<NotSupportedException>(() => Doc("<text>x</text>", options: strict)).Message.ShouldContain("<text> element");
+        Should.Throw<NotSupportedException>(() => Doc("<switch/>", options: strict)).Message.ShouldContain("<switch> element");
         Should.Throw<NotSupportedException>(() => Doc("<rect width=\"1\" height=\"1\" filter=\"url(#f)\"/>", options: strict));
-        Doc("<rect width=\"1\" height=\"1\" fill=\"bogus\"/><defs><text>x</text></defs>", options: strict)
+        Doc("<rect width=\"1\" height=\"1\" fill=\"bogus\"/><defs><switch/></defs>", options: strict)
             .Issues.ShouldHaveSingleItem().Kind.ShouldBe(SvgIssueKind.Invalid);
     }
 

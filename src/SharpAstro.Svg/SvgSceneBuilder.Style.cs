@@ -104,6 +104,8 @@ internal sealed partial class SvgSceneBuilder
         style.OverflowVisible = null;
         style.ClipPath = null;
         style.Mask = null;
+        style.AlignmentBaseline = null;
+        style.OwnLines = TextDecorations.None;
 
         IReadOnlyList<SvgDeclaration> declarations = Cascade(element);
         if (declarations.Count == 0) return style;
@@ -119,7 +121,9 @@ internal sealed partial class SvgSceneBuilder
         // font-size before the rest: em lengths on this element are in its own font size.
         for (int i = 0; i < declarations.Count; i++)
         {
-            if (declarations[i].Name != "font-size") continue;
+            // The font shorthand sets the size too, and the later of the two stands.
+            bool shorthand = declarations[i].Name == "font";
+            if (declarations[i].Name != "font-size" && !shorthand) continue;
             string raw = declarations[i].Value;
             if (HasVar(raw) && !TrySubstitute(raw, style.Variables, null, 0, out raw))
             {
@@ -128,12 +132,19 @@ internal sealed partial class SvgSceneBuilder
             }
             ReadOnlySpan<char> v = raw.AsSpan().Trim();
             if (v.Equals("inherit", StringComparison.OrdinalIgnoreCase)) style.FontSize = parent.FontSize;
-            else if (SvgLength.TryParse(v, out SvgLength size) && size.Value >= 0) style.FontSize = size.Resolve(parent.FontSize, parent.FontSize);
+            else if (shorthand) TryFontShorthand(v, ref style, parent, sizeOnly: true);
+            else if (TryFontSize(v, parent.FontSize, out double size)) style.FontSize = size;
         }
         for (int i = 0; i < declarations.Count; i++)
         {
             string name = declarations[i].Name;
             if (name != "font-size" && !IsCustom(name)) Apply(ref style, parent, viewport, name, declarations[i].Value);
+        }
+        // Lines are drawn through everything in the element, in the element's own paints: kept with its style as it
+        // now is, on top of the lines it is already under.
+        if (style.OwnLines != TextDecorations.None)
+        {
+            style.Lines = [.. parent.Lines ?? [], new SvgTextLines(style.OwnLines, style)];
         }
         return style;
     }
@@ -379,6 +390,100 @@ internal sealed partial class SvgSceneBuilder
             case "transform-origin":
                 Issue(SvgIssueKind.Unsupported, name);
                 break;
+
+            // ---- Text ----
+            case "font":
+                // Its size was taken before everything else; here the rest of it.
+                if (!TryFontShorthand(v, ref s, parent, sizeOnly: false))
+                {
+                    // One of the system fonts (caption, menu and so on) is a font of the machine's, which a scene cannot name.
+                    Issue(v.ContainsAny(" \t") ? SvgIssueKind.Invalid : SvgIssueKind.Unsupported, name);
+                }
+                break;
+            case "font-family":
+                s.FontFamilies = FontFamilies(v);
+                break;
+            case "font-weight":
+                if (TryFontWeight(v, parent.FontWeight, out int weight)) s.FontWeight = weight; else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "font-style":
+                if (TryFontSlant(v, out FontSlant slant)) s.FontSlant = slant; else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "font-stretch":
+                if (TryFontStretch(v, out double stretch)) s.FontStretch = stretch; else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "font-variant":
+                if (v is not "normal") Issue(SvgIssueKind.Unsupported, name);
+                break;
+            case "text-anchor":
+                if (v is "start") s.TextAnchor = TextAnchor.Start;
+                else if (v is "middle") s.TextAnchor = TextAnchor.Middle;
+                else if (v is "end") s.TextAnchor = TextAnchor.End;
+                else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "letter-spacing":
+                if (v is "normal") s.LetterSpacing = 0;
+                else if (SvgLength.TryParse(v, out SvgLength letter) && letter.Unit != SvgUnit.Percent) s.LetterSpacing = letter.Resolve(s.FontSize, 0);
+                else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "word-spacing":
+                if (v is "normal") s.WordSpacing = 0;
+                else if (SvgLength.TryParse(v, out SvgLength word) && word.Unit != SvgUnit.Percent) s.WordSpacing = word.Resolve(s.FontSize, 0);
+                else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "text-decoration" or "text-decoration-line":
+            {
+                // An element's lines are drawn through everything inside it, so they add to the lines it is already
+                // under: "none" on a tspan does not take its text's underline away.
+                TextDecorations lines = TextDecorations.None;
+                bool more = false;
+                foreach (Range range in v.SplitAny(' ', '\t', '\n', '\r'))
+                {
+                    ReadOnlySpan<char> word = v[range];
+                    if (word is "underline") lines |= TextDecorations.Underline;
+                    else if (word is "overline") lines |= TextDecorations.Overline;
+                    else if (word is "line-through") lines |= TextDecorations.LineThrough;
+                    else if (!word.IsEmpty && word is not "none") more = true;
+                }
+                // A colour, a style or a thickness of the line: the line is drawn in the text's own paint, solid.
+                if (more) Issue(SvgIssueKind.Unsupported, "text-decoration with a colour, a style or a thickness");
+                s.OwnLines = lines;
+                break;
+            }
+            case "dominant-baseline":
+                // "auto" inside text with another baseline keeps that baseline: it does not go back to the alphabetic
+                // one (measured in a browser).
+                if (TryBaseline(v, out TextBaseline? dominant)) s.Baseline = dominant ?? parent.Baseline;
+                else Issue(SvgIssueKind.Unsupported, $"{name}: {v}");
+                break;
+            case "alignment-baseline":
+                if (TryBaseline(v, out TextBaseline? alignment)) s.AlignmentBaseline = alignment;
+                else Issue(SvgIssueKind.Unsupported, $"{name}: {v}");
+                break;
+            case "baseline-shift":
+                (s.BaselineShift, s.ScriptRise) = (parent.BaselineShift, parent.ScriptRise);
+                if (v is "baseline") { }
+                // How far a superscript is raised is the font's to say: the scene carries the size it is to be said for.
+                else if (v is "super") s.ScriptRise += s.FontSize;
+                else if (v is "sub") s.ScriptRise -= s.FontSize;
+                else if (SvgLength.TryParse(v, out SvgLength shift)) s.BaselineShift += shift.Resolve(s.FontSize, s.FontSize);
+                else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "writing-mode":
+                if (v is not ("horizontal-tb" or "lr" or "lr-tb" or "rl" or "rl-tb")) Issue(SvgIssueKind.Unsupported, "vertical text");
+                break;
+            case "direction":
+                if (v is not "ltr") Issue(SvgIssueKind.Unsupported, "text from right to left");
+                break;
+            case "white-space":
+                if (v is "normal" or "nowrap") s.PreserveWhiteSpace = false;
+                else if (v is "pre" or "pre-wrap" or "break-spaces") s.PreserveWhiteSpace = true;
+                else if (v is "pre-line") Issue(SvgIssueKind.Unsupported, "white-space: pre-line");
+                else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "inline-size":
+                if (v is not ("auto" or "0")) Issue(SvgIssueKind.Unsupported, "text wrapped to a width (inline-size)");
+                break;
             case "x" or "y" or "width" or "height" or "cx" or "cy" or "r" or "rx" or "ry":
                 // Only a sheet or a style attribute brings these here; the attributes are read where the shape is made.
                 if (v is not "auto") Issue(SvgIssueKind.Unsupported, $"{name} as a CSS property");
@@ -414,7 +519,40 @@ internal sealed partial class SvgSceneBuilder
             case "marker-end": s.MarkerEnd = parent.MarkerEnd; break;
             case "marker": (s.MarkerStart, s.MarkerMid, s.MarkerEnd) = (parent.MarkerStart, parent.MarkerMid, parent.MarkerEnd); break;
             case "paint-order": s.PaintOrder = parent.PaintOrder; break;
+            case "font":
+                (s.FontFamilies, s.FontWeight, s.FontSlant, s.FontStretch) = (parent.FontFamilies, parent.FontWeight, parent.FontSlant, parent.FontStretch);
+                break;
+            case "font-family": s.FontFamilies = parent.FontFamilies; break;
+            case "font-weight": s.FontWeight = parent.FontWeight; break;
+            case "font-style": s.FontSlant = parent.FontSlant; break;
+            case "font-stretch": s.FontStretch = parent.FontStretch; break;
+            case "text-anchor": s.TextAnchor = parent.TextAnchor; break;
+            case "letter-spacing": s.LetterSpacing = parent.LetterSpacing; break;
+            case "word-spacing": s.WordSpacing = parent.WordSpacing; break;
+            case "text-decoration" or "text-decoration-line": s.OwnLines = TextDecorations.None; break;
+            case "dominant-baseline": s.Baseline = parent.Baseline; break;
+            case "alignment-baseline": s.AlignmentBaseline = null; break;
+            case "baseline-shift": (s.BaselineShift, s.ScriptRise) = (parent.BaselineShift, parent.ScriptRise); break;
+            case "white-space": s.PreserveWhiteSpace = parent.PreserveWhiteSpace; break;
         }
+    }
+
+    /// <summary>A baseline keyword. Null is <c>auto</c> (and <c>baseline</c>): whatever is inherited, or the alphabetic one. False for a keyword this reader does not act on.</summary>
+    private static bool TryBaseline(ReadOnlySpan<char> v, out TextBaseline? baseline)
+    {
+        baseline = v switch
+        {
+            "alphabetic" => TextBaseline.Alphabetic,
+            "middle" => TextBaseline.Middle,
+            "central" => TextBaseline.Central,
+            "hanging" => TextBaseline.Hanging,
+            "mathematical" => TextBaseline.Mathematical,
+            "ideographic" => TextBaseline.Ideographic,
+            "text-before-edge" or "text-top" => TextBaseline.TextTop,
+            "text-after-edge" or "text-bottom" => TextBaseline.TextBottom,
+            _ => null,
+        };
+        return baseline is not null || v is "auto" or "baseline";
     }
 
     /// <summary>

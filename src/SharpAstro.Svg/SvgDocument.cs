@@ -111,6 +111,9 @@ public sealed record SvgReadOptions
     /// <summary>The most path verbs the scene may hold in total, each instance a <c>use</c> makes counted. Default 2^24.</summary>
     public int MaxPathVerbs { get; init; } = 1 << 24;
 
+    /// <summary>The most characters of text the scene may hold in total, each instance a <c>use</c> makes counted. Default 2^24.</summary>
+    public long MaxTextCharacters { get; init; } = 1L << 24;
+
     /// <summary>
     /// The most selector tests the style sheets may cost. Applying a sheet is elements times rules, and a document
     /// chooses both. Default 2^27.

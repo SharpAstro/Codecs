@@ -64,7 +64,10 @@ honoured. `:hover` and the like never match. `@media` rules with plain media typ
 Each of these is left out of the scene and reported in `SvgDocument.Issues`
 (`SvgReadOptions.ThrowOnUnsupported` makes the first one an exception):
 
-- `text`, `switch`, `foreignObject`
+- `switch`, `foreignObject`
+- in text: vertical writing and text from right to left (drawn as horizontal, left-to-right text), `font-variant`,
+  wrapping to a width (`inline-size`), `tref`, `textLength` on a `tspan`, a colour or style of its own for a
+  `text-decoration`; a pattern, a clip or a mask in the units of a text's bounding box
 - `filter`, `mix-blend-mode`, `vector-effect`
 - an `image` with no `width` or `height` (its size would be the picture's own, which is only known once it is
   decoded), and an `image` that is itself an SVG document
@@ -77,6 +80,16 @@ Each of these is left out of the scene and reported in `SvgDocument.Issues`
 
 Entities a document declares itself are expanded (some Adobe Illustrator exports write their namespace and every
 style as one). Nothing outside the document is fetched.
+
+## Text
+
+`text`, `tspan` and `textPath` become one `VectorText` node: spans in reading order, each a string with the font it
+asks for (`VectorFont`: family names, size, weight, slant, stretch), its paints, its anchor, baseline, spacing and
+lines, and whatever `x`, `y`, `dx`, `dy` and `rotate` say about single characters. White space is already handled.
+
+**It is not laid out, and no font is read**: this package has none. Whoever draws the scene shapes each span with its
+own fonts and places the result as the spans say. `SharpAstro.Fonts` does exactly that (`SceneText`,
+`SceneRasterizer` with `SceneRenderOptions.ShapeText`), and `DIR.Lib` supplies the machine's fonts (`SceneFonts`).
 
 ## What a document takes from its surroundings
 

@@ -79,8 +79,8 @@ public sealed record VectorStroke(
     float DashOffset);
 
 /// <summary>
-/// Something in a <see cref="VectorScene"/>: a <see cref="VectorShape"/>, a <see cref="VectorImage"/> or a
-/// <see cref="VectorGroup"/>.
+/// Something in a <see cref="VectorScene"/>: a <see cref="VectorShape"/>, a <see cref="VectorImage"/>,
+/// a <see cref="VectorText"/> or a <see cref="VectorGroup"/>.
 /// </summary>
 public abstract class VectorNode
 {

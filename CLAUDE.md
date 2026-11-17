@@ -1131,7 +1131,7 @@ rungs. What a person touching it should know:
 
 - **The layering is forced, and it is the point.** Codecs is the bottom layer: Fonts.Lib references `SharpAstro.Png`,
   and the fill rasteriser, stroker and COLR paint code live in Fonts.Lib. A rasterising SVG codec here could not use
-  them. Reading to a scene needs none of it, and it means text will be handed to the caller as runs and drawn by the
+  them. Reading to a scene needs none of it, and it means text is handed on as spans (rung 5) and shaped by the
   text code the caller already has, so there is never a second text renderer. Do not add a rasteriser or font parsing
   to these two packages.
 - **The package is `SharpAstro.Vector`, its namespace is `SharpAstro.VectorGraphics`, and that mismatch is deliberate.** A
@@ -1257,6 +1257,30 @@ rung 4 settled") has the reasons. The ones that bite:
 - **Firefox is the only browser here that draws OpenType SVG glyphs, and it does four things the specification does
   not** (no palette, black `currentColor`, no strokes, a nested glyph inheriting from its groups and ignoring the root's
   `viewBox`). The roadmap lists them as measured. Where it and the specification disagree, the specification is followed.
+
+Rung 5 (3.39) added text; `roadmap/svg.md` ("What rung 5 settled") has the reasons. The ones that bite:
+
+- **Text is not laid out here, and cannot be tested by pixels here.** A `text` element is one `VectorText` of spans:
+  strings, the font each asks for, paints, and what the document says about single characters. There is no font in
+  this repository, so `SvgTextTests` holds only what the scene says, and `SvgPlainRasteriser` leaves text out. The
+  drawing is `SceneText` in Fonts.Lib, and **its browser tests are also the oracle for this reader's white-space
+  rules, position lists and baselines**: change one of those here and run `SceneTextBrowserTests` there.
+- **What the reader does is exactly what needs no font**: white space (which decides which characters there are, and so
+  what the position lists count), the cascade of the font properties, the lists resolved to characters, chunks, the
+  sets of lines. Do not move any of that to the renderer, and do not bring anything that needs an advance here.
+- **A fourth thing walks scenes now.** `VectorText` joins `VectorImage`, `PatternPaint` and a group's clip and mask:
+  `VectorSceneFile`, `Dump`, `ReachesOutside` (text may reach anywhere: it says yes) and `BoundsOf` (text has no
+  box here: it says the box is not known, and a clip or mask in that box's units is reported, not guessed).
+- **Lines are shared objects, and so are text paths.** Spans under one `text-decoration` hold the same
+  `VectorTextLine`, spans on one `textPath` the same `VectorTextPath`; the renderer draws one line under them all
+  because of it. `VectorSceneFile` writes each once and `Dump` prints which one a span holds. A line carries only
+  its kinds and its paints: where it lies follows the span, which a browser showed and the first model had wrong.
+- **`Cascade` reuse again**: `ComputeStyle` now makes an `SvgTextLines` for an element that asks for lines, holding a
+  copy of its style. It is made after every declaration is applied, so the copy has the paints the lines are drawn in.
+- **The XML reader keeps white space between tags** (`IgnoreWhitespace = false`), because inside `text` it is text.
+  `ReadTree` keeps character data only for elements that hold text (`InText`), in one list with their child
+  elements, since the order of the two matters there and nowhere else.
+- **Budget**: `MaxTextCharacters`, charged for every instance a `use` makes of a text.
 
 ## Oracle harnesses (all codecs)
 

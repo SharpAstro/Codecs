@@ -25,6 +25,7 @@ public static class SvgReader
 {
     internal const string SvgNamespace = "http://www.w3.org/2000/svg";
     private const string XLinkNamespace = "http://www.w3.org/1999/xlink";
+    private const string XmlNamespace = "http://www.w3.org/XML/1998/namespace";
 
     /// <summary>Reads a document from its bytes (plain or gzip).</summary>
     /// <exception cref="InvalidDataException">Not well-formed XML, not an SVG document, or over a limit in <paramref name="options"/>.</exception>
@@ -109,7 +110,8 @@ public static class SvgReader
             MaxCharactersFromEntities = options.MaxEntityCharacters,
             IgnoreComments = true,
             IgnoreProcessingInstructions = true,
-            IgnoreWhitespace = true,
+            // White space between tags is text inside a text element: "<tspan>a</tspan> <tspan>b</tspan>" has a space in it.
+            IgnoreWhitespace = false,
             MaxCharactersInDocument = options.MaxCharacters,
             CloseInput = false,
         };
@@ -154,9 +156,14 @@ public static class SvgReader
                 open.Pop();
                 continue;
             }
-            if (xml.NodeType is XmlNodeType.Text or XmlNodeType.CDATA or XmlNodeType.SignificantWhitespace)
+            if (xml.NodeType is XmlNodeType.Text or XmlNodeType.CDATA or XmlNodeType.SignificantWhitespace or XmlNodeType.Whitespace)
             {
-                if (open.Count > 0 && open.Peek() is { Name: "style" } style) style.Text += xml.Value;
+                if (open.Count > 0 && open.Peek() is { } holder)
+                {
+                    if (holder.Name == "style") holder.Text += xml.Value;
+                    // Character data is kept where it is text: in a text element and what may hold text inside one.
+                    else if (InText(holder)) ((holder.Extras ??= new SvgElementExtras()).Content ??= []).Add(xml.Value);
+                }
                 continue;
             }
             if (xml.NodeType != XmlNodeType.Element) continue;
@@ -185,6 +192,8 @@ public static class SvgReader
             {
                 element = new SvgElement(xml.LocalName);
                 parent.Add(element);
+                // Inside text the order of character data and elements matters, so the two are kept in one list.
+                if (InText(parent)) ((parent.Extras ??= new SvgElementExtras()).Content ??= []).Add(element);
             }
 
             if (element is not null && xml.HasAttributes)
@@ -194,6 +203,7 @@ public static class SvgReader
                 {
                     if (xml.NamespaceURI.Length == 0) element.Set(xml.LocalName, xml.Value);
                     else if (xml.NamespaceURI == XLinkNamespace && xml.LocalName == "href") xlinkHref = xml.Value;
+                    else if (xml.NamespaceURI == XmlNamespace && xml.LocalName == "space") element.Set("xml:space", xml.Value);
                 }
                 xml.MoveToElement();
                 if (xlinkHref is not null && element.Get("href") is null) element.Set("href", xlinkHref);
@@ -206,6 +216,14 @@ public static class SvgReader
         if (root is null) throw new InvalidDataException("Not an SVG document: it has no root element.");
         return new SvgTree(root, ids, sheets, externalEntities);
     }
+
+    /// <summary>Whether an element holds text: a <c>text</c>, or a <c>tspan</c>, <c>textPath</c> or <c>a</c> inside one.</summary>
+    private static bool InText(SvgElement element) => element.Name switch
+    {
+        "text" => true,
+        "tspan" or "textPath" or "a" => element.Parent is { } parent && InText(parent),
+        _ => false,
+    };
 
     /// <summary>
     /// Whether a DOCTYPE's internal subset declares an entity that is kept somewhere else (<c>SYSTEM</c> or
@@ -269,6 +287,9 @@ internal sealed class SvgElementExtras
     public ReadOnlyMemory<byte> Picture;
     public string? MediaType;
     public bool PictureRead;
+
+    /// <summary>For an element that holds text: its character data (strings) and its child elements, in document order.</summary>
+    public List<object>? Content;
 }
 
 /// <summary>An SVG element as read: its local name, its un-namespaced attributes and its SVG children.</summary>
