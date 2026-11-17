@@ -80,6 +80,60 @@ internal static class SvgTestSupport
                         $" type={image.MediaType ?? "(none)"} source={image.Source ?? "(none)"} bytes={image.Data.Length} sha={Convert.ToHexString(SHA256.HashData(image.Data.Span))[..12]}\n");
                     break;
 
+                case VectorText words:
+                {
+                    text.Append(CultureInfo.InvariantCulture, $"text id={words.Id ?? "(none)"} transform={words.Transform}");
+                    if (words.TextLength is { } length) text.Append(CultureInfo.InvariantCulture, $" length={length:R} {words.LengthAdjust}");
+                    text.Append('\n');
+                    foreach (VectorTextSpan span in words.Spans)
+                    {
+                        text.Append(' ', (indent + 1) * 2);
+                        VectorFont font = span.Font;
+                        text.Append(CultureInfo.InvariantCulture,
+                            $"span \"{span.Text}\" font=[{string.Join(", ", font.Families)}] {font.Size:R} w={font.Weight} {font.Slant} {font.Stretch:R}% {span.Anchor} {span.Baseline}");
+                        if (span.BaselineShift != 0) text.Append(CultureInfo.InvariantCulture, $" shift={span.BaselineShift:R}");
+                        if (span.ScriptRise != 0) text.Append(CultureInfo.InvariantCulture, $" rise={span.ScriptRise:R}");
+                        if (span.LetterSpacing != 0) text.Append(CultureInfo.InvariantCulture, $" letter={span.LetterSpacing:R}");
+                        if (span.WordSpacing != 0) text.Append(CultureInfo.InvariantCulture, $" word={span.WordSpacing:R}");
+                        if (span.Hidden) text.Append(" hidden");
+                        foreach (VectorTextLine line in span.Lines)
+                        {
+                            // Which object it is is part of what a span says: spans under one line say so by sharing it.
+                            int which = words.Spans.SelectMany(s => s.Lines).Distinct(ReferenceEqualityComparer.Instance).ToList().IndexOf(line);
+                            text.Append(CultureInfo.InvariantCulture, $" line#{which}({line.Kinds}");
+                            if (line.Fill is { } lineFill) text.Append(CultureInfo.InvariantCulture, $" fill({DumpPaint(lineFill.Paint)} {lineFill.Opacity:R}{(line.FillInBox ? " in-box" : "")})");
+                            if (line.Stroke is { } lineStroke) text.Append(CultureInfo.InvariantCulture, $" stroke({DumpPaint(lineStroke.Paint)} {lineStroke.Opacity:R} w={lineStroke.Width:R}{(line.StrokeInBox ? " in-box" : "")})");
+                            text.Append(')');
+                        }
+                        if (span.Fill is { } spanFill) text.Append(CultureInfo.InvariantCulture, $" fill({DumpPaint(spanFill.Paint)} {spanFill.Opacity:R} {spanFill.Rule}{(span.FillInBox ? " in-box" : "")})");
+                        if (span.Stroke is { } spanStroke)
+                        {
+                            text.Append(CultureInfo.InvariantCulture,
+                                $" stroke({DumpPaint(spanStroke.Paint)} {spanStroke.Opacity:R} w={spanStroke.Width:R} {spanStroke.Cap} {spanStroke.Join}{(span.StrokeInBox ? " in-box" : "")}{(span.StrokeFirst ? " first" : "")})");
+                        }
+                        foreach (VectorTextPosition p in span.Positions)
+                        {
+                            text.Append(CultureInfo.InvariantCulture, $" @{p.Index}(");
+                            if (p.X is { } x) text.Append(CultureInfo.InvariantCulture, $"x={x:R} ");
+                            if (p.Y is { } y) text.Append(CultureInfo.InvariantCulture, $"y={y:R} ");
+                            if (p.Dx != 0) text.Append(CultureInfo.InvariantCulture, $"dx={p.Dx:R} ");
+                            if (p.Dy != 0) text.Append(CultureInfo.InvariantCulture, $"dy={p.Dy:R} ");
+                            if (p.Rotate != 0) text.Append(CultureInfo.InvariantCulture, $"turn={p.Rotate:R} ");
+                            if (text[^1] == ' ') text.Length--;
+                            text.Append(')');
+                        }
+                        if (span.Path is { } along)
+                        {
+                            // The object's identity is part of what a span says: spans on one path say so by sharing it.
+                            int number = words.Spans.Select(s => s.Path).Where(p => p is not null).Distinct(ReferenceEqualityComparer.Instance).ToList().IndexOf(along);
+                            text.Append(CultureInfo.InvariantCulture,
+                                $" along#{number}([{Describe(along.Path)}] {along.Transform} start={along.StartOffset:R}{(along.StartIsFraction ? " of the length" : "")}{(along.RightSide ? " right" : "")})");
+                        }
+                        text.Append('\n');
+                    }
+                    break;
+                }
+
                 default:
                 {
                     var shape = (VectorShape)node;
