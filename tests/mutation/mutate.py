@@ -29,8 +29,8 @@ TESTS = {
 TIMEOUT = 1200   # seconds for one build and test run; a bug that makes a test hang counts as caught
 
 
-def run(kind):
-    """(verdict, detail, skipped) of one test run."""
+def run(kind, show=False):
+    """(verdict, detail, skipped) of one test run. With `show`, failing tests' messages are printed."""
     repo, command = TESTS[kind]
     try:
         p = subprocess.run(command, cwd=os.path.join(ROOT, repo), capture_output=True, text=True, timeout=TIMEOUT)
@@ -42,6 +42,10 @@ def run(kind):
         errors = re.findall(r'error [A-Z]+\d+: [^\[]+', out)
         return 'BUILD ERROR', (errors[0][:200] if errors else out[-400:]), 0
     if int(m.group(2)) > 0:
+        if show:
+            # What failed and why, as the test runner printed it (the lines from each [FAIL] to the next result).
+            for block in out.split('[FAIL]')[1:21]:
+                print('[FAIL]' + block[:1500], flush=True)
         failed = sorted(set(re.findall(r'\]\s+SharpAstro\.[\w.]+\.(\w+\.\w+)[^\n]*\[FAIL\]', out)))
         return 'CAUGHT by %s' % m.group(2), ', '.join(failed)[:300], int(m.group(4))
     return 'MISSED', '%s passed' % m.group(3), int(m.group(4))
@@ -79,7 +83,7 @@ def main():
             if not available(kind):
                 results.append(('(unmutated, %s)' % kind, 'NOT RUN', TESTS[kind][0] + ' is not beside this repository'))
                 continue
-            verdict, detail, skipped = run(kind)
+            verdict, detail, skipped = run(kind, show=True)
             good = verdict == 'MISSED'
             ok &= good
             results.append(('(unmutated, %s)' % kind, 'PASS' if good else 'BASELINE ' + verdict, '%s, %d skipped' % (detail, skipped)))
