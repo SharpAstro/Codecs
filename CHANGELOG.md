@@ -14,6 +14,49 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.37
+
+**`SharpAstro.Svg` rung 3: clips, masks, markers, `paint-order`, images and patterns.** The scene model gains what they need,
+`VectorSceneFile` moves to version 2 (and still reads version 1), and everything new was held against a headless browser.
+
+- **`SharpAstro.Vector`**: `VectorGroup` gains `Clip` (a `VectorClip`: a union of outlines, each of which may have a clip of its
+  own, optionally intersected with another) and `Mask` (a `VectorMask`: a little scene whose luminance or alpha scales the
+  layer). New node `VectorImage` (the picture's file bytes or its address, a box, and how it is fitted: `ImageFit` and an
+  alignment). New paint `PatternPaint` (a tile's content, the tile, a transform). **A renderer written for 3.36 must learn
+  these**: it will meet a node that is not a shape or a group, and a paint that is not a colour or a gradient.
+- **`clipPath`**, with `clipPathUnits`, `clip-rule`, a `transform`, several children, `use` of a shape, a `clip-path` on a child
+  and on the `clipPath` itself. **The clip of a nested `svg`, a `symbol` and a marker** is now in the scene (it was reported as
+  unsupported), and only where content can really reach outside, so an icon sprite reads to the same flat scene as before.
+- **`mask`**, with `maskUnits`, `maskContentUnits`, its area, and `mask-type` (luminance or alpha).
+- **Markers**: `marker-start`, `marker-mid`, `marker-end` and the `marker` shorthand in style sheets; `orient` (an angle, `auto`,
+  `auto-start-reverse`), `markerUnits`, `refX` / `refY`, `viewBox`, `overflow`. A marker is resolved to its content, placed; a
+  path command is one vertex however many curves an arc became.
+- **`paint-order`**: resolved into the order of the scene's nodes.
+- **`image`**: a `data:` URI's bytes are carried as the file they are (base64 or percent-encoded, decoded once an element); a
+  picture in another file is named and **never fetched**. Not decoded here: the caller has the codecs.
+- **`pattern`**, with both units for the tile and the content, `patternTransform`, `viewBox`, inheritance through `href`, on fills
+  and strokes.
+- **Limits follow the new ways to repeat.** Markers, masks and clips are counted for every instance; a pattern in user units is
+  worked out once and **charged for every use**, since patterns painted with patterns double at every level for whoever draws
+  the scene (forty levels in under 8 KB ask for 2^40 tiles, and are refused at once).
+- **Changed:** `clip-path`, `mask`, markers, `paint-order`, `pattern` and `image` no longer appear in `SvgDocument.Issues` as
+  unsupported, and neither does "clipping to a nested viewport". A `clip-path` or `mask` that is not a reference to an element
+  of this document still does. The `marker` shorthand written as an attribute is ignored, as a browser ignores it.
+- **`VectorSceneFile`** version 2 holds all of the above. Version 1 files are still read. The reader's checks on untrusted bytes
+  cover the new counts (a clip's outlines, an image's bytes).
+- **Tests.** The test rasteriser was rewritten as a function from a point to a colour (`SvgPlainRasteriser`) and now draws
+  strokes, clips, masks, patterns and images, so the browser oracle holds strokes for the first time. Nine new documents, 37 in
+  all. Twelve behaviours the specification leaves open or states in a way that reads two ways were settled by the browser and are
+  listed in `roadmap/svg.md` ("What rung 3 settled"). Seven first readings were wrong and were changed to what the browser does:
+  the `marker` shorthand as an attribute, a circular `clip-path` or `mask`, a pattern painted with itself, a `mask` on a `mask`,
+  `opacity` on a `marker`, and the coordinates of a `clip-path` on a `use` and on a nested `svg`.
+- **Mutation-checked:** 37 deliberate bugs, one at a time. 36 were caught at once; the one that was not (a clipped shape's
+  bounding box taken from its markers too) had no test, has one now, and fails it.
+- **Not in this release:** the rasteriser in Fonts.Lib and `VectorIcon` in DIR.Lib do not draw the new things yet (rung 3f).
+  Until they do, Fonts.Lib 1.18 draws a clipped or masked group without its clip or mask, and refuses a scene that holds a
+  pattern or an image (`NotSupportedException`, by design: it says what it does not know). Their pins are `3.36.*`, so
+  nothing changes for them until they move.
+
 ## 3.36
 
 **`SharpAstro.Svg` rung 2: `use`, `symbol`, nested `svg`, gradients and style sheets.** The scene model gains gradient paints,

@@ -11,8 +11,10 @@ namespace SharpAstro.Svg;
 /// <para>Written from the W3C SVG 1.1 and SVG 2 specifications. Read so far: the root's size, <c>viewBox</c> and
 /// <c>preserveAspectRatio</c>, and nested <c>svg</c>; <c>g</c> and <c>a</c>; <c>defs</c>, <c>use</c> and <c>symbol</c>;
 /// <c>path</c>, <c>rect</c>, <c>circle</c>, <c>ellipse</c>, <c>line</c>, <c>polyline</c>, <c>polygon</c>;
-/// <c>transform</c>; solid and gradient fills and strokes with every stroke property; opacity; <c>display</c> and
-/// <c>visibility</c>; presentation attributes, the <c>style</c> attribute and <c>style</c> sheets, cascaded and inherited
+/// <c>transform</c>; solid, gradient and pattern fills and strokes with every stroke property; opacity; <c>display</c> and
+/// <c>visibility</c>; <c>clipPath</c>, <c>mask</c> and the clip of a nested viewport; markers and <c>paint-order</c>;
+/// <c>image</c> (the picture is carried as the file it is, not decoded, and one in another file is named, not fetched);
+/// presentation attributes, the <c>style</c> attribute and <c>style</c> sheets, cascaded and inherited
 /// as CSS says. Everything else is left out of the scene and listed in <see cref="SvgDocument.Issues"/>.</para>
 /// <para>The XML is read with DTD processing ignored and no resolver, so nothing outside the document is fetched and
 /// entities are not expanded; a document that uses an entity it declares itself is refused. A gzip stream (SVGZ) is
@@ -212,6 +214,18 @@ public static class SvgReader
 /// <summary>The document as read: the root, the elements by <c>id</c>, and the <c>style</c> elements in document order.</summary>
 internal sealed record SvgTree(SvgElement Root, Dictionary<string, SvgElement> Ids, List<SvgElement> StyleSheets);
 
+/// <summary>Things worked out once for an element that few elements have.</summary>
+internal sealed class SvgElementExtras
+{
+    /// <summary>For a <c>path</c> that has been drawn with markers: the verb count of its path after each path command.</summary>
+    public int[]? CommandEnds;
+
+    /// <summary>For an <c>image</c> with a data URI, once decoded: its bytes (empty when it could not be read) and media type. Every instance shares them.</summary>
+    public ReadOnlyMemory<byte> Picture;
+    public string? MediaType;
+    public bool PictureRead;
+}
+
 /// <summary>An SVG element as read: its local name, its un-namespaced attributes and its SVG children.</summary>
 internal sealed class SvgElement(string name)
 {
@@ -233,6 +247,12 @@ internal sealed class SvgElement(string name)
 
     /// <summary>The path of a <c>path</c>, <c>polyline</c> or <c>polygon</c>, once it has been drawn: every instance shares it.</summary>
     public SharpAstro.VectorGraphics.VectorPath? Path { get; set; }
+
+    /// <summary>
+    /// What only a few elements ever need, kept behind one reference so that the many that do not pay eight bytes for
+    /// it and no more: a document is mostly elements.
+    /// </summary>
+    public SvgElementExtras? Extras { get; set; }
 
     /// <summary>The declarations that apply to this element, once worked out against the style sheets.</summary>
     public SvgDeclaration[]? Cascade { get; set; }

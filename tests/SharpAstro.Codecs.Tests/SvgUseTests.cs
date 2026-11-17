@@ -211,7 +211,7 @@ public sealed class SvgUseTests
     [InlineData("overflow=\"visible\"", "<rect x=\"15\" width=\"10\" height=\"5\"/>", false)]
     [InlineData("style=\"overflow: auto\"", "<rect x=\"15\" width=\"10\" height=\"5\"/>", false)]
     [InlineData("overflow=\"hidden\"", "<rect x=\"15\" width=\"10\" height=\"5\"/>", true)]
-    public void ContentThatLeavesANestedViewport_WouldBeClipped_WhichIsReportedOnlyThen(string overflow, string content, bool reported)
+    public void ContentThatLeavesANestedViewport_IsClippedToIt_AndOnlyThenIsThereAClipInTheScene(string overflow, string content, bool clipped)
     {
         foreach (string body in (string[])
         [
@@ -220,9 +220,21 @@ public sealed class SvgUseTests
         ])
         {
             SvgDocument document = Doc(body);
-            document.Scene.Nodes.ShouldNotBeEmpty();
-            if (reported) document.Issues.ShouldHaveSingleItem().ShouldBe(new SvgIssue(SvgIssueKind.Unsupported, "clipping to a nested viewport (overflow)", 1));
-            else document.Issues.ShouldBeEmpty();
+            document.Issues.ShouldBeEmpty();
+            if (!clipped)
+            {
+                // Nothing can reach outside, so the scene stays as flat as it was: no layer for a renderer to make.
+                document.Scene.Nodes.ShouldNotBeEmpty();
+                Dump(document.Scene).ShouldNotContain("clip");
+                continue;
+            }
+            // Everything the viewport drew is in one group, kept to the viewport's rectangle in the picture.
+            VectorGroup group = document.Scene.Nodes.ShouldHaveSingleItem().ShouldBeOfType<VectorGroup>();
+            group.Opacity.ShouldBe(1f);
+            group.Mask.ShouldBeNull();
+            VectorClipShape region = group.Clip.ShouldNotBeNull().Shapes.ShouldHaveSingleItem();
+            group.Clip.Intersect.ShouldBeNull();
+            Flatten(region.Path, region.Transform).ShouldHaveSingleItem().ShouldBe([new(10, 10), new(30, 10), new(30, 20), new(10, 20)]);
         }
     }
 

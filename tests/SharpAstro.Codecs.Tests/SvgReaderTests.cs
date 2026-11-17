@@ -136,17 +136,17 @@ public sealed class SvgReaderTests
         SvgDocument document = Doc(
             "<text x=\"1\" y=\"1\">words <tspan>more</tspan></text><text>again</text>" +
             "<image href=\"a.png\"/><switch><g/></switch><foreignObject><rect width=\"1\" height=\"1\"/></foreignObject>" +
-            "<defs><pattern id=\"p\"/></defs>" +
-            RectWith("clip-path=\"url(#c)\" mask=\"url(#m)\" filter=\"url(#f)\" marker-end=\"url(#k)\" id=\"kept\"") +
-            RectWith("style=\"mix-blend-mode: multiply; paint-order: stroke; vector-effect: non-scaling-stroke; transform: scale(2)\"") +
-            RectWith("clip-path=\"none\" mask=\"none\" filter=\"none\" marker=\"none\" mix-blend-mode=\"normal\" paint-order=\"normal\"") +
+            RectWith("filter=\"url(#f)\" clip-path=\"circle(4px)\" mask=\"linear-gradient(red, blue)\" id=\"kept\"") +
+            RectWith("style=\"mix-blend-mode: multiply; vector-effect: non-scaling-stroke; transform: scale(2)\"") +
+            RectWith("clip-path=\"none\" mask=\"none\" filter=\"none\" marker-end=\"none\" mix-blend-mode=\"normal\" paint-order=\"normal\"") +
             RectWith("stroke=\"red\" stroke-linejoin=\"arcs\"") +
-            RectWith("fill=\"url(#p) green\" id=\"patterned\"") +
+            RectWith("clip-path=\"url(other.svg#c)\" fill=\"green\"") +
             RectWith("fill=\"url(other.svg#g) blue\"") +
             "<use href=\"other.svg#thing\"/>");
 
         // The shapes are still there, drawn without what was not read.
         document.Scene.Nodes.Length.ShouldBe(6);
+        document.Scene.Nodes.ShouldAllBe(node => node is VectorShape);
         document.Scene.Nodes[0].Id.ShouldBe("kept");
         ((VectorShape)document.Scene.Nodes[3]).Stroke!.Join.ShouldBe(LineJoin.Miter);
         FillColor((VectorShape)document.Scene.Nodes[4]).ShouldBe(new Rgba32(0, 128, 0));
@@ -156,19 +156,17 @@ public sealed class SvgReaderTests
         document.Issues.ToDictionary(issue => issue.What, issue => issue.Count).ShouldBe(new Dictionary<string, int>
         {
             ["<text> element"] = 2,
-            ["<image> element"] = 1,
+            ["image with no width or height (sized by the picture)"] = 1,
             ["<switch> element"] = 1,
             ["<foreignObject> element"] = 1,
-            ["clip-path"] = 1,
-            ["mask"] = 1,
+            ["clip-path: a value that is not a reference"] = 1,
+            ["mask: a value that is not a reference"] = 1,
+            ["clip-path: an element in another document"] = 1,
             ["filter"] = 1,
-            ["marker-end"] = 1,
             ["mix-blend-mode"] = 1,
-            ["paint-order"] = 1,
             ["vector-effect"] = 1,
             ["transform in a style attribute or sheet"] = 1,
             ["stroke-linejoin: arcs"] = 1,
-            ["pattern"] = 1,
             ["paint server in another document"] = 1,
             ["use of an element in another document"] = 1,
         }, ignoreOrder: true);

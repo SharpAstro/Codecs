@@ -41,7 +41,8 @@ internal sealed partial class SvgSceneBuilder
         _scratch.Clear();
         foreach (KeyValuePair<string, string> attribute in element.Attributes)
         {
-            if (Properties.Contains(attribute.Key)) _scratch.Add(new SvgDeclaration(attribute.Key, attribute.Value, false));
+            // The marker shorthand is a property of style sheets only: as an attribute a browser does not read it.
+            if (Properties.Contains(attribute.Key) && attribute.Key != "marker") _scratch.Add(new SvgDeclaration(attribute.Key, attribute.Value, false));
         }
         int attributes = _scratch.Count;
         if (element.Get("style") is { } css) SvgStyleSheet.ParseDeclarations(css, _scratch, Keep, stripComments: true);
@@ -93,6 +94,8 @@ internal sealed partial class SvgSceneBuilder
         style.Opacity = 1;
         style.Display = true;
         style.OverflowVisible = null;
+        style.ClipPath = null;
+        style.Mask = null;
 
         IReadOnlyList<SvgDeclaration> declarations = Cascade(element);
         if (declarations.Count == 0) return style;
@@ -198,11 +201,41 @@ internal sealed partial class SvgSceneBuilder
                 else Issue(SvgIssueKind.Invalid, name);
                 break;
 
+            case "clip-path":
+                s.ClipPath = v is "none" ? null : Reference(v, name, "clipPath");
+                break;
+            case "mask":
+                s.Mask = v is "none" ? null : Reference(v, name, "mask");
+                break;
+            case "clip-rule":
+                if (v is "nonzero") s.ClipRule = FillRule.NonZero;
+                else if (v is "evenodd") s.ClipRule = FillRule.EvenOdd;
+                else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "marker-start":
+                s.MarkerStart = v is "none" ? null : Reference(v, name, "marker");
+                break;
+            case "marker-mid":
+                s.MarkerMid = v is "none" ? null : Reference(v, name, "marker");
+                break;
+            case "marker-end":
+                s.MarkerEnd = v is "none" ? null : Reference(v, name, "marker");
+                break;
+            case "marker":
+                s.MarkerStart = s.MarkerMid = s.MarkerEnd = v is "none" ? null : Reference(v, name, "marker");
+                break;
+            case "paint-order":
+                if (TryPaintOrder(v, out byte order)) s.PaintOrder = order; else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "mask-type":
+                // Read where the mask is used: it is a property of the mask element alone.
+                break;
+
             // Read far enough to know the scene is missing something.
-            case "clip-path" or "mask" or "filter" or "marker" or "marker-start" or "marker-mid" or "marker-end" or "vector-effect":
+            case "filter" or "vector-effect":
                 if (v is not "none") Issue(SvgIssueKind.Unsupported, name);
                 break;
-            case "mix-blend-mode" or "paint-order":
+            case "mix-blend-mode":
                 if (v is not "normal") Issue(SvgIssueKind.Unsupported, name);
                 break;
             case "transform":
@@ -234,7 +267,73 @@ internal sealed partial class SvgSceneBuilder
             case "visibility": s.Visible = parent.Visible; break;
             case "display": s.Display = parent.Display; break;
             case "overflow": s.OverflowVisible = parent.OverflowVisible; break;
+            case "clip-path": s.ClipPath = parent.ClipPath; break;
+            case "mask": s.Mask = parent.Mask; break;
+            case "clip-rule": s.ClipRule = parent.ClipRule; break;
+            case "marker-start": s.MarkerStart = parent.MarkerStart; break;
+            case "marker-mid": s.MarkerMid = parent.MarkerMid; break;
+            case "marker-end": s.MarkerEnd = parent.MarkerEnd; break;
+            case "marker": (s.MarkerStart, s.MarkerMid, s.MarkerEnd) = (parent.MarkerStart, parent.MarkerMid, parent.MarkerEnd); break;
+            case "paint-order": s.PaintOrder = parent.PaintOrder; break;
         }
+    }
+
+    /// <summary>
+    /// A <c>url(#id)</c> that must name an element of one kind. Anything else is reported and is as if the property
+    /// were <c>none</c>: a reference that leads nowhere does not hide the element.
+    /// </summary>
+    private SvgElement? Reference(ReadOnlySpan<char> v, string property, string kind)
+    {
+        if (!v.StartsWith("url(", StringComparison.OrdinalIgnoreCase) || v[^1] != ')')
+        {
+            Issue(SvgIssueKind.Unsupported, $"{property}: a value that is not a reference");
+            return null;
+        }
+        ReadOnlySpan<char> reference = v[4..^1].Trim().Trim("\"'").Trim();
+        if (reference.IsEmpty || reference[0] != '#')
+        {
+            Issue(SvgIssueKind.Unsupported, $"{property}: an element in another document");
+            return null;
+        }
+        if (!tree.Ids.TryGetValue(reference[1..].ToString(), out SvgElement? element))
+        {
+            Issue(SvgIssueKind.Invalid, $"{property}: no element with that id");
+            return null;
+        }
+        if (element.Name != kind)
+        {
+            Issue(SvgIssueKind.Invalid, $"{property}: not a {kind} element");
+            return null;
+        }
+        return element;
+    }
+
+    /// <summary>The first, second and third thing painted, two bits each: 0 the fill, 1 the stroke, 2 the markers.</summary>
+    internal const byte NormalPaintOrder = 0 | 1 << 2 | 2 << 4;
+
+    /// <summary><c>normal</c>, or one to three of <c>fill</c>, <c>stroke</c> and <c>markers</c>: those first, in that order, then the rest in the usual one.</summary>
+    private static bool TryPaintOrder(ReadOnlySpan<char> v, out byte order)
+    {
+        order = NormalPaintOrder;
+        if (v is "normal") return true;
+        Span<int> slots = stackalloc int[3];
+        int count = 0, seen = 0;
+        foreach (Range range in v.SplitAny(' ', '\t', '\n', '\r'))
+        {
+            ReadOnlySpan<char> word = v[range];
+            if (word.IsEmpty) continue;
+            int which = word is "fill" ? 0 : word is "stroke" ? 1 : word is "markers" ? 2 : -1;
+            if (which < 0 || (seen & 1 << which) != 0) return false;
+            seen |= 1 << which;
+            slots[count++] = which;
+        }
+        if (count == 0) return false;
+        for (int which = 0; which < 3; which++)
+        {
+            if ((seen & 1 << which) == 0) slots[count++] = which;
+        }
+        order = (byte)(slots[0] | slots[1] << 2 | slots[2] << 4);
+        return true;
     }
 
     /// <summary>
@@ -281,13 +380,9 @@ internal sealed partial class SvgSceneBuilder
         {
             Issue(SvgIssueKind.Invalid, "paint: no element with that id");
         }
-        else if (server.Name is "linearGradient" or "radialGradient")
+        else if (server.Name is "linearGradient" or "radialGradient" or "pattern")
         {
             paint = new SvgPaint(SvgPaintKind.Server, fallback.Color, server, fallback.Kind);
-        }
-        else if (server.Name == "pattern")
-        {
-            Issue(SvgIssueKind.Unsupported, "pattern");
         }
         else
         {

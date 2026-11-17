@@ -1,5 +1,7 @@
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Numerics;
+using System.Security.Cryptography;
 using System.Text;
 using SharpAstro.Svg;
 using SharpAstro.VectorGraphics;
@@ -40,6 +42,95 @@ internal static class SvgTestSupport
             }
         }
         return text.ToString();
+    }
+
+    /// <summary>
+    /// Everything about a scene, as text, so that two scenes can be compared whole and a test can say what it expects to
+    /// find. One node a line, children indented under their group; a group's clip and mask come before its children.
+    /// </summary>
+    public static string Dump(VectorScene scene)
+    {
+        var text = new StringBuilder(string.Create(CultureInfo.InvariantCulture, $"scene {scene.Width:R} x {scene.Height:R}\n"));
+        DumpNodes(text, scene.Nodes, 1);
+        return text.ToString();
+    }
+
+    private static void DumpNodes(StringBuilder text, ImmutableArray<VectorNode> nodes, int indent)
+    {
+        foreach (VectorNode node in nodes)
+        {
+            text.Append(' ', indent * 2);
+            switch (node)
+            {
+                case VectorGroup group:
+                    text.Append(CultureInfo.InvariantCulture, $"group id={group.Id ?? "(none)"} opacity={group.Opacity:R}\n");
+                    if (group.Clip is { } clip) DumpClip(text, clip, "clip", indent + 1);
+                    if (group.Mask is { } mask)
+                    {
+                        text.Append(' ', (indent + 1) * 2).Append(CultureInfo.InvariantCulture, $"mask {mask.Kind}\n");
+                        DumpNodes(text, mask.Children, indent + 2);
+                    }
+                    DumpNodes(text, group.Children, indent + 1);
+                    break;
+
+                case VectorImage image:
+                    text.Append(CultureInfo.InvariantCulture,
+                        $"image id={image.Id ?? "(none)"} transform={image.Transform} bounds={image.Bounds} {image.Fit} align={image.AlignX:R},{image.AlignY:R} opacity={image.Opacity:R}");
+                    text.Append(CultureInfo.InvariantCulture,
+                        $" type={image.MediaType ?? "(none)"} source={image.Source ?? "(none)"} bytes={image.Data.Length} sha={Convert.ToHexString(SHA256.HashData(image.Data.Span))[..12]}\n");
+                    break;
+
+                default:
+                {
+                    var shape = (VectorShape)node;
+                    text.Append(CultureInfo.InvariantCulture, $"shape id={shape.Id ?? "(none)"} transform={shape.Transform} path=[{Describe(shape.Path)}]");
+                    if (shape.Fill is { } fill) text.Append(CultureInfo.InvariantCulture, $" fill({DumpPaint(fill.Paint)} {fill.Opacity:R} {fill.Rule})");
+                    if (shape.Stroke is { } s)
+                    {
+                        text.Append(CultureInfo.InvariantCulture,
+                            $" stroke({DumpPaint(s.Paint)} {s.Opacity:R} w={s.Width:R} {s.Cap} {s.Join} m={s.MiterLimit:R} dashes=[{string.Join(' ', s.Dashes.Select(d => d.ToString("R", CultureInfo.InvariantCulture)))}] off={s.DashOffset:R})");
+                    }
+                    text.Append('\n');
+                    break;
+                }
+            }
+        }
+    }
+
+    private static void DumpClip(StringBuilder text, VectorClip clip, string label, int indent)
+    {
+        text.Append(' ', indent * 2).Append(label).Append('\n');
+        foreach (VectorClipShape shape in clip.Shapes)
+        {
+            text.Append(' ', (indent + 1) * 2).Append(CultureInfo.InvariantCulture, $"outline {shape.Rule} transform={shape.Transform} path=[{Describe(shape.Path)}]\n");
+            if (shape.Clip is { } inner) DumpClip(text, inner, "within", indent + 2);
+        }
+        if (clip.Intersect is { } intersect) DumpClip(text, intersect, "intersect", indent + 1);
+    }
+
+    private static string DumpPaint(VectorPaint paint)
+    {
+        switch (paint)
+        {
+            case SolidPaint solid:
+                return $"solid {solid.Color}";
+            case LinearGradientPaint l:
+                return string.Create(CultureInfo.InvariantCulture, $"linear {l.X1:R},{l.Y1:R} {l.X2:R},{l.Y2:R} {l.Extend} {l.Transform} [{Stops(l.Stops)}]");
+            case RadialGradientPaint r:
+                return string.Create(CultureInfo.InvariantCulture, $"radial {r.StartX:R},{r.StartY:R},{r.StartRadius:R} {r.EndX:R},{r.EndY:R},{r.EndRadius:R} {r.Extend} {r.Transform} [{Stops(r.Stops)}]");
+            case PatternPaint pattern:
+            {
+                // The tile's own scene on one line, so that a shape stays one line.
+                var tile = new StringBuilder();
+                DumpNodes(tile, pattern.Children, 0);
+                return string.Create(CultureInfo.InvariantCulture, $"pattern tile={pattern.Tile} {pattern.Transform} <{tile.ToString().TrimEnd('\n').Replace("\n", " | ")}>");
+            }
+            default:
+                return paint.GetType().Name;
+        }
+
+        static string Stops(ImmutableArray<GradientStop> stops) =>
+            string.Join("; ", stops.Select(stop => string.Create(CultureInfo.InvariantCulture, $"{stop.Offset:R} {stop.Color}")));
     }
 
     /// <summary>What a <c>d</c> attribute becomes.</summary>

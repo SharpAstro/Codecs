@@ -35,11 +35,17 @@ internal struct SvgStyle
     public Rgba32 Color;
     public bool Visible;
     public double FontSize;
+    public FillRule ClipRule;
+    public SvgElement? MarkerStart, MarkerMid, MarkerEnd;
+
+    /// <summary>What is painted first, second and third: see <see cref="SvgSceneBuilder.NormalPaintOrder"/>.</summary>
+    public byte PaintOrder;
 
     // Not inherited.
     public double Opacity;
     public bool Display;
     public bool? OverflowVisible;
+    public SvgElement? ClipPath, Mask;
 
     /// <summary>The initial values: black fill, no stroke, a 1-wide butt/miter stroke when one is asked for, 16 px text.</summary>
     public static SvgStyle Initial => new()
@@ -53,6 +59,7 @@ internal struct SvgStyle
         Color = new Rgba32(0, 0, 0),
         Visible = true,
         FontSize = 16,
+        PaintOrder = SvgSceneBuilder.NormalPaintOrder,
         Opacity = 1,
         Display = true,
     };
@@ -70,7 +77,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         "fill", "stroke", "fill-rule", "fill-opacity", "stroke-opacity", "opacity", "stroke-width", "stroke-linecap",
         "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset", "color", "visibility", "display",
         "font-size", "overflow", "stop-color", "stop-opacity", "clip-path", "mask", "filter", "marker", "marker-start",
-        "marker-mid", "marker-end", "mix-blend-mode", "paint-order", "vector-effect", "transform-origin",
+        "marker-mid", "marker-end", "mix-blend-mode", "paint-order", "vector-effect", "transform-origin", "clip-rule", "mask-type",
     ], StringComparer.Ordinal);
 
     /// <summary>Elements that are never drawn where they stand. What refers to them is reported where the reference is.</summary>
@@ -87,6 +94,9 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
     private VectorFill? _lastFill;
     private VectorStroke? _lastStroke;
     private long _verbs, _visits;
+
+    /// <summary>How deep the shape being painted is: a pattern's content is walked from inside a paint, which has no depth of its own.</summary>
+    private int _paintDepth;
 
     public SvgDocument Build()
     {
@@ -133,7 +143,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                 {
                     Walk(child, style, matrix, viewport, target, 1);
                 }
-                EndLayer(target, nodes, style, root.Get("id"));
+                EndLayer(target, nodes, style, root.Get("id"), matrix, viewport, 0);
             }
         }
 
@@ -275,15 +285,47 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         return matrix.IsFinite && matrix.Determinant != 0 && style.Opacity > 0;
     }
 
-    /// <summary>Opacity on a container is the one thing here that needs a layer: its children may overlap.</summary>
-    private static List<VectorNode> BeginLayer(in SvgStyle style, List<VectorNode> output) => style.Opacity < 1 ? [] : output;
+    private static bool NeedsLayer(in SvgStyle style) => style.Opacity < 1 || style.ClipPath is not null || style.Mask is not null;
 
-    private static void EndLayer(List<VectorNode> target, List<VectorNode> output, in SvgStyle style, string? id)
+    /// <summary>
+    /// Opacity on a container needs a layer, because its children may overlap; so do a clip and a mask, which apply
+    /// to what the element draws as a whole. Everything else is drawn straight into what is above.
+    /// </summary>
+    private static List<VectorNode> BeginLayer(in SvgStyle style, List<VectorNode> output) => NeedsLayer(style) ? [] : output;
+
+    /// <summary>
+    /// Closes a layer <see cref="BeginLayer"/> opened: resolves the element's clip and mask against what it drew and
+    /// adds the group. <paramref name="matrix"/> is the element's user space, which is what a clip or mask is defined in.
+    /// </summary>
+    /// <param name="shapePath">For a shape, its path: its bounding box is the path's, whatever markers were drawn with it.</param>
+    private void EndLayer(List<VectorNode> target, List<VectorNode> output, in SvgStyle style, string? id, SvgAffine matrix,
+        in SvgViewport viewport, int depth, VectorPath? shapePath = null)
     {
-        if (!ReferenceEquals(target, output) && target.Count > 0)
+        if (ReferenceEquals(target, output) || target.Count == 0) return;
+
+        VectorClip? clip = null;
+        VectorMask? mask = null;
+        if (style.ClipPath is not null || style.Mask is not null)
         {
-            output.Add(new VectorGroup { Opacity = (float)style.Opacity, Children = [.. target], Id = id });
+            VectorRect? box = shapePath is null ? BoundsOf(target, matrix) : shapePath.TryGetBounds(out VectorRect own) ? own : null;
+            if (style.ClipPath is { } clipElement)
+            {
+                clip = Clip(clipElement, matrix, box, viewport, depth + 1);
+                if (clip is { Shapes.IsEmpty: true }) return;       // a region with nothing in it: nothing is left to draw
+            }
+            if (style.Mask is { } maskElement)
+            {
+                mask = Mask(maskElement, matrix, box, viewport, depth + 1);
+                if (mask is { Children.IsEmpty: true }) return;     // a mask with no picture keeps nothing
+            }
         }
+        if (clip is null && mask is null && style.Opacity >= 1)
+        {
+            // The clip or mask turned out to be one that is ignored: no layer is needed after all.
+            output.AddRange(target);
+            return;
+        }
+        output.Add(new VectorGroup { Opacity = (float)style.Opacity, Clip = clip, Mask = mask, Children = [.. target], Id = id });
     }
 
     private void Walk(SvgElement element, in SvgStyle parent, SvgAffine outer, in SvgViewport viewport, List<VectorNode> output, int depth)
@@ -299,7 +341,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                 {
                     Walk(child, style, matrix, viewport, target, depth + 1);
                 }
-                EndLayer(target, output, style, element.Get("id"));
+                EndLayer(target, output, style, element.Get("id"), matrix, viewport, depth);
                 return;
             }
 
@@ -315,7 +357,16 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
             {
                 if (Enter(element, parent, outer, viewport, false, out SvgStyle style, out SvgAffine matrix))
                 {
-                    Shape(element, style, matrix, viewport, output);
+                    Shape(element, style, matrix, viewport, output, depth);
+                }
+                return;
+            }
+
+            case "image":
+            {
+                if (Enter(element, parent, outer, viewport, false, out SvgStyle style, out SvgAffine matrix))
+                {
+                    Image(element, style, matrix, viewport, output, depth);
                 }
                 return;
             }
@@ -363,13 +414,15 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         {
             Walk(child, style, matrix * inner, innerViewport, target, depth + 1);
         }
-        // These viewports clip what leaves them unless overflow says otherwise. Clipping is not in the scene yet, so
-        // say so, but only when something really does reach outside: most symbols stay inside their box.
+        // These viewports clip what leaves them unless overflow says otherwise. The clip is only put in the scene when
+        // something really can reach outside: most symbols stay inside their box, and a clip is a layer to a renderer.
         if (style.OverflowVisible != true && ReachesOutside(target, first, matrix, x, y, w, h))
         {
-            Issue(SvgIssueKind.Unsupported, "clipping to a nested viewport (overflow)");
+            ClipToRectangle(target, first, matrix, x, y, w, h);
         }
-        EndLayer(target, output, style, element.Get("id"));
+        // A clip or mask on the element is in the coordinates of its content: inside its x and y and its viewBox
+        // mapping (measured in a browser).
+        EndLayer(target, output, style, element.Get("id"), matrix * inner, innerViewport, depth);
     }
 
     /// <summary>A width or height that defaults to the whole of what it is a percentage of. Below zero is an error and draws nothing.</summary>
@@ -412,10 +465,21 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                 return false;
             }
 
-            var shape = (VectorShape)node;
-            if (!shape.Path.TryGetBounds(out VectorRect bounds)) return false;
-            float grow = shape.Stroke is { } stroke ? StrokeReach(shape.Path, stroke) : 0;
-            Matrix3x2 map = shape.Transform * toViewport;
+            VectorRect bounds;
+            float grow = 0;
+            Matrix3x2 map;
+            if (node is VectorImage image)
+            {
+                bounds = image.Bounds;
+                map = image.Transform * toViewport;
+            }
+            else
+            {
+                var shape = (VectorShape)node;
+                if (!shape.Path.TryGetBounds(out bounds)) return false;
+                if (shape.Stroke is { } stroke) grow = StrokeReach(shape.Path, stroke);
+                map = shape.Transform * toViewport;
+            }
             ReadOnlySpan<Vector2> corners =
             [
                 new(bounds.X - grow, bounds.Y - grow), new(bounds.Right + grow, bounds.Y - grow),
@@ -552,6 +616,8 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         }
 
         double fontSize = style.FontSize;
+        // A clip or mask on the use is in the coordinates its content is drawn in, the move by x and y included
+        // (measured in a browser).
         matrix *= new SvgAffine(1, 0, 0, 1, Length(element, "x", viewport.Width, fontSize), Length(element, "y", viewport.Height, fontSize));
 
         List<VectorNode> target_ = BeginLayer(style, output);
@@ -575,7 +641,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
             _active.Remove(target);
             _uses.RemoveAt(_uses.Count - 1);
         }
-        EndLayer(target_, output, style, element.Get("id"));
+        EndLayer(target_, output, style, element.Get("id"), matrix, viewport, depth);
     }
 
     /// <summary>The width or height a <c>use</c> gives the viewport it instantiates, or null when it gives none.</summary>
@@ -591,11 +657,15 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         return length.Resolve(fontSize, percentBase);
     }
 
-    private void Shape(SvgElement element, in SvgStyle style, SvgAffine matrix, in SvgViewport viewport, List<VectorNode> output)
+    /// <summary>
+    /// The outline of a shape element, in its own coordinates. False when it has none (a zero size, an error that
+    /// leaves nothing, coordinates out of range). <paramref name="fillable"/> is false for a <c>line</c>.
+    /// </summary>
+    private bool TryGeometry(SvgElement element, in SvgStyle style, in SvgViewport viewport, out VectorPath path, out bool fillable)
     {
-        bool fillable = true;
+        fillable = true;
+        path = VectorPath.Empty;
         double fontSize = style.FontSize;
-        VectorPath path;
         switch (element.Name)
         {
             case "path":
@@ -634,7 +704,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                         double x = Length(element, "x", viewport.Width, fontSize), y = Length(element, "y", viewport.Height, fontSize);
                         double w = Length(element, "width", viewport.Width, fontSize), h = Length(element, "height", viewport.Height, fontSize);
                         if (w < 0 || h < 0) Issue(SvgIssueKind.Invalid, "negative rect size");
-                        if (w <= 0 || h <= 0) return;
+                        if (w <= 0 || h <= 0) return false;
                         double? rx = Radius(element, "rx", viewport.Width, fontSize), ry = Radius(element, "ry", viewport.Height, fontSize);
                         SvgGeometry.Rectangle(builder, x, y, w, h, Math.Min(rx ?? ry ?? 0, w / 2), Math.Min(ry ?? rx ?? 0, h / 2));
                         break;
@@ -644,7 +714,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                     {
                         double r = Length(element, "r", viewport.Diagonal, fontSize);
                         if (r < 0) Issue(SvgIssueKind.Invalid, "negative radius");
-                        if (r <= 0) return;
+                        if (r <= 0) return false;
                         SvgGeometry.Ellipse(builder, Length(element, "cx", viewport.Width, fontSize), Length(element, "cy", viewport.Height, fontSize), r, r);
                         break;
                     }
@@ -653,7 +723,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                     {
                         double? rx = Radius(element, "rx", viewport.Width, fontSize), ry = Radius(element, "ry", viewport.Height, fontSize);
                         double rxValue = rx ?? ry ?? 0, ryValue = ry ?? rx ?? 0;
-                        if (rxValue <= 0 || ryValue <= 0) return;
+                        if (rxValue <= 0 || ryValue <= 0) return false;
                         SvgGeometry.Ellipse(builder, Length(element, "cx", viewport.Width, fontSize), Length(element, "cy", viewport.Height, fontSize), rxValue, ryValue);
                         break;
                     }
@@ -670,13 +740,13 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
             }
         }
 
-        if (path.IsEmpty) return;
+        if (path.IsEmpty) return false;
         foreach (float coordinate in path.Coordinates)
         {
             if (!float.IsFinite(coordinate))
             {
                 Issue(SvgIssueKind.Invalid, "coordinate out of range");
-                return;
+                return false;
             }
         }
         _verbs += path.Verbs.Length;
@@ -684,25 +754,106 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         {
             throw new InvalidDataException($"The SVG's paths have more than {options.MaxPathVerbs} segments in total.");
         }
-        if (!style.Visible) return;
+        return true;
+    }
 
+    private void Shape(SvgElement element, in SvgStyle style, SvgAffine matrix, in SvgViewport viewport, List<VectorNode> output, int depth)
+    {
+        if (!TryGeometry(element, style, viewport, out VectorPath path, out bool fillable) || !style.Visible) return;
+
+        _paintDepth = depth;
         VectorFill? fill = fillable ? MakeFill(style, path, viewport) : null;
+        _paintDepth = depth;
         VectorStroke? stroke = MakeStroke(style, path, viewport);
-        if (fill is null && stroke is null) return;
+        // Markers belong to the shapes that have vertices of their own.
+        bool markers = (style.MarkerStart ?? style.MarkerMid ?? style.MarkerEnd) is not null
+            && element.Name is "path" or "line" or "polyline" or "polygon";
+        if (fill is null && stroke is null && !markers) return;
 
         string? id = element.Get("id");
         float opacity = (float)style.Opacity;
-        if (opacity < 1 && fill is not null && stroke is not null)
+        Matrix3x2 transform = matrix.ToMatrix();
+        bool layered = style.ClipPath is not null || style.Mask is not null;
+        // The stroke is painted after the fill unless paint-order puts it first; with one of the two it does not matter.
+        // (The usual order is checked first: this is every shape of every drawing, and almost none says otherwise.)
+        bool strokeFirst = style.PaintOrder != NormalPaintOrder && fill is not null && stroke is not null
+            && Array.IndexOf(PaintSlots(style.PaintOrder), 1) < Array.IndexOf(PaintSlots(style.PaintOrder), 0);
+        if (!markers && !strokeFirst && !layered)
         {
-            // Fill and stroke overlap along the outline, so the pair has to be faded as one.
-            var shape = new VectorShape { Path = path, Transform = matrix.ToMatrix(), Fill = fill, Stroke = stroke, Id = id };
-            output.Add(new VectorGroup { Opacity = opacity, Children = [shape] });
+            if (opacity < 1 && fill is not null && stroke is not null)
+            {
+                // Fill and stroke overlap along the outline, so the pair has to be faded as one.
+                var shape = new VectorShape { Path = path, Transform = transform, Fill = fill, Stroke = stroke, Id = id };
+                output.Add(new VectorGroup { Opacity = opacity, Children = [shape] });
+                return;
+            }
+            // One paint cannot overlap itself, so its opacity and the element's multiply exactly.
+            if (fill is not null) fill = fill with { Opacity = fill.Opacity * opacity };
+            if (stroke is not null) stroke = stroke with { Opacity = stroke.Opacity * opacity };
+            output.Add(new VectorShape { Path = path, Transform = transform, Fill = fill, Stroke = stroke, Id = id });
             return;
         }
-        // One paint cannot overlap itself, so its opacity and the element's multiply exactly.
-        if (fill is not null) fill = fill with { Opacity = fill.Opacity * opacity };
-        if (stroke is not null) stroke = stroke with { Opacity = stroke.Opacity * opacity };
-        output.Add(new VectorShape { Path = path, Transform = matrix.ToMatrix(), Fill = fill, Stroke = stroke, Id = id });
+
+        // The general case: the fill, the stroke and the markers as separate pieces, in the order paint-order gives.
+        var pieces = new List<VectorNode>(4);
+        int[] slots = PaintSlots(style.PaintOrder);
+        for (int slot = 0; slot < 3; slot++)
+        {
+            switch (slots[slot])
+            {
+                case 0 when fill is not null:
+                {
+                    // The stroke straight after the fill is the usual shape with both.
+                    bool both = stroke is not null && slot < 2 && slots[slot + 1] == 1;
+                    pieces.Add(new VectorShape { Path = path, Transform = transform, Fill = fill, Stroke = both ? stroke : null, Id = id });
+                    id = null;
+                    if (both) slot++;
+                    break;
+                }
+                case 1 when stroke is not null:
+                    pieces.Add(new VectorShape { Path = path, Transform = transform, Stroke = stroke, Id = id });
+                    id = null;
+                    break;
+                case 2 when markers:
+                    Markers(element, style, matrix, viewport, path, pieces, depth);
+                    break;
+            }
+        }
+        if (pieces.Count == 0) return;
+
+        if (!layered)
+        {
+            if (opacity >= 1)
+            {
+                output.AddRange(pieces);
+                return;
+            }
+            if (pieces is [VectorShape { Fill: null } or VectorShape { Stroke: null }])
+            {
+                var only = (VectorShape)pieces[0];
+                output.Add(new VectorShape
+                {
+                    Path = only.Path, Transform = only.Transform, Id = only.Id,
+                    Fill = only.Fill is { } f ? f with { Opacity = f.Opacity * opacity } : null,
+                    Stroke = only.Stroke is { } s ? s with { Opacity = s.Opacity * opacity } : null,
+                });
+                return;
+            }
+        }
+        EndLayer(pieces, output, style, null, matrix, viewport, depth, path);
+    }
+
+    private static readonly int[][] PaintOrders =
+        [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+
+    /// <summary>The three things painted (0 the fill, 1 the stroke, 2 the markers) in the order a <see cref="SvgStyle.PaintOrder"/> gives.</summary>
+    private static int[] PaintSlots(byte order)
+    {
+        foreach (int[] slots in PaintOrders)
+        {
+            if ((slots[0] | slots[1] << 2 | slots[2] << 4) == order) return slots;
+        }
+        return PaintOrders[0];
     }
 
     private VectorFill? MakeFill(in SvgStyle style, VectorPath path, in SvgViewport viewport)

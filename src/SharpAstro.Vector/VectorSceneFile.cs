@@ -23,8 +23,9 @@ namespace SharpAstro.VectorGraphics;
 /// a file says which version it is so that a later layout can refuse or convert an earlier one. For a file to hand to
 /// another program, SVG is the format.</para>
 /// <para><b>Layout</b>, little-endian: the magic <c>SAVS</c>, a version, the scene's size; a table of paths (verbs,
-/// then coordinates), which the shapes refer to by index, so a path many shapes share is stored once and is one object
-/// again after loading; then the nodes, depth first.</para>
+/// then coordinates), which the shapes and clips refer to by index, so a path many shapes share is stored once and is one object
+/// again after loading; then the nodes, depth first. Version 2 added what version 1 had no place for: a group's clip
+/// and mask, images, and pattern paints. A version 1 file is still read.</para>
 /// <para><b>The bytes are not trusted.</b> Every count is checked against what is left of the input before anything is
 /// allocated for it, so a short file cannot ask for a large array; verbs and tags are checked; nesting has a limit.
 /// What does not check out is an <see cref="InvalidDataException"/>.</para>
@@ -34,14 +35,15 @@ public static class VectorSceneFile
     /// <summary>The first four bytes of a scene file.</summary>
     public static ReadOnlySpan<byte> Magic => "SAVS"u8;
 
-    /// <summary>The layout this build writes, and the only one it reads.</summary>
-    public const ushort Version = 1;
+    /// <summary>The layout this build writes. It reads this one and every earlier one.</summary>
+    public const ushort Version = 2;
 
     /// <summary>The deepest nesting of groups a file may hold.</summary>
     public const int MaxDepth = 256;
 
-    private const byte ShapeTag = 1, GroupTag = 2;
-    private const byte SolidTag = 1, LinearTag = 2, RadialTag = 3;
+    private const byte ShapeTag = 1, GroupTag = 2, ImageTag = 3;
+    private const byte SolidTag = 1, LinearTag = 2, RadialTag = 3, PatternTag = 4;
+    private const byte ClipFlag = 1, MaskFlag = 2;
     private const ushort NoString = 0xFFFF;
 
     /// <summary>Whether the bytes start as a scene file does. Says nothing about whether the rest is sound.</summary>
@@ -91,16 +93,31 @@ public static class VectorSceneFile
             if (node is VectorShape shape)
             {
                 if (indexOf.TryAdd(shape.Path, paths.Count)) paths.Add(shape.Path);
+                if (shape.Fill?.Paint is PatternPaint fillPattern) Collect(fillPattern.Children, paths, indexOf, depth + 1);
+                if (shape.Stroke?.Paint is PatternPaint strokePattern) Collect(strokePattern.Children, paths, indexOf, depth + 1);
             }
             else if (node is VectorGroup group)
             {
                 Collect(group.Children, paths, indexOf, depth + 1);
+                if (group.Clip is { } clip) Collect(clip, paths, indexOf, depth + 1);
+                if (group.Mask is { } mask) Collect(mask.Children, paths, indexOf, depth + 1);
             }
-            else
+            else if (node is not VectorImage)
             {
                 throw new NotSupportedException($"A scene node of type {node.GetType().Name} cannot be written.");
             }
         }
+    }
+
+    private static void Collect(VectorClip clip, List<VectorPath> paths, Dictionary<VectorPath, int> indexOf, int depth)
+    {
+        if (depth > MaxDepth) throw new NotSupportedException($"The scene nests clips more than {MaxDepth} deep.");
+        foreach (VectorClipShape shape in clip.Shapes)
+        {
+            if (indexOf.TryAdd(shape.Path, paths.Count)) paths.Add(shape.Path);
+            if (shape.Clip is { } inner) Collect(inner, paths, indexOf, depth + 1);
+        }
+        if (clip.Intersect is { } intersect) Collect(intersect, paths, indexOf, depth + 1);
     }
 
     /// <summary>Two paths are the same when their verbs and coordinates are, bit for bit.</summary>
@@ -142,7 +159,33 @@ public static class VectorSceneFile
                 writer.Write(GroupTag);
                 WriteString(writer, group.Id);
                 writer.Write(group.Opacity);
+                writer.Write((byte)((group.Clip is null ? 0 : ClipFlag) | (group.Mask is null ? 0 : MaskFlag)));
+                if (group.Clip is { } clip) WriteClip(writer, clip, indexOf);
+                if (group.Mask is { } mask)
+                {
+                    writer.Write((byte)mask.Kind);
+                    WriteNodes(writer, mask.Children, indexOf);
+                }
                 WriteNodes(writer, group.Children, indexOf);
+                continue;
+            }
+            if (node is VectorImage image)
+            {
+                writer.Write(ImageTag);
+                WriteString(writer, image.Id);
+                writer.Write(image.Data.Length);
+                writer.Write(image.Data.Span);
+                WriteString(writer, image.MediaType);
+                WriteString(writer, image.Source);
+                writer.Write(image.Bounds.X);
+                writer.Write(image.Bounds.Y);
+                writer.Write(image.Bounds.Width);
+                writer.Write(image.Bounds.Height);
+                WriteMatrix(writer, image.Transform);
+                writer.Write(image.Opacity);
+                writer.Write((byte)image.Fit);
+                writer.Write(image.AlignX);
+                writer.Write(image.AlignY);
                 continue;
             }
 
@@ -155,7 +198,7 @@ public static class VectorSceneFile
             writer.Write(shape.Fill is not null);
             if (shape.Fill is { } fill)
             {
-                WritePaint(writer, fill.Paint);
+                WritePaint(writer, fill.Paint, indexOf);
                 writer.Write(fill.Opacity);
                 writer.Write((byte)fill.Rule);
             }
@@ -163,7 +206,7 @@ public static class VectorSceneFile
             writer.Write(shape.Stroke is not null);
             if (shape.Stroke is { } stroke)
             {
-                WritePaint(writer, stroke.Paint);
+                WritePaint(writer, stroke.Paint, indexOf);
                 writer.Write(stroke.Opacity);
                 writer.Write(stroke.Width);
                 writer.Write((byte)stroke.Cap);
@@ -178,6 +221,22 @@ public static class VectorSceneFile
         }
     }
 
+    private static void WriteClip(BinaryWriter writer, VectorClip clip, Dictionary<VectorPath, int> indexOf)
+    {
+        ImmutableArray<VectorClipShape> shapes = clip.Shapes.IsDefault ? [] : clip.Shapes;
+        writer.Write(shapes.Length);
+        foreach (VectorClipShape shape in shapes)
+        {
+            writer.Write(indexOf[shape.Path]);
+            WriteMatrix(writer, shape.Transform);
+            writer.Write((byte)shape.Rule);
+            writer.Write(shape.Clip is not null);
+            if (shape.Clip is { } inner) WriteClip(writer, inner, indexOf);
+        }
+        writer.Write(clip.Intersect is not null);
+        if (clip.Intersect is { } intersect) WriteClip(writer, intersect, indexOf);
+    }
+
     private static void WriteString(BinaryWriter writer, string? text)
     {
         if (text is null)
@@ -186,7 +245,7 @@ public static class VectorSceneFile
             return;
         }
         byte[] bytes = Encoding.UTF8.GetBytes(text);
-        if (bytes.Length >= NoString) throw new NotSupportedException("An id longer than 65,534 bytes cannot be written.");
+        if (bytes.Length >= NoString) throw new NotSupportedException("A text (an id, a media type, an address) longer than 65,534 bytes cannot be written.");
         writer.Write((ushort)bytes.Length);
         writer.Write(bytes);
     }
@@ -201,7 +260,7 @@ public static class VectorSceneFile
         writer.Write(m.M32);
     }
 
-    private static void WritePaint(BinaryWriter writer, VectorPaint paint)
+    private static void WritePaint(BinaryWriter writer, VectorPaint paint, Dictionary<VectorPath, int> indexOf)
     {
         switch (paint)
         {
@@ -226,6 +285,15 @@ public static class VectorSceneFile
                 writer.Write(radial.EndY);
                 writer.Write(radial.EndRadius);
                 WriteGradient(writer, radial.Stops, radial.Extend, radial.Transform);
+                break;
+            case PatternPaint pattern:
+                writer.Write(PatternTag);
+                writer.Write(pattern.Tile.X);
+                writer.Write(pattern.Tile.Y);
+                writer.Write(pattern.Tile.Width);
+                writer.Write(pattern.Tile.Height);
+                WriteMatrix(writer, pattern.Transform);
+                WriteNodes(writer, pattern.Children.IsDefault ? [] : pattern.Children, indexOf);
                 break;
             default:
                 throw new NotSupportedException($"A paint of type {paint.GetType().Name} cannot be written.");
@@ -264,9 +332,9 @@ public static class VectorSceneFile
         if (!IsSceneFile(data)) throw new InvalidDataException("Not a vector scene file: it does not start with 'SAVS'.");
         reader.Skip(4);
         ushort version = reader.UInt16();
-        if (version != Version)
+        if (version is 0 or > Version)
         {
-            throw new InvalidDataException($"The vector scene file is version {version}; this build reads version {Version}.");
+            throw new InvalidDataException($"The vector scene file is version {version}; this build reads versions 1 to {Version}.");
         }
         reader.Skip(2);
         float width = reader.Single(), height = reader.Single();
@@ -294,13 +362,14 @@ public static class VectorSceneFile
             paths[i] = verbCount == 0 ? VectorPath.Empty : new VectorPath(verbs, reader.Singles(coordinateCount));
         }
 
-        ImmutableArray<VectorNode> nodes = ReadNodes(ref reader, paths, 0);
+        ImmutableArray<VectorNode> nodes = ReadNodes(ref reader, paths, 0, version);
         if (!reader.AtEnd) throw new InvalidDataException("The vector scene file has bytes after its last node.");
         return new VectorScene(width, height, nodes);
     }
 
-    private static ImmutableArray<VectorNode> ReadNodes(ref Reader reader, VectorPath[] paths, int depth)
+    private static ImmutableArray<VectorNode> ReadNodes(ref Reader reader, VectorPath[] paths, int depth, ushort version)
     {
+        // Groups, masks and pattern tiles all nest nodes, and all count.
         if (depth > MaxDepth) throw new InvalidDataException($"The vector scene file nests groups more than {MaxDepth} deep.");
         // The smallest node is a group with no id and no children: a tag, a string length, an opacity, a count.
         int count = reader.Count(minimumBytesEach: 11, "nodes");
@@ -312,7 +381,38 @@ public static class VectorSceneFile
             if (tag == GroupTag)
             {
                 float opacity = reader.Single();
-                nodes.Add(new VectorGroup { Id = id, Opacity = opacity, Children = ReadNodes(ref reader, paths, depth + 1) });
+                VectorClip? clip = null;
+                VectorMask? mask = null;
+                if (version >= 2)
+                {
+                    byte flags = reader.Byte();
+                    if ((flags & ~(ClipFlag | MaskFlag)) != 0) throw new InvalidDataException($"The vector scene file has group flags of {flags}.");
+                    if ((flags & ClipFlag) != 0) clip = ReadClip(ref reader, paths, depth + 1);
+                    if ((flags & MaskFlag) != 0)
+                    {
+                        VectorMaskKind kind = reader.Enum<VectorMaskKind>((byte)VectorMaskKind.Alpha, "mask kind");
+                        mask = new VectorMask { Kind = kind, Children = ReadNodes(ref reader, paths, depth + 1, version) };
+                    }
+                }
+                nodes.Add(new VectorGroup { Id = id, Opacity = opacity, Clip = clip, Mask = mask, Children = ReadNodes(ref reader, paths, depth + 1, version) });
+                continue;
+            }
+            if (tag == ImageTag && version >= 2)
+            {
+                // The picture's bytes are copied out: the scene must not keep the caller's buffer alive, or be changed through it.
+                int length = reader.Count(minimumBytesEach: 1, "image bytes");
+                byte[] data = reader.Bytes(length).ToArray();
+                string? mediaType = reader.String(), source = reader.String();
+                var bounds = new VectorRect(reader.Single(), reader.Single(), reader.Single(), reader.Single());
+                Matrix3x2 imageTransform = reader.Matrix();
+                float imageOpacity = reader.Single();
+                ImageFit fit = reader.Enum<ImageFit>((byte)ImageFit.Slice, "image fit");
+                float alignX = reader.Single(), alignY = reader.Single();
+                nodes.Add(new VectorImage
+                {
+                    Id = id, Data = data, MediaType = mediaType, Source = source, Bounds = bounds, Transform = imageTransform,
+                    Opacity = imageOpacity, Fit = fit, AlignX = alignX, AlignY = alignY,
+                });
                 continue;
             }
             if (tag != ShapeTag) throw new InvalidDataException($"The vector scene file has a node tag {tag}, which is not one.");
@@ -327,7 +427,7 @@ public static class VectorSceneFile
             VectorFill? fill = null;
             if (reader.Boolean())
             {
-                VectorPaint paint = ReadPaint(ref reader);
+                VectorPaint paint = ReadPaint(ref reader, paths, depth, version);
                 float opacity = reader.Single();
                 fill = new VectorFill(paint, opacity, reader.Enum<FillRule>((byte)FillRule.EvenOdd, "fill rule"));
             }
@@ -335,7 +435,7 @@ public static class VectorSceneFile
             VectorStroke? stroke = null;
             if (reader.Boolean())
             {
-                VectorPaint paint = ReadPaint(ref reader);
+                VectorPaint paint = ReadPaint(ref reader, paths, depth, version);
                 float opacity = reader.Single(), strokeWidth = reader.Single();
                 LineCap cap = reader.Enum<LineCap>((byte)LineCap.Square, "line cap");
                 LineJoin join = reader.Enum<LineJoin>((byte)LineJoin.Bevel, "line join");
@@ -351,7 +451,29 @@ public static class VectorSceneFile
         return nodes.MoveToImmutable();
     }
 
-    private static VectorPaint ReadPaint(ref Reader reader)
+    private static VectorClip ReadClip(ref Reader reader, VectorPath[] paths, int depth)
+    {
+        if (depth > MaxDepth) throw new InvalidDataException($"The vector scene file nests clips more than {MaxDepth} deep.");
+        // A clip shape is at least a path index, a matrix, a rule and a flag.
+        int count = reader.Count(minimumBytesEach: 30, "clip shapes");
+        var shapes = ImmutableArray.CreateBuilder<VectorClipShape>(count);
+        for (int i = 0; i < count; i++)
+        {
+            int pathIndex = reader.Int32();
+            if ((uint)pathIndex >= (uint)paths.Length)
+            {
+                throw new InvalidDataException($"The vector scene file refers to path {pathIndex} of {paths.Length}.");
+            }
+            Matrix3x2 transform = reader.Matrix();
+            FillRule rule = reader.Enum<FillRule>((byte)FillRule.EvenOdd, "fill rule");
+            VectorClip? inner = reader.Boolean() ? ReadClip(ref reader, paths, depth + 1) : null;
+            shapes.Add(new VectorClipShape(paths[pathIndex], transform, rule, inner));
+        }
+        VectorClip? intersect = reader.Boolean() ? ReadClip(ref reader, paths, depth + 1) : null;
+        return new VectorClip { Shapes = shapes.MoveToImmutable(), Intersect = intersect };
+    }
+
+    private static VectorPaint ReadPaint(ref Reader reader, VectorPath[] paths, int depth, ushort version)
     {
         byte tag = reader.Byte();
         switch (tag)
@@ -369,6 +491,12 @@ public static class VectorSceneFile
                 float sx = reader.Single(), sy = reader.Single(), sr = reader.Single(), ex = reader.Single(), ey = reader.Single(), er = reader.Single();
                 ReadGradient(ref reader, out ImmutableArray<GradientStop> stops, out GradientExtend extend, out Matrix3x2 transform);
                 return new RadialGradientPaint(sx, sy, sr, ex, ey, er, stops, extend, transform);
+            }
+            case PatternTag when version >= 2:
+            {
+                var tile = new VectorRect(reader.Single(), reader.Single(), reader.Single(), reader.Single());
+                Matrix3x2 transform = reader.Matrix();
+                return new PatternPaint(ReadNodes(ref reader, paths, depth + 1, version), tile, transform);
             }
             default:
                 throw new InvalidDataException($"The vector scene file has a paint tag {tag}, which is not one.");

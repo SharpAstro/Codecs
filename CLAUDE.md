@@ -1153,7 +1153,8 @@ rungs. What a person touching it should know:
 - **Entities are never expanded** (`DtdProcessing.Ignore`, no resolver), so a document that uses one it declares is
   refused. Some Illustrator exports do. That is a known gap, not an oversight.
 - **The pixel oracle is ImageMagick's SVG renderer over a test-only rasteriser** (`SvgRenderOracleTests`), because a
-  structural expectation repeats any misreading of the specification. It is a tolerance and fills only.
+  structural expectation repeats any misreading of the specification. It is a tolerance, and its twelve documents are
+  fills only (the rasteriser itself, `SvgPlainRasteriser`, draws strokes, clips, masks, patterns and images since rung 3).
   `SVG_ORACLE_DUMP=<dir>` writes both pictures. ImageMagick does not read `hsl()` and does not draw a visible child of
   a hidden group; both were measured and are kept out of the oracle documents.
 - **A headless browser is the stronger pixel oracle** (`SvgBrowserOracleTests`; Chrome or Edge, found from `SVG_BROWSER`
@@ -1198,6 +1199,45 @@ settled") has the reasons. The ones that bite:
   browser those features are covered structurally only. CI has one.
 - **Mutation-checked** (32 more: 30 caught at once; the other two led to the cycle fix and a missing test).
 
+- **Mutation-checked** (37 more: 36 caught at once, the other led to a missing test). Eight are seen by only one of
+  the two layers (structural, browser), so neither can be dropped. Not run: trusting a clip's count in the scene file,
+  which would ask for a 16 GB array rather than fail.
+
+Rung 3 (3.37) added clips, masks, markers, `paint-order`, images and patterns; `roadmap/svg.md` ("What rung 3 settled")
+has the reasons. The ones that bite:
+
+- **The scene has a new node and a new paint, and a group has two new properties.** `VectorImage`, `PatternPaint`,
+  `VectorGroup.Clip` and `.Mask`. Anything that walks a scene (`VectorSceneFile`, the test rasteriser, `Dump` in
+  `SvgTestSupport`, `BoundsOf` / `ReachesOutside` in the builder, Fonts.Lib's `SceneRasterizer`) must handle all four. A
+  walker that casts "not a group" to `VectorShape` is the bug to look for.
+- **Twelve behaviours are the browser's, measured** (the `rung3-edges` oracle document, one case a 30 x 30 cell, listed in
+  the roadmap). Seven of them were first written the other way from the specification's text and failed against the
+  browser. Do not change one back without running that document: a circular `clip-path` or `mask` is dropped where it
+  closes the circle (not "nothing is drawn"); a `mask` on a `mask` does nothing; the `marker` shorthand is not an
+  attribute; `opacity` on a `marker` applies; a `clip-path` on a `use` or a nested `svg` is in the inner coordinates.
+- **A layer is only made when it changes the picture.** A viewport's or a marker's clip, and a mask's area, go into the
+  scene only when `ReachesOutside` says content can leave the box. That keeps an icon sprite's scene as flat as rung 2
+  left it, and it is why `SvgUseTests` checks both "clipped" and "no clip in the dump".
+- **What is only referred to inherits from where it stands** (`InheritedStyle`): a marker's, mask's, clip's and
+  pattern's content takes its properties from that element's own ancestors, never from the shape that refers to it.
+- **A pattern in user units is cached, and the cache hit is charged** (`_visits += cached.Weight`). The reader walks a
+  pattern once, but the scene holds it once more per use for whoever draws or writes it, and patterns painted with
+  patterns double at each level. Take that line out and 8 KB reads at once into a scene that is 2^40 tiles to anyone
+  who walks it; `PatternsFilledWithPatterns_AreChargedForEveryUse` is the test, and with the charge removed it does
+  not hang, it fails (nothing in it walks the scene).
+- **Markers need to know where path commands end** (`SvgElementExtras.CommandEnds`, from `ParsePath`'s `ends`): an arc is
+  one vertex and up to four cubics. Only paths that carry markers are parsed a second time for it.
+- **An image is never decoded and never fetched here.** The bytes of a `data:` URI are kept as the file they are, and
+  decoded from the URI once an element (`SvgElementExtras.Picture`), because a `use` can repeat it. An `image` with no
+  `width` or `height` is reported, not guessed: its size is the picture's, which only a decoder knows.
+- **The test rasteriser is a function from a point to a colour** (`SvgPlainRasteriser`), 16 samples a pixel, with no
+  spans or coverage. A stroke is "within half the width of a segment, or in a join or cap polygon"; a pattern asks its
+  tile's scene at the wrapped point. The pattern document alone is allowed a mean of 2.0 (measured 1.48): the browser's
+  tile edges are softer.
+- **`VectorSceneFile` is version 2 and reads version 1** (`AVersion1File_IsStillRead` writes one by hand). A new field
+  is a new version, as before, and the "cut at every length, flip every byte" tests must run over a scene that holds
+  the new thing: extend `Everything` in `VectorSceneFileTests`, do not add a second scene.
+
 ## Oracle harnesses (all codecs)
 
 There are multiple oracle mechanisms, with different acquisition stories. All of them
@@ -1217,7 +1257,7 @@ refuses to accept that silence.
 | TIFF **tiled write** | Magick.NET (libtiff) | Just a NuGet reference. `TiffWriterTiledOracleTests` has libtiff read back what `TiffWriter` emits in `TiffLayout.Tiled`. Nothing to install, nothing to skip. Kept as an oracle even though `TiffReader` reads tiles now: writer and reader agree about tile order by construction, so a round trip cannot see a consistent transpose. |
 | TIFF **tiled read** | Magick.NET (libtiff) | The same reference, run the other way: `TiffTiledReadTests` has libtiff WRITE the tiled file (`tile-geometry` + `predictor` defines) and reads it back with `TiffReader`. **The predictor is why it must be a foreign encoder** -- `TiffWriter` emits none, so nothing we write exercises Predictor 2, and inverting it at image width rather than TILE width decodes with no error into a picture that is right in its first tile column and drifts across the rest. That sabotage fails exactly the two libtiff cases and nothing else in the suite. |
 | SVG **scene** | Magick.NET (ImageMagick's SVG renderer) | Just a NuGet reference. `SvgRenderOracleTests` draws our scene with a test-only fill rasteriser and compares it with ImageMagick's rendering of the same document, within a measured tolerance. Nothing to install, nothing to skip. |
-| SVG **scene**, in a browser | headless Chrome or Edge (**binary only**) | `SvgBrowserOracleTests`. Found from `SVG_BROWSER`, then the usual install paths (Windows, macOS) or `PATH` (Linux). One launch for every document. Skips without a browser; the runner image has Chrome. |
+| SVG **scene**, in a browser | headless Chrome or Edge (**binary only**) | `SvgBrowserOracleTests`. Found from `SVG_BROWSER`, then the usual install paths (Windows, macOS) or `PATH` (Linux). One launch for every document (37 since rung 3, strokes included). Skips without a browser; the runner image has Chrome. |
 | GIF **decode** | Magick.NET (`Coalesce()`) | Just a NuGet reference. ImageMagick writes the animations (and `GifBuilder` hand-builds what it will not write); every frame must equal the coalesced frame byte for byte, alpha-0 RGB included. Nothing to install, nothing to skip. |
 | JBIG2 **decode** | committed jbig2enc fixtures + spec vectors | No external dependency, nothing to skip — `Fixtures/jbig2/*.jb2` (real jbig2enc output) plus the T.88 Annex H.2 MQ vector and one-hot template tests. Regenerate the fixtures with `Oracle/jbig2/make-fixtures.sh` (needs jbig2enc). |
 | JPEG 2000 **decode** | committed OpenJPEG fixtures | No external dependency, nothing to skip. A lossless 5/3 codestream reproduces its source raster **exactly**, so `Fixtures/jpeg2000/<name>.pgm` (or `.ppm`) is the expected output for `<name>.j2k` (or `.jp2`) — byte equality, no tolerance, no subprocess. Regenerate with `Oracle/jpeg2000/make-fixtures.sh`, which verifies each pair lossless before it will commit it. The lossy fixtures in `Fixtures/jpeg2000-lossy/` have no committed expected output and are compared against `opj_decompress` at run time: exactly for `lossy53-*`, within the measured tolerance for `lossy97-*`. |

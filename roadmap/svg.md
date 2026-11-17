@@ -1,8 +1,8 @@
 # Roadmap: SVG (`SharpAstro.Svg` on `SharpAstro.Vector`)
 
-**Status: rungs 1 and 2 shipped (3.35, 3.36).** `SharpAstro.Svg` reads paths, basic shapes, transforms,
-viewports, `use` and `symbol`, solid and gradient paints, stroke properties and style sheets into a
-`SharpAstro.Vector.VectorScene`.
+**Status: rungs 1 to 3 written (3.35, 3.36, 3.37).** `SharpAstro.Svg` reads paths, basic shapes, transforms,
+viewports, `use` and `symbol`, solid, gradient and pattern paints, stroke properties, style sheets, clips, masks,
+markers and images into a `SharpAstro.Vector.VectorScene`.
 
 ## The design, and why it is not a codec like the others
 
@@ -33,7 +33,7 @@ can emit the same scene and reuse every renderer written for it.
   `Rgba32`. When Fonts.Lib takes this package it can drop its own copies. (DIR.Lib's `RGBAColor32` names its
   members differently; folding that in is a wider change, not planned here.)
 - A scene is flat except where compositing needs a layer: transforms are multiplied out onto each shape, and
-  a `VectorGroup` appears only for opacity over more than one paint.
+  a `VectorGroup` appears only for opacity over more than one paint, for a clip and for a mask.
 - Paths are absolute move / line / quad / cubic / close. Arcs, circles and rounded corners are cubics.
 
 **Provenance:** written from the W3C SVG 1.1 and SVG 2 specifications (and CSS Color for the colour syntax).
@@ -45,7 +45,9 @@ resvg, librsvg and browser sources are not read; renderers are used as programs 
 |---|---|---|
 | 1 | Root size / viewBox / preserveAspectRatio; `g`, `a`; `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`; `transform`; solid fill and stroke, every stroke property; opacity; `display`, `visibility`; presentation attributes and the `style` attribute; SVGZ; limits | shipped 3.35 |
 | 2 | `defs`, `use`, `symbol`, nested `svg`; `linearGradient` / `radialGradient` (with `href` inheritance and `gradientTransform`); `<style>` sheets with the selectors real files use; limits that follow `use` | shipped 3.36 |
-| 3 | `clipPath`, `mask`, the clip of nested viewports, `image` (decoded by the caller or the facade), markers, `paint-order`, `pattern`; a stroker in the test rasteriser | open |
+| 3 | `clipPath`, `mask`, the clip of nested viewports, `image` (carried as the file it is; decoded by the caller), markers, `paint-order`, `pattern`; a stroker in the test rasteriser; `VectorSceneFile` version 2 | written, 3.37 |
+| 3f | The rasteriser in Fonts.Lib draws what rung 3 added to the scene (clips, masks, images through a decoder the caller gives, patterns), and DIR.Lib takes it | open, in Fonts.Lib and DIR.Lib |
+| E | XML entities a document declares itself (some Adobe Illustrator exports): the internal subset read with bounded expansion, nothing external | open |
 | 4a | The one scene rasteriser: `SharpAstro.Fonts.Scenes.SceneRasterizer` (fills, strokes, gradients, layers), held against the browser with strokes | shipped, Fonts.Lib 1.18 |
 | 4b | Fonts.Lib reads the OpenType `SVG ` table through this package | open, in Fonts.Lib |
 | D | SVG in DIR.Lib: `IconBaker.Bake(VectorScene, size)`, `VectorIcon` (read once, rasterise once a size), `bake-icons --svg` and `--scenes` | shipped, DIR.Lib 11.78 |
@@ -210,6 +212,49 @@ without reading SVG at start-up.
 - **Stops interpolate in sRGB, not premultiplied**, which is what the browser draws for a stop with
   `stop-opacity="0"` (the scene says so on the paint types).
 
+## What rung 3 settled
+
+- **A clip and a mask are properties of a layer.** `VectorGroup` gained `Clip` and `Mask`: the children are drawn,
+  cut to the region, multiplied by the mask's picture, then blended at the opacity. A region (`VectorClip`) is a
+  union of outlines, each of which may have a region of its own, and may be intersected with another: that is
+  exactly what `clipPath` can say (several children, a `clip-path` on a child, a `clip-path` on the `clipPath`),
+  and nothing more general was added. A mask is a little scene and a rule (luminance or alpha).
+- **The scene stays flat where nothing is clipped.** The clip of a nested `svg`, a `symbol` or a marker is only put
+  in the scene when its content can reach outside its box (the same test that used to decide whether to report
+  it); a mask's area is only a clip when its picture can leave the area. An icon sprite reads to the same scene
+  as before.
+- **Markers and `paint-order` are resolved, not carried.** A marker becomes its content, placed; `paint-order`
+  becomes the order of the nodes (stroke first is two shapes: the stroke, then the fill). A renderer needs
+  nothing new for either.
+- **A path command is one vertex, but an arc is several curves.** The path parser reports where each command
+  ends, only for paths that carry markers, so that an arc's inner joints get no marker.
+- **An image is carried, never decoded and never fetched.** `VectorImage` holds the bytes of a `data:` URI (PNG,
+  JPEG, whatever they are) or the address of another file, the box, and the fitting rule, because the picture's
+  own size is not known until someone decodes it. One `image` element used many times shares one array. An
+  `image` with no `width` or `height` (sized by the picture) is reported, not guessed; so is one that is itself
+  an SVG document.
+- **A pattern is a tile's scene on a paint** (`PatternPaint`): its content in pattern space, the tile rectangle,
+  and a transform to the shape's coordinates. In user units one pattern is one paint for every shape; it is then
+  **charged again for every use**, because patterns painted with patterns double at every level for whoever
+  draws or writes the scene, although the reader walks each only once (forty levels, under 8 KB, 2^40 tiles).
+- **Twelve answers came from the browser.** They are the `rung3-edges` oracle document, one case a cell:
+  - the `marker` shorthand is read from style sheets and the `style` attribute, **not** as an attribute;
+  - a reference that leads nowhere (`clip-path`, `mask`) leaves the element drawn, unclipped;
+  - a `clipPath` in bounding-box units on something with no box area draws nothing; so does an empty `clipPath`;
+  - a `clip-path` or `mask` that leads back to itself is dropped **where it closes the circle**, and the ones
+    around it still apply (the first reading, "nothing is drawn", was wrong);
+  - a pattern painted with itself is used, and the shape inside it gets its fallback colour;
+  - a `mask` property on a `mask` element does nothing, though a `clip-path` on a `clipPath` clips;
+  - `opacity` on a `marker` fades the marker; on a `mask` or a `pattern` it does nothing;
+  - a marker is drawn although it is `display: none`, and although the shape has no stroke;
+  - a hidden shape has no markers; a `rect` never has any;
+  - a `clip-path` on a `use` is in the coordinates after its `x` and `y`, and on a nested `svg` inside its
+    `viewBox` mapping (both first read the other way);
+  - a group in a `clipPath` is not looked at, and a hidden child does not clip;
+  - mask luminance is taken from the sRGB values as they are.
+- **`VectorSceneFile` is version 2** and still reads version 1. Its untrusted-bytes tests (cut at every length,
+  every byte flipped) now run over a scene that holds every new thing.
+
 ## Validation
 
 Four layers, in `tests/SharpAstro.Codecs.Tests/Svg*Tests.cs`:
@@ -222,8 +267,11 @@ Four layers, in `tests/SharpAstro.Codecs.Tests/Svg*Tests.cs`:
 3. **Pixels against ImageMagick's SVG renderer** (`SvgRenderOracleTests`): the structural tests cannot catch a
    misreading of the specification, because the same misreading would be in the expectation. So twelve
    documents are drawn by ImageMagick and by a plain test-only fill rasteriser over our scene, and compared.
-   Measured: mean difference 0.08 to 0.44 of 255 (bound 0.8), no pixel further than 72 off. Fills only; the
-   test rasteriser has no stroker.
+   Measured: mean difference 0.08 to 0.44 of 255 (bound 0.8), no pixel further than 72 off. These twelve are
+   fills only. The test rasteriser (`SvgPlainRasteriser`, since rung 3) is a function from a point to a colour,
+   sampled 16 times a pixel: a fill by winding number, a stroke by distance to the outline with its joins and
+   caps as the small polygons they are, a clip by "inside or not", a mask and a pattern by asking their own
+   little scene at that point. It has no spans and no coverage to get wrong.
 
 4. **Pixels against a headless browser** (`SvgBrowserOracleTests`, Chrome or Edge through `OracleGate`): the same
    documents, four ImageMagick cannot be trusted with, and twelve for rung 2. **Rung 2 has no ImageMagick layer:**
@@ -234,6 +282,13 @@ Four layers, in `tests/SharpAstro.Codecs.Tests/Svg*Tests.cs`:
    The browser's own curves are a little coarse (up to 100 levels off the true ellipse at a few pixels where we are
    within 6), so an edge may sit one pixel away; a shape in the wrong place still fails. This is the oracle the later
    rungs are meant to be held against.
+
+   **Rung 3 added nine documents** and is covered by the browser alone, like rung 2: strokes (caps, joins, the
+   miter limit, dashes, a stroke under a transform that is not uniform, dots), `clip-path`, viewport clips, masks,
+   markers, `paint-order`, patterns, images, and `rung3-edges` (above). Of the first eight, seven passed on
+   their first run and the eighth (patterns) had no pixel plainly wrong but a mean of 1.48: the browser's tile
+   edges are softer than ours where a tile does not start on a pixel, so that one document is allowed 2.0.
+   `rung3-edges` is where the twelve answers came from.
 
 **Mutation-checked:** seventeen deliberate bugs, one at a time, all caught: arc sweep inverted, arc radii not
 scaled up, a relative arc's end not offset, the transform list applied left to right, nested transforms
@@ -250,9 +305,20 @@ mutual uses one level further than a browser does; and a rule about which attrib
 no test. Not run, deliberately: turning off the element count, which would make the doubling test walk 2^40
 elements.
 
+Rung 3: thirty-seven more (clip units, transforms and rules, the clip on a child and on the `clipPath`, cycles,
+mask area, units and kind, viewport clips, `paint-order`, marker direction, scale, reference point and vertices,
+pattern tile, content and transform, the charge for a cached pattern, image fitting, the scene file's new fields).
+Thirty-six were caught at once. Taking a clipped shape's bounding box from everything it drew, markers included,
+was not: no test had a shape with both markers and a clip in bounding-box units. One was added and the mutation
+fails it. Eight are seen only by the structural tests or only by the browser, so both layers are needed: the
+browser alone sees a `clip-path` on a nested `svg` taken in the outer coordinates and an arc's inner joints taken
+for vertices; the structural tests alone see the mask's default area, a picture decoded again for every instance,
+the two scene-file fields and the pattern charge (with it removed the 2^40 test fails; it does not hang, because nothing walks the scene).
+Not run, deliberately: trusting a clip's count in the scene file, which would ask for a 16 GB array.
+
 **Known limits of the oracle.** ImageMagick's renderer does not read `hsl()` and does not draw a
 `visibility="visible"` child of a hidden group; both were taken out of the oracle documents and stay covered
-structurally. Strokes have no pixel oracle yet (the scene carries the parameters; nothing here draws them).
+structurally. Strokes are held against the browser since rung 3 (in Fonts.Lib too, by its own rasteriser).
 The browser oracle is the answer to ImageMagick's gaps; text will need a font the page loads itself, or the result
 depends on what each machine has installed.
 
