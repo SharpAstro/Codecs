@@ -10,8 +10,9 @@ namespace SharpAstro.VectorGraphics;
 public readonly record struct Rgba32(byte R, byte G, byte B, byte A = 255);
 
 /// <summary>
-/// What an area is painted with: a <see cref="SolidPaint"/>, a <see cref="LinearGradientPaint"/> or a
-/// <see cref="RadialGradientPaint"/>. A renderer that meets a kind it does not know should say so, not guess.
+/// What an area is painted with: a <see cref="SolidPaint"/>, a <see cref="LinearGradientPaint"/>, a
+/// <see cref="RadialGradientPaint"/> or a <see cref="PatternPaint"/>. A renderer that meets a kind it does not know
+/// should say so, not guess.
 /// </summary>
 public abstract record VectorPaint;
 
@@ -77,7 +78,10 @@ public sealed record VectorStroke(
     ImmutableArray<float> Dashes,
     float DashOffset);
 
-/// <summary>Something in a <see cref="VectorScene"/>: a <see cref="VectorShape"/> or a <see cref="VectorGroup"/>.</summary>
+/// <summary>
+/// Something in a <see cref="VectorScene"/>: a <see cref="VectorShape"/>, a <see cref="VectorImage"/>,
+/// a <see cref="VectorText"/> or a <see cref="VectorGroup"/>.
+/// </summary>
 public abstract class VectorNode
 {
     /// <summary>The source's own name for this node (an SVG <c>id</c>), when it had one.</summary>
@@ -105,7 +109,8 @@ public sealed class VectorShape : VectorNode
 
 /// <summary>
 /// Nodes that must be drawn together and then composited as one: the children are drawn, in order, into
-/// a transparent layer, and the layer is blended over what is below it at <see cref="Opacity"/>.
+/// a transparent layer; the layer is cut down to <see cref="Clip"/> and multiplied by <see cref="Mask"/> when there
+/// are any, and then blended over what is below it at <see cref="Opacity"/>.
 /// A reader only emits a group where that differs from drawing the children one by one.
 /// </summary>
 public sealed class VectorGroup : VectorNode
@@ -115,6 +120,12 @@ public sealed class VectorGroup : VectorNode
 
     /// <summary>The children, bottom first.</summary>
     public required ImmutableArray<VectorNode> Children { get; init; }
+
+    /// <summary>The region the layer is kept to, or null for all of it.</summary>
+    public VectorClip? Clip { get; init; }
+
+    /// <summary>The picture the layer is multiplied by, or null.</summary>
+    public VectorMask? Mask { get; init; }
 }
 
 /// <summary>

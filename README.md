@@ -32,7 +32,7 @@ support, and how to pick the right one. A bundled **sRGB ICC** profile ships in
 `SharpAstro.Color.Icc` for embedding.
 
 **SVG is read, not rasterised.** `SharpAstro.Svg` resolves an SVG document into a `SharpAstro.Vector` scene
-(paths, fills, strokes, transforms, opacity groups) and leaves drawing to the caller, so it is not part of
+(paths, fills, strokes, gradients and patterns, clips and masks, images carried as files) and leaves drawing to the caller, so it is not part of
 the facade. See [`roadmap/svg.md`](roadmap/svg.md) for what it reads so far.
 
 The facade decodes WebP still images and frame 0 of animated WebP. Use

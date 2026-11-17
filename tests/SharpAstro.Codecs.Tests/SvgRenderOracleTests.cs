@@ -13,16 +13,18 @@ namespace SharpAstro.Codecs.Tests;
 /// The scene against a renderer that is not ours. The structural tests say what the reader produces; they cannot say
 /// that it is what an SVG renderer would draw, because the same misreading of the specification (a sweep flag the wrong
 /// way, a transform list applied left to right) would be in the expectation too. So each document here is drawn twice:
-/// by ImageMagick's own SVG renderer, and by a deliberately plain fill rasteriser over OUR scene (16 samples a pixel,
-/// point-in-polygon by winding number). The two are compared pixel by pixel.
+/// by ImageMagick's own SVG renderer, and by a deliberately plain rasteriser over OUR scene
+/// (<see cref="SvgPlainRasteriser"/>: 16 samples a pixel, each asked "is this point inside"). The two are compared
+/// pixel by pixel.
 /// </summary>
 /// <remarks>
 /// <para>ImageMagick's renderer is a modest one, and two things were taken out of these documents because it gets them
 /// wrong, each measured with the picture in hand (<c>SVG_ORACLE_DUMP</c>): it does not read <c>hsl()</c> (the shape keeps
 /// its inherited fill), and it does not draw a <c>visibility="visible"</c> child of a hidden group, which SVG says is
 /// drawn because visibility is inherited, not applied to the subtree. Both stay covered by the structural tests.</para>
-/// Fills only: the test rasteriser has no stroker, and a scene with a stroke fails loudly instead of being drawn
-/// without it. The comparison is a tolerance (the two anti-alias differently), kept in this file, apart from the exact tests.
+/// These documents are fills only, as they were when the test rasteriser had no stroker; strokes, clips, masks,
+/// markers and patterns are held against the browser (<see cref="SvgBrowserOracleTests"/>), which draws them right.
+/// The comparison is a tolerance (the two anti-alias differently), kept in this file, apart from the exact tests.
 /// </remarks>
 public sealed class SvgRenderOracleTests
 {
@@ -105,7 +107,7 @@ public sealed class SvgRenderOracleTests
     internal static void Compare(string name, string reference, VectorScene scene, int width, int height, byte[] theirs, double maxMean,
         bool edgeSlack = false)
     {
-        float[] ours = PlainRasteriser.Render(scene, width, height);
+        float[] ours = SvgPlainRasteriser.Render(scene, width, height);
         double sum = 0;
         int wrong = 0;
         var where = new StringBuilder();
@@ -183,192 +185,5 @@ public sealed class SvgRenderOracleTests
         image.Alpha(AlphaOption.Remove);
         using IPixelCollection<float> pixels = image.GetPixels();
         return pixels.ToByteArray(PixelMapping.RGB).ShouldNotBeNull();
-    }
-
-    /// <summary>
-    /// Fills a scene over white, the slow and obvious way: a 4 x 4 grid of samples in every pixel, each tested against the
-    /// flattened path by winding number. Groups are drawn into their own layer and blended, as the scene's contract says.
-    /// </summary>
-    private static class PlainRasteriser
-    {
-        private const int Grid = 4;
-
-        /// <summary>RGB floats, 0 to 1, over white.</summary>
-        public static float[] Render(VectorScene scene, int width, int height)
-        {
-            // Premultiplied RGBA, starting as opaque white.
-            float[] canvas = new float[width * height * 4];
-            Array.Fill(canvas, 1f);
-            Draw(scene.Nodes, canvas, width, height);
-
-            float[] rgb = new float[width * height * 3];
-            for (int i = 0; i < width * height; i++)
-            {
-                rgb[i * 3] = canvas[i * 4];
-                rgb[i * 3 + 1] = canvas[i * 4 + 1];
-                rgb[i * 3 + 2] = canvas[i * 4 + 2];
-            }
-            return rgb;
-        }
-
-        private static void Draw(IEnumerable<VectorNode> nodes, float[] canvas, int width, int height)
-        {
-            foreach (VectorNode node in nodes)
-            {
-                if (node is VectorGroup group)
-                {
-                    float[] layer = new float[canvas.Length];
-                    Draw(group.Children, layer, width, height);
-                    for (int i = 0; i < canvas.Length; i += 4)
-                    {
-                        float a = layer[i + 3] * group.Opacity;
-                        for (int ch = 0; ch < 4; ch++) canvas[i + ch] = layer[i + ch] * group.Opacity + canvas[i + ch] * (1 - a);
-                    }
-                    continue;
-                }
-
-                var shape = (VectorShape)node;
-                shape.Stroke.ShouldBeNull("the test rasteriser only fills");
-                VectorFill fill = shape.Fill.ShouldNotBeNull();
-                Func<Vector2, Vector4> colourAt = Evaluator(fill.Paint, shape.Transform);
-                List<List<Vector2>> polygons = Flatten(shape.Path, shape.Transform);
-
-                float minY = float.MaxValue, maxY = float.MinValue, minX = float.MaxValue, maxX = float.MinValue;
-                foreach (Vector2 p in polygons.SelectMany(polygon => polygon))
-                {
-                    (minX, maxX, minY, maxY) = (Math.Min(minX, p.X), Math.Max(maxX, p.X), Math.Min(minY, p.Y), Math.Max(maxY, p.Y));
-                }
-                int y0 = Math.Max(0, (int)MathF.Floor(minY)), y1 = Math.Min(height - 1, (int)MathF.Ceiling(maxY));
-                int x0 = Math.Max(0, (int)MathF.Floor(minX)), x1 = Math.Min(width - 1, (int)MathF.Ceiling(maxX));
-                for (int y = y0; y <= y1; y++)
-                {
-                    for (int x = x0; x <= x1; x++)
-                    {
-                        // The pixel's colour is the mean of its samples, premultiplied, a sample outside the shape being nothing.
-                        Vector4 sum = default;
-                        for (int s = 0; s < Grid * Grid; s++)
-                        {
-                            var sample = new Vector2(x + (s % Grid + 0.5f) / Grid, y + (s / Grid + 0.5f) / Grid);
-                            int winding = polygons.Sum(polygon => Winding(polygon, sample));
-                            if (fill.Rule == FillRule.NonZero ? winding == 0 : (winding & 1) == 0) continue;
-                            Vector4 colour = colourAt(sample);
-                            float a = colour.W * fill.Opacity;
-                            sum += new Vector4(colour.X * a, colour.Y * a, colour.Z * a, a);
-                        }
-                        if (sum.W == 0) continue;
-                        sum /= Grid * Grid;
-                        int i = (y * width + x) * 4;
-                        canvas[i] = sum.X + canvas[i] * (1 - sum.W);
-                        canvas[i + 1] = sum.Y + canvas[i + 1] * (1 - sum.W);
-                        canvas[i + 2] = sum.Z + canvas[i + 2] * (1 - sum.W);
-                        canvas[i + 3] = sum.W + canvas[i + 3] * (1 - sum.W);
-                    }
-                }
-            }
-        }
-
-        /// <summary>The paint as a function of a point of the picture: RGBA, 0 to 1, not premultiplied.</summary>
-        private static Func<Vector2, Vector4> Evaluator(VectorPaint paint, Matrix3x2 shapeTransform)
-        {
-            switch (paint)
-            {
-                case SolidPaint solid:
-                {
-                    Vector4 colour = ToVector(solid.Color);
-                    return _ => colour;
-                }
-                case LinearGradientPaint linear:
-                {
-                    // Gradient space -> the shape's coordinates -> the picture; a point of the picture goes back the other way.
-                    Matrix3x2.Invert(linear.Transform * shapeTransform, out Matrix3x2 toGradient).ShouldBeTrue();
-                    Vector2 start = new(linear.X1, linear.Y1), along = new Vector2(linear.X2, linear.Y2) - start;
-                    float lengthSquared = along.LengthSquared();
-                    return p => ColourAt(linear.Stops, linear.Extend, Vector2.Dot(Vector2.Transform(p, toGradient) - start, along) / lengthSquared);
-                }
-                case RadialGradientPaint radial:
-                {
-                    Matrix3x2.Invert(radial.Transform * shapeTransform, out Matrix3x2 toGradient).ShouldBeTrue();
-                    return p => TwoCircles(Vector2.Transform(p, toGradient), radial) is { } t
-                        ? ColourAt(radial.Stops, radial.Extend, t)
-                        : default;
-                }
-                default:
-                    throw new NotSupportedException(paint.GetType().Name);
-            }
-        }
-
-        private static Vector4 ToVector(Rgba32 c) => new(c.R / 255f, c.G / 255f, c.B / 255f, c.A / 255f);
-
-        /// <summary>
-        /// Where a point is between the two circles: the largest t for which it lies on the circle with centre
-        /// lerp(c0, c1, t) and radius lerp(r0, r1, t) >= 0. Null where no such circle passes through it.
-        /// </summary>
-        private static float? TwoCircles(Vector2 p, RadialGradientPaint g)
-        {
-            Vector2 c0 = new(g.StartX, g.StartY), cd = new Vector2(g.EndX, g.EndY) - c0, pd = p - c0;
-            double r0 = g.StartRadius, dr = g.EndRadius - g.StartRadius;
-            // (pd - t cd)^2 = (r0 + t dr)^2  ->  a t^2 - 2 b t + c = 0
-            double a = Vector2.Dot(cd, cd) - dr * dr, b = Vector2.Dot(pd, cd) + r0 * dr, c = Vector2.Dot(pd, pd) - r0 * r0;
-            // The focal point on the end circle makes this linear; in floats "on" is only nearly so.
-            if (Math.Abs(a) < 1e-6 * (Vector2.Dot(cd, cd) + dr * dr))
-            {
-                if (Math.Abs(b) < 1e-12) return null;
-                double only = c / (2 * b);
-                return r0 + only * dr >= 0 ? (float)only : null;
-            }
-            double discriminant = b * b - a * c;
-            if (discriminant < 0) return null;
-            double root = Math.Sqrt(discriminant), t1 = (b + root) / a, t2 = (b - root) / a;
-            double larger = Math.Max(t1, t2), smaller = Math.Min(t1, t2);
-            if (r0 + larger * dr >= 0) return (float)larger;
-            if (r0 + smaller * dr >= 0) return (float)smaller;
-            return null;
-        }
-
-        /// <summary>The colour at an offset: the extend rule first, then a straight blend between the two stops around it.</summary>
-        private static Vector4 ColourAt(System.Collections.Immutable.ImmutableArray<GradientStop> stops, GradientExtend extend, float t)
-        {
-            switch (extend)
-            {
-                case GradientExtend.Repeat:
-                    t -= MathF.Floor(t);
-                    break;
-                case GradientExtend.Reflect:
-                    t = MathF.Abs(t) % 2;
-                    if (t > 1) t = 2 - t;
-                    break;
-                default:
-                    t = Math.Clamp(t, 0, 1);
-                    break;
-            }
-            if (t < stops[0].Offset) return ToVector(stops[0].Color);
-            for (int i = 1; i < stops.Length; i++)
-            {
-                if (t >= stops[i].Offset) continue;
-                float span = stops[i].Offset - stops[i - 1].Offset;
-                return Vector4.Lerp(ToVector(stops[i - 1].Color), ToVector(stops[i].Color), (t - stops[i - 1].Offset) / span);
-            }
-            return ToVector(stops[^1].Color);
-        }
-
-        /// <summary>How many times the closed polygon winds round the point, signed.</summary>
-        private static int Winding(List<Vector2> polygon, Vector2 p)
-        {
-            int winding = 0;
-            for (int i = 0; i < polygon.Count; i++)
-            {
-                Vector2 a = polygon[i], b = polygon[(i + 1) % polygon.Count];
-                float side = (b.X - a.X) * (p.Y - a.Y) - (p.X - a.X) * (b.Y - a.Y);
-                if (a.Y <= p.Y)
-                {
-                    if (b.Y > p.Y && side > 0) winding++;
-                }
-                else if (b.Y <= p.Y && side < 0)
-                {
-                    winding--;
-                }
-            }
-            return winding;
-        }
     }
 }

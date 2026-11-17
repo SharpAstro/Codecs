@@ -1,8 +1,9 @@
 # Roadmap: SVG (`SharpAstro.Svg` on `SharpAstro.Vector`)
 
-**Status: rungs 1 and 2 shipped (3.35, 3.36).** `SharpAstro.Svg` reads paths, basic shapes, transforms,
-viewports, `use` and `symbol`, solid and gradient paints, stroke properties and style sheets into a
-`SharpAstro.Vector.VectorScene`.
+**Status: rungs 1 to 5 written (3.35 to 3.39).** `SharpAstro.Svg` reads paths, basic shapes, transforms,
+viewports, `use` and `symbol`, solid, gradient and pattern paints, stroke properties, style sheets with custom
+properties, clips, masks, markers, images and text into a `SharpAstro.Vector.VectorScene`, expands the entities a
+document declares, and reads one element out of a document for a font's `SVG ` table.
 
 ## The design, and why it is not a codec like the others
 
@@ -15,15 +16,15 @@ That shape is forced by the dependency direction:
 ```
 DIR.Lib ──► Fonts.Lib ──► SharpAstro.Png (Codecs)
    │            │
-   │            └──► SharpAstro.Svg ──► SharpAstro.Vector      (planned: OpenType `SVG ` glyphs)
-   └──► draws text runs with its own text pipeline             (planned: rung 5)
+   │            └──► SharpAstro.Svg ──► SharpAstro.Vector      (OpenType `SVG ` glyphs, rung 4b)
+   └──► gives the fonts for a scene's text                     (rung 5)
 ```
 
 Codecs is the bottom layer. The anti-aliased fill, the stroker and the COLR paint code live in Fonts.Lib,
 which already references Codecs, so a rasterising SVG codec here could not use them, and moving them down
 would have been a breaking change to Fonts.Lib for no gain. Reading to a scene needs none of it. It also
-means **text can never be drawn twice**: a `text` element will be handed to the caller as runs (string, font
-properties, positions), and the caller draws them with the text code it already has.
+means **text can never be drawn twice**: a `text` element is handed on as spans (string, font properties,
+positions), and whoever draws the scene shapes them with the text code it already has.
 
 `SharpAstro.Vector` is deliberately not named after SVG. Most vector formats reduce to the same model (paths
 with fill and stroke, groups with opacity and clip, images, text runs), so a later reader for another format
@@ -33,7 +34,7 @@ can emit the same scene and reuse every renderer written for it.
   `Rgba32`. When Fonts.Lib takes this package it can drop its own copies. (DIR.Lib's `RGBAColor32` names its
   members differently; folding that in is a wider change, not planned here.)
 - A scene is flat except where compositing needs a layer: transforms are multiplied out onto each shape, and
-  a `VectorGroup` appears only for opacity over more than one paint.
+  a `VectorGroup` appears only for opacity over more than one paint, for a clip and for a mask.
 - Paths are absolute move / line / quad / cubic / close. Arcs, circles and rounded corners are cubics.
 
 **Provenance:** written from the W3C SVG 1.1 and SVG 2 specifications (and CSS Color for the colour syntax).
@@ -45,11 +46,13 @@ resvg, librsvg and browser sources are not read; renderers are used as programs 
 |---|---|---|
 | 1 | Root size / viewBox / preserveAspectRatio; `g`, `a`; `path`, `rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`; `transform`; solid fill and stroke, every stroke property; opacity; `display`, `visibility`; presentation attributes and the `style` attribute; SVGZ; limits | shipped 3.35 |
 | 2 | `defs`, `use`, `symbol`, nested `svg`; `linearGradient` / `radialGradient` (with `href` inheritance and `gradientTransform`); `<style>` sheets with the selectors real files use; limits that follow `use` | shipped 3.36 |
-| 3 | `clipPath`, `mask`, the clip of nested viewports, `image` (decoded by the caller or the facade), markers, `paint-order`, `pattern`; a stroker in the test rasteriser | open |
+| 3 | `clipPath`, `mask`, the clip of nested viewports, `image` (carried as the file it is; decoded by the caller), markers, `paint-order`, `pattern`; a stroker in the test rasteriser; `VectorSceneFile` version 2 | written, 3.37 |
+| 3f | The rasteriser in Fonts.Lib draws what rung 3 added to the scene (clips, masks, images through a decoder the caller gives, patterns), and DIR.Lib takes it | open, in Fonts.Lib and DIR.Lib |
+| E | XML entities a document declares itself (some Adobe Illustrator exports): the internal subset read with bounded expansion, nothing external | written, 3.38 |
 | 4a | The one scene rasteriser: `SharpAstro.Fonts.Scenes.SceneRasterizer` (fills, strokes, gradients, layers), held against the browser with strokes | shipped, Fonts.Lib 1.18 |
-| 4b | Fonts.Lib reads the OpenType `SVG ` table through this package | open, in Fonts.Lib |
+| 4b | Fonts.Lib reads the OpenType `SVG ` table through this package. Here: one element of a document (`ElementId`), the text colour as `currentColor`, CSS custom properties and `var()` (a palette reaches a glyph that way) | written, 3.38 and Fonts.Lib 1.20 |
 | D | SVG in DIR.Lib: `IconBaker.Bake(VectorScene, size)`, `VectorIcon` (read once, rasterise once a size), `bake-icons --svg` and `--scenes` | shipped, DIR.Lib 11.78 |
-| 5 | `text` / `tspan` as text runs, then per-character positioning, then `textPath` | open |
+| 5 | `text`, `tspan` and `textPath` as spans of a `VectorText` node, with white space handled, every font property, per-character positions, anchors, baselines, lines and paints; `VectorSceneFile` version 3. Laid out and drawn in Fonts.Lib (`SceneText`), with the fonts from the caller (DIR.Lib: `SceneFonts`) | written, 3.39, Fonts.Lib 1.21, DIR.Lib 11.80 |
 | 6 | Filters, blend modes | open, only if asked for |
 
 **Not planned until someone asks:** deprecated features (SVG fonts: `<font>` / `<glyph>`, `tref`, `altGlyph`,
@@ -210,6 +213,182 @@ without reading SVG at start-up.
 - **Stops interpolate in sRGB, not premultiplied**, which is what the browser draws for a stop with
   `stop-opacity="0"` (the scene says so on the paint types).
 
+## What rung 3 settled
+
+- **A clip and a mask are properties of a layer.** `VectorGroup` gained `Clip` and `Mask`: the children are drawn,
+  cut to the region, multiplied by the mask's picture, then blended at the opacity. A region (`VectorClip`) is a
+  union of outlines, each of which may have a region of its own, and may be intersected with another: that is
+  exactly what `clipPath` can say (several children, a `clip-path` on a child, a `clip-path` on the `clipPath`),
+  and nothing more general was added. A mask is a little scene and a rule (luminance or alpha).
+- **The scene stays flat where nothing is clipped.** The clip of a nested `svg`, a `symbol` or a marker is only put
+  in the scene when its content can reach outside its box (the same test that used to decide whether to report
+  it); a mask's area is only a clip when its picture can leave the area. An icon sprite reads to the same scene
+  as before.
+- **Markers and `paint-order` are resolved, not carried.** A marker becomes its content, placed; `paint-order`
+  becomes the order of the nodes (stroke first is two shapes: the stroke, then the fill). A renderer needs
+  nothing new for either.
+- **A path command is one vertex, but an arc is several curves.** The path parser reports where each command
+  ends, only for paths that carry markers, so that an arc's inner joints get no marker.
+- **An image is carried, never decoded and never fetched.** `VectorImage` holds the bytes of a `data:` URI (PNG,
+  JPEG, whatever they are) or the address of another file, the box, and the fitting rule, because the picture's
+  own size is not known until someone decodes it. One `image` element used many times shares one array. An
+  `image` with no `width` or `height` (sized by the picture) is reported, not guessed; so is one that is itself
+  an SVG document.
+- **A pattern is a tile's scene on a paint** (`PatternPaint`): its content in pattern space, the tile rectangle,
+  and a transform to the shape's coordinates. In user units one pattern is one paint for every shape; it is then
+  **charged again for every use**, because patterns painted with patterns double at every level for whoever
+  draws or writes the scene, although the reader walks each only once (forty levels, under 8 KB, 2^40 tiles).
+- **Twelve answers came from the browser.** They are the `rung3-edges` oracle document, one case a cell:
+  - the `marker` shorthand is read from style sheets and the `style` attribute, **not** as an attribute;
+  - a reference that leads nowhere (`clip-path`, `mask`) leaves the element drawn, unclipped;
+  - a `clipPath` in bounding-box units on something with no box area draws nothing; so does an empty `clipPath`;
+  - a `clip-path` or `mask` that leads back to itself is dropped **where it closes the circle**, and the ones
+    around it still apply (the first reading, "nothing is drawn", was wrong);
+  - a pattern painted with itself is used, and the shape inside it gets its fallback colour;
+  - a `mask` property on a `mask` element does nothing, though a `clip-path` on a `clipPath` clips;
+  - `opacity` on a `marker` fades the marker; on a `mask` or a `pattern` it does nothing;
+  - a marker is drawn although it is `display: none`, and although the shape has no stroke;
+  - a hidden shape has no markers; a `rect` never has any;
+  - a `clip-path` on a `use` is in the coordinates after its `x` and `y`, and on a nested `svg` inside its
+    `viewBox` mapping (both first read the other way);
+  - a group in a `clipPath` is not looked at, and a hidden child does not clip;
+  - mask luminance is taken from the sRGB values as they are.
+- **`VectorSceneFile` is version 2** and still reads version 1. Its untrusted-bytes tests (cut at every length,
+  every byte flipped) now run over a scene that holds every new thing.
+
+## What rung 4 settled
+
+Two things: the entities carried over from rung 1, and what a font needs to draw the glyphs of an OpenType `SVG `
+table. The second was asked of the reader as three general options, so nothing about fonts is known here.
+
+- **Entities are the XML reader's, bounded.** The internal subset of a DOCTYPE is parsed, with no resolver, and what
+  entities expand to is limited in total (`SvgReadOptions.MaxEntityCharacters`, 2^22): ten nested entities of ten
+  ask for 10^10 characters from 400 bytes and are refused at once. An Illustrator export that writes its namespace and
+  every style as an entity now reads.
+- **An entity kept in another file is never loaded, and that is said.** Measured, because the documentation does not
+  say it: with no resolver the XML reader puts NOTHING where such an entity is used between elements, without an
+  error (in an attribute it is an error, as XML has it). So the reader looks at the DOCTYPE itself and reports a
+  `SYSTEM` or `PUBLIC` entity as unsupported, used or not. The test keeps a real file with a shape in it and requires
+  that the shape never appears.
+- **Custom properties and `var()` are read for every document**, not only for glyphs: declared in a sheet, a `style`
+  attribute or by the caller (`SvgReadOptions.CustomProperties`, which stand as an ancestor's would), inherited, used
+  in any property the reader reads, presentation attributes included. A declaration's own `var()` is replaced where it
+  is declared, against that element's own set; one that leads back to itself is then not declared at all, not even
+  by an ancestor. A property whose `var()` finds nothing and has no fallback is the inherited value (or the initial
+  one for a property that does not inherit), NOT the declaration it beat. Names keep their case. All of that is the
+  CSS specification's, and the `custom-properties` browser document (eighteen cells) agreed on its first run.
+- **What `var()` puts into values is bounded** by `MaxCharacters`, in total: a custom property can hold another twice,
+  and forty elements of that are 2^40 characters.
+- **A gradient stop inherits from where it stands**, which matters now that it can ask for `currentColor` or a custom
+  property: both come from the gradient's own ancestors (and so from the caller), never from the shape painted.
+  Before 3.38 a stop's `currentColor` was its own `color` or black.
+- **One element of a document** (`SvgReadOptions.ElementId`) **is drawn as the OpenType specification defines a
+  glyph's picture**: "as though the given element and its content were specified in a defs tag and then referenced
+  as the graphic content of an SVG document". That is a `use` of it standing alone in the root: its own transform and
+  properties apply, the root's apply (its `viewBox` mapping too), and the groups it stands in give it nothing. When the
+  root itself has the id, the whole document is drawn. The test holds the scene equal, node for node, to the scene of
+  the document the specification writes out.
+- **`SvgReader.Read(ReadOnlyMemory<byte>)`** reads a part of a larger array without copying it: a font's table holds
+  many documents.
+
+**In Fonts.Lib (1.20):** `SvgTable` finds a glyph's document (every offset checked against the table, in 64 bits),
+`SvgGlyphRenderer` reads it with the options above (the em square as the viewport, the text colour, the 'CPAL' palette
+as `--color0` and on, each `#rrggbbaa` so that an entry's alpha comes with it) and draws the scene with
+`SceneRasterizer`; `OpenTypeFont.RenderColor` tries COLR, then SVG, then bitmaps. DIR.Lib calls `RenderColor` and needed
+no change: its `ManagedFontRasterizer` returns the test font's SVG glyphs as colour glyphs as it stands (checked by hand
+against the local sources; DIR.Lib has no test of its own for it yet, and it draws them with black for `currentColor`
+and the first palette, since a glyph atlas does not know the text's colour). A document is read again for each glyph
+drawn from it; a glyph atlas keeps what it draws. Measured with a stopwatch over 2,000 runs (arm64, not a benchmark):
+about 20 us to read a glyph of a few shapes out of its document, 100 to 140 us to read it and draw it at 64 pixels.
+
+**Two oracles, because neither is enough.** Chrome and Edge do not draw OpenType SVG glyphs at all. Firefox does,
+from the font, so it checks the whole path (table, gzip, element, y axis, scale). But, measured with Firefox 160:
+
+- it defines no `--colorN` for a palette, with or without `font-palette`: every `var()` takes its fallback;
+- `currentColor` is black whatever the colour of the text;
+- it draws no stroke in a glyph, on a filled shape or alone;
+- a glyph that is not the root inherits from the groups it stands in, and the root's `viewBox` is not applied to it
+  (where the root is the glyph, a `viewBox` of another size than the em scales it, as here).
+
+The first three are things the specification requires or strongly recommends; the last is the opposite of its
+definition by `use`. So fifteen cases are held against Firefox's own drawing of the font (the capture is committed, and
+checked against a live Firefox where there is one), and all eighteen, in two text colours and two palettes, against
+headless Chrome drawing the document the specification says the glyph's picture is. All of them matched on their
+first run.
+
+## What rung 5 settled
+
+Text. A scene cannot lay text out, because that takes a font and a scene knows none; so the reader does everything
+that needs no font and says the rest.
+
+- **Text is described, not laid out.** A `text` element is one `VectorText` node: spans in reading order, each a
+  string with a font as the document asks for it (`VectorFont`: families in order, size, weight, slant, stretch), its
+  paints, and what the document says about single characters. No glyph, no advance, no font file. Fonts.Lib's
+  `SceneText` lays it out with a shaper the caller gives, and DIR.Lib gives one over the machine's fonts.
+- **White space is the reader's, because it needs no font and decides which characters there are.** A tab and a line
+  end are a space; of a run of spaces one stays, across element boundaries; the text's first and last spaces go.
+  `xml:space="preserve"` (inherited, taken back by `default`) and CSS `white-space` keep them all, and CSS wins. The
+  XML reader no longer drops white space between tags, since inside a `text` it is text.
+- **A list of positions is for the characters that are left**: `x`, `y`, `dx`, `dy` and `rotate` give one value a
+  character, counted over what remains after white space is collapsed and after what is `display: none`, a
+  character outside the basic plane counting once. An inner element's value wins character by character; the last
+  angle of a `rotate` list stands for the rest of its element. A span carries them as entries by UTF-16 offset.
+- **A character with an `x` or a `y` starts a chunk**, and a chunk is what `text-anchor` moves.
+- **Lines belong to two elements at once** (measured in a browser): a line is painted in the paint of the element
+  that asked for it, and is as thick and as far from the baseline as the span it runs under wants. Underlined black
+  text with a red word twice the size in it has a black line that is twice as thick under that word. So a span holds
+  the sets of lines it is under (`VectorTextLine`: the kinds and the paints), each set one object shared by every span
+  under it, and the geometry is left to whoever knows the font. `text-decoration: none` inside takes nothing away.
+- **Baselines.** `dominant-baseline` inherits; `auto` on an element keeps what is inherited and does not go back to
+  the alphabetic line; `alignment-baseline` is for its element alone. A `baseline-shift` adds to the one above it and a
+  percentage is of the font size. `sub` and `super` are carried as the font size they are for (`ScriptRise`), because
+  how far they move is half a line of that size in the font.
+- **A paint in the units of the text's bounding box cannot be placed here.** A gradient is resolved against the unit
+  square and marked (`FillInBox`); whoever lays the text out maps it to the box of the characters' cells. A pattern
+  in such units, and a clip or a mask in the units of a text's box, are reported. The clip is then not applied, and a
+  mask loses only its area, so the text is still there.
+- **Text along a path** names the path (a `path` or a basic shape, with that element's transform, or the
+  `textPath`'s own data), where it starts and on which side. Only `text` and `tspan` place characters: an `x` on a
+  `textPath` is not an attribute of it. Along a path an `x` is a distance along it and a `y` is not looked at, even
+  the `text` element's own.
+- **`VectorSceneFile` is version 3** and reads versions 1 and 2. A text node writes its paths and its sets of lines
+  once each, so spans that shared an object share one again after loading.
+- **Limits.** `MaxTextCharacters` counts the characters of text for every instance a `use` makes.
+
+**Laid out and drawn in Fonts.Lib (1.21):** `SceneText.ToShapes` turns a `VectorText` into the outlines of its
+glyphs, one path a span, and `SceneRasterizer` draws text that way when it is given a shaper
+(`SceneRenderOptions.ShapeText`); with none, text is left out, as a picture nobody decodes is. A shaper is the caller's
+text shaping (`SceneTextShaper`: a string and a font to glyphs with advances); `SceneText.ShaperFor` makes a plain one,
+one glyph a character with pair kerning, from a font lookup. **DIR.Lib (11.80)** gives `SceneFonts.Installed`, the
+machine's fonts by family, weight and slant with fallbacks by character, and `SceneFonts.From(faces)` for the same
+picture on every machine; `VectorIcon` and `IconBaker` draw text with the first unless told otherwise.
+
+**Held against a browser, in Fonts.Lib** (`SceneTextBrowserTests`): nineteen documents with DejaVu Sans as the page's
+own web font. The page is captured at four times the size and averaged down, because a browser fits small text to the
+pixel grid and darkens it, which at four times the size is a quarter of a pixel; without that every case was a
+few levels out along every edge. Means 0.3 to 1.9 of 255 (bound 2.5), no pixel outside its neighbourhood. What it
+settled, each first written another way or not known:
+
+- a line's thickness is a tenth of the font size, not the font's own; an underline starts max(1, half its thickness
+  rounded up) below the baseline; an overline ends on the ascent taken to a whole unit; a line through the text is
+  centred a third of that ascent above the baseline;
+- an underline and an overline are broken where a glyph crosses them, by the line's thickness to each side;
+- a line's paint is its element's and its geometry its span's (above);
+- `sub` and `super` move by half the height of a line (ascent plus descent) of the element's own size;
+- the baselines: `middle` is half an x-height, `central` half of ascent less descent, `hanging` 0.8 and
+  `mathematical` 0.5 of the ascent, the two edges the ascent and the descent;
+- `dominant-baseline: auto` inside text with another baseline keeps that baseline;
+- a character with both an `x` and a `dx` is at their sum (the specification's algorithm, read literally, drops the `dx`);
+- text that starts part of the way round a closed path stops at the path's end: SVG 2 lets it go on past the start,
+  and the browser does not;
+- a `y` moves nothing that is on a path, and a `textPath` has no `x`;
+- a line end inside text is a space, not nothing as SVG 1.1 had it.
+
+Two things the browser does that are **not** copied. It measures a path along chords that may lie half a unit off the
+curve, so round a circle its text runs ahead of the true length (half a pixel three quarters round a circle of radius
+40): circles are not held against it. And it does not set text along a basic shape or on a path's right side
+(`side`), both SVG 2: those are read and drawn here and tested without it.
+
 ## Validation
 
 Four layers, in `tests/SharpAstro.Codecs.Tests/Svg*Tests.cs`:
@@ -222,8 +401,11 @@ Four layers, in `tests/SharpAstro.Codecs.Tests/Svg*Tests.cs`:
 3. **Pixels against ImageMagick's SVG renderer** (`SvgRenderOracleTests`): the structural tests cannot catch a
    misreading of the specification, because the same misreading would be in the expectation. So twelve
    documents are drawn by ImageMagick and by a plain test-only fill rasteriser over our scene, and compared.
-   Measured: mean difference 0.08 to 0.44 of 255 (bound 0.8), no pixel further than 72 off. Fills only; the
-   test rasteriser has no stroker.
+   Measured: mean difference 0.08 to 0.44 of 255 (bound 0.8), no pixel further than 72 off. These twelve are
+   fills only. The test rasteriser (`SvgPlainRasteriser`, since rung 3) is a function from a point to a colour,
+   sampled 16 times a pixel: a fill by winding number, a stroke by distance to the outline with its joins and
+   caps as the small polygons they are, a clip by "inside or not", a mask and a pattern by asking their own
+   little scene at that point. It has no spans and no coverage to get wrong.
 
 4. **Pixels against a headless browser** (`SvgBrowserOracleTests`, Chrome or Edge through `OracleGate`): the same
    documents, four ImageMagick cannot be trusted with, and twelve for rung 2. **Rung 2 has no ImageMagick layer:**
@@ -234,6 +416,13 @@ Four layers, in `tests/SharpAstro.Codecs.Tests/Svg*Tests.cs`:
    The browser's own curves are a little coarse (up to 100 levels off the true ellipse at a few pixels where we are
    within 6), so an edge may sit one pixel away; a shape in the wrong place still fails. This is the oracle the later
    rungs are meant to be held against.
+
+   **Rung 3 added nine documents** and is covered by the browser alone, like rung 2: strokes (caps, joins, the
+   miter limit, dashes, a stroke under a transform that is not uniform, dots), `clip-path`, viewport clips, masks,
+   markers, `paint-order`, patterns, images, and `rung3-edges` (above). Of the first eight, seven passed on
+   their first run and the eighth (patterns) had no pixel plainly wrong but a mean of 1.48: the browser's tile
+   edges are softer than ours where a tile does not start on a pixel, so that one document is allowed 2.0.
+   `rung3-edges` is where the twelve answers came from.
 
 **Mutation-checked:** seventeen deliberate bugs, one at a time, all caught: arc sweep inverted, arc radii not
 scaled up, a relative arc's end not offset, the transform list applied left to right, nested transforms
@@ -250,17 +439,58 @@ mutual uses one level further than a browser does; and a rule about which attrib
 no test. Not run, deliberately: turning off the element count, which would make the doubling test walk 2^40
 elements.
 
+Rung 3: thirty-seven more (clip units, transforms and rules, the clip on a child and on the `clipPath`, cycles,
+mask area, units and kind, viewport clips, `paint-order`, marker direction, scale, reference point and vertices,
+pattern tile, content and transform, the charge for a cached pattern, image fitting, the scene file's new fields).
+Thirty-six were caught at once. Taking a clipped shape's bounding box from everything it drew, markers included,
+was not: no test had a shape with both markers and a clip in bounding-box units. One was added and the mutation
+fails it. Eight are seen only by the structural tests or only by the browser, so both layers are needed: the
+browser alone sees a `clip-path` on a nested `svg` taken in the outer coordinates and an arc's inner joints taken
+for vertices; the structural tests alone see the mask's default area, a picture decoded again for every instance,
+the two scene-file fields and the pattern charge (with it removed the 2^40 test fails; it does not hang, because nothing walks the scene).
+Not run, deliberately: trusting a clip's count in the scene file, which would ask for a 16 GB array.
+
+Rung 4: nineteen more in the reader (`var()` lookup and fallback, the unset rule, the case of names, the shared
+dictionary, circles, a stop's inheritance, the three options, entities and their report, geometry written as CSS) and
+twenty in Fonts.Lib (the y axis, the em, the element picked, the viewport, the palette's index, numbering and alpha,
+the text colour, where the bitmap is put, a stroke's reach, the table's offsets, ranges, order and bounds, the order
+of the colour tables). Thirty-six were caught at once. Three were not and each got a test: a name that only ends in
+`var(`, a `symbol` asked for by its id (walking the element where it stands draws the same as using it for everything
+but a symbol), and a stroke at the edge of a glyph's bitmap, which the browser comparison's one pixel of slack had
+swallowed. Not run, deliberately: the entity and the `var()` budgets removed (their tests would ask for 10^10 and 2^40
+characters), and a glyph's bitmap not kept near its origin (a 16 GB array).
+
+Rung 5: 40 in the reader and the scene file and 43 in Fonts.Lib's layout, run in CI (the `Mutation check` workflow,
+`tests/mutation/lists/` in each repository), after a first run on a working machine was stopped for the load it put on
+it. Reader and scene file: 36 caught at once, and four that showed a missing test (a position's index counted in
+characters where it is a UTF-16 offset, `letter-spacing` in ems of 16, character positions out of order in a scene file,
+every span given the first text path by a scene file). Layout: 42 caught at once, and one that showed a missing test (a
+`y` moving a character that is set along a path, which only a scene not made by the reader can hold). One bug in the list
+changed nothing and was replaced. Not run, deliberately: the text budget switched off (its test reads what it was built
+to refuse; the runner was shut down for want of memory).
+
+The same run found something no test here could: **Chrome on Linux does not set text where Chrome and Edge on Windows
+do.** Four of the nineteen text documents come out a pixel apart on the Ubuntu runner (baselines other than alphabetic,
+thin lines under small text). The rules are the ones measured on Windows, and Fonts.Lib's comparison is against a
+committed Windows capture for that reason.
+
 **Known limits of the oracle.** ImageMagick's renderer does not read `hsl()` and does not draw a
 `visibility="visible"` child of a hidden group; both were taken out of the oracle documents and stay covered
-structurally. Strokes have no pixel oracle yet (the scene carries the parameters; nothing here draws them).
+structurally. Strokes are held against the browser since rung 3 (in Fonts.Lib too, by its own rasteriser).
 The browser oracle is the answer to ImageMagick's gaps; text will need a font the page loads itself, or the result
 depends on what each machine has installed.
 
 ## Refused and reported
 
-- A document that uses an XML entity it declares itself is refused (`InvalidDataException`): DTD processing
-  is ignored, so entities are never expanded and nothing outside the document is fetched. Some Adobe
-  Illustrator exports rely on entities; reading the internal subset safely (bounded expansion) is open.
+- Entities a document declares itself are expanded, up to `MaxEntityCharacters` in total; over that the document
+  is refused (`InvalidDataException`), as is one that uses an entity nobody declared. Nothing outside the document is
+  fetched: an entity kept in another file stands for nothing and is reported (`Unsupported`).
+- Text: vertical writing and text from right to left (both are drawn as horizontal, left-to-right text),
+  `font-variant` other than `normal`, text wrapped to a width (`inline-size`), `tref`, `textLength` on a `tspan`,
+  a colour, a style or a thickness of its own for a `text-decoration`, `pathLength` on a path text is set along,
+  and `textPath` with `method="stretch"` or `spacing="auto"`: reported (`Unsupported`).
+- The geometry properties SVG 2 lets a style sheet set (`width`, `height`, `x`, `y`, `cx`, `cy`, `r`, `rx`, `ry`) are
+  read as attributes only. Written in a `style` attribute or a sheet they are reported (`Unsupported`).
 - Everything valid but unread is left out of the scene and listed in `SvgDocument.Issues` as `Unsupported`;
   everything the document got wrong is handled as the specification says an error is and listed as `Invalid`.
   `SvgReadOptions.ThrowOnUnsupported` turns the first of the former into an exception.

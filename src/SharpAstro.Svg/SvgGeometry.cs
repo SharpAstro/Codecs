@@ -15,7 +15,11 @@ internal static class SvgGeometry
     /// Parses path data. Returns false when the data has an error; what came before the error is in the builder, which is
     /// the specification's rule ("render up to the last correct segment").
     /// </summary>
-    public static bool ParsePath(ReadOnlySpan<char> data, PathBuilder sink)
+    /// <param name="ends">
+    /// When given, the builder's verb count after every command that added to it. A command is one vertex for markers,
+    /// but an arc is several curves here, so the verbs alone do not say where the vertices are.
+    /// </param>
+    public static bool ParsePath(ReadOnlySpan<char> data, PathBuilder sink, List<int>? ends = null)
     {
         var s = new SvgScanner(data);
         double cx = 0, cy = 0;      // current point
@@ -158,6 +162,7 @@ internal static class SvgGeometry
 
             previous = upper;
             s.SkipCommaWhitespace();
+            if (ends is not null && sink.VerbCount > (ends.Count == 0 ? 0 : ends[^1])) ends.Add(sink.VerbCount);
         }
         return true;
     }

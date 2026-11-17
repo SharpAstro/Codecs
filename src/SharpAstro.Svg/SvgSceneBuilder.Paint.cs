@@ -36,7 +36,14 @@ internal sealed partial class SvgSceneBuilder
             case SvgPaintKind.CurrentColor:
                 return Solid(style.Color);
             case SvgPaintKind.Server:
-                if (TryGradient(paint.Server!, path, viewport, out VectorPaint? gradient)) return gradient;
+                if (paint.Server!.Name == "pattern")
+                {
+                    if (TryPattern(paint.Server, path, viewport, out VectorPaint? pattern)) return pattern;
+                }
+                else if (TryGradient(paint.Server, path, viewport, out VectorPaint? gradient))
+                {
+                    return gradient;
+                }
                 // The server cannot paint this shape: its fallback does.
                 return paint.Fallback switch
                 {
@@ -109,6 +116,172 @@ internal sealed partial class SvgSceneBuilder
         double Value(SvgLength length, double percentBase) => definition.UserSpace
             ? length.Resolve(SvgStyle.Initial.FontSize, percentBase)
             : length.Unit == SvgUnit.Percent ? length.Value / 100.0 : length.Value;
+    }
+
+    private Dictionary<SvgElement, (VectorRect Box, SvgViewport Viewport, VectorPaint? Paint, long Weight)>? _patternCache;
+
+    /// <summary>Made when first needed: most documents have no pattern.</summary>
+    private Dictionary<SvgElement, (VectorRect Box, SvgViewport Viewport, VectorPaint? Paint, long Weight)> _patterns => _patternCache ??= [];
+
+    /// <summary>
+    /// The pattern as a paint for one shape. False when it cannot be applied to this shape (bounding-box units on a shape
+    /// whose box has no width or no height, a pattern transform with no inverse): then the fallback colour is used.
+    /// True with a null paint means the pattern itself is nothing (a tile of no size, no content).
+    /// </summary>
+    private bool TryPattern(SvgElement server, VectorPath path, in SvgViewport viewport, out VectorPaint? paint)
+    {
+        paint = null;
+        // The element, then whatever its href leads to: an attribute not given here is taken from the first pattern
+        // along that chain that gives it, and the content from the first that has any.
+        var chain = new List<SvgElement>();
+        for (SvgElement? e = server; e is not null && e.Name == "pattern" && !chain.Contains(e);)
+        {
+            chain.Add(e);
+            e = e.Get("href") is { } href && href.Trim() is ['#', .. var id] && tree.Ids.TryGetValue(id, out SvgElement? next) ? next : null;
+            if (chain.Count > 64) break;
+        }
+        string? Find(string attribute)
+        {
+            foreach (SvgElement e in chain)
+            {
+                if (e.Get(attribute) is { } value) return value;
+            }
+            return null;
+        }
+
+        bool tileInBox = true, contentInBox = false;
+        switch (Find("patternUnits")?.Trim())
+        {
+            case null or "objectBoundingBox": break;
+            case "userSpaceOnUse": tileInBox = false; break;
+            default: Issue(SvgIssueKind.Invalid, "patternUnits"); break;
+        }
+        switch (Find("patternContentUnits")?.Trim())
+        {
+            case null or "userSpaceOnUse": break;
+            case "objectBoundingBox": contentInBox = true; break;
+            default: Issue(SvgIssueKind.Invalid, "patternContentUnits"); break;
+        }
+        SvgAffine transform = SvgAffine.Identity;
+        if (Find("patternTransform") is { } transformText && !SvgAffine.TryParse(transformText, out transform))
+        {
+            Issue(SvgIssueKind.Invalid, "patternTransform");
+            transform = SvgAffine.Identity;
+        }
+        if (!transform.IsFinite || transform.Determinant == 0) return false;
+
+        bool hasViewBox = false;
+        double vbX = 0, vbY = 0, vbW = 0, vbH = 0;
+        if (Find("viewBox") is { } viewBoxText)
+        {
+            hasViewBox = TryParseViewBox(viewBoxText, out vbX, out vbY, out vbW, out vbH);
+            if (!hasViewBox) Issue(SvgIssueKind.Invalid, "viewBox");
+        }
+        // With a viewBox the content is fitted to the tile and patternContentUnits says nothing.
+        if (hasViewBox) contentInBox = false;
+
+        VectorRect box = default;
+        if (tileInBox || contentInBox)
+        {
+            if (!path.TryGetBounds(out box) || box.Width <= 0 || box.Height <= 0) return false;
+        }
+        // The same pattern on the same box is the same paint: a drawing often fills many shapes with one pattern in
+        // user-space units, where the box does not come into it at all.
+        if (_patterns.TryGetValue(server, out var cached) && cached.Box == box && cached.Viewport == viewport)
+        {
+            // Not walked again, but charged again: the scene holds the tile's content once more for whoever draws or
+            // writes it, and patterns filled with patterns would otherwise double it at every level for nothing.
+            _visits += cached.Weight;
+            if (_visits > options.MaxElements)
+            {
+                throw new InvalidDataException($"The SVG draws more than {options.MaxElements} elements once its patterns are followed.");
+            }
+            paint = cached.Paint;
+            return true;
+        }
+
+        double fontSize = SvgStyle.Initial.FontSize;
+        double x, y, w, h;
+        if (tileInBox)
+        {
+            x = box.X + Fraction("x") * box.Width;
+            y = box.Y + Fraction("y") * box.Height;
+            w = Fraction("width") * box.Width;
+            h = Fraction("height") * box.Height;
+        }
+        else
+        {
+            x = Tile("x", viewport.Width);
+            y = Tile("y", viewport.Height);
+            w = Tile("width", viewport.Width);
+            h = Tile("height", viewport.Height);
+        }
+        SvgElement? owner = chain.Find(e => e.Children.Count > 0);
+        if (!(w > 0) || !(h > 0) || owner is null || (hasViewBox && (vbW <= 0 || vbH <= 0)))
+        {
+            _patterns[server] = (box, viewport, null, 0);
+            return true;
+        }
+
+        // Pattern space is the shape's own coordinates before the pattern transform; the tile sits at (x, y) in it.
+        SvgAffine content = new(1, 0, 0, 1, x, y);
+        SvgViewport inner = viewport;
+        if (hasViewBox)
+        {
+            content *= ViewBoxTransform(Find("preserveAspectRatio"), vbX, vbY, vbW, vbH, w, h);
+            inner = new SvgViewport(vbW, vbH);
+        }
+        else if (contentInBox)
+        {
+            content *= new SvgAffine(box.Width, 0, 0, box.Height, 0, 0);
+        }
+
+        if (!_active.Add(server))
+        {
+            // A pattern painted with itself cannot be applied: the fallback colour is (measured in a browser).
+            Issue(SvgIssueKind.Invalid, "pattern: circular reference");
+            return false;
+        }
+        var nodes = new List<VectorNode>();
+        int depth = _paintDepth + 1;
+        long before = _visits;
+        try
+        {
+            Charge(depth);
+            SvgStyle style = InheritedStyle(owner, viewport);
+            if (style.OverflowVisible == true) Issue(SvgIssueKind.Unsupported, "pattern with overflow: visible");
+            foreach (SvgElement child in owner.Children)
+            {
+                Walk(child, style, content, inner, nodes, depth + 1);
+            }
+        }
+        finally
+        {
+            _active.Remove(server);
+        }
+
+        if (nodes.Count > 0)
+        {
+            paint = new PatternPaint([.. nodes], new VectorRect((float)x, (float)y, (float)w, (float)h), transform.ToMatrix());
+        }
+        _patterns[server] = (box, viewport, paint, _visits - before);
+        return true;
+
+        double Fraction(string attribute)
+        {
+            if (Find(attribute) is not { } text) return 0;
+            if (SvgLength.TryParse(text, out SvgLength length)) return length.Unit == SvgUnit.Percent ? length.Value / 100.0 : length.Value;
+            Issue(SvgIssueKind.Invalid, attribute);
+            return 0;
+        }
+
+        double Tile(string attribute, double percentBase)
+        {
+            if (Find(attribute) is not { } text) return 0;
+            if (SvgLength.TryParse(text, out SvgLength length)) return length.Resolve(fontSize, percentBase);
+            Issue(SvgIssueKind.Invalid, attribute);
+            return 0;
+        }
     }
 
     private GradientDefinition ReadGradient(SvgElement element)
@@ -204,12 +377,30 @@ internal sealed partial class SvgSceneBuilder
 
             // stop-color and stop-opacity are properties: attribute, sheet or style, the last one standing wins.
             var color = new Rgba32(0, 0, 0);
-            Rgba32 current = new(0, 0, 0);
             double opacity = 1;
             bool currentColor = false;
+            // What the stop inherits (its colour, its custom properties) comes from where it stands in the document.
+            // Worked out only for a stop that asks, since few do, and before its declarations are gone through: working
+            // out a style reuses the list they are in.
+            bool asks = false;
             foreach (SvgDeclaration declaration in Cascade(stop))
             {
-                ReadOnlySpan<char> v = declaration.Value.AsSpan().Trim();
+                asks |= declaration.Name is "stop-color" or "stop-opacity"
+                    && (HasVar(declaration.Value) || declaration.Value.Contains("currentColor", StringComparison.OrdinalIgnoreCase));
+            }
+            SvgStyle inherited = asks ? ComputeStyle(stop, InheritedStyle(gradient, default), default) : default;
+            foreach (SvgDeclaration declaration in Cascade(stop))
+            {
+                string raw = declaration.Value;
+                if (declaration.Name is "stop-color" or "stop-opacity" && HasVar(raw) && !TrySubstitute(raw, inherited.Variables, null, 0, out raw))
+                {
+                    // Unusable once looked up: the initial value, black and opaque.
+                    Issue(SvgIssueKind.Invalid, "var() with no value and no fallback");
+                    if (declaration.Name == "stop-color") (color, currentColor) = (new Rgba32(0, 0, 0), false);
+                    else opacity = 1;
+                    continue;
+                }
+                ReadOnlySpan<char> v = raw.AsSpan().Trim();
                 switch (declaration.Name)
                 {
                     case "stop-color":
@@ -226,12 +417,9 @@ internal sealed partial class SvgSceneBuilder
                             opacity = 1;
                         }
                         break;
-                    case "color":
-                        if (SvgColor.TryParse(v, out Rgba32 own)) current = own;
-                        break;
                 }
             }
-            if (currentColor) color = current;
+            if (currentColor) color = inherited.Color;
             byte alpha = (byte)Math.Clamp(Math.Round(color.A * opacity, MidpointRounding.AwayFromZero), 0, 255);
             stops.Add(new GradientStop((float)offset, color with { A = alpha }));
         }
