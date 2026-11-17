@@ -172,6 +172,26 @@ public sealed class VectorSceneFileTests
 
     // ---- Bytes that are not to be trusted ------------------------------------------------------------------------
 
+    [Fact]
+    public void SpansOnTwoPaths_EachComeBackOnTheirOwn()
+    {
+        // The file holds each path text is set along once and a span says which: with one path in a scene, "the
+        // first" and "the right one" are the same, so this scene has two, and the second is used first.
+        VectorScene scene = Doc(
+            "<defs><path id=\"p\" d=\"M 0 10 H 90\"/><path id=\"q\" d=\"M 5 40 V 90\"/></defs>" +
+            "<text><textPath href=\"#q\">down<tspan fill=\"red\">red</tspan></textPath><textPath href=\"#p\">along</textPath></text>").Scene;
+        VectorText back = VectorSceneFile.Read(VectorSceneFile.Write(scene)).Nodes.ShouldHaveSingleItem().ShouldBeOfType<VectorText>();
+        back.Spans.Length.ShouldBe(3);
+        back.Spans[0].Path.ShouldNotBeNull().Path.TryGetBounds(out VectorRect first).ShouldBeTrue();
+        back.Spans[2].Path.ShouldNotBeNull().Path.TryGetBounds(out VectorRect second).ShouldBeTrue();
+        (first.X, first.Y, first.Height).ShouldBe((5f, 40f, 50f));
+        (second.X, second.Y, second.Width).ShouldBe((0f, 10f, 90f));
+        // And the two spans of one textPath hold one object again.
+        back.Spans[1].Path.ShouldBeSameAs(back.Spans[0].Path);
+        back.Spans[2].Path.ShouldNotBeSameAs(back.Spans[0].Path);
+        Dump(VectorSceneFile.Read(VectorSceneFile.Write(scene))).ShouldBe(Dump(scene));
+    }
+
     [Theory]
     [InlineData(2, 1)]      // going back
     [InlineData(1, 1)]      // the same character twice

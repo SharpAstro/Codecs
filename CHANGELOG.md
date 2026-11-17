@@ -55,10 +55,16 @@ with the caller's fonts, and that is where it is held against a browser.
   (`SceneTextBrowserTests`), which is where its white-space rules, position lists and baselines were checked, and where
   four of them were first wrong (the paint and place of a decoration, `dominant-baseline: auto` inside another baseline, a
   `y` for a character on a path, an `x` on a `textPath`).
-- **Mutation check, partly:** 27 deliberate bugs in the reader's text code were run, one at a time, before the run was stopped for the load it
-  put on the machine: 26 were caught, and the one that was not (a position's index counted in characters where it is a
-  UTF-16 offset) had a test that could not see it, which is fixed. **The rest of the list was not run**: 14 more in the
-  reader and the scene file, and 46 in Fonts.Lib's layout. It is `mutate5.py` in the session's scratch files, not in the repository.
+- **Mutation-checked, in CI:** 40 deliberate bugs in the reader's text code and the scene file, one at a time
+  (`tests/mutation/lists/svg-text.py`). 36 were caught at once. Four were not, each for want of a test, now written: a
+  position's index counted in characters where it is a UTF-16 offset, `letter-spacing` in ems of 16 where it is ems of
+  the element's font size, a scene file whose character positions are out of order, and a scene file that gives every
+  span the first text path. One more was found to change nothing (a second check of a flag its caller reads) and was
+  replaced. Not run: the text budget switched off, whose test then reads what it was built to refuse (it shut the CI
+  runner down for want of memory).
+- **Mutation checks are a workflow now** (`.github/workflows/mutation.yml`, `tests/mutation/`): started from the Actions
+  tab or by the label `mutation` on a pull request, six shards, never part of CI/CD. Fonts.Lib has its own list and uses
+  this repository's runner.
 
 ## 3.38
 

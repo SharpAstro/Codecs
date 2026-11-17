@@ -460,10 +460,19 @@ but a symbol), and a stroke at the edge of a glyph's bitmap, which the browser c
 swallowed. Not run, deliberately: the entity and the `var()` budgets removed (their tests would ask for 10^10 and 2^40
 characters), and a glyph's bitmap not kept near its origin (a 16 GB array).
 
-Rung 5: a list of 87 (41 in the reader and the scene file, 46 in Fonts.Lib's layout) was started and **stopped after 27**,
-for the load it put on the machine. Of those 27, all in the reader, 26 were caught; the one that was not (a
-position's index counted in characters, where it is a UTF-16 offset) showed a test that could not tell the two apart,
-and it can now. The other 60 have not been run, so the claim "mutation-checked" is not made for rung 5.
+Rung 5: 40 in the reader and the scene file and 43 in Fonts.Lib's layout, run in CI (the `Mutation check` workflow,
+`tests/mutation/lists/` in each repository), after a first run on a working machine was stopped for the load it put on
+it. Reader and scene file: 36 caught at once, and four that showed a missing test (a position's index counted in
+characters where it is a UTF-16 offset, `letter-spacing` in ems of 16, character positions out of order in a scene file,
+every span given the first text path by a scene file). Layout: 42 caught at once, and one that showed a missing test (a
+`y` moving a character that is set along a path, which only a scene not made by the reader can hold). One bug in the list
+changed nothing and was replaced. Not run, deliberately: the text budget switched off (its test reads what it was built
+to refuse; the runner was shut down for want of memory).
+
+The same run found something no test here could: **Chrome on Linux does not set text where Chrome and Edge on Windows
+do.** Four of the nineteen text documents come out a pixel apart on the Ubuntu runner (baselines other than alphabetic,
+thin lines under small text). The rules are the ones measured on Windows, and Fonts.Lib's comparison is against a
+committed Windows capture for that reason.
 
 **Known limits of the oracle.** ImageMagick's renderer does not read `hsl()` and does not draw a
 `visibility="visible"` child of a hidden group; both were taken out of the oracle documents and stay covered
