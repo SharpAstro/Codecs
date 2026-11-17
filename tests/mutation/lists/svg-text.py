@@ -113,9 +113,11 @@ M = [
  ('xml:space not kept by the tree', 'src/SharpAstro.Svg/SvgReader.cs', 'both',
   'else if (xml.NamespaceURI == XmlNamespace && xml.LocalName == "space") element.Set("xml:space", xml.Value);',
   ''),
- ("a clip in a text's box units draws nothing, unsaid", 'src/SharpAstro.Svg/SvgSceneBuilder.Clip.cs', 'codecs',
-  '        if (_textInBounds) return null;\n',
-  ''),
+ # Not here: BoundsOf answering "no box" when it measured text. Whoever asks reads the flag itself, so taking that
+ # line out changes nothing (run in CI: every test passed, and by reading the code rightly so).
+ ("a clip in a text's box units is placed in the box of the rest", 'src/SharpAstro.Svg/SvgSceneBuilder.cs', 'codecs',
+  '_boxOfText = shapePath is null && _textInBounds;',
+  '_boxOfText = false;'),
  ('scene file: every span under the first line', 'src/SharpAstro.Vector/VectorSceneFile.cs', 'codecs',
   'under.Add(lines[lineNumber]);',
   'under.Add(lines[0]);'),

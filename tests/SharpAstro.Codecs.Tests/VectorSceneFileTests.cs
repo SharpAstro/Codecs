@@ -172,6 +172,29 @@ public sealed class VectorSceneFileTests
 
     // ---- Bytes that are not to be trusted ------------------------------------------------------------------------
 
+    [Theory]
+    [InlineData(2, 1)]      // going back
+    [InlineData(1, 1)]      // the same character twice
+    public void CharacterPositionsOutOfOrder_AreRefused(int first, int second)
+    {
+        // Whoever lays text out walks the characters and their positions together, so a file is held to the order the
+        // reader gives them in. Nothing checks a scene built by hand when it is written: the file is where it is caught.
+        var span = new VectorTextSpan
+        {
+            Text = "abc",
+            Font = new VectorFont(["T"], 10),
+            Positions = [new VectorTextPosition(first, 1, null, 0, 0, 0), new VectorTextPosition(second, 2, null, 0, 0, 0)],
+        };
+        byte[] bytes = VectorSceneFile.Write(new VectorScene(10, 10, [new VectorText { Spans = [span] }]));
+        Should.Throw<InvalidDataException>(() => VectorSceneFile.Read(bytes));
+
+        // In order, the same scene comes back.
+        var inOrder = span with { Positions = [new VectorTextPosition(1, 1, null, 0, 0, 0), new VectorTextPosition(2, 2, null, 0, 0, 0)] };
+        VectorText back = VectorSceneFile.Read(VectorSceneFile.Write(new VectorScene(10, 10, [new VectorText { Spans = [inOrder] }])))
+            .Nodes.ShouldHaveSingleItem().ShouldBeOfType<VectorText>();
+        back.Spans[0].Positions.Select(position => position.Index).ShouldBe([1, 2]);
+    }
+
     [Fact]
     public void EveryTruncation_IsRefused_AndNeverByAnythingButInvalidData()
     {

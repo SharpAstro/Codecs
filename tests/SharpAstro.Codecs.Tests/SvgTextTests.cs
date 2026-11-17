@@ -180,6 +180,16 @@ public sealed class SvgTextTests
     // ---- The properties of text -------------------------------------------------------------------------------------
 
     [Fact]
+    public void SpacingInEms_IsOfTheSizeOfTheElementItIsOn()
+    {
+        // 16 is the size nothing says, so a size that is not 16 tells an em of the font from an em of the default.
+        VectorText text = Text("<text font-size=\"20\" letter-spacing=\"0.1em\" word-spacing=\"0.5em\">a<tspan font-size=\"40\" letter-spacing=\"0.1em\">b</tspan></text>");
+        text.Spans.Select(span => span.LetterSpacing).ShouldBe([2f, 4f]);
+        // What is inherited is the length, not the ems.
+        text.Spans.Select(span => span.WordSpacing).ShouldBe([10f, 10f]);
+    }
+
+    [Fact]
     public void AnchorSpacingBaselineAndLines_AreOnEverySpan()
     {
         VectorText text = Text(
