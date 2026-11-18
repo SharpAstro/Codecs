@@ -24,7 +24,7 @@ TESTS = {
     'codecs': ('Codecs', ['dotnet', 'test', 'tests/SharpAstro.Codecs.Tests/SharpAstro.Codecs.Tests.csproj', '-c', 'Release',
                           '--filter', 'FullyQualifiedName~Svg|FullyQualifiedName~VectorScene']),
     'fonts': ('Fonts.Lib', ['dotnet', 'test', 'tests/SharpAstro.Fonts.Tests', '-c', 'Release',
-                            '--filter', 'FullyQualifiedName~SceneText']),
+                            '--filter', 'FullyQualifiedName~SceneText|FullyQualifiedName~SceneEffects|FullyQualifiedName~SceneRasterizer']),
 }
 TIMEOUT = 1200   # seconds for one build and test run; a bug that makes a test hang counts as caught
 

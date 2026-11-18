@@ -55,6 +55,30 @@ internal static class SvgTestSupport
         return text.ToString();
     }
 
+    private static string DumpInput(VectorFilterInput input) => input.Kind == FilterInputKind.Result ? $"#{input.Index}" : input.Kind.ToString();
+
+    private static string DumpFunction(FilterTransferFunction f) => f.Kind switch
+    {
+        FilterTransferKind.Identity => "identity",
+        FilterTransferKind.Linear => string.Create(CultureInfo.InvariantCulture, $"linear({f.Slope:R},{f.Intercept:R})"),
+        FilterTransferKind.Gamma => string.Create(CultureInfo.InvariantCulture, $"gamma({f.Amplitude:R},{f.Exponent:R},{f.Offset:R})"),
+        _ => string.Create(CultureInfo.InvariantCulture, $"{f.Kind.ToString().ToLowerInvariant()}({string.Join(",", f.Table.Select(v => v.ToString("R", CultureInfo.InvariantCulture)))})"),
+    };
+
+    private static string DumpStep(VectorFilterPrimitive step) => step switch
+    {
+        FilterBlur b => string.Create(CultureInfo.InvariantCulture, $"blur {DumpInput(b.Input)} {b.DeviationX:R},{b.DeviationY:R}"),
+        FilterOffset o => string.Create(CultureInfo.InvariantCulture, $"offset {DumpInput(o.Input)} {o.Dx:R},{o.Dy:R}"),
+        FilterFlood f => $"flood {f.Color.R},{f.Color.G},{f.Color.B},{f.Color.A}",
+        FilterComposite c => string.Create(CultureInfo.InvariantCulture, $"composite {DumpInput(c.Input)} {c.Operator} {DumpInput(c.Input2)}")
+            + (c.Operator == FilterCompositeOperator.Arithmetic ? string.Create(CultureInfo.InvariantCulture, $" {c.K1:R},{c.K2:R},{c.K3:R},{c.K4:R}") : ""),
+        FilterMerge m => $"merge {string.Join(" ", m.Inputs.Select(DumpInput))}",
+        FilterColorMatrix m => $"matrix {DumpInput(m.Input)} {string.Join(",", m.Matrix.Select(v => MathF.Round(v, 4).ToString("R", CultureInfo.InvariantCulture)))}",
+        FilterBlend b => $"blend {DumpInput(b.Input)} {b.Mode} {DumpInput(b.Input2)}",
+        FilterComponentTransfer t => $"transfer {DumpInput(t.Input)} r={DumpFunction(t.Red)} g={DumpFunction(t.Green)} b={DumpFunction(t.Blue)} a={DumpFunction(t.Alpha)}",
+        _ => throw new NotSupportedException(step.GetType().Name),
+    };
+
     private static void DumpNodes(StringBuilder text, ImmutableArray<VectorNode> nodes, int indent)
     {
         foreach (VectorNode node in nodes)
@@ -63,7 +87,18 @@ internal static class SvgTestSupport
             switch (node)
             {
                 case VectorGroup group:
-                    text.Append(CultureInfo.InvariantCulture, $"group id={group.Id ?? "(none)"} opacity={group.Opacity:R}\n");
+                    text.Append(CultureInfo.InvariantCulture, $"group id={group.Id ?? "(none)"} opacity={group.Opacity:R}");
+                    if (group.Blend != VectorBlendMode.Normal) text.Append(CultureInfo.InvariantCulture, $" blend={group.Blend}");
+                    text.Append('\n');
+                    if (group.Filter is { } filter)
+                    {
+                        text.Append(' ', (indent + 1) * 2).Append(CultureInfo.InvariantCulture, $"filter region={filter.Region} transform={filter.Transform}\n");
+                        for (int i = 0; i < filter.Primitives.Length; i++)
+                        {
+                            VectorFilterPrimitive step = filter.Primitives[i];
+                            text.Append(' ', (indent + 2) * 2).Append(CultureInfo.InvariantCulture, $"{i}: {DumpStep(step)} region={step.Region} {(step.LinearRgb ? "linear" : "srgb")}\n");
+                        }
+                    }
                     if (group.Clip is { } clip) DumpClip(text, clip, "clip", indent + 1);
                     if (group.Mask is { } mask)
                     {

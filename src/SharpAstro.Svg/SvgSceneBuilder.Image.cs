@@ -66,7 +66,7 @@ internal sealed partial class SvgSceneBuilder
             source = href;
         }
 
-        bool layered = style.ClipPath is not null || style.Mask is not null;
+        bool layered = style.ClipPath is not null || style.Mask is not null || style.Filter is not null || style.Blend != VectorBlendMode.Normal;
         var image = new VectorImage
         {
             Id = element.Get("id"),

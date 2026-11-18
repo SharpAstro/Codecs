@@ -7,7 +7,33 @@ namespace SharpAstro.VectorGraphics;
 /// An sRGB colour, 8 bits a channel, alpha not premultiplied. The same shape as SharpAstro.Fonts' <c>Rgba32</c>, so that
 /// one can be replaced by this when Fonts.Lib takes this package.
 /// </summary>
-public readonly record struct Rgba32(byte R, byte G, byte B, byte A = 255);
+public readonly record struct Rgba32(byte R, byte G, byte B, byte A = 255)
+{
+    /// <summary>Nothing: every channel zero.</summary>
+    public static readonly Rgba32 Transparent = new(0, 0, 0, 0);
+
+    /// <summary>Opaque black.</summary>
+    public static readonly Rgba32 Black = new(0, 0, 0, 255);
+
+    /// <summary>The colour with its alpha multiplied by <paramref name="multiplier"/> (0 to 1), rounded to the nearest level.</summary>
+    public Rgba32 WithMultipliedAlpha(float multiplier)
+        => new(R, G, B, (byte)Math.Clamp((int)MathF.Round(A * multiplier), 0, 255));
+
+    /// <summary>
+    /// The colour a share <paramref name="t"/> of the way from <paramref name="a"/> to <paramref name="b"/>, channel by
+    /// channel and rounded down: <paramref name="a"/> at 0 or below, <paramref name="b"/> at 1 or above.
+    /// </summary>
+    public static Rgba32 Lerp(Rgba32 a, Rgba32 b, float t)
+    {
+        if (t <= 0) return a;
+        if (t >= 1) return b;
+        return new Rgba32(
+            (byte)(a.R + (b.R - a.R) * t),
+            (byte)(a.G + (b.G - a.G) * t),
+            (byte)(a.B + (b.B - a.B) * t),
+            (byte)(a.A + (b.A - a.A) * t));
+    }
+}
 
 /// <summary>
 /// What an area is painted with: a <see cref="SolidPaint"/>, a <see cref="LinearGradientPaint"/>, a
@@ -109,10 +135,15 @@ public sealed class VectorShape : VectorNode
 
 /// <summary>
 /// Nodes that must be drawn together and then composited as one: the children are drawn, in order, into
-/// a transparent layer; the layer is cut down to <see cref="Clip"/> and multiplied by <see cref="Mask"/> when there
-/// are any, and then blended over what is below it at <see cref="Opacity"/>.
+/// a transparent layer; the layer is replaced by what <see cref="Filter"/> makes of it, cut down to <see cref="Clip"/>
+/// and multiplied by <see cref="Mask"/> when there are any, in that order, and then put over what is below it at
+/// <see cref="Opacity"/>, its colour mixed with the colour below by <see cref="Blend"/>.
 /// A reader only emits a group where that differs from drawing the children one by one.
 /// </summary>
+/// <remarks>
+/// "What is below" is what was drawn before this group into the layer this group is in: the scene, or the nearest
+/// group around it. A group is thereby also what keeps a blend inside it from reaching what is below the group.
+/// </remarks>
 public sealed class VectorGroup : VectorNode
 {
     /// <summary>0 to 1.</summary>
@@ -126,6 +157,12 @@ public sealed class VectorGroup : VectorNode
 
     /// <summary>The picture the layer is multiplied by, or null.</summary>
     public VectorMask? Mask { get; init; }
+
+    /// <summary>What the layer is replaced by before it is clipped and masked, or null for the layer itself.</summary>
+    public VectorFilter? Filter { get; init; }
+
+    /// <summary>How the layer's colour is mixed with what is below it.</summary>
+    public VectorBlendMode Blend { get; init; }
 }
 
 /// <summary>

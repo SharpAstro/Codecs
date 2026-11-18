@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using ImageMagick;
 using SharpAstro.Svg;
@@ -53,6 +54,7 @@ public sealed class SvgBrowserOracleTests
             foreach ((string name, string root, string body) in Rung2) documents.Add(name, root, body);
             foreach ((string name, string root, string body) in Rung3) documents.Add(name, root, body);
             foreach ((string name, string root, string body) in Rung4) documents.Add(name, root, body);
+            foreach ((string name, string root, string body) in Rung6) documents.Add(name, root, body);
             return documents;
         }
     }
@@ -428,6 +430,60 @@ public sealed class SvgBrowserOracleTests
             <rect x="77" y="52" width="21" height="21" fill="var(--a) "/>
             <rect x="102" y="52" width="21" height="21" fill="var(--a, )"/>
             <rect x="127" y="52" width="21" height="21" style="--q: var(--a); --a: #080; fill: var(--q)"/>
+            """),
+    ];
+
+    // ---- Rung 6: blend modes ----------------------------------------------------------------------------------------
+    // (Filters are not here: this repository's rasteriser has a colour at a point and no pictures. Fonts.Lib draws them.)
+
+    private static string BlendCells()
+    {
+        string[] modes = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light",
+            "difference", "exclusion", "hue", "saturation", "color", "luminosity"];
+        var cells = new StringBuilder();
+        for (int i = 0; i < modes.Length; i++)
+        {
+            // A backdrop that is not symmetric in its channels, and a layer of two colours, one of them half there, part
+            // of it over nothing: so every mode differs from every other somewhere, and "over nothing" is in each cell.
+            cells.Append(CultureInfo.InvariantCulture, $"<g transform=\"translate({i % 4 * 44 + 2} {i / 4 * 34 + 2})\" style=\"isolation: isolate\">");
+            cells.Append("<rect width=\"26\" height=\"30\" fill=\"url(#back)\"/>");
+            cells.Append(CultureInfo.InvariantCulture, $"<g style=\"mix-blend-mode: {modes[i]}\"><rect x=\"8\" y=\"4\" width=\"32\" height=\"12\" fill=\"#e07010\"/><rect x=\"8\" y=\"14\" width=\"32\" height=\"12\" fill=\"#2060d0\" fill-opacity=\"0.6\"/></g>");
+            cells.Append("</g>");
+        }
+        return cells.ToString();
+    }
+
+    internal static readonly (string Name, string Root, string Body)[] Rung6 =
+    [
+        ("blend-modes", "width=\"180\" height=\"140\"", $"""
+            <defs><linearGradient id="back" x2="1" y2="1"><stop offset="0" stop-color="#103050"/><stop offset="0.5" stop-color="#c0d040"/><stop offset="1" stop-color="#f0e8ff"/></linearGradient></defs>
+            {BlendCells()}
+            """),
+        // What a blend mode mixes with, and when: each case a 44 x 34 cell, the whole of it in a layer of its own so that
+        // nothing depends on what the page is.
+        ("blend-layers", "width=\"180\" height=\"110\"", """
+            <g style="isolation: isolate">
+            <rect width="180" height="110" fill="#e8e0d0"/>
+            <!-- 1: no layer between: the circle mixes with the square AND with the ground. -->
+            <g transform="translate(2 2)"><rect width="24" height="24" fill="#3070c0"/><circle cx="24" cy="16" r="12" fill="#e03020" style="mix-blend-mode: multiply"/></g>
+            <!-- 2: isolated: with the square only; over the ground the circle is as it is. -->
+            <g transform="translate(46 2)" style="isolation: isolate"><rect width="24" height="24" fill="#3070c0"/><circle cx="24" cy="16" r="12" fill="#e03020" style="mix-blend-mode: multiply"/></g>
+            <!-- 3: opacity makes a layer as isolation does, and then fades it. -->
+            <g transform="translate(90 2)" opacity="0.6"><rect width="24" height="24" fill="#3070c0"/><circle cx="24" cy="16" r="12" fill="#e03020" style="mix-blend-mode: multiply"/></g>
+            <!-- 4: the element's own opacity is applied before it is mixed. -->
+            <g transform="translate(134 2)"><rect width="24" height="24" fill="#3070c0"/><circle cx="24" cy="16" r="12" fill="#e03020" opacity="0.5" style="mix-blend-mode: multiply"/></g>
+            <!-- 5: a blended group is mixed as one picture: its two circles do not mix with each other. -->
+            <g transform="translate(2 38)"><rect width="24" height="24" fill="#3070c0"/><g style="mix-blend-mode: screen"><circle cx="20" cy="12" r="9" fill="#e03020"/><circle cx="28" cy="20" r="9" fill="#20a040"/></g></g>
+            <!-- 6: a clip and a mask cut the layer before it is mixed. -->
+            <g transform="translate(46 38)"><rect width="24" height="24" fill="#3070c0"/><circle cx="24" cy="16" r="12" fill="#e03020" clip-path="url(#half)" style="mix-blend-mode: difference"/></g>
+            <!-- 7: a stroke and a fill are one layer. -->
+            <g transform="translate(90 38)"><rect width="24" height="24" fill="#3070c0"/><circle cx="24" cy="16" r="9" fill="#e03020" stroke="#f0d020" stroke-width="5" style="mix-blend-mode: exclusion"/></g>
+            <!-- 8: through a use, and from a style sheet. -->
+            <g transform="translate(134 38)"><rect width="24" height="24" fill="#3070c0"/><use href="#dot" class="lit"/></g>
+            <!-- 9: nested: the inner one mixes inside the outer blended group, the outer one with the ground. -->
+            <g transform="translate(2 74)"><rect width="24" height="24" fill="#3070c0"/><g style="mix-blend-mode: multiply"><circle cx="20" cy="12" r="9" fill="#e0c020"/><circle cx="28" cy="20" r="9" fill="#20a0e0" style="mix-blend-mode: difference"/></g></g>
+            </g>
+            <defs><clipPath id="half"><rect x="12" width="14" height="40"/></clipPath><circle id="dot" cx="24" cy="16" r="12" fill="#e03020"/><style>.lit { mix-blend-mode: color-dodge }</style></defs>
             """),
     ];
 

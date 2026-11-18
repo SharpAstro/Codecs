@@ -248,7 +248,7 @@ internal sealed partial class SvgSceneBuilder
             // Opacity on the marker element fades the whole marker (measured in a browser).
             if (style.Opacity < 1 && output.Count > first)
             {
-                if (output.Count == first + 1 && output[first] is VectorGroup { Mask: null } only)
+                if (output.Count == first + 1 && output[first] is VectorGroup { Mask: null, Filter: null, Blend: VectorBlendMode.Normal } only)
                 {
                     output[first] = new VectorGroup { Opacity = only.Opacity * (float)style.Opacity, Clip = only.Clip, Children = only.Children, Id = only.Id };
                 }

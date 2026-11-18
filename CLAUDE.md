@@ -1282,6 +1282,33 @@ Rung 5 (3.39) added text; `roadmap/svg.md` ("What rung 5 settled") has the reaso
   elements, since the order of the two matters there and nowhere else.
 - **Budget**: `MaxTextCharacters`, charged for every instance a `use` makes of a text.
 
+Rung 6 (3.40) added blend modes and filters; `roadmap/svg.md` ("What rung 6 settled") has the reasons. The ones that bite:
+
+- **Filters are not drawn here, and cannot be tested by pixels here.** `SvgPlainRasteriser` is a colour at a point and
+  refuses a filtered group. `SvgEffectsTests` holds what the scene says; Fonts.Lib's `SceneRasterizerBrowserTests`
+  (`filter-blur`, `filter-shadow`, `filter-colour`, `filter-edges`) **is the oracle for this reader's filter rules**:
+  change one here and run it there. Blend modes are per point and are drawn here too (`blend-modes`, `blend-layers`).
+- **A group has two more properties, and an order.** `Filter` and `Blend`: children drawn, then the filter, then the
+  clip, the mask, the opacity, and last the blend with what the enclosing layer already holds. Anything that walks a
+  scene must carry both (`VectorSceneFile`, `Dump`, `ReachesOutside`, which says yes for a filtered group). Code that
+  rebuilds a `VectorGroup` from another's fields is the bug to look for: `Markers` folds opacity into a group only when
+  it has no mask, no filter and no blend mode.
+- **There is no "isolated" flag.** Everything that isolates is already a group. `isolation: isolate` makes a group only
+  where something directly inside it blends; `EndLayer` decides that, and a shape or an image ignores `isolation`.
+- **The reader hands over steps, not a document.** Units, areas, names and `feDropShadow` are resolved in
+  `SvgSceneBuilder.Filter.cs`; a `VectorFilterInput` is the layer, its alpha, or an EARLIER step by index. The scene
+  file refuses any other index, because a renderer indexes what it has worked out so far.
+- **Null and `NoResult` are different, as for clips.** `Filter(...)` returning null is "not read: report, draw
+  unfiltered"; `NoResult` (no steps) is "draws nothing". Do not merge the two.
+- **`flood-color` is read like `stop-color`**: from the step's own cascade, with `currentColor` and `var()` taken from
+  where the filter stands in the document, never from the filtered element. The declarations are copied out before a
+  `var()` is substituted, because substituting may work a style out, which reuses the cascade's list.
+- **The layer is not cut to the filter's area; the result is** (measured). The scene's documentation says so. Do not
+  "tidy" that sentence back.
+- **Budget**: every step is charged for every element that is filtered (`Charge` in the loop over the filter's children).
+- **`Rgba32` is the stack's one colour type since Fonts.Lib 2.0** (`Black`, `Transparent`, `Lerp`, `WithMultipliedAlpha`
+  came from there). DIR.Lib's `RGBAColor32` converts to and from it implicitly. Do not add a third.
+
 ## Mutation checks run in CI, on demand
 
 `tests/mutation/mutate.py` applies one deliberate bug at a time from a list (`tests/mutation/lists/*.py`), rebuilds,
@@ -1317,7 +1344,7 @@ refuses to accept that silence.
 | TIFF **tiled write** | Magick.NET (libtiff) | Just a NuGet reference. `TiffWriterTiledOracleTests` has libtiff read back what `TiffWriter` emits in `TiffLayout.Tiled`. Nothing to install, nothing to skip. Kept as an oracle even though `TiffReader` reads tiles now: writer and reader agree about tile order by construction, so a round trip cannot see a consistent transpose. |
 | TIFF **tiled read** | Magick.NET (libtiff) | The same reference, run the other way: `TiffTiledReadTests` has libtiff WRITE the tiled file (`tile-geometry` + `predictor` defines) and reads it back with `TiffReader`. **The predictor is why it must be a foreign encoder** -- `TiffWriter` emits none, so nothing we write exercises Predictor 2, and inverting it at image width rather than TILE width decodes with no error into a picture that is right in its first tile column and drifts across the rest. That sabotage fails exactly the two libtiff cases and nothing else in the suite. |
 | SVG **scene** | Magick.NET (ImageMagick's SVG renderer) | Just a NuGet reference. `SvgRenderOracleTests` draws our scene with a test-only fill rasteriser and compares it with ImageMagick's rendering of the same document, within a measured tolerance. Nothing to install, nothing to skip. |
-| SVG **scene**, in a browser | headless Chrome or Edge (**binary only**) | `SvgBrowserOracleTests`. Found from `SVG_BROWSER`, then the usual install paths (Windows, macOS) or `PATH` (Linux). One launch for every document (37 since rung 3, strokes included). Skips without a browser; the runner image has Chrome. |
+| SVG **scene**, in a browser | headless Chrome or Edge (**binary only**) | `SvgBrowserOracleTests`. Found from `SVG_BROWSER`, then the usual install paths (Windows, macOS) or `PATH` (Linux). One launch for every document (40 since rung 6, strokes and blend modes included; filters are in Fonts.Lib). Skips without a browser; the runner image has Chrome. |
 | GIF **decode** | Magick.NET (`Coalesce()`) | Just a NuGet reference. ImageMagick writes the animations (and `GifBuilder` hand-builds what it will not write); every frame must equal the coalesced frame byte for byte, alpha-0 RGB included. Nothing to install, nothing to skip. |
 | JBIG2 **decode** | committed jbig2enc fixtures + spec vectors | No external dependency, nothing to skip — `Fixtures/jbig2/*.jb2` (real jbig2enc output) plus the T.88 Annex H.2 MQ vector and one-hot template tests. Regenerate the fixtures with `Oracle/jbig2/make-fixtures.sh` (needs jbig2enc). |
 | JPEG 2000 **decode** | committed OpenJPEG fixtures | No external dependency, nothing to skip. A lossless 5/3 codestream reproduces its source raster **exactly**, so `Fixtures/jpeg2000/<name>.pgm` (or `.ppm`) is the expected output for `<name>.j2k` (or `.jp2`) — byte equality, no tolerance, no subprocess. Regenerate with `Oracle/jpeg2000/make-fixtures.sh`, which verifies each pair lossless before it will commit it. The lossy fixtures in `Fixtures/jpeg2000-lossy/` have no committed expected output and are compared against `opj_decompress` at run time: exactly for `lossy53-*`, within the measured tolerance for `lossy97-*`. |

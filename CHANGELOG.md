@@ -14,6 +14,49 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.40
+
+**`SharpAstro.Svg` rung 6: blend modes and filters.** `mix-blend-mode`, `isolation` and `filter` are read into the scene:
+a group can say how it is mixed with what is below it, and can carry a filter as plain steps. Nothing is filtered here
+(there is still no rasteriser in this repository); Fonts.Lib 2.0 draws both, and that is where filters are held against
+a browser.
+
+- **`SharpAstro.Vector`**: `VectorGroup.Blend` (a `VectorBlendMode`: normal and the fifteen modes of the W3C Compositing
+  and Blending specification) and `VectorGroup.Filter` (a `VectorFilter`: an area, a transform, and steps). The steps
+  are `FilterBlur`, `FilterOffset`, `FilterFlood`, `FilterComposite`, `FilterMerge`, `FilterColorMatrix`, `FilterBlend`
+  and `FilterComponentTransfer`; each has its own area, says whether it works in linear light, and names what it
+  works on (`VectorFilterInput`: the layer, the layer's alpha, or an earlier step by index). A group is now: children
+  drawn, then the filter, then the clip, then the mask, then opacity, then the blend. **A renderer written for 3.39
+  that ignores what it does not know will draw a blended or filtered group plainly.**
+- **`mix-blend-mode`** on any element, and **`isolation: isolate`**. A blended element mixes with what is below it in
+  the layer it is in; a group (opacity, a clip, a mask, a filter, isolation) is what keeps that inside. Isolation only
+  makes a group where something directly inside it blends, so drawings that do not blend read as they did.
+- **`filter`** as a reference to one `filter` element, with `filterUnits` and `primitiveUnits` (both kinds), the area
+  (a tenth past the box all round unless it says otherwise), and the steps `feGaussianBlur`, `feOffset`, `feFlood`,
+  `feComposite` (all operators, `arithmetic` included), `feMerge`, `feColorMatrix` (all four types, resolved to the
+  twenty numbers), `feBlend`, `feComponentTransfer` (all five function types) and `feDropShadow` (written out as the
+  five steps of its definition). `in`, `in2` and `result` are resolved to indices; `SourceGraphic` and `SourceAlpha`
+  are read; `color-interpolation-filters`, `flood-color` and `flood-opacity` are read as properties.
+- **Not read, reported, and the element drawn unfiltered**: `feMorphology`, `feConvolveMatrix`, `feTurbulence`,
+  `feDisplacementMap`, the two lighting steps, `feImage`, `feTile`; `BackgroundImage`, `BackgroundAlpha`, `FillPaint`
+  and `StrokePaint`; an `edgeMode` other than `none`; `href` from one filter to another; CSS's own filter functions
+  (`blur()`, `drop-shadow()`) and a list of filters; `plus-lighter`; a filter in the units of a text's bounding box.
+- **A filter that gives nothing draws nothing**, as in a browser: no steps, an area with no width or height, or
+  bounding-box units on an element whose box has no width or no height (a straight line).
+- **`VectorSceneFile` is version 4** and reads versions 1 to 3. A group with no filter and no blend mode is written as
+  version 3 wrote it. A step that refers to itself or a later step is refused.
+- **`Rgba32` has `Black`, `Transparent`, `WithMultipliedAlpha` and `Lerp`.** They come from Fonts.Lib, which gave up
+  its own colour type of the same shape in 2.0 and uses this one.
+- **Limits**: a filter's steps are charged like elements, once for every element that is filtered.
+- **Tests**: `SvgEffectsTests` (58 cases) for what the scene holds; two browser documents for blend modes
+  (`blend-modes`, all sixteen over a gradient, and `blend-layers`, what a mode mixes with and when), drawn by the test
+  rasteriser: measured means 0.21 and 0.26 of 255 against Edge. The test rasteriser does not filter and refuses a
+  filtered group.
+- **Mutation list**: `tests/mutation/lists/svg-effects.py`, 46 bugs, for the `Mutation check` workflow. Not run yet
+  when this was written: the figures go here once it has.
+- The runner's Fonts.Lib test filter now takes in `SceneEffects` and `SceneRasterizer` as well as `SceneText`, since
+  a reader bug in a filter only shows once the filter is drawn.
+
 ## 3.39
 
 **`SharpAstro.Svg` rung 5: text.** `text`, `tspan` and `textPath` are read into the scene as what they say: which

@@ -53,7 +53,8 @@ resvg, librsvg and browser sources are not read; renderers are used as programs 
 | 4b | Fonts.Lib reads the OpenType `SVG ` table through this package. Here: one element of a document (`ElementId`), the text colour as `currentColor`, CSS custom properties and `var()` (a palette reaches a glyph that way) | written, 3.38 and Fonts.Lib 1.20 |
 | D | SVG in DIR.Lib: `IconBaker.Bake(VectorScene, size)`, `VectorIcon` (read once, rasterise once a size), `bake-icons --svg` and `--scenes` | shipped, DIR.Lib 11.78 |
 | 5 | `text`, `tspan` and `textPath` as spans of a `VectorText` node, with white space handled, every font property, per-character positions, anchors, baselines, lines and paints; `VectorSceneFile` version 3. Laid out and drawn in Fonts.Lib (`SceneText`), with the fonts from the caller (DIR.Lib: `SceneFonts`) | written, 3.39, Fonts.Lib 1.21, DIR.Lib 11.80 |
-| 6 | Filters, blend modes | open, only if asked for |
+| 6 | `mix-blend-mode`, `isolation` and `filter` (blur, offset, flood, composite, merge, colour matrix, blend, component transfer, drop shadow) as a blend mode and a filter of steps on a group; `VectorSceneFile` version 4. Drawn in Fonts.Lib (`SceneRasterizer`, `SceneFilters`, `Compositing`) | written, 3.40, Fonts.Lib 2.0, DIR.Lib 11.81 |
+| 6b | The other filter steps: morphology, convolve matrix, turbulence, displacement map, lighting, `feImage`, `feTile`; CSS filter functions | open, only if asked for |
 
 **Not planned until someone asks:** deprecated features (SVG fonts: `<font>` / `<glyph>`, `tref`, `altGlyph`,
 the `cursor` element), animation, scripting.
@@ -388,6 +389,51 @@ Two things the browser does that are **not** copied. It measures a path along ch
 curve, so round a circle its text runs ahead of the true length (half a pixel three quarters round a circle of radius
 40): circles are not held against it. And it does not set text along a basic shape or on a path's right side
 (`side`), both SVG 2: those are read and drawn here and tested without it.
+
+## What rung 6 settled
+
+- **A blend mode is a property of a group, and a group is what bounds it.** CSS says an element mixes with the backdrop
+  of its stacking context. In a scene that is simply "what the layer this group is drawn into already holds", because
+  everything that makes a stacking context here (opacity, a clip, a mask, a filter, isolation, a blend mode itself) is
+  already a `VectorGroup`. So there is no "isolated" flag: `isolation: isolate` makes a plain group, and only where
+  something directly inside it blends (otherwise the picture is the same without one).
+- **Blending over nothing is the layer itself.** The specification's formula has the mixed colour weighted by the
+  backdrop's alpha, so every mode is plain "over" where nothing is below. A scene starts with nothing, which is why a
+  document's own background decides what a top-level blend looks like, in a browser too.
+- **The reader resolves everything about a filter that needs the document; the renderer gets steps.** The area in
+  either units, a step's own area (what it says, else the union of what it works on, else the filter's, never more
+  than the filter's), lengths in box units, `in` / `result` names as indices, a colour matrix written four ways as
+  twenty numbers, `feDropShadow` as the five steps of its definition, the colour space of each step. What is left for
+  a renderer is arithmetic on pictures.
+- **A filter has its own coordinates.** `VectorFilter.Transform` takes them to the scene; blurs and offsets run along
+  its axes in its units. A renderer therefore scales distances by the transform and, when it is turned, works in a
+  buffer along those axes. The reader never scales a distance.
+- **Measured in a browser, each a cell of Fonts.Lib's `filter-edges` document** (all of them came out as first
+  written, which rung 3 could not say):
+  - an `in` that names no earlier result is the step before (the layer, for the first step);
+  - a blur with a deviation of zero, or below zero, is its input unchanged;
+  - a filter with no steps, or with no area, draws nothing; so does bounding-box units on a straight line;
+  - a reference to a filter that is not there leaves the element drawn as it is;
+  - `color-interpolation-filters: auto` is sRGB;
+  - a `feComposite` with no `in2` takes the step before, like `in`;
+  - `flood-color: currentColor` is the colour where the filter element stands, not that of the filtered element;
+  - the filter is applied before the clip, the mask and the opacity of the same element.
+- **One thing measured that the first model had wrong: the layer is not cut to the filter's area before it is
+  filtered.** Only the result is. A shape the area cuts through is blurred as the whole shape, so its cut edge is sharp
+  and full, not faded. The scene's documentation says so, and a renderer has to draw the layer wider than the area by
+  as far as the filter's blurs and offsets reach.
+- **A browser's blur is three boxes from a deviation of 0.8, not from 2.** The Filter Effects specification allows the
+  box approximation from 2. Chrome and Edge use it as soon as the box is two pixels wide: an edge blurred by 1 comes out
+  as boxes of 2, 2 and 3 give it, to the level. That is the renderer's business, noted here because it is what makes
+  "matches the browser" a claim about pixels and not about looks.
+- **Filters are held against a browser in Fonts.Lib only.** The test rasteriser here is a colour at a point and has no
+  pictures to filter; it refuses a filtered group. So, as with text, the reader's filter rules have their pixel oracle
+  in the other repository: change one here and run `SceneRasterizerBrowserTests` there. Blend modes are per point, so
+  they are drawn here too.
+- **A COLR bug came to light on the way.** Fonts.Lib's `PaintComposite` code had colours on a scale of 0 to 255 against
+  alphas of 0 to 1, so every channel that was not zero came out full, and no test drew a composite. It now shares the
+  compositing with the scene rasteriser.
+- **Mutation-checked**: lists written (46 bugs here, 46 in Fonts.Lib), to be run by the `Mutation check` workflow.
 
 ## Validation
 

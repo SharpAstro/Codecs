@@ -68,7 +68,12 @@ Each of these is left out of the scene and reported in `SvgDocument.Issues`
 - in text: vertical writing and text from right to left (drawn as horizontal, left-to-right text), `font-variant`,
   wrapping to a width (`inline-size`), `tref`, `textLength` on a `tspan`, a colour or style of its own for a
   `text-decoration`; a pattern, a clip or a mask in the units of a text's bounding box
-- `filter`, `mix-blend-mode`, `vector-effect`
+- in filters: `feMorphology`, `feConvolveMatrix`, `feTurbulence`, `feDisplacementMap`, `feDiffuseLighting`,
+  `feSpecularLighting`, `feImage`, `feTile`; the inputs `BackgroundImage`, `BackgroundAlpha`, `FillPaint` and
+  `StrokePaint`; an `edgeMode` other than `none`; `href` from one filter to another; CSS's own filter functions
+  (`blur()`, `drop-shadow()`) and a list of filters; a filter in the units of a text's bounding box. The element is
+  drawn unfiltered
+- `mix-blend-mode: plus-lighter`, `vector-effect`
 - an `image` with no `width` or `height` (its size would be the picture's own, which is only known once it is
   decoded), and an `image` that is itself an SVG document
 - a `clip-path` or `mask` that is not a reference to an element (`inset(...)`, a CSS mask image); text in a `clipPath`
