@@ -433,7 +433,10 @@ curve, so round a circle its text runs ahead of the true length (half a pixel th
 - **A COLR bug came to light on the way.** Fonts.Lib's `PaintComposite` code had colours on a scale of 0 to 255 against
   alphas of 0 to 1, so every channel that was not zero came out full, and no test drew a composite. It now shares the
   compositing with the scene rasteriser.
-- **Mutation-checked**: lists written (46 bugs here, 46 in Fonts.Lib), to be run by the `Mutation check` workflow.
+- **Mutation-checked**, in CI: 46 bugs here, 45 caught at once and the other (an empty transfer table read from a scene
+  file) by a test written for it; 46 in Fonts.Lib, 42 caught at once, three by tests written for them and one that was
+  not a bug and left the list. Chrome on Linux draws the blend and filter documents as Edge on Windows does, within
+  the same tolerances.
 
 ## Validation
 

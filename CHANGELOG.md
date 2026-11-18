@@ -52,8 +52,10 @@ a browser.
   (`blend-modes`, all sixteen over a gradient, and `blend-layers`, what a mode mixes with and when), drawn by the test
   rasteriser: measured means 0.21 and 0.26 of 255 against Edge. The test rasteriser does not filter and refuses a
   filtered group.
-- **Mutation list**: `tests/mutation/lists/svg-effects.py`, 46 bugs, for the `Mutation check` workflow. Not run yet
-  when this was written: the figures go here once it has.
+- **Mutation-checked, in CI:** 46 deliberate bugs in the reader's filter and blend code, the scene file and the colour
+  (`tests/mutation/lists/svg-effects.py`), one at a time. 45 were caught at once. One was not, for want of a test, now
+  written: a scene file whose transfer table has no values was read. The same run was the first time the blend and
+  filter documents met Chrome on Linux, here and through Fonts.Lib's tests: they pass there as they are.
 - The runner's Fonts.Lib test filter now takes in `SceneEffects` and `SceneRasterizer` as well as `SceneText`, since
   a reader bug in a filter only shows once the filter is drawn.
 
