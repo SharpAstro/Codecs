@@ -305,6 +305,34 @@ public sealed class VectorSceneFileTests
         Should.Throw<InvalidDataException>(() => VectorSceneFile.Read([.. bytes])).Message.ShouldContain("deep");
     }
 
+    // A table or a set of steps with no values has no value to give: a renderer would index an empty array. The
+    // writer writes what it is handed, so the reader is where it is refused. (Found by the mutation check: nothing
+    // had tried one.)
+    [Theory]
+    [InlineData(FilterTransferKind.Table)]
+    [InlineData(FilterTransferKind.Discrete)]
+    public void ATransferTableWithNoValues_IsRefused(FilterTransferKind kind)
+    {
+        VectorScene With(FilterTransferFunction red)
+        {
+            var area = new VectorRect(0, 0, 10, 10);
+            var filter = new VectorFilter
+            {
+                Region = area,
+                Primitives = [new FilterComponentTransfer(VectorFilterInput.SourceGraphic, red, FilterTransferFunction.Identity,
+                    FilterTransferFunction.Identity, FilterTransferFunction.Identity) { Region = area }],
+            };
+            return new VectorScene(10, 10, [new VectorGroup { Opacity = 1, Children = [], Filter = filter }]);
+        }
+
+        Should.Throw<InvalidDataException>(() => VectorSceneFile.Read(VectorSceneFile.Write(With(new FilterTransferFunction(kind, [])))))
+            .Message.ShouldContain("transfer table with no values");
+
+        // One value is enough, and a function that has no table needs none.
+        VectorSceneFile.Read(VectorSceneFile.Write(With(new FilterTransferFunction(kind, [0.5f])))).Nodes.Length.ShouldBe(1);
+        VectorSceneFile.Read(VectorSceneFile.Write(With(new FilterTransferFunction(FilterTransferKind.Linear, [])))).Nodes.Length.ShouldBe(1);
+    }
+
     private sealed record StripePaint : VectorPaint;
 
     [Fact]
