@@ -25,7 +25,8 @@ namespace SharpAstro.VectorGraphics;
 /// <para><b>Layout</b>, little-endian: the magic <c>SAVS</c>, a version, the scene's size; a table of paths (verbs,
 /// then coordinates), which the shapes and clips refer to by index, so a path many shapes share is stored once and is one object
 /// again after loading; then the nodes, depth first. Version 2 added what version 1 had no place for: a group's clip
-/// and mask, images, and pattern paints. Version 3 added text. Files of versions 1 and 2 are still read.</para>
+/// and mask, images, and pattern paints. Version 3 added text. Version 4 added a group's filter and blend mode. Files of
+/// versions 1 to 3 are still read.</para>
 /// <para><b>The bytes are not trusted.</b> Every count is checked against what is left of the input before anything is
 /// allocated for it, so a short file cannot ask for a large array; verbs and tags are checked; nesting has a limit.
 /// What does not check out is an <see cref="InvalidDataException"/>.</para>
@@ -36,7 +37,7 @@ public static class VectorSceneFile
     public static ReadOnlySpan<byte> Magic => "SAVS"u8;
 
     /// <summary>The layout this build writes. It reads this one and every earlier one.</summary>
-    public const ushort Version = 3;
+    public const ushort Version = 4;
 
     /// <summary>The deepest nesting of groups a file may hold.</summary>
     public const int MaxDepth = 256;
@@ -45,7 +46,8 @@ public static class VectorSceneFile
     private const byte SpanFill = 1, SpanStroke = 2, SpanFillInBox = 4, SpanStrokeInBox = 8, SpanStrokeFirst = 16, SpanHidden = 32;
     private const ushort NoTextPath = 0xFFFF;
     private const byte SolidTag = 1, LinearTag = 2, RadialTag = 3, PatternTag = 4;
-    private const byte ClipFlag = 1, MaskFlag = 2;
+    private const byte ClipFlag = 1, MaskFlag = 2, FilterFlag = 4, BlendFlag = 8;
+    private const byte BlurTag = 1, OffsetTag = 2, FloodTag = 3, CompositeTag = 4, MergeTag = 5, ColorMatrixTag = 6, BlendTag = 7, TransferTag = 8;
     private const ushort NoString = 0xFFFF;
 
     /// <summary>Whether the bytes start as a scene file does. Says nothing about whether the rest is sound.</summary>
@@ -175,13 +177,16 @@ public static class VectorSceneFile
                 writer.Write(GroupTag);
                 WriteString(writer, group.Id);
                 writer.Write(group.Opacity);
-                writer.Write((byte)((group.Clip is null ? 0 : ClipFlag) | (group.Mask is null ? 0 : MaskFlag)));
+                writer.Write((byte)((group.Clip is null ? 0 : ClipFlag) | (group.Mask is null ? 0 : MaskFlag)
+                    | (group.Filter is null ? 0 : FilterFlag) | (group.Blend == VectorBlendMode.Normal ? 0 : BlendFlag)));
                 if (group.Clip is { } clip) WriteClip(writer, clip, indexOf);
                 if (group.Mask is { } mask)
                 {
                     writer.Write((byte)mask.Kind);
                     WriteNodes(writer, mask.Children, indexOf);
                 }
+                if (group.Filter is { } filter) WriteFilter(writer, filter);
+                if (group.Blend != VectorBlendMode.Normal) writer.Write((byte)group.Blend);
                 WriteNodes(writer, group.Children, indexOf);
                 continue;
             }
@@ -349,6 +354,101 @@ public static class VectorSceneFile
         writer.Write(font.Stretch);
     }
 
+    private static void WriteRect(BinaryWriter writer, VectorRect rect)
+    {
+        writer.Write(rect.X);
+        writer.Write(rect.Y);
+        writer.Write(rect.Width);
+        writer.Write(rect.Height);
+    }
+
+    private static void WriteInput(BinaryWriter writer, VectorFilterInput input)
+    {
+        writer.Write((byte)input.Kind);
+        writer.Write(input.Index);
+    }
+
+    private static void WriteFilter(BinaryWriter writer, VectorFilter filter)
+    {
+        WriteRect(writer, filter.Region);
+        WriteMatrix(writer, filter.Transform);
+        ImmutableArray<VectorFilterPrimitive> primitives = filter.Primitives.IsDefault ? [] : filter.Primitives;
+        writer.Write(primitives.Length);
+        foreach (VectorFilterPrimitive primitive in primitives)
+        {
+            writer.Write(primitive switch
+            {
+                FilterBlur => BlurTag,
+                FilterOffset => OffsetTag,
+                FilterFlood => FloodTag,
+                FilterComposite => CompositeTag,
+                FilterMerge => MergeTag,
+                FilterColorMatrix => ColorMatrixTag,
+                FilterBlend => BlendTag,
+                FilterComponentTransfer => TransferTag,
+                _ => throw new NotSupportedException($"A filter primitive of type {primitive.GetType().Name} cannot be written."),
+            });
+            WriteRect(writer, primitive.Region);
+            writer.Write(primitive.LinearRgb);
+            switch (primitive)
+            {
+                case FilterBlur blur:
+                    WriteInput(writer, blur.Input);
+                    writer.Write(blur.DeviationX);
+                    writer.Write(blur.DeviationY);
+                    break;
+                case FilterOffset offset:
+                    WriteInput(writer, offset.Input);
+                    writer.Write(offset.Dx);
+                    writer.Write(offset.Dy);
+                    break;
+                case FilterFlood flood:
+                    WriteColor(writer, flood.Color);
+                    break;
+                case FilterComposite composite:
+                    WriteInput(writer, composite.Input);
+                    WriteInput(writer, composite.Input2);
+                    writer.Write((byte)composite.Operator);
+                    writer.Write(composite.K1);
+                    writer.Write(composite.K2);
+                    writer.Write(composite.K3);
+                    writer.Write(composite.K4);
+                    break;
+                case FilterMerge merge:
+                {
+                    ImmutableArray<VectorFilterInput> inputs = merge.Inputs.IsDefault ? [] : merge.Inputs;
+                    writer.Write(inputs.Length);
+                    foreach (VectorFilterInput input in inputs) WriteInput(writer, input);
+                    break;
+                }
+                case FilterColorMatrix matrix:
+                    if (matrix.Matrix.IsDefault || matrix.Matrix.Length != 20) throw new NotSupportedException("A colour matrix is twenty numbers.");
+                    WriteFloats(writer, matrix.Matrix.AsSpan());
+                    WriteInput(writer, matrix.Input);
+                    break;
+                case FilterBlend blend:
+                    WriteInput(writer, blend.Input);
+                    WriteInput(writer, blend.Input2);
+                    writer.Write((byte)blend.Mode);
+                    break;
+                case FilterComponentTransfer transfer:
+                    WriteInput(writer, transfer.Input);
+                    foreach (FilterTransferFunction function in (ReadOnlySpan<FilterTransferFunction>)[transfer.Red, transfer.Green, transfer.Blue, transfer.Alpha])
+                    {
+                        writer.Write((byte)function.Kind);
+                        writer.Write(function.Table.Length);
+                        WriteFloats(writer, function.Table.AsSpan());
+                        writer.Write(function.Slope);
+                        writer.Write(function.Intercept);
+                        writer.Write(function.Amplitude);
+                        writer.Write(function.Exponent);
+                        writer.Write(function.Offset);
+                    }
+                    break;
+            }
+        }
+    }
+
     private static void WriteClip(BinaryWriter writer, VectorClip clip, Dictionary<VectorPath, int> indexOf)
     {
         ImmutableArray<VectorClipShape> shapes = clip.Shapes.IsDefault ? [] : clip.Shapes;
@@ -511,18 +611,27 @@ public static class VectorSceneFile
                 float opacity = reader.Single();
                 VectorClip? clip = null;
                 VectorMask? mask = null;
+                VectorFilter? filter = null;
+                var blend = VectorBlendMode.Normal;
                 if (version >= 2)
                 {
                     byte flags = reader.Byte();
-                    if ((flags & ~(ClipFlag | MaskFlag)) != 0) throw new InvalidDataException($"The vector scene file has group flags of {flags}.");
+                    int known = version >= 4 ? ClipFlag | MaskFlag | FilterFlag | BlendFlag : ClipFlag | MaskFlag;
+                    if ((flags & ~known) != 0) throw new InvalidDataException($"The vector scene file has group flags of {flags}.");
                     if ((flags & ClipFlag) != 0) clip = ReadClip(ref reader, paths, depth + 1);
                     if ((flags & MaskFlag) != 0)
                     {
                         VectorMaskKind kind = reader.Enum<VectorMaskKind>((byte)VectorMaskKind.Alpha, "mask kind");
                         mask = new VectorMask { Kind = kind, Children = ReadNodes(ref reader, paths, depth + 1, version) };
                     }
+                    if ((flags & FilterFlag) != 0) filter = ReadFilter(ref reader);
+                    if ((flags & BlendFlag) != 0) blend = reader.Enum<VectorBlendMode>((byte)VectorBlendMode.Luminosity, "blend mode");
                 }
-                nodes.Add(new VectorGroup { Id = id, Opacity = opacity, Clip = clip, Mask = mask, Children = ReadNodes(ref reader, paths, depth + 1, version) });
+                nodes.Add(new VectorGroup
+                {
+                    Id = id, Opacity = opacity, Clip = clip, Mask = mask, Filter = filter, Blend = blend,
+                    Children = ReadNodes(ref reader, paths, depth + 1, version),
+                });
                 continue;
             }
             if (tag == ImageTag && version >= 2)
@@ -699,6 +808,79 @@ public static class VectorSceneFile
         };
     }
 
+    private static VectorFilter ReadFilter(ref Reader reader)
+    {
+        VectorRect region = reader.Rect();
+        Matrix3x2 transform = reader.Matrix();
+        // The smallest primitive is a flood: a tag, a region, a flag, a colour.
+        int count = reader.Count(minimumBytesEach: 22, "filter primitives");
+        var primitives = ImmutableArray.CreateBuilder<VectorFilterPrimitive>(count);
+        for (int i = 0; i < count; i++)
+        {
+            byte tag = reader.Byte();
+            VectorRect own = reader.Rect();
+            bool linear = reader.Boolean();
+            VectorFilterPrimitive primitive;
+            switch (tag)
+            {
+                case BlurTag:
+                    primitive = new FilterBlur(reader.Input(i), reader.Single(), reader.Single()) { Region = own };
+                    break;
+                case OffsetTag:
+                    primitive = new FilterOffset(reader.Input(i), reader.Single(), reader.Single()) { Region = own };
+                    break;
+                case FloodTag:
+                    primitive = new FilterFlood(reader.Color()) { Region = own };
+                    break;
+                case CompositeTag:
+                    primitive = new FilterComposite(reader.Input(i), reader.Input(i),
+                        reader.Enum<FilterCompositeOperator>((byte)FilterCompositeOperator.Arithmetic, "composite operator"),
+                        reader.Single(), reader.Single(), reader.Single(), reader.Single()) { Region = own };
+                    break;
+                case MergeTag:
+                {
+                    int inputs = reader.Count(minimumBytesEach: 5, "merge inputs");
+                    var merged = ImmutableArray.CreateBuilder<VectorFilterInput>(inputs);
+                    for (int k = 0; k < inputs; k++) merged.Add(reader.Input(i));
+                    primitive = new FilterMerge(merged.MoveToImmutable()) { Region = own };
+                    break;
+                }
+                case ColorMatrixTag:
+                {
+                    ImmutableArray<float> matrix = [.. reader.Singles(20)];
+                    primitive = new FilterColorMatrix(reader.Input(i), matrix) { Region = own };
+                    break;
+                }
+                case BlendTag:
+                    primitive = new FilterBlend(reader.Input(i), reader.Input(i),
+                        reader.Enum<VectorBlendMode>((byte)VectorBlendMode.Luminosity, "blend mode")) { Region = own };
+                    break;
+                case TransferTag:
+                {
+                    VectorFilterInput input = reader.Input(i);
+                    var functions = new FilterTransferFunction[4];
+                    for (int k = 0; k < 4; k++)
+                    {
+                        FilterTransferKind kind = reader.Enum<FilterTransferKind>((byte)FilterTransferKind.Gamma, "transfer function");
+                        int values = reader.Count(minimumBytesEach: 4, "transfer table values");
+                        if (values == 0 && kind is FilterTransferKind.Table or FilterTransferKind.Discrete)
+                        {
+                            throw new InvalidDataException("The vector scene file has a transfer table with no values.");
+                        }
+                        ImmutableArray<float> table = [.. reader.Singles(values)];
+                        functions[k] = new FilterTransferFunction(kind, table, reader.Single(), reader.Single(), reader.Single(), reader.Single(), reader.Single());
+                    }
+                    primitive = new FilterComponentTransfer(input, functions[0], functions[1], functions[2], functions[3]) { Region = own };
+                    break;
+                }
+                default:
+                    throw new InvalidDataException($"The vector scene file has a filter primitive tag {tag}, which is not one.");
+            }
+            primitives.Add(primitive with { LinearRgb = linear });
+        }
+        return new VectorFilter { Region = region, Transform = transform, Primitives = primitives.MoveToImmutable() };
+    }
+
     private static VectorClip ReadClip(ref Reader reader, VectorPath[] paths, int depth)
     {
         if (depth > MaxDepth) throw new InvalidDataException($"The vector scene file nests clips more than {MaxDepth} deep.");
@@ -846,6 +1028,20 @@ public static class VectorSceneFile
         }
 
         public Matrix3x2 Matrix() => new(Single(), Single(), Single(), Single(), Single(), Single());
+
+        public VectorRect Rect() => new(Single(), Single(), Single(), Single());
+
+        /// <summary>An input of the filter primitive at <paramref name="primitive"/>: an earlier primitive's result, or the layer.</summary>
+        public VectorFilterInput Input(int primitive)
+        {
+            FilterInputKind kind = Enum<FilterInputKind>((byte)FilterInputKind.Result, "filter input");
+            int index = Int32();
+            if (kind == FilterInputKind.Result ? (uint)index >= (uint)primitive : index != 0)
+            {
+                throw new InvalidDataException($"The vector scene file has a filter primitive {primitive} that refers to result {index}.");
+            }
+            return new VectorFilterInput(kind, index);
+        }
 
         public Rgba32 Color()
         {

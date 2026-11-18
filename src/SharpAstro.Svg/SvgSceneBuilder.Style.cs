@@ -104,6 +104,9 @@ internal sealed partial class SvgSceneBuilder
         style.OverflowVisible = null;
         style.ClipPath = null;
         style.Mask = null;
+        style.Filter = null;
+        style.Blend = VectorBlendMode.Normal;
+        style.Isolate = false;
         style.AlignmentBaseline = null;
         style.OwnLines = TextDecorations.None;
 
@@ -251,6 +254,9 @@ internal sealed partial class SvgSceneBuilder
             case "overflow": s.OverflowVisible = null; break;
             case "clip-path": s.ClipPath = null; break;
             case "mask": s.Mask = null; break;
+            case "filter": s.Filter = null; break;
+            case "mix-blend-mode": s.Blend = VectorBlendMode.Normal; break;
+            case "isolation": s.Isolate = false; break;
             default: CopyFromParent(ref s, parent, name); break;
         }
     }
@@ -377,12 +383,34 @@ internal sealed partial class SvgSceneBuilder
                 // Read where the mask is used: it is a property of the mask element alone.
                 break;
 
-            // Read far enough to know the scene is missing something.
-            case "filter" or "vector-effect":
-                if (v is not "none") Issue(SvgIssueKind.Unsupported, name);
+            case "filter":
+                if (v is "none") s.Filter = null;
+                // Only one filter element: a list, or one of CSS's own functions (blur(), drop-shadow()), is not read.
+                else if (v.IndexOf(')') != v.Length - 1) Issue(SvgIssueKind.Unsupported, "filter: a value that is not one reference");
+                else s.Filter = Reference(v, name, "filter");
                 break;
             case "mix-blend-mode":
-                if (v is not "normal") Issue(SvgIssueKind.Unsupported, name);
+                if (TryBlendMode(v, out VectorBlendMode blend)) s.Blend = blend;
+                else if (v is "plus-lighter" or "plus-darker") Issue(SvgIssueKind.Unsupported, $"mix-blend-mode: {v}");
+                else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "isolation":
+                if (v is "isolate") s.Isolate = true;
+                else if (v is "auto") s.Isolate = false;
+                else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "color-interpolation-filters":
+                if (v.Equals("linearRGB", StringComparison.OrdinalIgnoreCase)) s.LinearFilters = true;
+                else if (v.Equals("sRGB", StringComparison.OrdinalIgnoreCase) || v is "auto") s.LinearFilters = false;
+                else Issue(SvgIssueKind.Invalid, name);
+                break;
+            case "flood-color" or "flood-opacity":
+                // Read where the filter is used: they are properties of a filter's step alone.
+                break;
+
+            // Read far enough to know the scene is missing something.
+            case "vector-effect":
+                if (v is not "none") Issue(SvgIssueKind.Unsupported, name);
                 break;
             case "transform":
                 Issue(SvgIssueKind.Unsupported, "transform in a style attribute or sheet");
@@ -513,6 +541,10 @@ internal sealed partial class SvgSceneBuilder
             case "overflow": s.OverflowVisible = parent.OverflowVisible; break;
             case "clip-path": s.ClipPath = parent.ClipPath; break;
             case "mask": s.Mask = parent.Mask; break;
+            case "filter": s.Filter = parent.Filter; break;
+            case "mix-blend-mode": s.Blend = parent.Blend; break;
+            case "isolation": s.Isolate = parent.Isolate; break;
+            case "color-interpolation-filters": s.LinearFilters = parent.LinearFilters; break;
             case "clip-rule": s.ClipRule = parent.ClipRule; break;
             case "marker-start": s.MarkerStart = parent.MarkerStart; break;
             case "marker-mid": s.MarkerMid = parent.MarkerMid; break;

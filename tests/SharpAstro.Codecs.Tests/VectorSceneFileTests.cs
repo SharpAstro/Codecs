@@ -39,7 +39,13 @@ public sealed class VectorSceneFileTests
         "font-family=\"'DejaVu Sans', Helvetica, sans-serif\" font-size=\"12\" font-weight=\"bold\" font-style=\"italic\" font-stretch=\"condensed\" " +
         "fill=\"url(#l)\" stroke=\"url(#dots)\" stroke-width=\"0.5\" paint-order=\"stroke\" letter-spacing=\"0.5\" word-spacing=\"2\" text-decoration=\"underline line-through\">" +
         "Ab \U0001F600<tspan dy=\"-3\" font-size=\"8\" fill=\"#c00\" text-anchor=\"end\" dominant-baseline=\"hanging\" baseline-shift=\"2\" visibility=\"hidden\" text-decoration=\"overline\">cd</tspan> e</text>" +
-        "<text id=\"round\" font-family=\"serif\" font-size=\"6\" text-anchor=\"middle\"><textPath href=\"#shared\" startOffset=\"25%\" side=\"right\">along <tspan fill=\"blue\">it</tspan></textPath> after<tspan baseline-shift=\"super\" font-size=\"4\">2</tspan></text>";
+        "<text id=\"round\" font-family=\"serif\" font-size=\"6\" text-anchor=\"middle\"><textPath href=\"#shared\" startOffset=\"25%\" side=\"right\">along <tspan fill=\"blue\">it</tspan></textPath> after<tspan baseline-shift=\"super\" font-size=\"4\">2</tspan></text>" +
+        "<defs><filter id=\"every\" x=\"-0.2\" width=\"1.4\"><feGaussianBlur in=\"SourceAlpha\" stdDeviation=\"1.5 0.5\" result=\"soft\"/><feOffset dx=\"2\" dy=\"-1\" width=\"30\"/>" +
+        "<feFlood flood-color=\"#036\" flood-opacity=\"0.5\" color-interpolation-filters=\"sRGB\"/><feComposite in2=\"soft\" operator=\"arithmetic\" k1=\"0.1\" k2=\"0.2\" k3=\"0.3\" k4=\"0.4\"/>" +
+        "<feColorMatrix type=\"saturate\" values=\"0.5\"/><feBlend in=\"SourceGraphic\" in2=\"soft\" mode=\"color-burn\"/>" +
+        "<feComponentTransfer><feFuncR type=\"table\" tableValues=\"0 0.25 1\"/><feFuncG type=\"discrete\" tableValues=\"0.5\"/><feFuncB type=\"linear\" slope=\"1.5\" intercept=\"0.125\"/><feFuncA type=\"gamma\" amplitude=\"0.75\" exponent=\"2\" offset=\"0.0625\"/></feComponentTransfer>" +
+        "<feMerge><feMergeNode in=\"soft\"/><feMergeNode/><feMergeNode in=\"SourceGraphic\"/></feMerge></filter></defs>" +
+        "<g id=\"effects\" filter=\"url(#every)\" opacity=\"0.75\" style=\"mix-blend-mode: luminosity\" transform=\"translate(3 4)\"><rect width=\"20\" height=\"10\" fill=\"#c00\"/><circle r=\"4\" style=\"mix-blend-mode: hard-light\"/></g>";
 
     [Fact]
     public void AScene_ComesBackExactlyAsItWasWritten()
@@ -57,6 +63,9 @@ public sealed class VectorSceneFileTests
             "line#0(Underline, LineThrough fill(linear", "line#1(Overline fill(solid", "rise=4",
             "in-box)", "first)", "@0(x=5 y=60)", "@1(x=9 turn=10)", "@3(turn=20)", "span \"cd\" font=[DejaVu Sans, Helvetica, sans-serif] 8 w=700 Italic 75% End Hanging shift=2",
             " hidden line#0(", "@0(dy=-3 turn=20)", "text id=round", "along#0(", "start=0.25 of the length right)", "span \"it\"", "span \" after\"",
+            "group id=effects opacity=0.75 blend=Luminosity", "group id=(none) opacity=1 blend=HardLight", "0: blur SourceAlpha 1.5,0.5 ", "1: offset #0 2,-1 ",
+            "2: flood 0,51,102,128 ", " srgb\n", "3: composite #2 Arithmetic #0 0.1,0.2,0.3,0.4 ", "4: matrix #3 0.6065,0.3575,0.036,0,0,", "5: blend SourceGraphic ColorBurn #0 ",
+            "6: transfer #5 r=table(0,0.25,1) g=discrete(0.5) b=linear(1.5,0.125) a=gamma(0.75,2,0.0625) ", "7: merge #0 #6 SourceGraphic ",
             "<shape id=(none)", "image id=embedded", "Slice align=1,0 opacity=0.5 type=image/png source=(none) bytes=", "image id=named", "Stretch", "source=https://example.org/a%20picture.png bytes=0",
         ])
         {
@@ -274,7 +283,7 @@ public sealed class VectorSceneFileTests
     [InlineData(new byte[0], "does not start with")]
     [InlineData(new byte[] { (byte)'S', (byte)'A', (byte)'V' }, "does not start with")]
     [InlineData(new byte[] { (byte)'<', (byte)'s', (byte)'v', (byte)'g', 0, 0, 0, 0 }, "does not start with")]
-    [InlineData(new byte[] { (byte)'S', (byte)'A', (byte)'V', (byte)'S', 4, 0, 0, 0 }, "version 4")]
+    [InlineData(new byte[] { (byte)'S', (byte)'A', (byte)'V', (byte)'S', 5, 0, 0, 0 }, "version 5")]
     [InlineData(new byte[] { (byte)'S', (byte)'A', (byte)'V', (byte)'S', 0, 0, 0, 0 }, "version 0")]
     public void WhatIsNotASceneFileOfThisVersion_IsRefused(byte[] data, string message)
     {
@@ -294,6 +303,34 @@ public sealed class VectorSceneFileTests
         for (int i = 0; i < VectorSceneFile.MaxDepth + 5; i++) bytes.AddRange([1, 0, 0, 0, 2, 0xFF, 0xFF, 0, 0, 0x80, 0x3F]);
         bytes.AddRange([0, 0, 0, 0]);
         Should.Throw<InvalidDataException>(() => VectorSceneFile.Read([.. bytes])).Message.ShouldContain("deep");
+    }
+
+    // A table or a set of steps with no values has no value to give: a renderer would index an empty array. The
+    // writer writes what it is handed, so the reader is where it is refused. (Found by the mutation check: nothing
+    // had tried one.)
+    [Theory]
+    [InlineData(FilterTransferKind.Table)]
+    [InlineData(FilterTransferKind.Discrete)]
+    public void ATransferTableWithNoValues_IsRefused(FilterTransferKind kind)
+    {
+        VectorScene With(FilterTransferFunction red)
+        {
+            var area = new VectorRect(0, 0, 10, 10);
+            var filter = new VectorFilter
+            {
+                Region = area,
+                Primitives = [new FilterComponentTransfer(VectorFilterInput.SourceGraphic, red, FilterTransferFunction.Identity,
+                    FilterTransferFunction.Identity, FilterTransferFunction.Identity) { Region = area }],
+            };
+            return new VectorScene(10, 10, [new VectorGroup { Opacity = 1, Children = [], Filter = filter }]);
+        }
+
+        Should.Throw<InvalidDataException>(() => VectorSceneFile.Read(VectorSceneFile.Write(With(new FilterTransferFunction(kind, [])))))
+            .Message.ShouldContain("transfer table with no values");
+
+        // One value is enough, and a function that has no table needs none.
+        VectorSceneFile.Read(VectorSceneFile.Write(With(new FilterTransferFunction(kind, [0.5f])))).Nodes.Length.ShouldBe(1);
+        VectorSceneFile.Read(VectorSceneFile.Write(With(new FilterTransferFunction(FilterTransferKind.Linear, [])))).Nodes.Length.ShouldBe(1);
     }
 
     private sealed record StripePaint : VectorPaint;

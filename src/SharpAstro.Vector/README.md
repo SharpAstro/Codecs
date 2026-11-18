@@ -7,7 +7,9 @@ A format-neutral vector scene for .NET, with no dependencies. The namespace is `
 - `VectorShape`: a `VectorPath` with a transform, an optional `VectorFill` and an optional `VectorStroke`.
 - `VectorGroup`: children that must be drawn into one layer, which is cut to its `Clip` (a `VectorClip`: a union of
   outlines) and multiplied by its `Mask` (a `VectorMask`: a little scene, by luminance or alpha) when it has them, and
-  then blended at an opacity.
+  then put over what is below at an opacity. Before the clip, the layer is replaced by what its `Filter` makes of it (a
+  `VectorFilter`: an area and steps such as a blur, an offset, a flood, a merge); and its colour is mixed with the
+  colour below by its `Blend` (a `VectorBlendMode`: multiply, screen and the rest).
 - `VectorImage`: a raster picture, carried as the file it is (or only named by its address), with the box it goes in
   and how it is fitted. The scene does not decode it.
 - `VectorPath` / `PathBuilder` / `IPathSink`: absolute move, line, quad, cubic and close.
@@ -31,7 +33,7 @@ foreach (VectorNode node in scene.Nodes)
         shape.Path.Replay(mySink);      // geometry, in the shape's local units
         // shape.Transform, shape.Fill, shape.Stroke say how to paint it
     }
-    // else a VectorGroup (a layer: Children, Opacity, Clip, Mask) or a VectorImage
+    // else a VectorGroup (a layer: Children, Opacity, Clip, Mask, Filter, Blend) or a VectorImage
 }
 ```
 

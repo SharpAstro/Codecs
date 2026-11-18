@@ -38,6 +38,9 @@ internal struct SvgStyle
     public FillRule ClipRule;
     public SvgElement? MarkerStart, MarkerMid, MarkerEnd;
 
+    /// <summary>Whether filter steps work on linear light (<c>color-interpolation-filters</c>), which is what they do unless told otherwise.</summary>
+    public bool LinearFilters;
+
     // Text. All inherited: a tspan writes in its text's font unless it says otherwise.
     public ImmutableArray<string> FontFamilies;
     public int FontWeight;
@@ -75,7 +78,13 @@ internal struct SvgStyle
     public double Opacity;
     public bool Display;
     public bool? OverflowVisible;
-    public SvgElement? ClipPath, Mask;
+    public SvgElement? ClipPath, Mask, Filter;
+
+    /// <summary>How the element is mixed with what is below it (<c>mix-blend-mode</c>).</summary>
+    public VectorBlendMode Blend;
+
+    /// <summary>Whether what is inside the element may only mix with what else is inside it (<c>isolation: isolate</c>).</summary>
+    public bool Isolate;
 
     /// <summary>The baseline one element alone asks for (<c>alignment-baseline</c>), over the inherited one.</summary>
     public TextBaseline? AlignmentBaseline;
@@ -99,6 +108,7 @@ internal struct SvgStyle
         FontWeight = 400,
         FontStretch = 100,
         PaintOrder = SvgSceneBuilder.NormalPaintOrder,
+        LinearFilters = true,
         Opacity = 1,
         Display = true,
     };
@@ -130,7 +140,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         "marker-mid", "marker-end", "mix-blend-mode", "paint-order", "vector-effect", "transform-origin", "clip-rule", "mask-type",
         "font", "font-family", "font-weight", "font-style", "font-stretch", "font-variant", "text-anchor", "letter-spacing", "word-spacing",
         "text-decoration", "text-decoration-line", "dominant-baseline", "alignment-baseline", "baseline-shift", "writing-mode", "direction",
-        "white-space", "inline-size",
+        "white-space", "inline-size", "isolation", "color-interpolation-filters", "flood-color", "flood-opacity",
     ], StringComparer.Ordinal);
 
     /// <summary>Elements that are never drawn where they stand. What refers to them is reported where the reference is.</summary>
@@ -373,11 +383,13 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         return matrix.IsFinite && matrix.Determinant != 0 && style.Opacity > 0;
     }
 
-    private static bool NeedsLayer(in SvgStyle style) => style.Opacity < 1 || style.ClipPath is not null || style.Mask is not null;
+    private static bool NeedsLayer(in SvgStyle style) => style.Opacity < 1 || style.ClipPath is not null || style.Mask is not null
+        || style.Filter is not null || style.Blend != VectorBlendMode.Normal || style.Isolate;
 
     /// <summary>
-    /// Opacity on a container needs a layer, because its children may overlap; so do a clip and a mask, which apply
-    /// to what the element draws as a whole. Everything else is drawn straight into what is above.
+    /// Opacity on a container needs a layer, because its children may overlap; so do a clip, a mask, a filter and a
+    /// blend mode, which apply to what the element draws as a whole, and an element that keeps the blending inside it
+    /// to itself. Everything else is drawn straight into what is above.
     /// </summary>
     private static List<VectorNode> BeginLayer(in SvgStyle style, List<VectorNode> output) => NeedsLayer(style) ? [] : output;
 
@@ -393,7 +405,8 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
 
         VectorClip? clip = null;
         VectorMask? mask = null;
-        if (style.ClipPath is not null || style.Mask is not null)
+        VectorFilter? filter = null;
+        if (style.ClipPath is not null || style.Mask is not null || style.Filter is not null)
         {
             VectorRect? box = shapePath is null ? BoundsOf(target, matrix) : shapePath.TryGetBounds(out VectorRect own) ? own : null;
             bool outer = _boxOfText;
@@ -410,19 +423,30 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
                     mask = Mask(maskElement, matrix, box, viewport, depth + 1);
                     if (mask is { Children.IsEmpty: true }) return;     // a mask with no picture keeps nothing
                 }
+                if (style.Filter is { } filterElement)
+                {
+                    filter = Filter(filterElement, matrix, box, viewport, depth + 1);
+                    if (filter is { Primitives.IsEmpty: true }) return; // a filter that gives nothing leaves nothing
+                }
             }
             finally
             {
                 _boxOfText = outer;
             }
         }
-        if (clip is null && mask is null && style.Opacity >= 1)
+        if (clip is null && mask is null && filter is null && style.Opacity >= 1 && style.Blend == VectorBlendMode.Normal
+            // Keeping blending inside is only a difference when something inside blends with what the element itself
+            // drew into. (What is in a group further in blends in that group.)
+            && !(style.Isolate && target.Exists(node => node is VectorGroup { Blend: not VectorBlendMode.Normal })))
         {
-            // The clip or mask turned out to be one that is ignored: no layer is needed after all.
+            // The clip, mask or filter turned out to be one that is ignored: no layer is needed after all.
             output.AddRange(target);
             return;
         }
-        output.Add(new VectorGroup { Opacity = (float)style.Opacity, Clip = clip, Mask = mask, Children = [.. target], Id = id });
+        output.Add(new VectorGroup
+        {
+            Opacity = (float)style.Opacity, Clip = clip, Mask = mask, Filter = filter, Blend = style.Blend, Children = [.. target], Id = id,
+        });
     }
 
     private void Walk(SvgElement element, in SvgStyle parent, SvgAffine outer, in SvgViewport viewport, List<VectorNode> output, int depth)
@@ -559,6 +583,8 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         {
             if (node is VectorGroup group)
             {
+                // A filter draws where its steps put things (a blur spreads, an offset moves): it may reach outside.
+                if (group.Filter is not null) return true;
                 foreach (VectorNode child in group.Children)
                 {
                     if (Outside(child)) return true;
@@ -876,7 +902,7 @@ internal sealed partial class SvgSceneBuilder(SvgReadOptions options, SvgTree tr
         string? id = element.Get("id");
         float opacity = (float)style.Opacity;
         Matrix3x2 transform = matrix.ToMatrix();
-        bool layered = style.ClipPath is not null || style.Mask is not null;
+        bool layered = style.ClipPath is not null || style.Mask is not null || style.Filter is not null || style.Blend != VectorBlendMode.Normal;
         // The stroke is painted after the fill unless paint-order puts it first; with one of the two it does not matter.
         // (The usual order is checked first: this is every shape of every drawing, and almost none says otherwise.)
         bool strokeFirst = style.PaintOrder != NormalPaintOrder && fill is not null && stroke is not null

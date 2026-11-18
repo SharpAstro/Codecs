@@ -208,8 +208,8 @@ public sealed class SvgReaderTests
     {
         SvgDocument document = Doc(
             "<image href=\"a.png\"/><switch><g/></switch><switch/><foreignObject><rect width=\"1\" height=\"1\"/></foreignObject>" +
-            RectWith("filter=\"url(#f)\" clip-path=\"circle(4px)\" mask=\"linear-gradient(red, blue)\" id=\"kept\"") +
-            RectWith("style=\"mix-blend-mode: multiply; vector-effect: non-scaling-stroke; transform: scale(2)\"") +
+            RectWith("filter=\"blur(2px)\" clip-path=\"circle(4px)\" mask=\"linear-gradient(red, blue)\" id=\"kept\"") +
+            RectWith("style=\"mix-blend-mode: plus-lighter; vector-effect: non-scaling-stroke; transform: scale(2)\"") +
             RectWith("clip-path=\"none\" mask=\"none\" filter=\"none\" marker-end=\"none\" mix-blend-mode=\"normal\" paint-order=\"normal\"") +
             RectWith("stroke=\"red\" stroke-linejoin=\"arcs\"") +
             RectWith("clip-path=\"url(other.svg#c)\" fill=\"green\"") +
@@ -233,8 +233,8 @@ public sealed class SvgReaderTests
             ["clip-path: a value that is not a reference"] = 1,
             ["mask: a value that is not a reference"] = 1,
             ["clip-path: an element in another document"] = 1,
-            ["filter"] = 1,
-            ["mix-blend-mode"] = 1,
+            ["filter: a value that is not a reference"] = 1,
+            ["mix-blend-mode: plus-lighter"] = 1,
             ["vector-effect"] = 1,
             ["transform in a style attribute or sheet"] = 1,
             ["stroke-linejoin: arcs"] = 1,
@@ -272,7 +272,7 @@ public sealed class SvgReaderTests
     {
         var strict = new SvgReadOptions { ThrowOnUnsupported = true };
         Should.Throw<NotSupportedException>(() => Doc("<switch/>", options: strict)).Message.ShouldContain("<switch> element");
-        Should.Throw<NotSupportedException>(() => Doc("<rect width=\"1\" height=\"1\" filter=\"url(#f)\"/>", options: strict));
+        Should.Throw<NotSupportedException>(() => Doc("<rect width=\"1\" height=\"1\" filter=\"blur(1px)\"/>", options: strict));
         Doc("<rect width=\"1\" height=\"1\" fill=\"bogus\"/><defs><switch/></defs>", options: strict)
             .Issues.ShouldHaveSingleItem().Kind.ShouldBe(SvgIssueKind.Invalid);
     }

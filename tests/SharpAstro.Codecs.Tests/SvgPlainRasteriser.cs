@@ -53,6 +53,9 @@ internal static class SvgPlainRasteriser
     private abstract class Drawable
     {
         public abstract Vector4 At(Vector2 p);
+
+        /// <summary>How its colour is mixed with what is below it.</summary>
+        public virtual VectorBlendMode Blend => VectorBlendMode.Normal;
     }
 
     /// <summary>The drawables composited at a point, bottom first: premultiplied RGBA over nothing.</summary>
@@ -62,9 +65,71 @@ internal static class SvgPlainRasteriser
         foreach (Drawable drawable in drawables)
         {
             Vector4 above = drawable.At(p);
-            if (above.W > 0) below = above + below * (1 - above.W);
+            if (above.W <= 0) continue;
+            below = drawable.Blend == VectorBlendMode.Normal || below.W <= 0 ? above + below * (1 - above.W) : Blended(drawable.Blend, below, above);
         }
         return below;
+    }
+
+    // ---- Blend modes -------------------------------------------------------------------------------------------------
+    // Written out from the W3C Compositing and Blending specification, on one sample at a time.
+
+    /// <summary>A layer's sample mixed with the one below it and laid over it; all three premultiplied.</summary>
+    private static Vector4 Blended(VectorBlendMode mode, Vector4 below, Vector4 above)
+    {
+        var cb = new Vector3(below.X, below.Y, below.Z) / below.W;
+        var cs = new Vector3(above.X, above.Y, above.Z) / above.W;
+        Vector3 mixed = mode switch
+        {
+            VectorBlendMode.Hue => SetLum(SetSat(cs, Sat(cb)), Lum(cb)),
+            VectorBlendMode.Saturation => SetLum(SetSat(cb, Sat(cs)), Lum(cb)),
+            VectorBlendMode.Color => SetLum(cs, Lum(cb)),
+            VectorBlendMode.Luminosity => SetLum(cb, Lum(cs)),
+            _ => new Vector3(Channel(mode, cb.X, cs.X), Channel(mode, cb.Y, cs.Y), Channel(mode, cb.Z, cs.Z)),
+        };
+        // Where nothing is below, the layer as it is; where both are, the mixed colour; then over what is below.
+        Vector3 colour = above.W * (1 - below.W) * cs + above.W * below.W * mixed + (1 - above.W) * below.W * cb;
+        return new Vector4(colour, above.W + below.W * (1 - above.W));
+    }
+
+    private static float Channel(VectorBlendMode mode, float b, float s) => mode switch
+    {
+        VectorBlendMode.Multiply => b * s,
+        VectorBlendMode.Screen => b + s - b * s,
+        VectorBlendMode.Overlay => HardLight(s, b),
+        VectorBlendMode.Darken => MathF.Min(b, s),
+        VectorBlendMode.Lighten => MathF.Max(b, s),
+        VectorBlendMode.ColorDodge => b == 0 ? 0 : s >= 1 ? 1 : MathF.Min(1, b / (1 - s)),
+        VectorBlendMode.ColorBurn => b >= 1 ? 1 : s <= 0 ? 0 : 1 - MathF.Min(1, (1 - b) / s),
+        VectorBlendMode.HardLight => HardLight(b, s),
+        VectorBlendMode.SoftLight => s <= 0.5f
+            ? b - (1 - 2 * s) * b * (1 - b)
+            : b + (2 * s - 1) * ((b <= 0.25f ? ((16 * b - 12) * b + 4) * b : MathF.Sqrt(b)) - b),
+        VectorBlendMode.Difference => MathF.Abs(b - s),
+        VectorBlendMode.Exclusion => b + s - 2 * b * s,
+        _ => s,
+    };
+
+    private static float HardLight(float b, float s) => s <= 0.5f ? b * (2 * s) : b + (2 * s - 1) - b * (2 * s - 1);
+
+    private static float Lum(Vector3 c) => 0.3f * c.X + 0.59f * c.Y + 0.11f * c.Z;
+
+    private static float Sat(Vector3 c) => MathF.Max(c.X, MathF.Max(c.Y, c.Z)) - MathF.Min(c.X, MathF.Min(c.Y, c.Z));
+
+    private static Vector3 SetLum(Vector3 c, float lum)
+    {
+        c += new Vector3(lum - Lum(c));
+        float l = Lum(c), low = MathF.Min(c.X, MathF.Min(c.Y, c.Z)), high = MathF.Max(c.X, MathF.Max(c.Y, c.Z));
+        if (low < 0) c = new Vector3(l) + (c - new Vector3(l)) * l / (l - low);
+        if (high > 1) c = new Vector3(l) + (c - new Vector3(l)) * (1 - l) / (high - l);
+        return c;
+    }
+
+    private static Vector3 SetSat(Vector3 c, float sat)
+    {
+        float low = MathF.Min(c.X, MathF.Min(c.Y, c.Z)), high = MathF.Max(c.X, MathF.Max(c.Y, c.Z));
+        // The smallest channel to 0, the largest to the saturation, the one between in proportion.
+        return high > low ? (c - new Vector3(low)) * sat / (high - low) : Vector3.Zero;
     }
 
     private static List<Drawable> Compile(ImmutableArray<VectorNode> nodes)
@@ -412,7 +477,12 @@ internal static class SvgPlainRasteriser
 
     private sealed class Layer(VectorGroup group) : Drawable
     {
-        private readonly List<Drawable> _children = Compile(group.Children);
+        // A filter works on pictures, and this rasteriser has none: only a colour at a point. Filters are drawn, and
+        // held against a browser, in Fonts.Lib; no oracle document of this repository has any.
+        private readonly List<Drawable> _children = group.Filter is null ? Compile(group.Children) : throw new NotSupportedException("a filter");
+
+        public override VectorBlendMode Blend => group.Blend;
+
         private readonly Region? _clip = group.Clip is { } clip ? new Region(clip) : null;
         private readonly List<Drawable>? _mask = group.Mask is { } mask ? Compile(mask.Children) : null;
 
