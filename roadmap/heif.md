@@ -95,8 +95,9 @@ windows on the gain maps and a thumbnail. Things worth knowing:
   machine that ran this had 3.6 GB free). The test cuts the bottom-right 2x2 tiles into a grid file of their own
   (output 960x976, crossing the overhang both ways) and compares that. Nor does `HeifDecoder` ever compose the whole
   200 MP primary in a test, on purpose: its canvas plus one picture is the 2.6 GiB residual in `HeifLimits`' remarks,
-  too much for a default test run on a shared machine. What covers the whole image instead: `Statistics_...` decodes
-  every tile of the primary through `HevcDecoder` (plane-exact against ffmpeg), and the corner grid runs the grid
+  too much for a default test run on a shared machine. What covers the whole image instead:
+  `Statistics_OfThePrimarysTiles_ShowWhatPhonesExercise` decodes every tile of the primary through `HevcDecoder`,
+  `EveryCodedPicture_MatchesFfmpeg` compares every coded picture plane-exact against ffmpeg, and the corner grid runs the grid
   composition, overhang and rotation path on real tiles. `Primary_SizeAndDepthAgreeWithMagick` pings the file, so
   libheif reads only the primary's size and depth and decodes no pixels.
 - **ffmpeg is run once per 48 same-shape pictures** (`HevcOracle.DecodeFrames`, `-fps_mode passthrough`), not
