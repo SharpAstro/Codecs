@@ -312,7 +312,7 @@ public sealed class JpegStripDecodeTests
 
                 (dw, dh).ShouldBe((expected.Width, expected.Height), label);
                 dest.AsSpan(0, length).SequenceEqual(expected.Pixels).ShouldBeTrue($"{label}: DecodeTo pixels differ from Decode");
-                dest.AsSpan(length).ToArray().ShouldAllBe(b => b == 0xAB, $"{label}: DecodeTo wrote past the image");
+                dest.AsSpan(length).IndexOfAnyExcept((byte)0xAB).ShouldBe(-1, $"{label}: DecodeTo wrote past the image");
             }
         }
     }
