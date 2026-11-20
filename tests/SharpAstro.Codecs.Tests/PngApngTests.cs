@@ -536,19 +536,23 @@ public sealed class PngApngTests
         var checkedPixels = 0;
         var ties = 0;
         var target = new byte[4];
+        var source = new byte[4];
+        var background = new byte[4];
+        var expected = new byte[4];
         for (var af = 0; af < 256; af++)
             for (var ab = 0; ab < 256; ab++)
                 foreach (var cf in colors)
                     foreach (var cb in colors)
                     {
-                        byte[] source = [(byte)cf, (byte)(255 - cf), (byte)((cf + cb) / 2), (byte)af];
-                        byte[] background = [(byte)cb, (byte)(255 - cb), (byte)((cf * 3 + cb) / 4), (byte)ab];
+                        // Four million pixels: the arrays are reused and a message is built only for a failure (#92).
+                        (source[0], source[1], source[2], source[3]) = ((byte)cf, (byte)(255 - cf), (byte)((cf + cb) / 2), (byte)af);
+                        (background[0], background[1], background[2], background[3]) = ((byte)cb, (byte)(255 - cb), (byte)((cf * 3 + cb) / 4), (byte)ab);
                         background.CopyTo(target, 0);
                         PngCompositor.Over(source, target);
                         checkedPixels++;
 
-                        var expected = SpecOver(source, background);
-                        target[3].ShouldBe(expected[3], $"alpha of {af} over {ab}");
+                        SpecOver(source, background, expected);
+                        if (target[3] != expected[3]) target[3].ShouldBe(expected[3], $"alpha of {af} over {ab}");
                         for (var c = 0; c < 3; c++)
                         {
                             if (target[c] == expected[c])
@@ -568,13 +572,18 @@ public sealed class PngApngTests
 
     private static byte[] SpecOver(byte[] fg, byte[] bg)
     {
+        var result = new byte[4];
+        SpecOver(fg, bg, result);
+        return result;
+    }
+
+    private static void SpecOver(byte[] fg, byte[] bg, byte[] result)
+    {
         double afr = fg[3] / 255.0, abr = bg[3] / 255.0;
         var outAlpha = afr + abr * (1 - afr);
-        var result = new byte[4];
         for (var c = 0; c < 3; c++)
             result[c] = outAlpha == 0 ? (byte)0 : (byte)Math.Floor((afr * fg[c] + (1 - afr) * abr * bg[c]) / outAlpha + 0.5);
         result[3] = (byte)Math.Floor(outAlpha * 255 + 0.5);
-        return result;
     }
 
     /// <summary>

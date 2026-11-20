@@ -44,7 +44,7 @@ public sealed class PngWriterParallelDeflateTests
         split.Width.ShouldBe(serial.Width);
         split.Height.ShouldBe(serial.Height);
         split.ColorType.ShouldBe(serial.ColorType);
-        split.Pixels.ShouldBe(serial.Pixels);
+        SpanAssert.Same<byte>(split.Pixels, serial.Pixels, "pixels");
         split.Pixels.ShouldBe(rgb);
     }
 
@@ -60,7 +60,7 @@ public sealed class PngWriterParallelDeflateTests
         var split = PngReader.Decode(PngWriter.EncodeRgba16(rgba, Width, Height,
             new PngWriteOptions { ParallelFragments = fragments }));
 
-        split.Pixels.ShouldBe(serial.Pixels);
+        SpanAssert.Same<byte>(split.Pixels, serial.Pixels, "pixels");
     }
 
     [Theory]

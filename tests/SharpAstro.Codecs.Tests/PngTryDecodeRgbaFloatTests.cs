@@ -154,6 +154,7 @@ public sealed class PngTryDecodeRgbaFloatTests
         }
 
         var bad = 0;
+        var opaqueBad = 0;
         var firstBad = -1;
         var worst = 0.0;
         void Check(int index, float actual, double expected)
@@ -176,10 +177,12 @@ public sealed class PngTryDecodeRgbaFloatTests
             Check(p * 4, rgba[p * 4], r);
             Check(p * 4 + 1, rgba[p * 4 + 1], g);
             Check(p * 4 + 2, rgba[p * 4 + 2], b);
-            rgba[p * 4 + 3].ShouldBe(1f);
+            // Counted, not asserted per pixel: a Shouldly call a pixel was most of what this test allocated (#92).
+            if (rgba[p * 4 + 3] != 1f) opaqueBad++;
         }
 
         bad.ShouldBe(0, $"{bad} samples differ from the reference by more than 1e-4 relative; worst {worst:E2}, first at sample {firstBad}");
+        opaqueBad.ShouldBe(0, "every alpha is 1");
 
         enc.Primaries.ShouldBe(ColorPrimaries.BT2020);
         enc.Transfer.ShouldBe(TransferFunction.Linear);
@@ -326,6 +329,7 @@ public sealed class PngTryDecodeRgbaFloatTests
             curve[c + 1] = RefBt709(Clamp01(RefSignal(c, 8, fullRange)), alpha, beta);
 
         var bad = 0;
+        var alphaBad = 0;
         for (var i = 0; i < rgba.Length; i += 4)
         {
             for (var c = 0; c < 3; c++)
@@ -335,9 +339,10 @@ public sealed class PngTryDecodeRgbaFloatTests
                 var hi = curve[code + 1 + 1] * (1 + 5e-3) + 1e-4;
                 if (rgba[i + c] < lo || rgba[i + c] > hi) bad++;
             }
-            rgba[i + 3].ShouldBe(rgba8[i + 3] / 255f);
+            if (rgba[i + 3] != rgba8[i + 3] / 255f) alphaBad++; // counted, not asserted per pixel (#92)
         }
         bad.ShouldBe(0, $"{bad} colour samples are outside the +/- 1 code band of the RGBA8 output");
+        alphaBad.ShouldBe(0, "every alpha is the RGBA8 alpha over 255");
 
         enc.Transfer.ShouldBe(TransferFunction.Linear);
         enc.Float.ShouldBe(FloatSemantics.DisplayReferred);
@@ -403,7 +408,8 @@ public sealed class PngTryDecodeRgbaFloatTests
 
         (wa, ha).ShouldBe((wb, hb));
         ea.ShouldBe(eb);
-        a.ShouldBe(b);
+        // A span compare: ShouldBe on two float arrays boxes all 8.3 million samples (#92).
+        a.AsSpan().SequenceEqual(b).ShouldBeTrue();
     }
 
     // ---- the RGBA8 paths keep refusing what this one decodes --------------------------------

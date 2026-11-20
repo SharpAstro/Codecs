@@ -114,11 +114,9 @@ public sealed class TileCoderTests
                 var e = encoded[r, c]; // holds the computed CBP
                 for (var ch = 0; ch < 3; ch++)
                 {
-                    for (var k = 0; k < 16; k++)
-                        d.BlockDc[ch][k].ShouldBe(o.BlockDc[ch][k], $"mb({r},{c}) BlockDc[{ch}][{k}]");
-                    for (var p = 0; p < MacroblockLayout.PlaneSize; p++)
-                        d.Plane[ch][p].ShouldBe(o.Plane[ch][p], $"mb({r},{c}) Plane[{ch}][{p}]");
-                    d.Cbp[ch].ShouldBe(e.Cbp[ch], $"mb({r},{c}) Cbp[{ch}]");
+                    SpanAssert.Same<int>(d.BlockDc[ch].AsSpan(0, 16), o.BlockDc[ch].AsSpan(0, 16), $"mb({r},{c}) BlockDc[{ch}]");
+                    SpanAssert.Same<int>(d.Plane[ch].AsSpan(0, MacroblockLayout.PlaneSize), o.Plane[ch].AsSpan(0, MacroblockLayout.PlaneSize), $"mb({r},{c}) Plane[{ch}]");
+                    if (d.Cbp[ch] != e.Cbp[ch]) d.Cbp[ch].ShouldBe(e.Cbp[ch], $"mb({r},{c}) Cbp[{ch}]");
                 }
             }
     }

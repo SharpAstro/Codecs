@@ -25,7 +25,7 @@ public sealed class HeifParallelDecodeTests
         serial.Width.ShouldBe(680);
         serial.Height.ShouldBe(320);
         foreach (var degree in new[] { -1, 2, 3 })
-            HeifDecoder.Decode(file, maxDegreeOfParallelism: degree).Samples.ShouldBe(serial.Samples, $"{degree} at once");
+            SpanAssert.Same<ushort>(HeifDecoder.Decode(file, maxDegreeOfParallelism: degree).Samples, serial.Samples, $"{degree} at once");
     }
 
     [Fact]
@@ -93,7 +93,7 @@ public sealed class HeifParallelDecodeTests
         var file = Grid(512, 384, Enumerable.Repeat(HevcFixtureTests.Load(scaled).Item, 4).ToArray(), columns: 2, rows: 2, fixture: scaled, tileWidth: 256, tileHeight: 192);
         var serial = HeifDecoder.Decode(file, maxDegreeOfParallelism: 1);
         for (var run = 0; run < 3; run++)
-            HeifDecoder.Decode(file).Samples.ShouldBe(serial.Samples);
+            SpanAssert.Same<ushort>(HeifDecoder.Decode(file).Samples, serial.Samples, "samples");
     }
 
     /// <summary>

@@ -105,11 +105,9 @@ public sealed class JxrChromaTileCoderTests
                 var e = encoded[r, c]; // holds the computed CBP
                 for (var ch = 0; ch < 3; ch++)
                 {
-                    for (var k = 0; k < d.BlockDc[ch].Length; k++)
-                        d.BlockDc[ch][k].ShouldBe(o.BlockDc[ch][k], $"{cf} mb({r},{c}) BlockDc[{ch}][{k}]");
-                    for (var p = 0; p < d.Plane[ch].Length; p++)
-                        d.Plane[ch][p].ShouldBe(o.Plane[ch][p], $"{cf} mb({r},{c}) Plane[{ch}][{p}]");
-                    d.Cbp[ch].ShouldBe(e.Cbp[ch], $"{cf} mb({r},{c}) Cbp[{ch}]");
+                    SpanAssert.Same<int>(d.BlockDc[ch], o.BlockDc[ch].AsSpan(0, d.BlockDc[ch].Length), $"{cf} mb({r},{c}) BlockDc[{ch}]");
+                    SpanAssert.Same<int>(d.Plane[ch], o.Plane[ch].AsSpan(0, d.Plane[ch].Length), $"{cf} mb({r},{c}) Plane[{ch}]");
+                    if (d.Cbp[ch] != e.Cbp[ch]) d.Cbp[ch].ShouldBe(e.Cbp[ch], $"{cf} mb({r},{c}) Cbp[{ch}]");
                 }
             }
     }

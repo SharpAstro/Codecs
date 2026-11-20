@@ -234,7 +234,7 @@ public sealed class JpegRegionDecodeTests
         else
             JpegDecoder.DecodeRegionTo(jpeg, r, dest, scale).ShouldBe((r.Width, r.Height), label);
 
-        dest.AsSpan(length).ToArray().ShouldAllBe(b => b == 0xAB, $"{label} region {r}: wrote past the region");
+        dest.AsSpan(length).IndexOfAnyExcept((byte)0xAB).ShouldBe(-1, $"{label} region {r}: wrote past the region");
         ShouldBeCropOf(full, r, dest, label);
     }
 
