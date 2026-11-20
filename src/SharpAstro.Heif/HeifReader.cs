@@ -396,14 +396,7 @@ public sealed partial class HeifFile
     /// <exception cref="NotSupportedException">The item is protected, lives in another file, or is built from other items.</exception>
     public byte[] ReadItemData(ReadOnlySpan<byte> file, HeifItem item)
     {
-        var ranges = ItemRanges(file.Length, item);
-        long total = 0;
-        foreach (var (_, length) in ranges) total += length;
-        // Extents may overlap (14496-12 does not forbid it), so their sum is not bounded by the file; an item's
-        // data larger than the file holding it is a file repeating itself, refused before it is copied.
-        if (total > file.Length)
-            throw new InvalidDataException($"Item {item.Id}'s extents add up to {total} bytes, more than the {file.Length}-byte file holds.");
-
+        var (ranges, total) = CheckItemData(file.Length, item);
         var data = new byte[total];
         var at = 0;
         foreach (var (start, length) in ranges)
@@ -412,6 +405,22 @@ public sealed partial class HeifFile
             at += length;
         }
         return data;
+    }
+
+    /// <summary>
+    /// Every check <see cref="ReadItemData"/> makes before it copies: the item's ranges, each inside the file, and their
+    /// total. A fuzz test of a real file calls this rather than copying megabytes of tile data per trial.
+    /// </summary>
+    internal (List<(int Start, int Length)> Ranges, long Total) CheckItemData(int fileLength, HeifItem item)
+    {
+        var ranges = ItemRanges(fileLength, item);
+        long total = 0;
+        foreach (var (_, length) in ranges) total += length;
+        // Extents may overlap (14496-12 does not forbid it), so their sum is not bounded by the file; an item's
+        // data larger than the file holding it is a file repeating itself, refused before it is copied.
+        if (total > fileLength)
+            throw new InvalidDataException($"Item {item.Id}'s extents add up to {total} bytes, more than the {fileLength}-byte file holds.");
+        return (ranges, total);
     }
 
     /// <summary>The absolute file ranges holding <paramref name="item"/>'s bytes, checked to lie inside the file.</summary>
