@@ -24,6 +24,10 @@ internal sealed class Vp8LPrefixCode
     private readonly uint[] _codes;
     private readonly int[] _emitBits;
 
+    // The cheaper of the two normal-form headers, planned once: HeaderBits costs every code the encoder considers,
+    // and WriteHeader writes the few it keeps.
+    private NormalPlan? _normal;
+
     private Vp8LPrefixCode(int alphabetSize, int[] lengths, uint[] codes, int usedSymbols)
     {
         _alphabetSize = alphabetSize;
@@ -73,12 +77,35 @@ internal sealed class Vp8LPrefixCode
         return bits;
     }
 
-    /// <summary>The bits <see cref="WriteHeader"/> writes.</summary>
+    /// <summary>
+    /// The bits <see cref="WriteHeader"/> writes, counted without writing them: the simple form's fields, or the
+    /// normal form's plan cost, which counts the same fields <see cref="WriteNormal"/> writes. It used to write the
+    /// header into a scratch writer for every code the encoder costed (Codecs#92).
+    /// </summary>
     public long HeaderBits()
     {
-        var scratch = new Vp8LBitWriter(64);
-        WriteHeader(scratch);
-        return scratch.BitCount;
+        if (IsSimple)
+        {
+            var (first, second) = SimpleSymbols();
+            // simple_code_or_not, num_symbols - 1, is_first_8bits, the first symbol, the second.
+            return 3 + (first > 1 ? 8 : 1) + (second >= 0 ? 8 : 0);
+        }
+
+        return NormalHeader().Cost;
+    }
+
+    private bool IsSimple => _usedSymbols <= 2 && LastUsedSymbol() < 256;
+
+    private NormalPlan NormalHeader()
+    {
+        if (_normal is { } planned)
+        {
+            return planned;
+        }
+
+        NormalPlan full = Plan(_alphabetSize, useMaxSymbol: false);
+        NormalPlan trimmed = Plan(LastUsedSymbol() + 1, useMaxSymbol: true);
+        return _normal = trimmed.Cost < full.Cost ? trimmed : full;
     }
 
     /// <summary>Writes one occurrence of <paramref name="symbol"/>.</summary>
@@ -87,7 +114,7 @@ internal sealed class Vp8LPrefixCode
     /// <summary>Writes the code's description (RFC 9649 section 3.7.2.1).</summary>
     public void WriteHeader(Vp8LBitWriter writer)
     {
-        if (_usedSymbols <= 2 && LastUsedSymbol() < 256)
+        if (IsSimple)
         {
             WriteSimple(writer);
             return;
@@ -110,6 +137,21 @@ internal sealed class Vp8LPrefixCode
     }
 
     private void WriteSimple(Vp8LBitWriter writer)
+    {
+        var (first, second) = SimpleSymbols();
+        writer.WriteBits(1, 1); // simple_code_or_not
+        writer.WriteBits(second >= 0 ? 1u : 0u, 1); // num_symbols - 1
+        bool wide = first > 1;
+        writer.WriteBits(wide ? 1u : 0u, 1); // is_first_8bits
+        writer.WriteBits((uint)first, wide ? 8 : 1);
+        if (second >= 0)
+        {
+            writer.WriteBits((uint)second, 8);
+        }
+    }
+
+    /// <summary>The simple form's one or two symbols; the second is -1 for one.</summary>
+    private (int First, int Second) SimpleSymbols()
     {
         // An empty histogram (a code nothing uses, like the distance code here) is coded as the
         // one symbol 0, which costs no bits per use.
@@ -137,15 +179,7 @@ internal sealed class Vp8LPrefixCode
             first = 0;
         }
 
-        writer.WriteBits(1, 1); // simple_code_or_not
-        writer.WriteBits(second >= 0 ? 1u : 0u, 1); // num_symbols - 1
-        bool wide = first > 1;
-        writer.WriteBits(wide ? 1u : 0u, 1); // is_first_8bits
-        writer.WriteBits((uint)first, wide ? 8 : 1);
-        if (second >= 0)
-        {
-            writer.WriteBits((uint)second, 8);
-        }
+        return (first, second);
     }
 
     private readonly record struct Token(int Symbol, int Extra, int ExtraBits);
@@ -161,10 +195,7 @@ internal sealed class Vp8LPrefixCode
 
     private void WriteNormal(Vp8LBitWriter writer)
     {
-        int trimmedCount = LastUsedSymbol() + 1;
-        NormalPlan full = Plan(_alphabetSize, useMaxSymbol: false);
-        NormalPlan trimmed = Plan(trimmedCount, useMaxSymbol: true);
-        NormalPlan plan = trimmed.Cost < full.Cost ? trimmed : full;
+        NormalPlan plan = NormalHeader();
 
         writer.WriteBits(0, 1); // simple_code_or_not
         int stored = 4;
@@ -269,7 +300,7 @@ internal sealed class Vp8LPrefixCode
     // (11-138 zeros).
     private List<Token> Tokenize(int count)
     {
-        var tokens = new List<Token>();
+        var tokens = new List<Token>(count); // never more tokens than lengths
         int previous = 8;
         int i = 0;
         while (i < count)

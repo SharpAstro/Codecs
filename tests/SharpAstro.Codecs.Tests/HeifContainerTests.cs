@@ -408,7 +408,9 @@ public class HeifContainerTests
     /// the two documented exceptions: anything else (an index out of range, an overflow, an
     /// out-of-memory) is a reader bug, and callers' <c>Try</c> wrappers would let it escape.
     /// </summary>
-    private static void ReadEverything(byte[] file)
+    /// <param name="copyItemData">False runs every check <c>ReadItemData</c> makes and skips only its copy, for a
+    /// fuzz test of a real file whose tile data would otherwise be copied again on every trial.</param>
+    private static void ReadEverything(byte[] file, bool copyItemData = true)
     {
         try
         {
@@ -416,7 +418,9 @@ public class HeifContainerTests
             foreach (var item in heif.Items)
             {
                 if (item.Type is "hvc1" or "grid") heif.Describe(file, item);
-                if (item.Type is "Exif" or "mime" or "hvc1") heif.ReadItemData(file, item);
+                if (item.Type is not ("Exif" or "mime" or "hvc1")) continue;
+                if (copyItemData) heif.ReadItemData(file, item);
+                else heif.CheckItemData(file.Length, item);
             }
             heif.ThumbnailsOf(heif.PrimaryItem);
         }
@@ -452,11 +456,15 @@ public class HeifContainerTests
         var original = HeifCanonFileTests.Load("canon-r7-hdrpq.hif");
         var random = new Random(7);
         const int metaEnd = 2214; // ftyp (32) + meta (2182): the structure, not the 13 MB of tile data
+        // One working copy, its first metaEnd bytes put back before each trial: the flips land only there, so every
+        // trial reads the same bytes a fresh clone would. A clone a trial was 5000 copies of 13.6 MB on the large
+        // object heap, 85 GiB and 224 gen2 collections in all, which paused every other test running beside it (#92).
+        var file = (byte[])original.Clone();
         for (var trial = 0; trial < 5000; trial++)
         {
-            var file = (byte[])original.Clone();
+            original.AsSpan(0, metaEnd).CopyTo(file);
             for (var f = 0; f < random.Next(1, 4); f++) file[random.Next(metaEnd)] = (byte)random.Next(256);
-            ReadEverything(file);
+            ReadEverything(file, copyItemData: false);
         }
     }
 
