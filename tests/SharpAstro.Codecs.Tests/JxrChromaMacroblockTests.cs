@@ -88,11 +88,9 @@ public sealed class JxrChromaMacroblockTests
 
         for (var ch = 0; ch < 3; ch++)
         {
-            for (var k = 0; k < dst.BlockDc[ch].Length; k++)
-                dst.BlockDc[ch][k].ShouldBe(src.BlockDc[ch][k], $"BlockDc[{ch}][{k}] cf={cf}");
-            dst.Cbp[ch].ShouldBe(src.Cbp[ch], $"Cbp[{ch}] cf={cf}");
-            for (var p = 0; p < dst.Plane[ch].Length; p++)
-                dst.Plane[ch][p].ShouldBe(src.Plane[ch][p], $"Plane[{ch}][{p}] cf={cf}");
+            SpanAssert.Same<int>(dst.BlockDc[ch], src.BlockDc[ch].AsSpan(0, dst.BlockDc[ch].Length), $"BlockDc[{ch}] cf={cf}");
+            if (dst.Cbp[ch] != src.Cbp[ch]) dst.Cbp[ch].ShouldBe(src.Cbp[ch], $"Cbp[{ch}] cf={cf}");
+            SpanAssert.Same<int>(dst.Plane[ch], src.Plane[ch].AsSpan(0, dst.Plane[ch].Length), $"Plane[{ch}] cf={cf}");
         }
     }
 

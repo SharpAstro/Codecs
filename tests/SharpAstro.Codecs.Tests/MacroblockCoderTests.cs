@@ -79,11 +79,9 @@ public sealed class MacroblockCoderTests
 
         for (var ch = 0; ch < 3; ch++)
         {
-            for (var k = 0; k < 16; k++)
-                dst.BlockDc[ch][k].ShouldBe(src.BlockDc[ch][k], $"BlockDc[{ch}][{k}]");
-            dst.Cbp[ch].ShouldBe(src.Cbp[ch], $"Cbp[{ch}]");
-            for (var p = 0; p < MacroblockLayout.PlaneSize; p++)
-                dst.Plane[ch][p].ShouldBe(src.Plane[ch][p], $"Plane[{ch}][{p}]");
+            SpanAssert.Same<int>(dst.BlockDc[ch].AsSpan(0, 16), src.BlockDc[ch].AsSpan(0, 16), $"BlockDc[{ch}]");
+            if (dst.Cbp[ch] != src.Cbp[ch]) dst.Cbp[ch].ShouldBe(src.Cbp[ch], $"Cbp[{ch}]");
+            SpanAssert.Same<int>(dst.Plane[ch].AsSpan(0, MacroblockLayout.PlaneSize), src.Plane[ch].AsSpan(0, MacroblockLayout.PlaneSize), $"Plane[{ch}]");
         }
     }
 

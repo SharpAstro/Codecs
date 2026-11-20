@@ -27,12 +27,9 @@ public sealed class SignalTransformTests
         var b2 = new int[256];
         SignalTransform.Inverse(mb, r2, g2, b2, Lossless.Qp, Lossless.Qp);
 
-        for (var i = 0; i < 256; i++)
-        {
-            r2[i].ShouldBe(r[i], $"R[{i}]");
-            g2[i].ShouldBe(g[i], $"G[{i}]");
-            b2[i].ShouldBe(b[i], $"B[{i}]");
-        }
+        SpanAssert.Same<int>(r2, r, "R");
+        SpanAssert.Same<int>(g2, g, "G");
+        SpanAssert.Same<int>(b2, b, "B");
     }
 
     [Fact]
