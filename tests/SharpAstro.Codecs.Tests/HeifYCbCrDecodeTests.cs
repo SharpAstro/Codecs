@@ -39,7 +39,7 @@ public sealed class HeifYCbCrDecodeTests(ITestOutputHelper output)
                 planes.Cb.ShouldNotBeNull().Length.ShouldBe(planes.ChromaWidth * planes.ChromaHeight);
                 planes.ChromaWidth.ShouldBe((width + (1 << planes.ChromaShiftX) - 1) >> planes.ChromaShiftX);
             }
-            planes.ToRgb().Samples.ShouldBe(HeifDecoder.Decode(file).Samples, $"{fixture}, full range {fullRange}");
+            SpanAssert.Same<ushort>(planes.ToRgb().Samples, HeifDecoder.Decode(file).Samples, $"{fixture}, full range {fullRange}");
         }
     }
 
@@ -49,7 +49,7 @@ public sealed class HeifYCbCrDecodeTests(ITestOutputHelper output)
         // 3 x 2 tiles of 230x166 into 680x320: the last column and row clipped, every tile with a conformance window.
         var tile = HevcFixtureTests.Load("x265-420p8-window").Item;
         var file = HeifParallelDecodeTests.Grid(680, 320, Enumerable.Repeat(tile, 6).ToArray());
-        HeifDecoder.DecodeYCbCr(file).ToRgb().Samples.ShouldBe(HeifDecoder.Decode(file).Samples);
+        SpanAssert.Same<ushort>(HeifDecoder.DecodeYCbCr(file).ToRgb().Samples, HeifDecoder.Decode(file).Samples, "clipped grid");
     }
 
     [Fact]
@@ -61,7 +61,7 @@ public sealed class HeifYCbCrDecodeTests(ITestOutputHelper output)
             fixture: fixture, tileWidth: 256, tileHeight: 192);
         var planes = HeifDecoder.DecodeYCbCr(file);
         (planes.ChromaShiftX, planes.ChromaShiftY, planes.ChromaWidth, planes.ChromaHeight).ShouldBe((1, 0, 250, 384));
-        planes.ToRgb().Samples.ShouldBe(HeifDecoder.Decode(file).Samples);
+        SpanAssert.Same<ushort>(planes.ToRgb().Samples, HeifDecoder.Decode(file).Samples, "4:2:2 grid");
     }
 
     [Fact]
@@ -100,7 +100,7 @@ public sealed class HeifYCbCrDecodeTests(ITestOutputHelper output)
             output.WriteLine($"{item} {planes.Width}x{planes.Height}: planes {planesMs} ms, R'G'B' {watch.ElapsedMilliseconds} ms");
             planes.ChromaFormatIdc.ShouldBe(2);
             planes.ColorEncoding.ShouldBe(rgb.ColorEncoding);
-            planes.ToRgb().Samples.ShouldBe(rgb.Samples, item.ToString());
+            SpanAssert.Same<ushort>(planes.ToRgb().Samples, rgb.Samples, item.ToString());
         }
     }
 }
