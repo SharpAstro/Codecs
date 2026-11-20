@@ -14,6 +14,25 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.41
+
+**`SharpAstro.Heif`: the decoded Y'CbCr planes, for a consumer that converts elsewhere.** `HeifDecoder.DecodeYCbCr`
+returns a `HeifYCbCrImage`: an item's Y', Cb and Cr planes (a grid's tiles composed, each picture cropped to its declared
+size) and how `Decode` would convert them (`Kr`, `Kb`, identity, range, the R'G'B' `ColorEncoding`).
+`CodeToLinearTable` is the per-code table `ToLinearRgbaFloat` looks up (refused for HLG, whose OOTF mixes the
+channels), and `ToRgb` converts the planes on the CPU, equal to `Decode` sample for sample. An item with `clap`,
+`irot` or `imir` is refused, since those apply to R'G'B'. It is what lets a viewer do the colour stage in a shader
+(SdlVulkan.Renderer 7.107's `VkTexture.CreateDeferredFromYCbCr`): on a Canon R7 file the processor's part of the
+1620x1080 preview goes from 157 to 145 ms and 45 to 15 MiB, and the full 6960x4640 image from 862 to 307 MiB.
+`Decode` and `DecodeYCbCr` share one decode; a grid with no tile inside its output, or a tile item the file lacks,
+is now `InvalidDataException` rather than a null dereference.
+
+**`SharpAstro.Webp`: the lossless encoder allocates 30 times less (#93, #94, Codecs#92).** Costing every candidate
+built heap trees, token lists, canonical codes and per-tile codes that only writing needs, or nothing read: a 256x256
+encode at effort 9 went from 4.5 GiB to 152 MiB, 31x7 from 157 to 8.5 MiB. Output is byte-identical (300 encodes over
+five kinds of image, six sizes and every effort). Shipped in the 3.40 run numbers after #93 and #94; noted here as the
+first release line that carries them.
+
 ## 3.40
 
 **`SharpAstro.Svg` rung 6: blend modes and filters.** `mix-blend-mode`, `isolation` and `filter` are read into the scene:
