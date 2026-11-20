@@ -10,33 +10,17 @@ internal static class Vp8LHuffman
     /// <summary>RFC 9649 section 3.7.2.1: a prefix code length is at most 15 bits.</summary>
     public const int MaxCodeLength = 15;
 
-    private sealed class Node
-    {
-        public readonly long Weight;
-        public readonly int Symbol;
-        public readonly Node? Left;
-        public readonly Node? Right;
-
-        public Node(long weight, int symbol)
-        {
-            Weight = weight;
-            Symbol = symbol;
-        }
-
-        public Node(Node left, Node right)
-        {
-            Weight = left.Weight + right.Weight;
-            Symbol = -1;
-            Left = left;
-            Right = right;
-        }
-    }
-
     /// <summary>
     /// Fills <paramref name="lengths"/> with an optimal prefix code length per symbol, none longer
     /// than <paramref name="maxLength"/>. Unused symbols get 0. A single used symbol gets length 1;
     /// the caller decides whether that is written as a zero-bit code.
     /// </summary>
+    /// <remarks>
+    /// The items of package-merge live in pooled arrays and point at each other by index: an encode costs every
+    /// candidate exactly, which builds this code many times over, and a heap object per item and a list per level
+    /// was 81% of what an encode allocated (157 MiB for a 31x7 image at effort 9, Codecs#92). The algorithm,
+    /// its order and its tie-breaks are the ones it always had, so the lengths are the same.
+    /// </remarks>
     public static void BuildLengths(ReadOnlySpan<int> histogram, int maxLength, Span<int> lengths)
     {
         if (lengths.Length < histogram.Length)
@@ -45,16 +29,16 @@ internal static class Vp8LHuffman
         }
 
         lengths[..histogram.Length].Clear();
-        var leaves = new List<Node>();
-        for (int i = 0; i < histogram.Length; i++)
+        int n = 0;
+        int only = -1;
+        foreach (int count in histogram)
         {
-            if (histogram[i] > 0)
+            if (count > 0)
             {
-                leaves.Add(new Node(histogram[i], i));
+                n++;
             }
         }
 
-        int n = leaves.Count;
         if (n == 0)
         {
             return;
@@ -62,7 +46,15 @@ internal static class Vp8LHuffman
 
         if (n == 1)
         {
-            lengths[leaves[0].Symbol] = 1;
+            for (int i = 0; i < histogram.Length; i++)
+            {
+                if (histogram[i] > 0)
+                {
+                    only = i;
+                }
+            }
+
+            lengths[only] = 1;
             return;
         }
 
@@ -71,54 +63,113 @@ internal static class Vp8LHuffman
             throw new ArgumentException($"{n} symbols cannot be coded in {maxLength} bits.");
         }
 
-        leaves.Sort(static (a, b) => a.Weight != b.Weight ? a.Weight.CompareTo(b.Weight) : a.Symbol.CompareTo(b.Symbol));
-
-        // Package-merge: level 1 is the leaves; each further level merges the leaves with the
-        // pairwise packages of the level before. The cheapest 2n-2 items of the last level are
-        // the code, and a symbol's length is the number of selected items that contain it.
-        List<Node> current = leaves;
-        for (int level = 1; level < maxLength; level++)
+        // Every level adds at most n - 1 packages to the n leaves, so maxLength levels hold at most maxLength * n items.
+        int capacity = maxLength * n;
+        long[] weight = WebpBufferPool<long>.Rent(capacity);
+        int[] symbol = WebpBufferPool<int>.Rent(capacity);
+        int[] left = WebpBufferPool<int>.Rent(capacity);
+        int[] right = WebpBufferPool<int>.Rent(capacity);
+        int[] current = WebpBufferPool<int>.Rent(2 * n);
+        int[] merged = WebpBufferPool<int>.Rent(2 * n);
+        int[] packages = WebpBufferPool<int>.Rent(n);
+        try
         {
-            var packages = new List<Node>(current.Count / 2);
-            for (int i = 0; i + 1 < current.Count; i += 2)
+            // The leaves, ordered by weight and then symbol: as one key each, since a count fits 31 bits.
+            long[] keys = WebpBufferPool<long>.Rent(n);
+            try
             {
-                packages.Add(new Node(current[i], current[i + 1]));
+                int k = 0;
+                for (int i = 0; i < histogram.Length; i++)
+                {
+                    if (histogram[i] > 0)
+                    {
+                        keys[k++] = ((long)histogram[i] << 32) | (uint)i;
+                    }
+                }
+
+                keys.AsSpan(0, n).Sort();
+                for (int i = 0; i < n; i++)
+                {
+                    weight[i] = keys[i] >> 32;
+                    symbol[i] = (int)(keys[i] & 0xFFFFFFFF);
+                    left[i] = -1;
+                    current[i] = i;
+                }
+            }
+            finally
+            {
+                WebpBufferPool<long>.Return(keys);
             }
 
-            var merged = new List<Node>(leaves.Count + packages.Count);
-            int a = 0;
-            int b = 0;
-            while (a < leaves.Count || b < packages.Count)
+            // Package-merge: level 1 is the leaves; each further level merges the leaves with the
+            // pairwise packages of the level before. The cheapest 2n-2 items of the last level are
+            // the code, and a symbol's length is the number of selected items that contain it.
+            int items = n;
+            int currentCount = n;
+            for (int level = 1; level < maxLength; level++)
             {
-                if (b >= packages.Count || (a < leaves.Count && leaves[a].Weight <= packages[b].Weight))
+                int packageCount = 0;
+                for (int i = 0; i + 1 < currentCount; i += 2)
                 {
-                    merged.Add(leaves[a++]);
+                    int a = current[i];
+                    int b = current[i + 1];
+                    weight[items] = weight[a] + weight[b];
+                    symbol[items] = -1;
+                    left[items] = a;
+                    right[items] = b;
+                    packages[packageCount++] = items++;
                 }
-                else
+
+                int count = 0;
+                int leaf = 0;
+                int package = 0;
+                while (leaf < n || package < packageCount)
                 {
-                    merged.Add(packages[b++]);
+                    if (package >= packageCount || (leaf < n && weight[leaf] <= weight[packages[package]]))
+                    {
+                        merged[count++] = leaf++;
+                    }
+                    else
+                    {
+                        merged[count++] = packages[package++];
+                    }
                 }
+
+                (current, merged) = (merged, current);
+                currentCount = count;
             }
 
-            current = merged;
-        }
+            // Each selected item adds one to every leaf under it. An item of level L is L - 1 deep, so the walk's stack
+            // holds at most maxLength pending items.
+            Span<int> stack = maxLength <= 64 ? stackalloc int[maxLength + 1] : new int[maxLength + 1];
+            for (int i = 0; i < 2 * n - 2; i++)
+            {
+                int depth = 0;
+                stack[depth++] = current[i];
+                while (depth > 0)
+                {
+                    int item = stack[--depth];
+                    if (left[item] < 0)
+                    {
+                        lengths[symbol[item]]++;
+                        continue;
+                    }
 
-        for (int i = 0; i < 2 * n - 2; i++)
+                    stack[depth++] = right[item];
+                    stack[depth++] = left[item];
+                }
+            }
+        }
+        finally
         {
-            Accumulate(current[i], lengths);
+            WebpBufferPool<long>.Return(weight);
+            WebpBufferPool<int>.Return(symbol);
+            WebpBufferPool<int>.Return(left);
+            WebpBufferPool<int>.Return(right);
+            WebpBufferPool<int>.Return(current);
+            WebpBufferPool<int>.Return(merged);
+            WebpBufferPool<int>.Return(packages);
         }
-    }
-
-    private static void Accumulate(Node node, Span<int> lengths)
-    {
-        if (node.Left is null)
-        {
-            lengths[node.Symbol]++;
-            return;
-        }
-
-        Accumulate(node.Left, lengths);
-        Accumulate(node.Right!, lengths);
     }
 
     /// <summary>
