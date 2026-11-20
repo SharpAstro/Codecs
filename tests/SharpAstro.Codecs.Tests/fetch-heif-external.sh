@@ -79,7 +79,6 @@ FILES=(
     "xiaomi-android.heic|https://raw.githubusercontent.com/bigcat88/pillow_heif/558ee2bfbe85a64b4371bcc1bc067883c5f9573d/tests/images/heif_special/xiaomi.heic|cb5c7d9131931df4abd9bfe1c3de47617b68d1fae54a1c367fc5981ffea6aeed"
 )
 
-status=0
 for entry in "${FILES[@]}"; do
     IFS='|' read -r name url sha <<< "$entry"
     target="$OUT/$name"
@@ -110,4 +109,4 @@ for entry in "${FILES[@]}"; do
     fi
     echo "[heif external] $name ok"
 done
-exit "$status"
+exit 0

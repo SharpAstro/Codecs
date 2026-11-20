@@ -143,6 +143,9 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
             builder.AddItem(new HeifBuilder.Item(TmapId, "tmap", options.TmapBytes ?? TmapData(metadata ?? Scalar())));
             builder.Reference("dimg", TmapId, options.Dimg ?? [BaseId, MapId]);
             var (bw, bh) = baseSpec.DeclaredSize ?? (baseSpec.Grid ? (Displayed(baseSpec.Fixture).W * 3, Displayed(baseSpec.Fixture).H * 2) : Displayed(baseSpec.Fixture));
+            // A derived image is as wide and high as its base is DISPLAYED, so a base turned a quarter or three
+            // quarters gives the tmap the swapped size, as a real file carries it. The reader does not use it.
+            if (options.BaseIrot is { Length: > 0 } turned && (turned[0] & 1) == 1) (bw, bh) = (bh, bw);
             builder.Associate(TmapId, "ispe", HeifBuilder.Ispe(bw, bh));
             if (options.TmapIrot is not null) builder.Associate(TmapId, "irot", options.TmapIrot, essential: true);
             foreach (var (type, body) in options.TmapProperties) builder.Associate(TmapId, type, body, essential: type != "imir");

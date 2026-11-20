@@ -114,7 +114,9 @@ public class HeifPhoneFileTests(ITestOutputHelper output)
     /// Size and depth against libheif. libheif applies <c>irot</c>, which this reader reports separately, so the
     /// Samsung 200 MP file (rotated 270) comes back from Magick with its sides swapped. The file is only pinged, so
     /// libheif reads the primary's handle (size, bit depth) and decodes no pixels: a full read of the 200 MP file
-    /// would hold about 800 MB of libheif's planes and its RGBA just to be asked for two numbers.
+    /// would hold about 800 MB of libheif's planes and its RGBA, and Magick's own pixel cache on top of that, which
+    /// is the larger part (about 2.4 GB at Q16-HDRI, the figure the first review of this test gave), just to be
+    /// asked for two numbers.
     /// </summary>
     [Theory]
     [MemberData(nameof(Names))]

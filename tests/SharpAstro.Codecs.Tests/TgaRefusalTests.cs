@@ -85,6 +85,9 @@ public sealed class TgaRefusalTests
     public void FooterBytes_AreNotPixelData_WhenAnRleImageIsComplete()
     {
         // A whole RLE image followed by a footer decodes exactly as it does without one.
+        // It passes with or without the trim in TgaReader, because a complete RLE image reads its packets from the
+        // front: what it guards is that a footer does not break a whole image. The two short-image tests above carry
+        // the proof of the trim. Run with the trim taken out (2026-11-20, Codecs #77): those two fail, this one passes.
         byte[] pixels = Run(4, 1, 2, 3);
         TgaReader.Decode(Build(10, 2, 2, 24, 0x20, [.. pixels, .. Footer26])).Rgba
             .ShouldBe(TgaReader.Decode(Build(10, 2, 2, 24, 0x20, pixels)).Rgba);
