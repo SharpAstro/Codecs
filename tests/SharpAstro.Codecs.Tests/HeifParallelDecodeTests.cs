@@ -203,7 +203,7 @@ public sealed class HeifParallelDecodeTests
 
     private static byte[] Tile() => HevcFixtureTests.Load(Fixture).Item;
 
-    private static byte[] Grid(uint width, uint height, byte[][] tiles, int columns = 3, int rows = 2, byte[]? nclx = null,
+    internal static byte[] Grid(uint width, uint height, byte[][] tiles, int columns = 3, int rows = 2, byte[]? nclx = null,
         string fixture = Fixture, uint tileWidth = 230, uint tileHeight = 166)
     {
         var (configuration, _) = HevcFixtureTests.Load(fixture);

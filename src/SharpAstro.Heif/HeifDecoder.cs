@@ -143,111 +143,9 @@ public static class HeifDecoder
     /// </param>
     public static HeifRgbImage Decode(ReadOnlySpan<byte> file, HeifItem? item = null, int maxDegreeOfParallelism = -1)
     {
-        if (maxDegreeOfParallelism is 0 or < -1)
-            throw new ArgumentOutOfRangeException(nameof(maxDegreeOfParallelism), maxDegreeOfParallelism, "Use -1 for no limit, or a positive count.");
-        var heif = HeifReader.Read(file);
-        var image = item is null ? heif.DescribePrimary(file) : heif.Describe(file, item);
-        if (image.Item.Type == "grid")
-        {
-            foreach (var tileId in image.Grid!.TileItemIds)
-                RefuseUnknownEssentials(heif.GetItem(tileId)!);
-        }
-        RefuseUnknownEssentials(image.Item);
-
-        var width = (int)image.Width;
-        var height = (int)image.Height;
-        var depth = image.Coding.BitDepthLuma;
-        Colour? colour = null;
-        ushort[] canvas;
-
-        if (image.Grid is { } grid)
-        {
-            var tileWidth = (int)image.TileWidth;
-            var tileHeight = (int)image.TileHeight;
-            // Everything that needs the file's bytes, and every refusal a tile's parameter sets carry, before
-            // any tile is decoded and before the canvas is allocated: a span cannot cross into the workers, an
-            // unsupported tile 19 should not cost the decode of tiles 0 to 18, and a tile whose SPS does not fit
-            // what the file declares should not cost the canvas.
-            // The file is copied once and each tile gets its bytes as a slice of that copy; only a tile split
-            // over several extents is concatenated, and those copies together may not exceed the file.
-            var shared = file.ToArray();
-            long concatenated = 0;
-            var jobs = new List<(HevcDecoderConfiguration Coding, ReadOnlyMemory<byte> Data, int X0, int Y0)>();
-            long largestPicture = 0;
-            // The grid's whole coded canvas may be at most four times its output (plus a CTB): a legal grid's
-            // last row and column may overhang the output by anything short of a tile, which on an axis of two
-            // or more tiles stays under twice, while a few-pixel output over huge tiles is still refused.
-            long codedArea = 0;
-            for (var t = 0; t < grid.TileItemIds.Count; t++)
-            {
-                int x0 = t % grid.Columns * tileWidth, y0 = t / grid.Columns * tileHeight;
-                if (x0 >= width || y0 >= height) continue; // a tile wholly outside the output size
-                var tile = heif.GetItem(grid.TileItemIds[t])!;
-                var coding = heif.Describe(file, tile).Coding;
-                var (sps, _) = HevcDecoder.ParameterSets(coding);
-                CheckCodedSize(sps, tileWidth, tileHeight, $"Tile {t}");
-                codedArea += (long)sps.Width * sps.Height;
-                if (codedArea > 4 * (long)width * height + 64 * 64)
-                    throw new InvalidDataException($"The grid's HEVC pictures add up to more than four times its {width}x{height} output.");
-                largestPicture = Math.Max(largestPicture, PictureBytes(sps));
-                colour ??= Colour.For(image, sps.VideoSignal, sps.BitDepthLuma, sps.ChromaFormatIdc);
-                var ranges = heif.ItemRanges(file.Length, tile);
-                ReadOnlyMemory<byte> data;
-                if (ranges.Count == 1)
-                {
-                    data = shared.AsMemory(ranges[0].Start, ranges[0].Length);
-                }
-                else
-                {
-                    var bytes = heif.ReadItemData(file, tile);
-                    concatenated += bytes.Length;
-                    if (concatenated > file.Length)
-                        throw new InvalidDataException($"The grid's tiles split over several extents add up to more than the {file.Length}-byte file.");
-                    data = bytes;
-                }
-                jobs.Add((coding, data, x0, y0));
-            }
-            canvas = new ushort[(long)width * height * 3];
-
-            // As many tiles at once as the machine runs (or the caller allows), but no more decoded pictures
-            // alive at once than LivePictureBytes holds: memory is the canvas plus that, not one picture per core.
-            var degree = maxDegreeOfParallelism == -1 ? Environment.ProcessorCount : maxDegreeOfParallelism;
-            degree = (int)Math.Clamp(LivePictureBytes / Math.Max(1, largestPicture), 1, degree);
-
-            // The tiles are independent pictures and write disjoint rectangles of the canvas, so they are decoded
-            // and converted in parallel; the result does not depend on the order. A failure stops the tiles after
-            // it (Break runs every one before it), and the first failing tile's exception is the one thrown, so a
-            // damaged file fails the same way however the work was scheduled.
-            var failures = new Exception?[jobs.Count];
-            var parallelism = new ParallelOptions { MaxDegreeOfParallelism = degree };
-            Parallel.For(0, jobs.Count, parallelism, (j, state) =>
-            {
-                var job = jobs[j];
-                try
-                {
-                    var picture = HevcDecoder.Decode(job.Coding, job.Data.Span);
-                    Convert(picture, colour!, tileWidth, tileHeight, canvas, width, height, job.X0, job.Y0);
-                }
-                catch (Exception e)
-                {
-                    failures[j] = e;
-                    state.Break();
-                }
-            });
-            if (failures.FirstOrDefault(e => e is not null) is { } failure)
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
-        }
-        else
-        {
-            var (sps, _) = HevcDecoder.ParameterSets(image.Coding);
-            CheckCodedSize(sps, width, height, image.Item.ToString());
-            if ((long)sps.Width * sps.Height > 2 * (long)width * height + 64 * 64)
-                throw new InvalidDataException($"{image.Item}'s HEVC picture of {sps.Width}x{sps.Height} is more than twice its {width}x{height}.");
-            canvas = new ushort[(long)width * height * 3];
-            var picture = HevcDecoder.Decode(image.Coding, heif.ReadItemData(file, image.Item));
-            colour = Colour.For(image, picture);
-            Convert(picture, colour, width, height, canvas, width, height, 0, 0);
-        }
+        var sink = new RgbCanvas();
+        var (image, colour) = DecodeInto(file, item, maxDegreeOfParallelism, sink);
+        var (canvas, width, height) = (sink.Canvas, sink.Width, sink.Height);
 
         // Transformative properties, in the order the item lists them. 23008-12 requires clap, irot, imir in
         // that order, and for a conforming file this is that order; a file that lists them otherwise gets what
@@ -273,8 +171,256 @@ public static class HeifDecoder
             }
         }
 
-        return new HeifRgbImage(width, height, depth, canvas, colour!.Encoding, image.Icc?.Profile);
+        return new HeifRgbImage(width, height, image.Coding.BitDepthLuma, canvas, colour.Encoding, image.Icc?.Profile);
     }
+
+    /// <summary>
+    /// Decodes <paramref name="item"/> (the primary item when null) to its Y'CbCr planes, a grid's tiles composed
+    /// and each picture cropped to the size the file declares, with no colour conversion: for a consumer that
+    /// converts elsewhere (a GPU shader, say) and wants neither the R'G'B' canvas nor the time it takes.
+    /// <see cref="HeifYCbCrImage.ToRgb"/> converts the planes exactly as <see cref="Decode"/> does.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The file or its HEVC data is malformed.</exception>
+    /// <exception cref="NotSupportedException">
+    /// The image uses something this decoder does not handle, or carries a transformative property
+    /// (<c>clap</c>, <c>irot</c>, <c>imir</c>): those are applied to the R'G'B' result, so such an image goes
+    /// through <see cref="Decode"/>.
+    /// </exception>
+    /// <param name="file">The whole HEIF file.</param>
+    /// <param name="item">The image item to decode; the primary item when null.</param>
+    /// <param name="maxDegreeOfParallelism">As for <see cref="Decode"/>.</param>
+    public static HeifYCbCrImage DecodeYCbCr(ReadOnlySpan<byte> file, HeifItem? item = null, int maxDegreeOfParallelism = -1)
+    {
+        var heif = HeifReader.Read(file);
+        var target = item ?? heif.PrimaryItem;
+        foreach (var association in target.Properties)
+        {
+            if (association.Property is HeifCleanAperture or HeifRotation { Degrees: not 0 } or HeifMirror)
+                throw new NotSupportedException($"{target} carries a transformative '{association.Property.Type}' property, which is applied to R'G'B'; decode it with HeifDecoder.Decode.");
+        }
+        var sink = new YCbCrPlanes();
+        var (image, colour) = DecodeInto(file, item, maxDegreeOfParallelism, sink);
+        return new HeifYCbCrImage(sink.Width, sink.Height, colour, sink.Luma, sink.Cb, sink.Cr, sink.ChromaWidth, sink.ChromaHeight,
+            image.Icc?.Profile);
+    }
+
+    /// <summary>
+    /// The decode both <see cref="Decode"/> and <see cref="DecodeYCbCr"/> share: every check, then each coded picture
+    /// handed to <paramref name="sink"/> (a grid's tiles in parallel), which owns what the pictures become.
+    /// </summary>
+    private static (HeifImage Image, Colour Colour) DecodeInto(ReadOnlySpan<byte> file, HeifItem? item, int maxDegreeOfParallelism,
+        IPictureSink sink)
+    {
+        if (maxDegreeOfParallelism is 0 or < -1)
+            throw new ArgumentOutOfRangeException(nameof(maxDegreeOfParallelism), maxDegreeOfParallelism, "Use -1 for no limit, or a positive count.");
+        var heif = HeifReader.Read(file);
+        var image = item is null ? heif.DescribePrimary(file) : heif.Describe(file, item);
+        if (image.Item.Type == "grid" && image.Grid is { } described)
+        {
+            foreach (var tileId in described.TileItemIds)
+                RefuseUnknownEssentials(TileItem(heif, tileId));
+        }
+        RefuseUnknownEssentials(image.Item);
+
+        var width = (int)image.Width;
+        var height = (int)image.Height;
+        Colour colour;
+
+        if (image.Grid is { } grid)
+        {
+            var tileWidth = (int)image.TileWidth;
+            var tileHeight = (int)image.TileHeight;
+            // Everything that needs the file's bytes, and every refusal a tile's parameter sets carry, before
+            // any tile is decoded and before the canvas is allocated: a span cannot cross into the workers, an
+            // unsupported tile 19 should not cost the decode of tiles 0 to 18, and a tile whose SPS does not fit
+            // what the file declares should not cost the canvas.
+            // The file is copied once and each tile gets its bytes as a slice of that copy; only a tile split
+            // over several extents is concatenated, and those copies together may not exceed the file.
+            var shared = file.ToArray();
+            long concatenated = 0;
+            var jobs = new List<(HevcDecoderConfiguration Coding, ReadOnlyMemory<byte> Data, int X0, int Y0)>();
+            long largestPicture = 0;
+            // The grid's whole coded canvas may be at most four times its output (plus a CTB): a legal grid's
+            // last row and column may overhang the output by anything short of a tile, which on an axis of two
+            // or more tiles stays under twice, while a few-pixel output over huge tiles is still refused.
+            long codedArea = 0;
+            Colour? tileColour = null;
+            for (var t = 0; t < grid.TileItemIds.Count; t++)
+            {
+                int x0 = t % grid.Columns * tileWidth, y0 = t / grid.Columns * tileHeight;
+                if (x0 >= width || y0 >= height) continue; // a tile wholly outside the output size
+                var tile = TileItem(heif, grid.TileItemIds[t]);
+                var coding = heif.Describe(file, tile).Coding;
+                var (sps, _) = HevcDecoder.ParameterSets(coding);
+                CheckCodedSize(sps, tileWidth, tileHeight, $"Tile {t}");
+                codedArea += (long)sps.Width * sps.Height;
+                if (codedArea > 4 * (long)width * height + 64 * 64)
+                    throw new InvalidDataException($"The grid's HEVC pictures add up to more than four times its {width}x{height} output.");
+                largestPicture = Math.Max(largestPicture, PictureBytes(sps));
+                tileColour ??= Colour.For(image, sps.VideoSignal, sps.BitDepthLuma, sps.ChromaFormatIdc);
+                var ranges = heif.ItemRanges(file.Length, tile);
+                ReadOnlyMemory<byte> data;
+                if (ranges.Count == 1)
+                {
+                    data = shared.AsMemory(ranges[0].Start, ranges[0].Length);
+                }
+                else
+                {
+                    var bytes = heif.ReadItemData(file, tile);
+                    concatenated += bytes.Length;
+                    if (concatenated > file.Length)
+                        throw new InvalidDataException($"The grid's tiles split over several extents add up to more than the {file.Length}-byte file.");
+                    data = bytes;
+                }
+                jobs.Add((coding, data, x0, y0));
+            }
+            colour = tileColour ?? throw new InvalidDataException("No tile of the grid lies inside its output.");
+            sink.Allocate(width, height, colour);
+
+            // As many tiles at once as the machine runs (or the caller allows), but no more decoded pictures
+            // alive at once than LivePictureBytes holds: memory is the canvas plus that, not one picture per core.
+            var degree = maxDegreeOfParallelism == -1 ? Environment.ProcessorCount : maxDegreeOfParallelism;
+            degree = (int)Math.Clamp(LivePictureBytes / Math.Max(1, largestPicture), 1, degree);
+
+            // The tiles are independent pictures and write disjoint rectangles of the canvas, so they are decoded
+            // and converted in parallel; the result does not depend on the order. A failure stops the tiles after
+            // it (Break runs every one before it), and the first failing tile's exception is the one thrown, so a
+            // damaged file fails the same way however the work was scheduled.
+            var failures = new Exception?[jobs.Count];
+            var parallelism = new ParallelOptions { MaxDegreeOfParallelism = degree };
+            Parallel.For(0, jobs.Count, parallelism, (j, state) =>
+            {
+                var job = jobs[j];
+                try
+                {
+                    var picture = HevcDecoder.Decode(job.Coding, job.Data.Span);
+                    sink.Place(picture, colour, tileWidth, tileHeight, job.X0, job.Y0);
+                }
+                catch (Exception e)
+                {
+                    failures[j] = e;
+                    state.Break();
+                }
+            });
+            if (failures.FirstOrDefault(e => e is not null) is { } failure)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
+        }
+        else
+        {
+            var (sps, _) = HevcDecoder.ParameterSets(image.Coding);
+            CheckCodedSize(sps, width, height, image.Item.ToString());
+            if ((long)sps.Width * sps.Height > 2 * (long)width * height + 64 * 64)
+                throw new InvalidDataException($"{image.Item}'s HEVC picture of {sps.Width}x{sps.Height} is more than twice its {width}x{height}.");
+            // The picture's colour is what its SPS says, so it is known before the decode, as a grid's is.
+            colour = Colour.For(image, sps.VideoSignal, sps.BitDepthLuma, sps.ChromaFormatIdc);
+            sink.Allocate(width, height, colour);
+            var picture = HevcDecoder.Decode(image.Coding, heif.ReadItemData(file, image.Item));
+            sink.Place(picture, colour, width, height, 0, 0);
+        }
+
+        return (image, colour);
+    }
+
+    private static HeifItem TileItem(HeifFile heif, uint id) =>
+        heif.GetItem(id) ?? throw new InvalidDataException($"The grid names item {id}, which the file does not have.");
+
+    /// <summary>
+    /// Where <see cref="DecodeInto"/> puts the pictures. <see cref="Place"/> runs on several threads at once for a
+    /// grid, each call writing its own rectangle of the output.
+    /// </summary>
+    private interface IPictureSink
+    {
+        void Allocate(int width, int height, Colour colour);
+        void Place(HevcPicture picture, Colour colour, int usedWidth, int usedHeight, int x0, int y0);
+    }
+
+    /// <summary>The interleaved R'G'B' canvas <see cref="Decode"/> returns.</summary>
+    private sealed class RgbCanvas : IPictureSink
+    {
+        public ushort[] Canvas { get; private set; } = [];
+        public int Width { get; private set; }
+        public int Height { get; private set; }
+
+        public void Allocate(int width, int height, Colour colour)
+        {
+            (Width, Height) = (width, height);
+            Canvas = new ushort[(long)width * height * 3];
+        }
+
+        public void Place(HevcPicture picture, Colour colour, int usedWidth, int usedHeight, int x0, int y0) =>
+            Convert(picture, colour, usedWidth, usedHeight, Canvas, Width, Height, x0, y0);
+    }
+
+    /// <summary>The three planes <see cref="DecodeYCbCr"/> returns, each picture copied in as coded.</summary>
+    private sealed class YCbCrPlanes : IPictureSink
+    {
+        public ushort[] Luma { get; private set; } = [];
+        public ushort[]? Cb { get; private set; }
+        public ushort[]? Cr { get; private set; }
+        public int Width { get; private set; }
+        public int Height { get; private set; }
+        public int ChromaWidth { get; private set; }
+        public int ChromaHeight { get; private set; }
+        private int _log2W, _log2H;
+
+        public void Allocate(int width, int height, Colour colour)
+        {
+            (Width, Height) = (width, height);
+            Luma = new ushort[(long)width * height];
+            if (colour.ChromaFormatIdc == 0) return;
+            (_log2W, _log2H) = Subsampling(colour.ChromaFormatIdc);
+            ChromaWidth = (width + (1 << _log2W) - 1) >> _log2W;
+            ChromaHeight = (height + (1 << _log2H) - 1) >> _log2H;
+            Cb = new ushort[(long)ChromaWidth * ChromaHeight];
+            Cr = new ushort[(long)ChromaWidth * ChromaHeight];
+        }
+
+        public void Place(HevcPicture picture, Colour colour, int usedWidth, int usedHeight, int x0, int y0)
+        {
+            var window = picture.ConformanceWindow;
+            var codedWidth = picture.Width - window.Left - window.Right;
+            var codedHeight = picture.Height - window.Top - window.Bottom;
+            if (usedWidth > codedWidth || usedHeight > codedHeight)
+                throw new InvalidDataException($"The image declares {usedWidth}x{usedHeight}, but its HEVC picture is {codedWidth}x{codedHeight}.");
+            if (picture.BitDepthLuma != colour.BitDepth)
+                throw new InvalidDataException("A grid's tiles are coded at different bit depths.");
+            if (picture.ChromaFormatIdc != colour.ChromaFormatIdc)
+                throw new InvalidDataException("A grid's tiles are coded with different chroma formats.");
+
+            var w = Math.Min(usedWidth, Width - x0);
+            var h = Math.Min(usedHeight, Height - y0);
+            for (var y = 0; y < h; y++)
+            {
+                picture.Luma.AsSpan((y + window.Top) * picture.Width + window.Left, w)
+                    .CopyTo(Luma.AsSpan((int)((long)(y0 + y) * Width + x0), w));
+            }
+            if (Cb is not { } cbPlane || Cr is not { } crPlane) return;
+            if (picture.Cb is not { } pictureCb || picture.Cr is not { } pictureCr)
+                throw new InvalidDataException("A picture with chroma planes decoded without them.");
+
+            // A tile placed between two chroma samples would need its chroma resampled, which planes as coded
+            // cannot carry. Real grids use tiles of even size; anything else goes through Decode.
+            if ((x0 & ((1 << _log2W) - 1)) != 0 || (y0 & ((1 << _log2H) - 1)) != 0)
+                throw new NotSupportedException($"A tile at ({x0}, {y0}) does not start on a chroma sample.");
+            int cx0 = x0 >> _log2W, cy0 = y0 >> _log2H;
+            // The conformance window is counted in chroma samples times the subsampling (H.265 7.4.3.2.1), so it
+            // always starts on a chroma sample.
+            int left = window.Left >> _log2W, top = window.Top >> _log2H;
+            var cw = Math.Min((w + (1 << _log2W) - 1) >> _log2W, ChromaWidth - cx0);
+            var ch = Math.Min((h + (1 << _log2H) - 1) >> _log2H, ChromaHeight - cy0);
+            for (var y = 0; y < ch; y++)
+            {
+                var source = (top + y) * picture.ChromaWidth + left;
+                var target = (int)((long)(cy0 + y) * ChromaWidth + cx0);
+                pictureCb.AsSpan(source, cw).CopyTo(cbPlane.AsSpan(target, cw));
+                pictureCr.AsSpan(source, cw).CopyTo(crPlane.AsSpan(target, cw));
+            }
+        }
+    }
+
+    /// <summary>log2 of the chroma subsampling, horizontal then vertical, for H.265's chroma_format_idc.</summary>
+    internal static (int Log2Width, int Log2Height) Subsampling(int chromaFormatIdc) =>
+        chromaFormatIdc switch { 1 => (1, 1), 2 => (1, 0), _ => (0, 0) };
 
     /// <summary>
     /// The most decoded tile pictures (their planes and per-block maps, <see cref="PictureBytes"/>) a grid
@@ -336,11 +482,11 @@ public static class HeifDecoder
         if (picture.BitDepthLuma != colour.BitDepth)
             throw new InvalidDataException("A grid's tiles are coded at different bit depths.");
 
-        var (log2W, log2H) = picture.ChromaFormatIdc switch { 1 => (1, 1), 2 => (1, 0), _ => (0, 0) };
+        var (log2W, log2H) = Subsampling(picture.ChromaFormatIdc);
         var w = Math.Min(usedWidth, canvasWidth - x0);
         var h = Math.Min(usedHeight, canvasHeight - y0);
         var max = (1 << colour.BitDepth) - 1;
-        if (picture.Cb is null)
+        if (picture.Cb is not { } cbPlane || picture.Cr is not { } crPlane)
         {
             // Monochrome (4:0:0): chroma at its mid-point, so every matrix gives R' = G' = B' = Y' expanded.
             var mid = (ushort)(1 << (colour.BitDepth - 1));
@@ -362,7 +508,7 @@ public static class HeifDecoder
             for (var x = 0; x < w; x++)
             {
                 var cx = (x + window.Left) >> log2W;
-                colour.ToRgb(picture.Luma[lumaRow + x], picture.Cb![chromaRow + cx], picture.Cr![chromaRow + cx], max,
+                colour.ToRgb(picture.Luma[lumaRow + x], cbPlane[chromaRow + cx], crPlane[chromaRow + cx], max,
                     out canvas[output], out canvas[output + 1], out canvas[output + 2]);
                 output += 3;
             }
@@ -373,6 +519,7 @@ public static class HeifDecoder
     internal sealed class Colour
     {
         public required int BitDepth { get; init; }
+        public required int ChromaFormatIdc { get; init; }
         public required ColorEncoding Encoding { get; init; }
         public required bool Identity { get; init; }
         public required bool FullRange { get; init; }
@@ -433,6 +580,7 @@ public static class HeifDecoder
             return new Colour
             {
                 BitDepth = bitDepth,
+                ChromaFormatIdc = chromaFormatIdc,
                 Encoding = new ColorEncoding { Primaries = primaries, Transfer = transfer, FullRange = true },
                 Identity = identity,
                 FullRange = fullRange,
