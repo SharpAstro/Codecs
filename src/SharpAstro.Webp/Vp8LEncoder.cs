@@ -577,7 +577,7 @@ internal static class Vp8LEncoder
 
         StreamPlan perTile = Evaluate(
             argb, width, baseline.CopyBuffer, baseline.CopyCount, baseline.Mapper, baseline.CacheBits, cache,
-            groupBits, tilesWide, identity, tileCount, baseline.IsMain, keepHistograms: true);
+            groupBits, tilesWide, identity, tileCount, baseline.IsMain, histogramsOnly: true);
         int[][] tileHistograms = perTile.Histograms!;
         var layout = new Vp8LHistogramLayout(LiteralAlphabet + LengthSymbols + (baseline.CacheBits == 0 ? 0 : 1 << baseline.CacheBits));
         int[] tileGroups = Vp8LHistogramClusterer.ClusterTiles(
@@ -691,21 +691,34 @@ internal static class Vp8LEncoder
         int[]? tileGroups,
         int groupCount,
         bool isMain,
-        bool keepHistograms = false)
+        bool histogramsOnly = false)
     {
         var layout = new Vp8LHistogramLayout(LiteralAlphabet + LengthSymbols + (cacheBits == 0 ? 0 : 1 << cacheBits));
+        // A pass that hands its histograms back owns them; any other one prices its codes and returns the sets to the
+        // pool, since every candidate the encoder considers is one pass (Codecs#92). Indexed through the layout only,
+        // so a rented array longer than layout.Total does no harm.
         int[][] sets = new int[groupCount][];
         for (int g = 0; g < sets.Length; g++)
         {
-            sets[g] = new int[layout.Total];
+            if (histogramsOnly)
+            {
+                sets[g] = new int[layout.Total];
+            }
+            else
+            {
+                sets[g] = WebpBufferPool<int>.Rent(layout.Total);
+                Array.Clear(sets[g], 0, layout.Total);
+            }
         }
 
         var sink = new HistogramSink(sets, layout, width, groupBits, tilesWide, tileGroups);
         Walk(argb, copyBuffer.AsSpan(0, copyCount), mapper, cacheBits, cache, ref sink);
 
         long bits = sink.ExtraBits;
-        var groups = new Vp8LPrefixCode[groupCount][];
-        for (int g = 0; g < groupCount; g++)
+        // The per-tile pass only gathers histograms to cluster: its codes were built and priced for every tile and
+        // never read (Codecs#92).
+        var groups = new Vp8LPrefixCode[histogramsOnly ? 0 : groupCount][];
+        for (int g = 0; g < groups.Length; g++)
         {
             groups[g] = new Vp8LPrefixCode[5];
             for (int i = 0; i < 5; i++)
@@ -714,6 +727,14 @@ internal static class Vp8LEncoder
                 ReadOnlySpan<int> histogram = sets[g].AsSpan(start, length);
                 groups[g][i] = Vp8LPrefixCode.Build(histogram);
                 bits += groups[g][i].DataBits(histogram) + groups[g][i].HeaderBits();
+            }
+        }
+
+        if (!histogramsOnly)
+        {
+            foreach (int[] set in sets)
+            {
+                WebpBufferPool<int>.Return(set);
             }
         }
 
@@ -729,7 +750,7 @@ internal static class Vp8LEncoder
             TilesWide = tilesWide,
             Groups = groups,
             CodeBits = bits,
-            Histograms = keepHistograms ? sets : null,
+            Histograms = histogramsOnly ? sets : null,
         };
     }
 
