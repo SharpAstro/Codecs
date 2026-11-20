@@ -360,7 +360,7 @@ public class HeifDecodeTests(ITestOutputHelper output)
         return (differing, max, first, (long)rgb.Width * rgb.Height * 3);
     }
 
-    private static (byte[] Heif, int Width, int Height) Wrap(string fixture, byte[]? colr)
+    internal static (byte[] Heif, int Width, int Height) Wrap(string fixture, byte[]? colr)
     {
         var (configuration, item) = HevcFixtureTests.Load(fixture);
         var picture = HevcDecoder.Decode(configuration, item);
