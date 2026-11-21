@@ -54,6 +54,46 @@ public class HdrSampleFormatsTests
     [InlineData("6B_TIFF_SDR.tiff", "1B_PNG_SDR.png")]
     public void Tiff_IsItsPngMaster(string file, string master) => Compare(Load(file), Load(master), 0, 0);
 
+    /// <summary>
+    /// cjxl's two files: the header reads (the PQ one sets extra_fields for its 10000-nit tone mapping, #103)
+    /// and so does the frame's permuted TOC (#104). Read wrongly, the sizes after the permutation desync and
+    /// the byte accounting fails, and its ANS stream fails the final-state check. Logically the sections tile
+    /// the data exactly once, and the permutation's direction shows in the layout: cjxl writes chunk by chunk,
+    /// so the codestream holds LfGlobal, then LfGroup 0, then that LF group's PassGroups a group-row at a time
+    /// (logical 17 to 24, then 50 to 57, 33 groups to a row of 8256 px), and only then LfGroup 1. Read the
+    /// other way round, the same permutation scatters them. Decoding the frames waits on the VarDCT tools cjxl
+    /// uses beyond this decoder's own (a global MA tree first), so no pixels are compared yet.
+    /// </summary>
+    [Theory]
+    [InlineData("4A_JPEG-XL_HDR.jxl", 10000f)]
+    [InlineData("4B_JPEG-XL_SDR.jxl", 255f)]
+    public void Jxl_HeaderAndPermutedTocRead(string name, float intensityTarget)
+    {
+        var path = Path.Combine(Root, name);
+        Assert.SkipUnless(File.Exists(path), $"{name} is not present; run tests/SharpAstro.Codecs.Tests/fetch-hdr-samples.sh");
+        var bytes = File.ReadAllBytes(path);
+        var info = SharpAstro.Jxl.JxlFile.ReadInfo(bytes);
+        (info.Width, info.Height, info.BitsPerSample, info.Orientation, info.IntensityTarget).ShouldBe((8256, 5504, 16, 1, intensityTarget));
+
+        var toc = JxlOracleTests.CheckByteAccounting(bytes, name);
+        toc.Permuted.ShouldBeTrue();
+        var tiles = toc.Offsets.Zip(toc.Sizes).OrderBy(t => t.First).ToArray();
+        long next = 0;
+        foreach (var (offset, size) in tiles)
+        {
+            offset.ShouldBe(next, "each section starts where the one before it in the codestream ends");
+            next += size;
+        }
+        next.ShouldBe(toc.TotalSize);
+
+        // 8256x5504: 33x22 groups of 256 px, 5x3 LF groups of 2048 px, one pass: LfGlobal, 15 LfGroups,
+        // HfGlobal, 726 PassGroups, so PassGroup g is logical 17 + g.
+        toc.EntryCount.ShouldBe(1 + 15 + 1 + 33 * 22);
+        var streamOrder = toc.Offsets.Select((offset, logical) => (offset, logical)).OrderBy(t => t.offset).Select(t => t.logical).ToArray();
+        streamOrder.Take(19).ShouldBe([0, 1, 17, 18, 19, 20, 21, 22, 23, 24, 50, 51, 52, 53, 54, 55, 56, 57, 83]);
+        Array.IndexOf(streamOrder, 2).ShouldBe(2 + 8 * 8, "LfGroup 1 follows LfGroup 0's 8x8 PassGroups");
+    }
+
     [Fact]
     public void PngMasters_SayWhatTheyAre()
     {

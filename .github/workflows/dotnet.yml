@@ -97,6 +97,8 @@ jobs:
       with:
         path: tests/SharpAstro.Codecs.Tests/Fixtures/hdr-samples
         key: hdr-samples-${{ hashFiles('tests/SharpAstro.Codecs.Tests/fetch-hdr-samples.sh') }}
+        # A changed pin list still restores the last cache, so only the files it adds are downloaded.
+        restore-keys: hdr-samples-
     - name: Fetch HDR sample images
       run: bash tests/SharpAstro.Codecs.Tests/fetch-hdr-samples.sh
     - name: Restore dependencies

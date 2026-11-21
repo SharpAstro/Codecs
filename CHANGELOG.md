@@ -16,6 +16,14 @@ those notes, verbatim in substance. 3.4 has no recorded note; it was never writt
 
 ## 3.41
 
+**`SharpAstro.Jxl`: a permuted TOC is read (#104).** cjxl writes a large image chunk by chunk (LfGlobal, LfGroup 0
+and its PassGroups, LfGroup 1, ...) and codes that order as a Lehmer-coded permutation before the section sizes, which
+used to be refused. `JxlToc` now decodes it (8 distributions, ANS final state checked) and gives every section's size
+and start in logical order, so the VarDCT reader finds each section wherever the encoder put it. Checked on both cjxl
+files of the HDR sample set (byte accounting, the sections tiling the data once, and the chunked layout the permutation
+describes); their pair joins CI's cached fetch set, and the cache now restores the previous set so a changed pin list
+downloads only what it adds. Their frames still stop at the next VarDCT feature (a global MA tree).
+
 **`SharpAstro.Jxl`: ImageMetadata's `extra_fields` are read (#103).** cjxl sets them for an HDR image (its tone
 mapping), so a PQ file used to be refused at the header. Orientation, the intrinsic size, the preview header and the
 tone mapping are read; `JxlImageInfo` reports `Orientation` (stored size kept) and `IntensityTarget` (10000 nits on

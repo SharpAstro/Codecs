@@ -17,10 +17,10 @@
 # Fixtures/hdr-samples/ from actions/cache keyed on this script's hash and runs this only on a miss; a
 # file already present is hash-checked and never fetched again. Change the pins only on purpose.
 #
-# Default set (what CI caches, ~450 MB): the two PNG masters, the two HEICs, the JPEG. --all adds the
-# TIFFs (lossless copies of the PNGs, 545 MB, their colour also covered by a synthetic test), the JXLs
-# (refused by SharpAstro.Jxl so far: an extended image header and a permuted TOC) and the AVIFs (no
-# decoder here). Move a pair into the default set once a test uses it.
+# Default set (what CI caches, ~460 MB): the two PNG masters, the two HEICs, the two JXLs (header and
+# permuted TOC; their VarDCT frames do not decode here yet), the JPEG. --all adds the TIFFs (lossless
+# copies of the PNGs, 545 MB, their colour also covered by a synthetic test) and the AVIFs (no decoder
+# here). Move a pair into the default set once a test uses it.
 #
 # Each file is pinned by commit and SHA-256. A mismatch means upstream changed, and the script stops.
 set -euo pipefail
@@ -37,11 +37,11 @@ FILES=(
     "1B_PNG_SDR.png|0a232fbf353f118874604eaafe6816636ee4a6b0f1177c67cfd9b3b7e1fe033a"
     "3A_HEIC_HDR.heic|28bd0e388fad6c695550e6201dcee3cf3a453810f19a2fbed434940bd4f7433c"
     "3B_HEIC_SDR.heic|0e366a983db397b1c1fbcb638e51ecbb6f2163f03f1e652f62ec8e192d96ce6e"
+    "4A_JPEG-XL_HDR.jxl|40e765108a520fa63f5d7553d39e59ee38a5033dcd30cb2004730207051cdfd0"
+    "4B_JPEG-XL_SDR.jxl|56c09ec507b7bb431ecd9b0c9b6d0e051e3d389d6046ebaa9c575c5dc33126e0"
     "5B_JPEG_SDR.jpg|b4d013555225a431fb744d44863db529c9b34ba90843842a4b7aa450857bd6c9"
 )
 EXTRA=(
-    "4B_JPEG-XL_SDR.jxl|56c09ec507b7bb431ecd9b0c9b6d0e051e3d389d6046ebaa9c575c5dc33126e0"
-    "4A_JPEG-XL_HDR.jxl|40e765108a520fa63f5d7553d39e59ee38a5033dcd30cb2004730207051cdfd0"
     "6A_TIFF_HDR.tiff|00331a5f21df33877585b9a5614bcb01694e2acb99ebca5730ef08ed7706cacd"
     "6B_TIFF_SDR.tiff|9f31b99a8fac9b851f23066e626bd2ff9c1879dcf41c78cfa4296ceb7b0a25ee"
     "2A_AVIF_HDR.avif|97d0dd6e29c565db6bfc21a4cdfdfd9af7b5d46c1538d15e11e715f9c4bc3522"
