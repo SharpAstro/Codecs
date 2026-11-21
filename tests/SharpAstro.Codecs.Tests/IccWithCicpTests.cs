@@ -150,4 +150,26 @@ public class IccWithCicpTests
         Should.Throw<ArgumentException>(() =>
             IccProfiles.WithCicp(bytes, ColorPrimaries.BT2020, TransferFunction.Pq));
     }
+
+    [Fact]
+    public void IccCicp_ReadsWhatWithCicpWrote()
+    {
+        var profile = IccProfiles.WithCicp(IccProfiles.SRgbV4.Span, ColorPrimaries.BT2020, TransferFunction.Pq, videoFullRange: false);
+        IccCicp.TryRead(profile, out var primaries, out var transfer, out var matrix, out var fullRange).ShouldBeTrue();
+        (primaries, transfer, matrix, fullRange).ShouldBe((ColorPrimaries.BT2020, TransferFunction.Pq, MatrixCoefficients.Identity, false));
+    }
+
+    [Fact]
+    public void IccCicp_IsFalse_WithoutTheTag_OrOnABrokenProfile()
+    {
+        IccCicp.TryRead(IccProfiles.SRgbV4.Span, out _, out _, out _, out _).ShouldBeFalse();
+        IccCicp.TryRead(new byte[100], out _, out _, out _, out _).ShouldBeFalse();
+
+        var profile = IccProfiles.WithCicp(IccProfiles.SRgbV4.Span, ColorPrimaries.BT2020, TransferFunction.Pq);
+        IccCicp.TryRead(profile.AsSpan(0, profile.Length - 4), out _, out _, out _, out _)
+            .ShouldBeFalse("a tag body cut short is not read past the end");
+        var hugeCount = profile.ToArray();
+        BinaryPrimitives.WriteUInt32BigEndian(hugeCount.AsSpan(128, 4), 0x10000000);
+        IccCicp.TryRead(hugeCount, out _, out _, out _, out _).ShouldBeFalse();
+    }
 }

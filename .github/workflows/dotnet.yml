@@ -87,6 +87,18 @@ jobs:
     # dev box would then quietly disagree about what the reference is.
     - name: Fetch JPEG 2000 oracle (OpenJPEG)
       run: bash tests/SharpAstro.Codecs.Tests/Oracle/jpeg2000/fetch.sh
+    # One photograph as PNG, HEIC and JPEG (aaron-rust/hdr-sample-images, CC0; HdrSampleFormatsTests), about
+    # 450 MB pinned by SHA-256. The files are in that repo's Git LFS, whose bandwidth its owner pays for, so
+    # they come from this cache, keyed on the fetch script (the pins live there), and are downloaded only on
+    # a miss. The script hash-checks a restored file and fetches nothing that is already present.
+    - name: Restore HDR sample images
+      id: hdr-samples
+      uses: actions/cache@v6
+      with:
+        path: tests/SharpAstro.Codecs.Tests/Fixtures/hdr-samples
+        key: hdr-samples-${{ hashFiles('tests/SharpAstro.Codecs.Tests/fetch-hdr-samples.sh') }}
+    - name: Fetch HDR sample images
+      run: bash tests/SharpAstro.Codecs.Tests/fetch-hdr-samples.sh
     - name: Restore dependencies
       run: dotnet restore Codecs.JustTests.sln
     - name: Build
