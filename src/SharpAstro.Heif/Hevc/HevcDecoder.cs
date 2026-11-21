@@ -10,13 +10,20 @@ namespace SharpAstro.Heif.Hevc;
 /// </summary>
 internal static class HevcDecoder
 {
-    public static HevcPicture Decode(HevcDecoderConfiguration configuration, ReadOnlySpan<byte> itemData, HevcDecodeStatistics? statistics = null)
+    public static HevcPicture Decode(HevcDecoderConfiguration configuration, ReadOnlySpan<byte> itemData, HevcDecodeStatistics? statistics = null) =>
+        Decode(configuration, itemData, statistics, null);
+
+    /// <summary>
+    /// <see cref="Decode(HevcDecoderConfiguration, ReadOnlySpan{byte}, HevcDecodeStatistics?)"/> with the decoder's arrays
+    /// taken from <paramref name="workspace"/> where it holds ones of the right size; the picture and every refusal are the same.
+    /// </summary>
+    internal static HevcPicture Decode(HevcDecoderConfiguration configuration, ReadOnlySpan<byte> itemData, HevcDecodeStatistics? statistics, HevcDecodeWorkspace? workspace)
     {
         var (sps, pps) = ParameterSets(configuration);
 
         // Split (and so length-check) the whole item before any plane is allocated.
         var nals = HevcNalUnit.SplitLengthPrefixed(itemData, configuration.LengthSize);
-        var decoder = new HevcPictureDecoder(sps, pps, statistics);
+        var decoder = new HevcPictureDecoder(sps, pps, statistics, workspace);
         var slices = 0;
         foreach (var bytes in nals)
         {
@@ -39,7 +46,7 @@ internal static class HevcDecoder
 
     /// <summary>
     /// The SPS and PPS of an item's <c>hvcC</c>, checked against each other, the configuration, the envelope
-    /// and the size limit: everything <see cref="Decode"/> refuses before it reads a slice.
+    /// and the size limit: everything <see cref="Decode(HevcDecoderConfiguration, ReadOnlySpan{byte}, HevcDecodeStatistics?)"/> refuses before it reads a slice.
     /// </summary>
     public static (HevcSps Sps, HevcPps Pps) ParameterSets(HevcDecoderConfiguration configuration)
     {

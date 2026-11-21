@@ -334,6 +334,9 @@ public class HevcFixtureTests(ITestOutputHelper output)
         var outcomes = new Dictionary<string, int>();
         var watch = System.Diagnostics.Stopwatch.StartNew();
         var attempts = 0;
+        // One workspace for the whole fixture: the arrays a decode builds are cleared and reused, and the decoded
+        // output and every refusal are those of a fresh decode (HevcDecoderReuseTests).
+        var workspace = new HevcDecodeWorkspace();
 
         void Attempt(byte[] data)
         {
@@ -341,7 +344,7 @@ public class HevcFixtureTests(ITestOutputHelper output)
             attempts++;
             try
             {
-                HevcDecoder.Decode(configuration, data);
+                HevcDecoder.Decode(configuration, data, null, workspace);
                 outcome = "decoded";
             }
             catch (InvalidDataException) { outcome = "invalid"; }
