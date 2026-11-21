@@ -326,7 +326,7 @@ public sealed class JpegStripDecodeTests
         Array.Fill(dest, (byte)0xAB);
 
         Should.Throw<ArgumentException>(() => JpegDecoder.DecodeTo(jpeg, dest));
-        dest.ShouldAllBe(b => b == 0xAB);
+        SpanAssert.AllEqual(dest, (byte)0xAB, "dest");
     }
 
     // ============================================================ 3. memory: bounded by the MCU row
@@ -645,7 +645,7 @@ public sealed class JpegStripDecodeTests
             strips.Error.ShouldBeNull();
             strips.Stats.Restarted.ShouldBeTrue("the second scan cannot be streamed after the first");
             strips.Stats.WholePlanes.ShouldBeTrue();
-            strips.Pixels.ShouldBe(single.Pixels, "the same scan twice decodes to the same image");
+            SpanAssert.Same(strips.Pixels, single.Pixels, "the same scan twice decodes to the same image");
 
             ShouldAgreeAtEveryScale(twice, "scan twice");
         }
@@ -699,7 +699,7 @@ public sealed class JpegStripDecodeTests
 
         var after = ShouldAgreeAtEveryScale(markerAfter, "Adobe after scan");
         after.Stats.Restarted.ShouldBeTrue("the colour model changed after rows were streamed");
-        after.Pixels.ShouldBe(before.Pixels, "the same final state, the same colours");
+        SpanAssert.Same(after.Pixels, before.Pixels, "the same final state, the same colours");
 
         var none = ShouldAgreeAtEveryScale(noMarker, "no Adobe marker");
         none.Stats.Restarted.ShouldBeFalse();
@@ -718,7 +718,7 @@ public sealed class JpegStripDecodeTests
         var plain = Run(jpeg, JpegScale.Full, wholePlanes: false);
         var withDnl = ShouldAgreeAtEveryScale(matching, "DNL matching");
         withDnl.Error.ShouldBeNull();
-        withDnl.Pixels.ShouldBe(plain.Pixels);
+        SpanAssert.Same(withDnl.Pixels, plain.Pixels, "DNL against plain");
 
         var wrong = Concat(Slice(jpeg, 0, sos), scan, Dnl(24), [0xFF, 0xD9]);
         var strips = Run(wrong, JpegScale.Full, wholePlanes: false);

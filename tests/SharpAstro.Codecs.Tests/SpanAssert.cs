@@ -21,4 +21,22 @@ internal static class SpanAssert
             Assert.Fail($"{what}[{at}] is {actual[at]}, expected {expected[at]}");
         }
     }
+
+    public static void Same<T>(T[] actual, T[] expected, string what)
+        where T : IEquatable<T> => Same<T>(actual.AsSpan(), expected.AsSpan(), what);
+
+    public static void AllEqual<T>(ReadOnlySpan<T> actual, T value, string what)
+        where T : IEquatable<T>
+    {
+        for (var i = 0; i < actual.Length; i++)
+        {
+            if (!actual[i].Equals(value))
+            {
+                Assert.Fail($"{what}[{i}] is {actual[i]}, expected {value}");
+            }
+        }
+    }
+
+    public static void AllEqual<T>(T[] actual, T value, string what)
+        where T : IEquatable<T> => AllEqual<T>(actual.AsSpan(), value, what);
 }

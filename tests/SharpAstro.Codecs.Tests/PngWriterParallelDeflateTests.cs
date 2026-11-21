@@ -45,7 +45,7 @@ public sealed class PngWriterParallelDeflateTests
         split.Height.ShouldBe(serial.Height);
         split.ColorType.ShouldBe(serial.ColorType);
         SpanAssert.Same<byte>(split.Pixels, serial.Pixels, "pixels");
-        split.Pixels.ShouldBe(rgb);
+        SpanAssert.Same(split.Pixels, rgb, "pixels");
     }
 
     [Theory]
@@ -78,7 +78,7 @@ public sealed class PngWriterParallelDeflateTests
         var split = PngWriter.EncodeRgb8(rgb, Width, Height,
             new PngWriteOptions { CompressionLevel = level, ParallelFragments = 4 });
 
-        PngReader.Decode(split).Pixels.ShouldBe(PngReader.Decode(serial).Pixels);
+        SpanAssert.Same(PngReader.Decode(split).Pixels, PngReader.Decode(serial).Pixels, "split against serial");
     }
 
     /// <summary>
@@ -132,7 +132,7 @@ public sealed class PngWriterParallelDeflateTests
 
         var png = PngWriter.EncodeRgb8(rgb, 2, 2, new PngWriteOptions { ParallelFragments = 8 });
 
-        PngReader.Decode(png).Pixels.ShouldBe(rgb.ToArray());
+        SpanAssert.Same(PngReader.Decode(png).Pixels, rgb.ToArray(), "pixels");
     }
 
     [Fact]

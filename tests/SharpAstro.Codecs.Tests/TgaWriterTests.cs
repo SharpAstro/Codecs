@@ -58,7 +58,7 @@ public sealed class TgaWriterTests
 
         // Ours: equal to the input.
         TgaImage ours = TgaReader.Decode(tga);
-        ours.Rgba.ShouldBe(rgba, what);
+        SpanAssert.Same(ours.Rgba, rgba, what);
 
         // Magick's: equal to the input, too (the oracle, not just our own reader).
         (int mw, int mh, byte[] magick) = TgaTestSupport.MagickRead(tga);
@@ -131,8 +131,8 @@ public sealed class TgaWriterTests
         packets.Where(p => p.Row == 2).Select(p => (p.Run, p.Count)).ShouldBe([(false, 128), (false, 1)]);
         packets.Where(p => p.Row == 3).Select(p => (p.Run, p.Count)).ShouldBe([(false, 1), (true, 128)]);
 
-        TgaReader.Decode(tga).Rgba.ShouldBe(ToRgba(rgb));
-        TgaTestSupport.MagickRead(tga).Rgba.ShouldBe(ToRgba(rgb));
+        SpanAssert.Same(TgaReader.Decode(tga).Rgba, ToRgba(rgb), "TgaReader");
+        SpanAssert.Same(TgaTestSupport.MagickRead(tga).Rgba, ToRgba(rgb), "Magick");
     }
 
     [Theory]
@@ -159,7 +159,7 @@ public sealed class TgaWriterTests
         byte[] rgb = ToRgb(Make(5, 4, Shape.Gradient, alpha: false));
         byte[] top = TgaWriter.EncodeRgb8(rgb, 5, 4, new TgaWriteOptions { TopOrigin = true });
         byte[] bottom = TgaWriter.EncodeRgb8(rgb, 5, 4, new TgaWriteOptions { TopOrigin = false });
-        TgaReader.Decode(top).Rgba.ShouldBe(TgaReader.Decode(bottom).Rgba);
+        SpanAssert.Same(TgaReader.Decode(top).Rgba, TgaReader.Decode(bottom).Rgba, "top against bottom origin");
         // The first stored row of the bottom-origin file is the image's last row.
         bottom[18..(18 + 15)].ShouldBe(top[(18 + 15 * 3)..(18 + 15 * 4)]);
     }

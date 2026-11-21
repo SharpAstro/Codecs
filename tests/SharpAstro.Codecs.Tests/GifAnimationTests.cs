@@ -395,12 +395,12 @@ public sealed class GifAnimationTests
     {
         var gif = ThreeFrames(0, 0, partialFirst: true, transparent0: 3);
         var still = GifDecoder.Decode(gif).Rgba;
-        GifDecoder.DecodeAnimation(gif).Frames[0].Rgba.ShouldBe(still, "frame 0 of an animation is the still, byte for byte");
+        SpanAssert.Same(GifDecoder.DecodeAnimation(gif).Frames[0].Rgba, still, "frame 0 of an animation is the still, byte for byte");
 
         var single = new GifBuilder().Header(3, 2, FourColours).Image(0, 0, 3, 2, [0, 1, 2, 0, 1, 2], 2).Trailer().ToArray();
         var animation = GifDecoder.DecodeAnimation(single);
         animation.Frames.Count.ShouldBe(1);
-        animation.Frames[0].Rgba.ShouldBe(GifDecoder.Decode(single).Rgba);
+        SpanAssert.Same(animation.Frames[0].Rgba, GifDecoder.Decode(single).Rgba, "frame 0 against the single-frame still");
     }
 
     [Fact]
@@ -601,8 +601,8 @@ public sealed class GifAnimationTests
         animation.Frames[1].IsTruncated.ShouldBeFalse();
         animation.Frames[2].IsTruncated.ShouldBeTrue();
         animation.Frames[2].Frame.IsTruncated.ShouldBeTrue();
-        animation.Frames[0].Rgba.ShouldBe(expected.Frames[0].Rgba);
-        animation.Frames[1].Rgba.ShouldBe(expected.Frames[1].Rgba);
+        SpanAssert.Same(animation.Frames[0].Rgba, expected.Frames[0].Rgba, "frame 0");
+        SpanAssert.Same(animation.Frames[1].Rgba, expected.Frames[1].Rgba, "frame 1");
 
         // The last frame is a prefix of the whole one: the last row, which the cut data did not reach, is frame 1's.
         animation.Frames[2].Rgba.AsSpan(6 * 9 * 4).ToArray().ShouldBe(animation.Frames[1].Rgba.AsSpan(6 * 9 * 4).ToArray());
