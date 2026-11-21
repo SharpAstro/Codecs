@@ -42,7 +42,13 @@ copies, `ChooseCrossColor`'s search takes a struct cost instead of a `Func<int,d
 `ChooseStream`/`BuildStream`/`CheapBits`/`Write` share a pooled colour cache, one distance mapper per width and a
 rented copy buffer (returned when the winning stream has no copies). Not changed, judged real work: a winning
 stream's own copy buffer (Write needs it) and each candidate's transformed pixel image, which the input images
-themselves require. A per-site trace of the remaining 7.51 GiB was not taken.
+themselves require. A per-site trace of the remaining 7.51 GiB was not taken. Writing the winning stream
+evaluates it a second time to get its codes (a little more CPU for far less allocation), and the test-hook
+`BuildStream` path still allocates its own copy buffer. Per-site figures (one thread, `GC.GetAllocatedBytesForCurrentThread`,
+nine 384x256 encodes at efforts 3, 6 and 9, warm second encode, MiB, 925.2 before the flight): unkept prefix codes
+-35.2, clusterer -39.7, `Prepare` -27.0, `Search` struct cost -35.1, per-call buffers in `ChooseStream` about 0 on this
+workload (+1.0), total 789.2. These are a small steady-state corpus, not the test classes' load, so they understate the
+test-class cut above.
 
 ## 3.40
 
