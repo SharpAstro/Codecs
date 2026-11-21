@@ -593,7 +593,8 @@ internal static class Vp8LEncoder
         if (copyBuffer.Length != 0 && best.CopyCount == 0)
         {
             ArrayPool<ulong>.Shared.Return(copyBuffer);
-            ClearCopyBuffer(best);
+            // A winner without copies no longer points at the buffer that went back to the pool.
+            best.CopyBuffer = [];
         }
 
         return best;
@@ -603,13 +604,8 @@ internal static class Vp8LEncoder
 
     private static void ReturnCache(int[] cache) => ArrayPool<int>.Shared.Return(cache);
 
-    // A winner without copies no longer points at the buffer that went back to the pool.
-    private static void ClearCopyBuffer(StreamPlan plan)
-    {
-        plan.CopyBuffer = [];
-    }
-
-    // The mapper is immutable once built, so one per width serves every stream of that width.
+    // The mapper is immutable once built, so one per width serves every stream of that width. One mapper
+    // per thread is kept for the thread's life (the last width asked for); a different width rebuilds it.
     [ThreadStatic]
     private static Vp8LDistanceMapper? _lastMapper;
 
