@@ -1,3 +1,6 @@
+// Portions of this file are ported from jxl-oxide (https://github.com/tirr-c/jxl-oxide), Copyright (c)
+// Wonwoo Choi and the jxl-oxide contributors, used under the MIT licence; see THIRD-PARTY-NOTICES.md.
+
 namespace SharpAstro.Jxl;
 
 /// <summary>
@@ -44,20 +47,132 @@ internal sealed class JxlDequantMatrices
 
     public static JxlDequantMatrices BuildDefault()
     {
-        var matrices = new float[SelectList.Length][][];
+        var weights = new float[SelectList.Length][][];
+        var needRecip = new bool[SelectList.Length];
         for (int i = 0; i < SelectList.Length; i++)
         {
-            float[][] m = BuildDefaultMatrix(SelectList[i]);
-            // Reciprocate (all default encodings need it) and validate.
-            foreach (float[] ch in m)
+            weights[i] = BuildDefaultMatrix(SelectList[i]);
+            needRecip[i] = true;
+        }
+        return Finish(weights, needRecip);
+    }
+
+    /// <summary>
+    /// Reads a DequantMatrixSet (§I.2, jxl-oxide <c>DequantMatrixSet::parse</c> / <c>DequantMatrixParams::parse</c>):
+    /// all_default, or per transform family an <c>encoding_mode</c> (0 default, 1 Hornuss, 2 DCT2, 3 DCT4, 4 DCT4x8,
+    /// 5 AFV, 6 DCT, 7 Raw) and its parameters. Raw matrices are a Modular image at stream
+    /// <c>1 + 3 * num_lf_groups + index</c>, used as given (not reciprocated).
+    /// </summary>
+    public static JxlDequantMatrices Read(ref JxlBitReader br, JxlMaConfig? globalTree, int numLfGroups, int bitDepth)
+    {
+        if (br.ReadBit())
+            return BuildDefault();
+
+        var weights = new float[SelectList.Length][][];
+        var needRecip = new bool[SelectList.Length];
+        for (int i = 0; i < SelectList.Length; i++)
+        {
+            JxlVarDctTransform t = SelectList[i];
+            int mode = (int)br.ReadBits(3);
+            if (mode is >= 1 and <= 5 && i is not (0 or 1 or 2 or 3 or 9 or 10))
+                throw new InvalidDataException($"JPEG XL dequant encoding mode {mode} is invalid for {t}.");
+            needRecip[i] = mode != 7;
+            weights[i] = mode switch
+            {
+                0 => BuildDefaultMatrix(t),
+                1 => Hornuss(ReadFixed(ref br, 3)),
+                2 => Dct2(ReadFixed(ref br, 6)),
+                3 => ReadDct4(ref br),
+                4 => ReadDct4x8(ref br),
+                5 => ReadAfv(ref br),
+                6 => Dct(t, ReadDctParams(ref br)),
+                _ => ReadRaw(ref br, t, globalTree, (uint)(1 + 3 * numLfGroups + i), bitDepth),
+            };
+        }
+        return Finish(weights, needRecip);
+    }
+
+    private static float[][] ReadFixed(ref JxlBitReader br, int n)
+    {
+        var p = new float[3][];
+        for (int c = 0; c < 3; c++)
+        {
+            p[c] = new float[n];
+            for (int k = 0; k < n; k++)
+                p[c][k] = br.ReadF16();
+        }
+        return p;
+    }
+
+    private static float[][] ReadDctParams(ref JxlBitReader br)
+    {
+        int num = (int)br.ReadBits(4) + 1;
+        var p = new float[3][];
+        for (int c = 0; c < 3; c++)
+        {
+            p[c] = new float[num];
+            for (int k = 0; k < num; k++)
+                p[c][k] = br.ReadF16();
+        }
+        for (int c = 0; c < 3; c++)
+            p[c][0] *= 64f;
+        return p;
+    }
+
+    private static float[][] ReadDct4(ref JxlBitReader br)
+    {
+        float[][] p = ReadFixed(ref br, 2);
+        return Dct4(p, ReadDctParams(ref br));
+    }
+
+    private static float[][] ReadDct4x8(ref JxlBitReader br)
+    {
+        float[][] p = ReadFixed(ref br, 1);
+        return Dct4x8(p, ReadDctParams(ref br));
+    }
+
+    private static float[][] ReadAfv(ref JxlBitReader br)
+    {
+        float[][] p = ReadFixed(ref br, 9);
+        for (int c = 0; c < 3; c++)
+            for (int k = 0; k < 6; k++)
+                p[c][k] *= 64f;
+        float[][] dctParams = ReadDctParams(ref br);
+        float[][] dct4x4Params = ReadDctParams(ref br);
+        return Afv(p, dctParams, dct4x4Params);
+    }
+
+    private static float[][] ReadRaw(ref JxlBitReader br, JxlVarDctTransform t, JxlMaConfig? globalTree, uint streamIndex, int bitDepth)
+    {
+        (int width, int height) = t.DequantMatrixSize();
+        float denominator = br.ReadF16();
+        var channels = new JxlModularChannel[3];
+        for (int c = 0; c < 3; c++)
+            channels[c] = new JxlModularChannel(width, height);
+        channels = JxlModularStream.Read(ref br, globalTree, channels, streamIndex, bitDepth);
+        var ret = new float[3][];
+        for (int c = 0; c < 3; c++)
+        {
+            ret[c] = new float[width * height];
+            for (int k = 0; k < ret[c].Length; k++)
+                ret[c][k] = channels[c].Data[k] * denominator;
+        }
+        return ret;
+    }
+
+    /// <summary>Reciprocates (all but Raw), validates, and builds the transposed copies.</summary>
+    private static JxlDequantMatrices Finish(float[][][] matrices, bool[] needRecip)
+    {
+        for (int i = 0; i < matrices.Length; i++)
+        {
+            foreach (float[] ch in matrices[i])
                 for (int k = 0; k < ch.Length; k++)
                 {
-                    float w = 1f / ch[k];
+                    float w = needRecip[i] ? 1f / ch[k] : ch[k];
                     if (w >= 1e8f || w <= 0f)
                         throw new InvalidDataException("JPEG XL: dequant matrix element out of range.");
                     ch[k] = w;
                 }
-            matrices[i] = m;
         }
 
         // Transposed variant: out[idx] = matrix[(idx % height) * width + (idx / height)].

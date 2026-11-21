@@ -12,7 +12,7 @@
     <PackageId>SharpAstro.Jxl</PackageId>
     <Product>SharpAstro.Jxl</Product>
     <Authors>SharpAstro</Authors>
-    <Description>Pure-managed JPEG XL (.jxl) codec for .NET. Clean-room implementation against ISO/IEC 18181, validated against the Magick.NET (libjxl) oracle. AOT-compatible.</Description>
+    <Description>Pure-managed JPEG XL (.jxl) codec for .NET. Implemented against ISO/IEC 18181 with parts ported from jxl-oxide (MIT, see THIRD-PARTY-NOTICES.md), validated against the Magick.NET (libjxl) oracle. AOT-compatible.</Description>
     <PackageTags>jxl jpegxl jpeg-xl image codec aot</PackageTags>
     <RepositoryUrl>https://github.com/SharpAstro/Codecs.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
@@ -26,6 +26,7 @@
   <ItemGroup>
     <None Include="../../UNLICENSE" Pack="true" PackagePath="/" />
     <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 
   <ItemGroup>

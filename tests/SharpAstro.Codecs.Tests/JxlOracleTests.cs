@@ -187,4 +187,122 @@ public sealed class JxlOracleTests
     }
 
     private static MagickImage BuildRgbLossy() => new(MagickColors.SteelBlue, 32, 24);
+
+    /// <summary>
+    /// libjxl's lossy output decodes to libjxl's own pixels: Magick.NET encodes a synthetic image (smooth ramps for
+    /// the large transforms, sharp edges and a fine checker for the small ones, noise for everything between) at a
+    /// range of sizes and qualities, and every sample of our decode is compared with Magick's decode of the same
+    /// bytes. At 16 bits no sample may differ by more than one code (measured: at most one, in about 1.5% of the
+    /// samples, the rounding of float noise; mean error under 0.02 codes). The sizes cover a single 8x8 block, sizes
+    /// that are not whole blocks, several PassGroups, and two LF groups; the low qualities make cjxl pick the large
+    /// DCTs, the high ones the small transforms.
+    /// </summary>
+    [Theory]
+    [InlineData(1, 1, 90)]
+    [InlineData(7, 5, 90)]
+    [InlineData(17, 3, 80)]
+    [InlineData(256, 256, 90)]
+    [InlineData(333, 217, 50)]
+    [InlineData(600, 400, 75)]
+    [InlineData(640, 480, 10)]
+    [InlineData(640, 480, 30)]
+    [InlineData(512, 512, 99)]
+    [InlineData(1000, 700, 90)]
+    [InlineData(2100, 300, 85)]
+    public void MagickEncodedVarDct_16Bit_MatchesLibjxl(int w, int h, int quality)
+    {
+        using MagickImage source = Synthetic(w, h, seed: w * 31 + h, depth: 16, grey: false);
+        source.Quality = (uint)quality;
+        byte[] bytes = source.ToByteArray(MagickFormat.Jxl);
+
+        JxlImage ours = JxlImageCodec.Decode(bytes);
+        (ours.Width, ours.Height, ours.BitsPerSample, ours.ColorChannels).ShouldBe((w, h, 16, 3));
+        CompareWithLibjxl(ours, bytes, maxCodeDifference: 1, $"{w}x{h} q{quality}");
+    }
+
+    /// <summary>
+    /// An 8-bit source gives an 8-bit image. libjxl dithers when it writes 8-bit samples (here about a quarter of the
+    /// samples land one code up or down, as many each way), while this decoder rounds, so the samples agree to one
+    /// code; the 16-bit cases above show the values before quantisation agree.
+    /// </summary>
+    [Theory]
+    [InlineData(300, 200, 85, false)]
+    [InlineData(300, 300, 70, true)]
+    public void MagickEncodedVarDct_8Bit_MatchesLibjxlToOneCode(int w, int h, int quality, bool grey)
+    {
+        using MagickImage source = Synthetic(w, h, seed: 7, depth: 8, grey);
+        source.Quality = (uint)quality;
+        byte[] bytes = source.ToByteArray(MagickFormat.Jxl);
+
+        JxlImage ours = JxlImageCodec.Decode(bytes);
+        (ours.Width, ours.Height, ours.BitsPerSample, ours.ColorChannels).ShouldBe((w, h, 8, grey ? 1 : 3));
+        CompareWithLibjxl(ours, bytes, maxCodeDifference: 1, $"{w}x{h} q{quality} {(grey ? "grey" : "rgb")}");
+    }
+
+    /// <summary>The facade decodes libjxl's lossy output at its bit depth and reports its colour (sRGB here).</summary>
+    [Fact]
+    public void MagickEncodedVarDct_ThroughTheFacade_KeepsDepthAndColour()
+    {
+        using MagickImage source = Synthetic(96, 64, seed: 3, depth: 16, grey: false);
+        source.Quality = 90;
+        byte[] bytes = source.ToByteArray(MagickFormat.Jxl);
+
+        ImageCodecs.TryDecode(bytes, out var image).ShouldBeTrue();
+        image.ShouldNotBeNull();
+        (image.Width, image.Height, image.Channels, image.SampleFormat).ShouldBe((96, 64, 3, SharpAstro.Codecs.Abstractions.SampleFormat.UInt16));
+        image.ColorEncoding.ShouldBe(SharpAstro.Codecs.Abstractions.ColorEncoding.AssumedSrgb);
+    }
+
+    private static void CompareWithLibjxl(JxlImage ours, byte[] bytes, int maxCodeDifference, string label)
+    {
+        using var reference = new MagickImage(bytes);
+        var expected = reference.GetPixels().ToShortArray(0, 0, reference.Width, reference.Height, "RGB");
+        expected.ShouldNotBeNull();
+        int max = (1 << ours.BitsPerSample) - 1;
+        int worst = 0;
+        double sumAbs = 0;
+        long n = 0;
+        for (var p = 0; p < ours.Width * ours.Height; p++)
+            for (var c = 0; c < 3; c++)
+            {
+                int ourCode = ours.Channels[Math.Min(c, ours.ColorChannels - 1)][p];
+                int refCode = (int)Math.Round(expected[3 * p + c] * (double)max / 65535);
+                int d = Math.Abs(ourCode - refCode);
+                worst = Math.Max(worst, d);
+                sumAbs += d;
+                n++;
+            }
+        TestContext.Current.TestOutputHelper?.WriteLine($"{label}: worst {worst} codes, mean {sumAbs / n:0.0000} codes");
+        worst.ShouldBeLessThanOrEqualTo(maxCodeDifference, label);
+    }
+
+    /// <summary>A deterministic test picture: ramps, a sine pattern, hard-edged bars, a fine checker and noise.</summary>
+    private static MagickImage Synthetic(int w, int h, int seed, uint depth, bool grey)
+    {
+        var rng = new Random(seed);
+        var values = new float[w * h * 3];
+        for (var y = 0; y < h; y++)
+            for (var x = 0; x < w; x++)
+            {
+                double u = x / (double)Math.Max(1, w - 1), v = y / (double)Math.Max(1, h - 1);
+                double smooth = 0.5 + 0.35 * Math.Sin(5 * u + 3 * v);
+                double bars = (x / 23 + y / 17) % 2 == 0 ? 0.15 : -0.15;
+                double checker = x < w / 3 && y < h / 3 ? (((x ^ y) & 1) == 0 ? 0.1 : -0.1) : 0;
+                for (var c = 0; c < 3; c++)
+                {
+                    double tint = grey ? 0 : 0.1 * Math.Cos(4 * u * (c + 1) + 2 * v);
+                    double noise = (rng.NextDouble() - 0.5) * 0.04;
+                    double value = Math.Clamp(smooth + bars + checker + tint + noise, 0, 1);
+                    values[(y * w + x) * 3 + c] = (float)(value * 65535);
+                }
+                if (grey)
+                    values[(y * w + x) * 3 + 1] = values[(y * w + x) * 3 + 2] = values[(y * w + x) * 3];
+            }
+        var image = new MagickImage(MagickColors.Black, (uint)w, (uint)h) { Depth = depth };
+        using (var pixels = image.GetPixels())
+            pixels.SetArea(0, 0, (uint)w, (uint)h, values);
+        if (grey)
+            image.ColorSpace = ColorSpace.Gray;
+        return image;
+    }
 }

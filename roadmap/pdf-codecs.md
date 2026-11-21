@@ -109,7 +109,8 @@ carrying an attribution/notice requirement *cannot* be relicensed into it.
 **Therefore: clean-room from the ITU-T specifications**, with permissively-licensed
 *binaries* as oracles. This is exactly the discipline already used for `SharpAstro.Jpeg`
 (clean-room decoder, stb as byte-exact oracle) and `SharpAstro.Jxl` (spec-as-judge +
-libjxl as empirical oracle) — see the oracle-harness table in `CLAUDE.md`.
+libjxl as empirical oracle; its VarDCT decoder was later ported from jxl-oxide under MIT, see
+`THIRD-PARTY-NOTICES.md`) — see the oracle-harness table in `CLAUDE.md`.
 
 Patent position is clear: the MQ-coder patents (IBM / Mitsubishi, early-1990s filings)
 have long expired.

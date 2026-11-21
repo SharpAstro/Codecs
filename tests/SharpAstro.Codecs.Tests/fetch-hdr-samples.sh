@@ -17,8 +17,8 @@
 # Fixtures/hdr-samples/ from actions/cache keyed on this script's hash and runs this only on a miss; a
 # file already present is hash-checked and never fetched again. Change the pins only on purpose.
 #
-# Default set (what CI caches, ~460 MB): the two PNG masters, the two HEICs, the two JXLs (header and
-# permuted TOC; their VarDCT frames do not decode here yet), the JPEG. --all adds the TIFFs (lossless
+# Default set (what CI caches, ~460 MB): the two PNG masters, the two HEICs, the two JXLs (decoded and
+# checked against libjxl and the PNG masters), the JPEG. --all adds the TIFFs (lossless
 # copies of the PNGs, 545 MB, their colour also covered by a synthetic test) and the AVIFs (no decoder
 # here). Move a pair into the default set once a test uses it.
 #
