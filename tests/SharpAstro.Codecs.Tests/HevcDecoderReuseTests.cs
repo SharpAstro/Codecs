@@ -79,14 +79,44 @@ public class HevcDecoderReuseTests
     [Fact]
     public void ADecodeThatFinished_LeavesItsPlanesToItsPicture_NotToTheNextDecode()
     {
-        var (configuration, item) = HevcFixtureTests.Load("x265-420p8-deblock");
+        // Every plane of every returned picture is a snapshot, then the workspace is driven through other
+        // fixtures (other sizes and chroma formats), a refused decode and a repeat of the first input. A
+        // returned picture must be untouched by all of it, share no plane with any other picture, and the
+        // repeat must equal a fresh decode.
+        var names = HevcFixtureTests.Names.Select(d => d.Data).ToList();
+        names.Count.ShouldBeGreaterThan(1);
         var workspace = new HevcDecodeWorkspace();
-        var first = HevcDecoder.Decode(configuration, item, null, workspace);
-        var snapshot = first.Luma.ToArray();
-        var second = HevcDecoder.Decode(configuration, item, null, workspace);
+        var pictures = new List<(HevcPicture Picture, ushort[] Luma, ushort[]? Cb, ushort[]? Cr)>();
+        HevcDecoderConfiguration firstConfiguration = default!;
+        byte[] firstItem = [];
 
-        second.Luma.ShouldNotBeSameAs(first.Luma);
-        first.Luma.AsSpan().SequenceEqual(snapshot).ShouldBeTrue("a later decode wrote into a returned picture");
-        second.Luma.AsSpan().SequenceEqual(snapshot).ShouldBeTrue();
+        foreach (var name in names.Append(names[0]))
+        {
+            var (configuration, item) = HevcFixtureTests.Load(name);
+            if (pictures.Count == 0) (firstConfiguration, firstItem) = (configuration, item);
+            var picture = HevcDecoder.Decode(configuration, item, null, workspace);
+            pictures.Add((picture, picture.Luma.ToArray(), picture.Cb?.ToArray(), picture.Cr?.ToArray()));
+
+            var damaged = (byte[])item.Clone();
+            damaged[item.Length / 2] ^= 0x5A;
+            Run(configuration, damaged, workspace); // may be refused or decode to something else; either way it must not write into a returned picture
+        }
+
+        var fresh = HevcDecoder.Decode(firstConfiguration, firstItem, null, null);
+        ShouldMatch(new("decoded", pictures[^1].Picture), new("decoded", fresh), "repeat of the first input");
+
+        for (var i = 0; i < pictures.Count; i++)
+        {
+            var (picture, luma, cb, cr) = pictures[i];
+            picture.Luma.AsSpan().SequenceEqual(luma).ShouldBeTrue($"picture {i}: luma was written after it was returned");
+            if (cb is not null) picture.Cb!.AsSpan().SequenceEqual(cb).ShouldBeTrue($"picture {i}: cb was written after it was returned");
+            if (cr is not null) picture.Cr!.AsSpan().SequenceEqual(cr).ShouldBeTrue($"picture {i}: cr was written after it was returned");
+            for (var j = i + 1; j < pictures.Count; j++)
+            {
+                picture.Luma.ShouldNotBeSameAs(pictures[j].Picture.Luma);
+                if (picture.Cb is not null) picture.Cb.ShouldNotBeSameAs(pictures[j].Picture.Cb);
+                if (picture.Cr is not null) picture.Cr.ShouldNotBeSameAs(pictures[j].Picture.Cr);
+            }
+        }
     }
 }
