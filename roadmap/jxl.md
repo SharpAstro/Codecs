@@ -81,8 +81,10 @@ can hit, and the messages are the authoritative list if this section drifts.
 **Frame-level**
 
 - Cropped frames; bitstream extensions; noise; patches; splines.
-- VarDCT frame without a global tree.
-- Custom `DequantMatrixSet`; custom coefficient orders.
+- VarDCT: frame upsampling (libjxl resamples at very low quality, around Magick.NET quality 1), an LF frame,
+  extra channels, YCbCr (a recompressed JPEG) and RGB without XYB, float samples. Everything else a cjxl file
+  carries decodes since 3.41 (`JxlVarDctDecoder`): local or global MA trees, custom dequant matrices and
+  coefficient orders, every DctSelect transform, several passes, Gabor and EPF.
 
 **Modular**
 
@@ -91,7 +93,7 @@ can hit, and the messages are the authoritative list if this section drifts.
 
 **Colour**
 
-- Embedded ICC colour encoding; custom primaries; custom white point.
+- Embedded ICC colour encoding; custom primaries; custom white point; HLG output from XYB.
 
 **VarDCT encoder shape**
 

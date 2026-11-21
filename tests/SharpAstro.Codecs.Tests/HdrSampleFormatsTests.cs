@@ -13,8 +13,8 @@ namespace SharpAstro.Codecs.Tests;
 /// </summary>
 /// <remarks>
 /// The bounds are what the decoders measured on these files when this was written (HEIC HDR 4.39 / 0.13,
-/// HEIC SDR 5.95 / 0.99, JPEG 5.13 / 0.89 codes), with a little room for rounding, never loosened to make a
-/// change pass. The channel-mean bound is what pins the Y'CbCr matrix of a heif-enc file with no nclx:
+/// HEIC SDR 5.95 / 0.99, JPEG 5.13 / 0.89, JXL HDR 2.76 / 0.22, JXL SDR 5.57 / 1.64 codes), with a little room for
+/// rounding, never loosened to make a change pass. The channel-mean bound is what pins the Y'CbCr matrix of a heif-enc file with no nclx:
 /// converted with BT.601 the HDR HEIC's means sit 0.12 codes from the master's, with BT.709 2.30 and with
 /// BT.2020 2.74 (SDR: 0.99, 4.34, 4.90), measured once by converting the decoded planes each way.
 /// </remarks>
@@ -55,14 +55,28 @@ public class HdrSampleFormatsTests
     public void Tiff_IsItsPngMaster(string file, string master) => Compare(Load(file), Load(master), 0, 0);
 
     /// <summary>
+    /// cjxl's two lossy (VarDCT) files: 16-bit, BT.2020 PQ and sRGB from their own colour encodings (no ICC), each
+    /// decoded to the PNG's bit depth through the full VarDCT path (cjxl uses fifteen DctSelect transforms here,
+    /// local MA trees, custom coefficient orders, fifteen HF presets, Gabor and EPF). Against libjxl's own decode of
+    /// the same bytes (Magick.NET, measured once outside the suite) the SDR file is within one 16-bit code
+    /// everywhere (114.3 dB) and the PQ file too except in a channel near black (101.9 dB), where PQ is steep
+    /// enough that libjxl's colour-managed conversion lands further off.
+    /// </summary>
+    [Theory]
+    [InlineData("4A_JPEG-XL_HDR.jxl", "1A_PNG_HDR.png", 2.9, 0.3)]
+    [InlineData("4B_JPEG-XL_SDR.jxl", "1B_PNG_SDR.png", 5.7, 1.75)]
+    public void Jxl_MatchesItsPngMaster(string file, string master, double maxMeanError, double maxChannelMeanShift) =>
+        Compare(Load(file), Load(master), maxMeanError, maxChannelMeanShift);
+
+    /// <summary>
     /// cjxl's two files: the header reads (the PQ one sets extra_fields for its 10000-nit tone mapping, #103)
     /// and so does the frame's permuted TOC (#104). Read wrongly, the sizes after the permutation desync and
     /// the byte accounting fails, and its ANS stream fails the final-state check. Logically the sections tile
     /// the data exactly once, and the permutation's direction shows in the layout: cjxl writes chunk by chunk,
     /// so the codestream holds LfGlobal, then LfGroup 0, then that LF group's PassGroups a group-row at a time
     /// (logical 17 to 24, then 50 to 57, 33 groups to a row of 8256 px), and only then LfGroup 1. Read the
-    /// other way round, the same permutation scatters them. Decoding the frames waits on the VarDCT tools cjxl
-    /// uses beyond this decoder's own (a global MA tree first), so no pixels are compared yet.
+    /// other way round, the same permutation scatters them. The frames themselves are decoded and compared with
+    /// the PNG masters by <see cref="Jxl_MatchesItsPngMaster"/>.
     /// </summary>
     [Theory]
     [InlineData("4A_JPEG-XL_HDR.jxl", 10000f)]

@@ -44,6 +44,16 @@ internal sealed class JxlEntropyDecoder
 
     public byte[] ClusterMap => _clusters;
 
+    /// <summary>
+    /// A decoder with the same distributions and fresh stream state (ANS state, LZ77 window). Every Modular
+    /// sub-image and every PassGroup that shares one parsed configuration decodes from its own clone, as
+    /// jxl-oxide clones its <c>Decoder</c> per stream; the LZ77 window must never carry from one stream into
+    /// the next.
+    /// </summary>
+    public JxlEntropyDecoder Clone() => new(
+        _clusters, _configs, _usePrefix, _prefix, _ans,
+        _lz77Enabled, _lzMinSymbol, _lzMinLength, _lzLenConfig);
+
     // Diagnostics.
     public bool UsesLz77 => _lz77Enabled;
     public bool UsesPrefix => _usePrefix;
@@ -267,7 +277,9 @@ internal sealed class JxlEntropyDecoder
         int offset = (int)(_lzNumDecoded & 0xfffff);
         if (_lzWindow.Length <= offset)
         {
-            Array.Resize(ref _lzWindow, offset + 1);
+            // Grow geometrically up to the 2^20-entry window; growing by one entry per symbol made every
+            // LZ77 stream quadratic in its length.
+            Array.Resize(ref _lzWindow, Math.Min(1 << 20, Math.Max(offset + 1, _lzWindow.Length * 2)));
         }
         _lzWindow[offset] = r;
         _lzNumDecoded++;

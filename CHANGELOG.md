@@ -16,6 +16,29 @@ those notes, verbatim in substance. 3.4 has no recorded note; it was never writt
 
 ## 3.41
 
+**`SharpAstro.Jxl`: libjxl's lossy (VarDCT) files decode, to libjxl's pixels.** The VarDCT reader used to mirror
+only this repo's own encoder (all DCT8, default tables, no filters), so a cjxl or Magick.NET file stopped at its
+first custom section. `JxlVarDctDecoder` is a port of jxl-oxide's VarDCT path, cited per routine: local or global MA
+trees, custom dequant matrices, custom coefficient orders and HF presets, the HF block context, every DctSelect
+transform (DCT2 to DCT256, DCT4x8, Hornuss, AFV) with the low frequencies of a large block taken from the LF image,
+LF and HF chroma-from-luma, adaptive LF smoothing, the quant bias, several passes, then the Gabor-like and
+edge-preserving filters, and XYB to the file's own colour encoding (sRGB, BT.2020 or P3 primaries; sRGB, PQ,
+BT.709, linear or gamma transfer; grey) at its own bit depth, scaled by the intensity target. Against libjxl's own
+decode (Magick.NET) of cjxl's 8256x5504 HDR sample pair: the SDR file is within one 16-bit code everywhere
+(114.3 dB), the PQ file too except in a channel near black (101.9 dB; PQ is steep there and libjxl converts through
+an ICC transform), and both stay as close to their PNG masters as the HEIC encodes (mean error 5.57 and 2.76 10-bit
+codes). Magick.NET files from 1x1 to 2100x300 at qualities 10 to 99 (DCT64 at the low end, AFV and Hornuss at the
+high) agree to one 16-bit code; 8-bit files agree to one code because libjxl dithers its 8-bit output and this
+decoder rounds. An 8256x5504 file takes about 1.6 s on 16 cores and 0.7 GB: the frame lives in one integer plane per
+channel that holds a group's coefficients, then its pixels, then the filtered image, then the output samples, and
+LF groups and PassGroups decode in parallel. Frame upsampling (libjxl resamples at very low quality), patches,
+splines, noise, extra channels, YCbCr and ICC colour are refused by name. `JxlImageDecoder` reports the
+codestream's colour encoding for integer images (BT.2020 PQ for the HDR file, not sRGB) and writes 16-bit samples
+straight into the raster's bytes, one 272 MB copy fewer for these files. Modular sub-images now read previous-channel
+properties, skip empty channels and take NN as N in the first two rows, as jxl-oxide does, and each stream decodes
+from its own copy of the entropy state; an LZ77 window grows geometrically instead of by one entry per symbol.
+`Jxl_MatchesItsPngMaster` and `JxlOracleTests`' VarDCT cases check all of this.
+
 **`SharpAstro.Jxl`: a permuted TOC is read (#104).** cjxl writes a large image chunk by chunk (LfGlobal, LfGroup 0
 and its PassGroups, LfGroup 1, ...) and codes that order as a Lehmer-coded permutation before the section sizes, which
 used to be refused. `JxlToc` now decodes it (8 distributions, ANS final state checked) and gives every section's size

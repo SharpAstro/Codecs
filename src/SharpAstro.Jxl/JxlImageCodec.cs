@@ -27,6 +27,9 @@ public sealed record JxlImage
     /// integer (F32 = 32-bit pattern, F16 = the 16-bit half pattern sign-extended).
     /// </summary>
     public required int[][] Channels { get; init; }
+
+    /// <summary>The colour encoding the integer samples are in (the codestream's own; sRGB when it says nothing).</summary>
+    internal JxlColorEncoding ColorEncoding { get; init; } = JxlColorEncoding.Srgb;
 }
 
 /// <summary>
@@ -41,39 +44,41 @@ public sealed record JxlImage
 /// <para><b>Lossy VarDCT</b> (<see cref="JxlVarDctEncoder"/> / <see cref="JxlVarDctFrame"/>) via
 /// <see cref="EncodeRgb24Lossy"/>: 8-bit RGB with a libjxl-style Butteraugli <c>distance</c> knob
 /// (default 1.0; DCT8, XYB colour, full-resolution chroma), dimensions multiples of 8 and ≤ 16384 px.
-/// <see cref="Decode(ReadOnlySpan{byte})"/> auto-detects the encoding and handles both. Grayscale-lossy and arbitrary
-/// lossy dimensions remain follow-ups.</para>
+/// <see cref="Decode(ReadOnlySpan{byte})"/> auto-detects the encoding and handles both, and decodes libjxl's own lossy
+/// files too (<see cref="JxlVarDctDecoder"/>). Grayscale-lossy encode and arbitrary lossy encode dimensions remain
+/// follow-ups.</para>
 /// </summary>
 public static class JxlImageCodec
 {
     /// <summary>
     /// Decodes a <c>.jxl</c> (bare codestream or ISOBMFF container) into channels, dispatching on the
-    /// frame encoding: lossless Modular (grey/RGB, 8/16-bit integer or F16/F32 float) or our lossy
-    /// VarDCT output (returned as 8-bit RGB). Throws <see cref="NotSupportedException"/> for constructs
-    /// outside the supported scope (multi-group Modular, alpha, …).
+    /// frame encoding: lossless Modular (grey/RGB, 8/16-bit integer or F16/F32 float) or lossy VarDCT
+    /// (grey/RGB integer samples at the image's bit depth, in its own colour encoding). Throws
+    /// <see cref="NotSupportedException"/> for constructs outside the supported scope (multi-group Modular, alpha,
+    /// VarDCT frame upsampling, ...).
     /// </summary>
     public static JxlImage Decode(ReadOnlySpan<byte> jxl)
     {
         byte[] bytes = jxl.ToArray();
-        var encoding = PeekEncoding(bytes, out int vw, out int vh, out int orientation);
-        return Orient(DecodeAsStored(bytes, encoding, vw, vh), orientation);
+        var encoding = PeekEncoding(bytes, out int vw, out int vh, out int orientation, out JxlColorEncoding color);
+        return Orient(DecodeAsStored(bytes, encoding, vw, vh) with { ColorEncoding = color }, orientation);
     }
 
     private static JxlImage DecodeAsStored(byte[] bytes, JxlFrameEncoding encoding, int vw, int vh)
     {
         if (encoding == JxlFrameEncoding.VarDct)
         {
-            // Lossy VarDCT (our DCT8 path): reconstructs to 8-bit integer RGB.
-            int[][] rgb = JxlVarDctFrame.DecodeToRgb24(bytes);
+            // Lossy VarDCT: integer RGB at the image's own bit depth, in its own colour encoding.
+            JxlVarDctResult r = JxlVarDctDecoder.Decode(bytes);
             return new JxlImage
             {
-                Width = vw,
-                Height = vh,
-                ColorChannels = 3,
-                BitsPerSample = 8,
+                Width = r.Width,
+                Height = r.Height,
+                ColorChannels = r.Channels.Length,
+                BitsPerSample = r.BitsPerSample,
                 FloatingPoint = false,
                 ExponentBits = 0,
-                Channels = rgb,
+                Channels = r.Channels,
             };
         }
 
@@ -94,13 +99,15 @@ public static class JxlImageCodec
     public static JxlImage Decode(byte[] jxl) => Decode(jxl.AsSpan());
 
     /// <summary>Reads just the headers to learn the frame encoding (+ dimensions) so <see cref="Decode(ReadOnlySpan{byte})"/> can dispatch.</summary>
-    private static JxlFrameEncoding PeekEncoding(byte[] containerOrCodestream, out int width, out int height, out int orientation)
+    private static JxlFrameEncoding PeekEncoding(
+        byte[] containerOrCodestream, out int width, out int height, out int orientation, out JxlColorEncoding color)
     {
         byte[] cs = JxlContainer.ExtractCodestream(containerOrCodestream);
         var br = new JxlBitReader(cs.AsSpan(2)); // skip FF 0A
         (width, height) = JxlSizeHeader.Read(ref br);
         JxlImageMetadata meta = JxlImageMetadata.Read(ref br);
         orientation = meta.Orientation;
+        color = meta.Color;
         JxlFrameHeader frame = JxlFrameHeader.Read(ref br, meta, width, height);
         return frame.Encoding;
     }

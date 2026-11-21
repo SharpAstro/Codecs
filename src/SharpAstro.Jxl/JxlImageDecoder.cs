@@ -129,23 +129,55 @@ public sealed class JxlImageDecoder : IImageDecoder
                 var src = img.Channels[c];
                 for (var i = 0; i < n; i++) dst[i * channels + c] = (byte)src[i];
             }
-            image = new RasterImage(img.Width, img.Height, channels, SampleFormat.UInt8, dst);
+            image = new RasterImage(img.Width, img.Height, channels, SampleFormat.UInt8, dst, iccProfile: null, ToColorEncoding(img.ColorEncoding));
             return true;
         }
 
         if (img.BitsPerSample <= 16)
         {
-            var dst = new ushort[checked(n * channels)];
+            // Written straight into the raster's bytes: a ushort[] copied out afterwards held the image twice.
+            var bytes = new byte[checked((long)n * channels * 2)];
+            var dst = MemoryMarshal.Cast<byte, ushort>(bytes.AsSpan());
             for (var c = 0; c < channels; c++)
             {
                 var src = img.Channels[c];
                 for (var i = 0; i < n; i++) dst[i * channels + c] = (ushort)src[i];
             }
-            image = new RasterImage(img.Width, img.Height, channels, SampleFormat.UInt16,
-                MemoryMarshal.AsBytes<ushort>(dst).ToArray());
+            image = new RasterImage(img.Width, img.Height, channels, SampleFormat.UInt16, bytes, iccProfile: null, ToColorEncoding(img.ColorEncoding));
             return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The codestream's colour encoding as the facade's: JPEG XL numbers its primaries and transfer functions as
+    /// H.273 does, so the enum values carry over; P3 primaries split by white point (D65 Display P3, DCI-P3), and an
+    /// explicit gamma maps to the H.273 gammas it equals. What H.273 cannot name reads as unspecified.
+    /// </summary>
+    internal static ColorEncoding ToColorEncoding(JxlColorEncoding enc)
+    {
+        ColorPrimaries primaries = enc.ColorSpace == JxlColorSpace.Gray
+            ? ColorPrimaries.BT709
+            : enc.Primaries switch
+            {
+                JxlPrimaries.Srgb => ColorPrimaries.BT709,
+                JxlPrimaries.Bt2100 => ColorPrimaries.BT2020,
+                JxlPrimaries.P3 => enc.WhitePoint == JxlWhitePoint.Dci ? ColorPrimaries.DciP3 : ColorPrimaries.DisplayP3,
+                _ => ColorPrimaries.Unspecified,
+            };
+        TransferFunction transfer = enc.Transfer switch
+        {
+            JxlTransferFunction.Srgb => TransferFunction.Srgb,
+            JxlTransferFunction.Linear => TransferFunction.Linear,
+            JxlTransferFunction.Pq => TransferFunction.Pq,
+            JxlTransferFunction.Hlg => TransferFunction.Hlg,
+            JxlTransferFunction.Bt709 => TransferFunction.BT709,
+            JxlTransferFunction.Dci => TransferFunction.SMPTE428,
+            JxlTransferFunction.Gamma when Math.Abs(enc.Gamma - 1 / 2.2) < 1e-4 => TransferFunction.BT470M,
+            JxlTransferFunction.Gamma when Math.Abs(enc.Gamma - 1 / 2.8) < 1e-4 => TransferFunction.BT470BG,
+            _ => TransferFunction.Unspecified,
+        };
+        return new ColorEncoding { Primaries = primaries, Transfer = transfer };
     }
 }

@@ -26,6 +26,9 @@ internal readonly struct JxlImageMetadata
     public bool HasAlpha { get; init; }
     public JxlColorSpace ColorSpace { get; init; }
 
+    /// <summary>The colour encoding the image is in (or, when <see cref="XybEncoded"/>, is to be shown in).</summary>
+    public JxlColorEncoding Color { get; init; }
+
     /// <summary>EXIF-style orientation 1 to 8 (1 = as stored), from <c>extra_fields</c>; 1 without them.</summary>
     public int Orientation { get; init; }
 
@@ -59,6 +62,7 @@ internal readonly struct JxlImageMetadata
                 NumExtraChannels = 0,
                 HasAlpha = false,
                 ColorSpace = JxlColorSpace.Rgb,
+                Color = JxlColorEncoding.Srgb,
                 Orientation = 1,
                 IntensityTarget = DefaultIntensityTarget,
             };
@@ -124,6 +128,7 @@ internal readonly struct JxlImageMetadata
             NumExtraChannels = (int)numExtraChannels,
             HasAlpha = hasAlpha,
             ColorSpace = color.ColorSpace,
+            Color = color,
             Orientation = orientation,
             IntrinsicSize = intrinsicSize,
             IntensityTarget = intensityTarget,
