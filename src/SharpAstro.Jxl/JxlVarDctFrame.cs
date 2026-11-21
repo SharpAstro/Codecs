@@ -66,12 +66,11 @@ internal static class JxlVarDctFrame
         }
         else
         {
-            // Multi-entry TOC: LfGlobal, LfGroup×num_lf_groups, HfGlobal, PassGroup×num_groups — each a
-            // separate byte-aligned section. Slice the codestream at the cumulative offsets.
+            // Multi-entry TOC: LfGlobal, LfGroup×num_lf_groups, HfGlobal, PassGroup×num_groups, each a
+            // separate byte-aligned section. The TOC gives each one's start in logical order, permuted or not.
             int secStart = 2 + (int)br.BytesRead;
             var offsets = new int[toc.EntryCount];
-            int acc = secStart;
-            for (int i = 0; i < toc.EntryCount; i++) { offsets[i] = acc; acc += (int)toc.Sizes[i]; }
+            for (int i = 0; i < toc.EntryCount; i++) offsets[i] = secStart + (int)toc.Offsets[i];
 
             var lfgBr = new JxlBitReader(cs.AsSpan(offsets[0], (int)toc.Sizes[0]));
             (lfVarDct, JxlMaConfig tree) = ParseLfGlobal(ref lfgBr, nodeLimit);

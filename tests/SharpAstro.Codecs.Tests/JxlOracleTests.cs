@@ -145,7 +145,7 @@ public sealed class JxlOracleTests
         CheckByteAccounting(image.ToByteArray(MagickFormat.Jxl), $"{w}x{h} {(lossless ? "lossless" : "lossy")}");
     }
 
-    private static void CheckByteAccounting(byte[] bytes, string label)
+    internal static JxlToc CheckByteAccounting(byte[] bytes, string label)
     {
         byte[] cs = JxlContainer.ExtractCodestream(bytes);
         var br = new JxlBitReader(cs.AsSpan(2)); // skip FF 0A
@@ -162,6 +162,7 @@ public sealed class JxlOracleTests
 
         // 2 signature bytes + headers/TOC bytes + data sections == whole codestream.
         (2 + br.BytesRead + toc.TotalSize).ShouldBe((long)cs.Length, label);
+        return toc;
     }
 
     private static MagickImage BuildRgb()
