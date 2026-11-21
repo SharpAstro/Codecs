@@ -353,12 +353,15 @@ public class HevcFixtureTests(ITestOutputHelper output)
         }
 
         // Skip the 4-byte length and 2-byte NAL header of each unit; damage only what follows.
+        // One working copy, one byte flipped and put back per attempt: the decode is synchronous and keeps
+        // no reference to its input, and the random sequence (so every attempt's damage) is unchanged.
+        var damaged = (byte[])item.Clone();
         for (var i = 0; i < 600; i++)
         {
-            var damaged = (byte[])item.Clone();
             var position = 6 + random.Next(item.Length - 6);
             damaged[position] ^= (byte)(1 + random.Next(255));
-            Attempt(damaged);
+            try { Attempt(damaged); }
+            finally { damaged[position] = item[position]; }
         }
         for (var cut = 16; cut < item.Length; cut += Math.Max(1, item.Length / 50))
         {
