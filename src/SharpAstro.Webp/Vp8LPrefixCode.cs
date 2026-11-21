@@ -64,6 +64,50 @@ internal sealed class Vp8LPrefixCode
         return new Vp8LPrefixCode(size, lengths, used);
     }
 
+    /// <summary>
+    /// What <see cref="DataBits"/> plus <see cref="HeaderBits"/> of the code <see cref="Build"/> makes for
+    /// <paramref name="histogram"/> would be, without making it: the lengths live in scratch and nothing is kept.
+    /// The encoder prices every candidate stream this way and builds codes only for the one it writes (Codecs#100).
+    /// </summary>
+    public static long Cost(ReadOnlySpan<int> histogram)
+    {
+        int size = histogram.Length;
+        int[]? rented = null;
+        Span<int> lengths = size <= 3072 ? stackalloc int[size] : (rented = WebpBufferPool<int>.Rent(size)).AsSpan(0, size);
+        try
+        {
+            lengths.Clear();
+            Vp8LHuffman.BuildLengths(histogram, Vp8LHuffman.MaxCodeLength, lengths);
+            int used = 0;
+            for (int i = 0; i < size; i++)
+            {
+                if (lengths[i] != 0)
+                {
+                    used++;
+                }
+            }
+
+            // A code with one symbol is a zero-bit code: every use of it writes nothing.
+            long bits = 0;
+            if (used > 1)
+            {
+                for (int i = 0; i < size; i++)
+                {
+                    bits += (long)histogram[i] * lengths[i];
+                }
+            }
+
+            return bits + HeaderBitsOf(lengths, used);
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                WebpBufferPool<int>.Return(rented);
+            }
+        }
+    }
+
     /// <summary>The bits the symbols of <paramref name="histogram"/> cost with this code (extra bits not included).</summary>
     public long DataBits(ReadOnlySpan<int> histogram)
     {
@@ -81,19 +125,28 @@ internal sealed class Vp8LPrefixCode
     /// normal form's plan cost, which counts the same fields <see cref="WriteNormal"/> writes. It used to write the
     /// header into a scratch writer for every code the encoder costed (Codecs#92).
     /// </summary>
-    public long HeaderBits()
+    public long HeaderBits() => HeaderBitsOf(_lengths, _usedSymbols);
+
+    private static long HeaderBitsOf(ReadOnlySpan<int> lengths, int usedSymbols)
     {
-        if (IsSimple)
+        if (IsSimpleCode(lengths, usedSymbols))
         {
-            var (first, second) = SimpleSymbols();
+            var (first, second) = SimpleSymbols(lengths);
             // simple_code_or_not, num_symbols - 1, is_first_8bits, the first symbol, the second.
             return 3 + (first > 1 ? 8 : 1) + (second >= 0 ? 8 : 0);
         }
 
-        return NormalHeader().Cost;
+        // The cheaper of the two normal-form headers (the trimmed one only when strictly cheaper, as NormalHeader).
+        Span<int> scratch = stackalloc int[19];
+        long full = PlanCore(lengths, lengths.Length, useMaxSymbol: false, scratch, out _);
+        long trimmed = PlanCore(lengths, LastUsedSymbol(lengths) + 1, useMaxSymbol: true, scratch, out _);
+        return trimmed < full ? trimmed : full;
     }
 
-    private bool IsSimple => _usedSymbols <= 2 && LastUsedSymbol() < 256;
+    private bool IsSimple => IsSimpleCode(_lengths, _usedSymbols);
+
+    private static bool IsSimpleCode(ReadOnlySpan<int> lengths, int usedSymbols) =>
+        usedSymbols <= 2 && LastUsedSymbol(lengths) < 256;
 
     private NormalPlan NormalHeader()
     {
@@ -103,7 +156,7 @@ internal sealed class Vp8LPrefixCode
         }
 
         NormalPlan full = Plan(_alphabetSize, useMaxSymbol: false);
-        NormalPlan trimmed = Plan(LastUsedSymbol() + 1, useMaxSymbol: true);
+        NormalPlan trimmed = Plan(LastUsedSymbol(_lengths) + 1, useMaxSymbol: true);
         return _normal = trimmed.Cost < full.Cost ? trimmed : full;
     }
 
@@ -138,11 +191,11 @@ internal sealed class Vp8LPrefixCode
         WriteNormal(writer);
     }
 
-    private int LastUsedSymbol()
+    private static int LastUsedSymbol(ReadOnlySpan<int> lengths)
     {
-        for (int i = _alphabetSize - 1; i >= 0; i--)
+        for (int i = lengths.Length - 1; i >= 0; i--)
         {
-            if (_lengths[i] != 0)
+            if (lengths[i] != 0)
             {
                 return i;
             }
@@ -153,7 +206,7 @@ internal sealed class Vp8LPrefixCode
 
     private void WriteSimple(Vp8LBitWriter writer)
     {
-        var (first, second) = SimpleSymbols();
+        var (first, second) = SimpleSymbols(_lengths);
         writer.WriteBits(1, 1); // simple_code_or_not
         writer.WriteBits(second >= 0 ? 1u : 0u, 1); // num_symbols - 1
         bool wide = first > 1;
@@ -166,15 +219,15 @@ internal sealed class Vp8LPrefixCode
     }
 
     /// <summary>The simple form's one or two symbols; the second is -1 for one.</summary>
-    private (int First, int Second) SimpleSymbols()
+    private static (int First, int Second) SimpleSymbols(ReadOnlySpan<int> lengths)
     {
         // An empty histogram (a code nothing uses, like the distance code here) is coded as the
         // one symbol 0, which costs no bits per use.
         int first = -1;
         int second = -1;
-        for (int i = 0; i < _alphabetSize; i++)
+        for (int i = 0; i < lengths.Length; i++)
         {
-            if (_lengths[i] == 0)
+            if (lengths[i] == 0)
             {
                 continue;
             }
@@ -198,15 +251,15 @@ internal sealed class Vp8LPrefixCode
     }
 
     /// <summary>Where <see cref="Tokenize"/> sends each code-length symbol, with its extra bits.</summary>
-    private interface ITokenSink
+    private interface ITokenSink : allows ref struct
     {
         void Add(int symbol, int extra, int extraBits);
     }
 
     /// <summary>Counts the symbols and their extra bits: all a plan's cost needs.</summary>
-    private struct CountingSink(int[] histogram) : ITokenSink
+    private ref struct CountingSink(Span<int> histogram) : ITokenSink
     {
-        public readonly int[] Histogram = histogram;
+        public readonly Span<int> Histogram = histogram;
         public int Tokens;
         public long ExtraBits;
 
@@ -276,7 +329,7 @@ internal sealed class Vp8LPrefixCode
         }
 
         var sink = new WritingSink(writer, plan.CodeLengthLengths, plan.CodeLengthCodes);
-        Tokenize(plan.Count, ref sink);
+        Tokenize(_lengths, plan.Count, ref sink);
     }
 
     // max_symbol is 2 + a (2 + 2k)-bit value, k in 0..7.
@@ -293,32 +346,65 @@ internal sealed class Vp8LPrefixCode
 
     private NormalPlan Plan(int count, bool useMaxSymbol)
     {
-        var counting = new CountingSink(new int[19]);
-        Tokenize(count, ref counting);
-        int[] histogram = counting.Histogram;
+        int[] lengths = new int[19];
+        long cost = PlanCore(_lengths, count, useMaxSymbol, lengths, out int tokens);
+        uint[] codes = new uint[19];
+        Vp8LHuffman.AssignCodes(lengths, codes);
+
+        return new NormalPlan
+        {
+            Count = count,
+            TokenCount = tokens,
+            CodeLengthLengths = lengths,
+            CodeLengthCodes = codes,
+            UseMaxSymbol = useMaxSymbol,
+            Cost = cost,
+        };
+    }
+
+    // Costs a normal-form header for the first `count` lengths and leaves its code-length code's lengths in
+    // `codeLengthLengths` (19 entries). All on the stack: costing every candidate the encoder considers used to
+    // allocate two arrays and a plan for each (Codecs#100).
+    private static long PlanCore(
+        ReadOnlySpan<int> lengthsOfCode,
+        int count,
+        bool useMaxSymbol,
+        Span<int> codeLengthLengths,
+        out int tokens)
+    {
+        Span<int> histogram = stackalloc int[19];
+        histogram.Clear();
+        var counting = new CountingSink(histogram);
+        Tokenize(lengthsOfCode, count, ref counting);
         // What the tokens cost is counted on the real histogram, before the second symbol below is added.
         Span<int> occurrences = stackalloc int[19];
         histogram.CopyTo(occurrences);
 
         // A one-symbol code-length code would be a zero-bit code; give it a second symbol so it
         // is an ordinary complete code every decoder reads the same way.
-        int distinct = histogram.Count(static h => h > 0);
+        int distinct = 0;
+        for (int i = 0; i < histogram.Length; i++)
+        {
+            if (histogram[i] > 0)
+            {
+                distinct++;
+            }
+        }
+
         if (distinct == 1)
         {
             int other = histogram[0] > 0 ? 1 : 0;
             histogram[other] = 1;
         }
 
-        int[] lengths = new int[19];
-        Vp8LHuffman.BuildLengths(histogram, CodeLengthCodeMaxLength, lengths);
-        uint[] codes = new uint[19];
-        Vp8LHuffman.AssignCodes(lengths, codes);
+        codeLengthLengths.Clear();
+        Vp8LHuffman.BuildLengths(histogram, CodeLengthCodeMaxLength, codeLengthLengths);
 
         long cost = 1 + 4; // simple_code_or_not, number_of_code_lengths
         int stored = 4;
         for (int i = 0; i < CodeLengthCodeOrder.Length; i++)
         {
-            if (lengths[CodeLengthCodeOrder[i]] != 0)
+            if (codeLengthLengths[CodeLengthCodeOrder[i]] != 0)
             {
                 stored = Math.Max(stored, i + 1);
             }
@@ -328,35 +414,27 @@ internal sealed class Vp8LPrefixCode
         cost += useMaxSymbol ? 4 + MaxSymbolBits(counting.Tokens) : 1;
         for (int symbol = 0; symbol < occurrences.Length; symbol++)
         {
-            cost += (long)occurrences[symbol] * lengths[symbol];
+            cost += (long)occurrences[symbol] * codeLengthLengths[symbol];
         }
 
         cost += counting.ExtraBits;
-
-        return new NormalPlan
-        {
-            Count = count,
-            TokenCount = counting.Tokens,
-            CodeLengthLengths = lengths,
-            CodeLengthCodes = codes,
-            UseMaxSymbol = useMaxSymbol,
-            Cost = cost,
-        };
+        tokens = counting.Tokens;
+        return cost;
     }
 
     // Turns the first `count` code lengths into code-length symbols: literal lengths 0..15, 16
     // (repeat the previous non-zero length 3-6 times, which starts as 8), 17 (3-10 zeros) and 18
     // (11-138 zeros).
-    private void Tokenize<TSink>(int count, ref TSink sink)
-        where TSink : struct, ITokenSink
+    private static void Tokenize<TSink>(ReadOnlySpan<int> lengths, int count, ref TSink sink)
+        where TSink : struct, ITokenSink, allows ref struct
     {
         int previous = 8;
         int i = 0;
         while (i < count)
         {
-            int value = _lengths[i];
+            int value = lengths[i];
             int run = 1;
-            while (i + run < count && _lengths[i + run] == value)
+            while (i + run < count && lengths[i + run] == value)
             {
                 run++;
             }
