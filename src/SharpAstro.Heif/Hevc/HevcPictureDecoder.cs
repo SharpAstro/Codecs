@@ -180,7 +180,7 @@ internal sealed partial class HevcPictureDecoder
     private readonly HevcDecodeStatistics? _statistics;
     private readonly HevcDecodeWorkspace? _workspace;
 
-    private T[] Alloc<T>(string slot, int length, T fill = default!)
+    private T[] Alloc<T>(HevcDecodeWorkspace.Slot slot, int length, T fill = default!)
     {
         if (_workspace is not null) return _workspace.Take(slot, length, fill);
         var array = new T[length];
@@ -215,29 +215,29 @@ internal sealed partial class HevcPictureDecoder
         if (_pps.DiffCuQpDeltaDepth > _log2Ctb - _log2MinCb)
             throw new InvalidDataException($"diff_cu_qp_delta_depth {_pps.DiffCuQpDeltaDepth} is deeper than the coding quadtree.");
 
-        _luma = Alloc<ushort>("luma", _width * _height);
+        _luma = Alloc<ushort>(HevcDecodeWorkspace.Slot.Luma, _width * _height);
         if (_chroma != 0)
         {
             _chromaWidth = _width >> _log2SubW;
             _chromaHeight = _height >> _log2SubH;
-            _cb = Alloc<ushort>("cb", _chromaWidth * _chromaHeight);
-            _cr = Alloc<ushort>("cr", _chromaWidth * _chromaHeight);
+            _cb = Alloc<ushort>(HevcDecodeWorkspace.Slot.Cb, _chromaWidth * _chromaHeight);
+            _cr = Alloc<ushort>(HevcDecodeWorkspace.Slot.Cr, _chromaWidth * _chromaHeight);
         }
 
         (_rsToTs, _tsToRs, _tileOfRs, _tileFirstColumn) = TileScan(pps, _widthInCtbs, _heightInCtbs);
         _ctbSlice = Alloc("ctbSlice", _widthInCtbs * _heightInCtbs, -1);
         _width4 = _width >> 2;
         var blocks = _width4 * (_height >> 2);
-        _ctDepth = Alloc<byte>("ctDepth", blocks);
-        _lumaMode = Alloc<byte>("lumaMode", blocks);
-        _chromaMode = Alloc<byte>("chromaMode", blocks);
-        _qpMap = Alloc<sbyte>("qpMap", blocks);
-        _edges = Alloc<byte>("edges", blocks);
-        _bypass = Alloc<byte>("bypass", blocks);
+        _ctDepth = Alloc<byte>(HevcDecodeWorkspace.Slot.CtDepth, blocks);
+        _lumaMode = Alloc<byte>(HevcDecodeWorkspace.Slot.LumaMode, blocks);
+        _chromaMode = Alloc<byte>(HevcDecodeWorkspace.Slot.ChromaMode, blocks);
+        _qpMap = Alloc<sbyte>(HevcDecodeWorkspace.Slot.QpMap, blocks);
+        _edges = Alloc<byte>(HevcDecodeWorkspace.Slot.Edges, blocks);
+        _bypass = Alloc<byte>(HevcDecodeWorkspace.Slot.Bypass, blocks);
         var ctbs = _widthInCtbs * _heightInCtbs;
-        _saoType = Alloc<byte>("saoType", ctbs * 3);
-        _saoBandOrClass = Alloc<byte>("saoBand", ctbs * 3);
-        _saoOffsets = Alloc<short>("saoOffsets", ctbs * 3 * 4);
+        _saoType = Alloc<byte>(HevcDecodeWorkspace.Slot.SaoType, ctbs * 3);
+        _saoBandOrClass = Alloc<byte>(HevcDecodeWorkspace.Slot.SaoBand, ctbs * 3);
+        _saoOffsets = Alloc<short>(HevcDecodeWorkspace.Slot.SaoOffsets, ctbs * 3 * 4);
     }
 
     public HevcPicture Finish()
@@ -245,7 +245,7 @@ internal sealed partial class HevcPictureDecoder
         if (_nextCtb != _ctbSlice.Length)
             throw new InvalidDataException($"The picture's slices cover {_nextCtb} of its {_ctbSlice.Length} coding tree blocks.");
         ApplyLoopFilters();
-        _workspace?.Release("luma", "cb", "cr");
+        _workspace?.Release(HevcDecodeWorkspace.Slot.Luma, HevcDecodeWorkspace.Slot.Cb, HevcDecodeWorkspace.Slot.Cr);
         return new HevcPicture(_width, _height, _chroma, _sps.BitDepthLuma, _sps.BitDepthChroma,
             _luma, _cb, _cr, _chromaWidth, _chromaHeight, _sps.ConformanceWindow, _sps.VideoSignal);
     }

@@ -15,10 +15,13 @@ namespace SharpAstro.Heif.Hevc;
 /// </summary>
 internal sealed class HevcDecodeWorkspace
 {
-    private readonly Dictionary<string, Array> _arrays = [];
+    /// <summary>Every array a picture decoder takes; a name the compiler checks, where a string literal would only fail at run time.</summary>
+    internal enum Slot { Luma, Cb, Cr, CtDepth, LumaMode, ChromaMode, QpMap, Edges, Bypass, SaoType, SaoBand, SaoOffsets }
+
+    private readonly Dictionary<Slot, Array> _arrays = [];
 
     /// <summary>An array of exactly <paramref name="length"/> filled with <paramref name="fill"/>, reused when one of that size is held.</summary>
-    internal T[] Take<T>(string slot, int length, T fill = default!)
+    internal T[] Take<T>(Slot slot, int length, T fill = default!)
     {
         var zero = EqualityComparer<T>.Default.Equals(fill, default!);
         if (_arrays.TryGetValue(slot, out var held) && held is T[] array && array.Length == length)
@@ -33,7 +36,7 @@ internal sealed class HevcDecodeWorkspace
     }
 
     /// <summary>The picture owns these arrays now: forget them, so no later decode writes into a returned picture.</summary>
-    internal void Release(string a, string b, string c)
+    internal void Release(Slot a, Slot b, Slot c)
     {
         _arrays.Remove(a);
         _arrays.Remove(b);
