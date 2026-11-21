@@ -431,7 +431,13 @@ internal static class Vp8LEncoder
         public required int GroupBits;
         public required int[]? TileGroups;
         public required int TilesWide;
-        public required Vp8LPrefixCode[][] Groups;
+
+        /// <summary>
+        /// The prefix codes, built only for the stream that is written (<see cref="WriteStream"/> asks
+        /// <see cref="Evaluate"/> again with the codes kept): pricing a candidate keeps none (Codecs#100).
+        /// </summary>
+        public Vp8LPrefixCode[][] Groups = [];
+        public required int GroupCount;
         public required long CodeBits;
         public StreamPlan? EntropyImage;
         public int[]? EntropyPixels;
@@ -704,7 +710,8 @@ internal static class Vp8LEncoder
         int[]? tileGroups,
         int groupCount,
         bool isMain,
-        bool histogramsOnly = false)
+        bool histogramsOnly = false,
+        bool keepCodes = false)
     {
         var layout = new Vp8LHistogramLayout(LiteralAlphabet + LengthSymbols + (cacheBits == 0 ? 0 : 1 << cacheBits));
         // A pass that hands its histograms back (the per-tile one) gives them to the caller, who returns them to the
@@ -722,18 +729,35 @@ internal static class Vp8LEncoder
         Walk(argb, copyBuffer.AsSpan(0, copyCount), mapper, cacheBits, cache, ref sink);
 
         long bits = sink.ExtraBits;
-        // The per-tile pass only gathers histograms to cluster: its codes were built and priced for every tile and
-        // never read (Codecs#92).
-        var groups = new Vp8LPrefixCode[histogramsOnly ? 0 : groupCount][];
-        for (int g = 0; g < groups.Length; g++)
+        // The per-tile pass only gathers histograms to cluster and prices nothing (Codecs#92). Every other pass prices
+        // its codes without building them; the one stream that is written is evaluated again with the codes kept
+        // (Codecs#100).
+        Vp8LPrefixCode[][] groups = [];
+        if (keepCodes && !histogramsOnly)
         {
-            groups[g] = new Vp8LPrefixCode[5];
+            groups = new Vp8LPrefixCode[groupCount][];
+        }
+
+        for (int g = 0; g < (histogramsOnly ? 0 : groupCount); g++)
+        {
+            if (keepCodes)
+            {
+                groups[g] = new Vp8LPrefixCode[5];
+            }
+
             for (int i = 0; i < 5; i++)
             {
                 (int start, int length) = layout.Segments[i];
                 ReadOnlySpan<int> histogram = sets[g].AsSpan(start, length);
-                groups[g][i] = Vp8LPrefixCode.Build(histogram);
-                bits += groups[g][i].DataBits(histogram) + groups[g][i].HeaderBits();
+                if (keepCodes)
+                {
+                    groups[g][i] = Vp8LPrefixCode.Build(histogram);
+                    bits += groups[g][i].DataBits(histogram) + groups[g][i].HeaderBits();
+                }
+                else
+                {
+                    bits += Vp8LPrefixCode.Cost(histogram);
+                }
             }
         }
 
@@ -756,6 +780,7 @@ internal static class Vp8LEncoder
             TileGroups = tileGroups,
             TilesWide = tilesWide,
             Groups = groups,
+            GroupCount = groupCount,
             CodeBits = bits,
             Histograms = histogramsOnly ? sets : null,
         };
@@ -920,7 +945,13 @@ internal static class Vp8LEncoder
             }
         }
 
-        foreach (Vp8LPrefixCode[] group in stream.Groups)
+        // Priced without codes; build them now, for this stream only. Evaluating is deterministic, so they are the
+        // codes the price was for.
+        Vp8LPrefixCode[][] groups = Evaluate(
+            argb, width, stream.CopyBuffer, stream.CopyCount, stream.Mapper, stream.CacheBits, cache,
+            stream.GroupBits, stream.TilesWide, stream.TileGroups, stream.GroupCount, stream.IsMain,
+            keepCodes: true).Groups;
+        foreach (Vp8LPrefixCode[] group in groups)
         {
             foreach (Vp8LPrefixCode code in group)
             {
@@ -928,7 +959,7 @@ internal static class Vp8LEncoder
             }
         }
 
-        var sink = new WriteSink(writer, stream.Groups, width, stream.GroupBits, stream.TilesWide, stream.TileGroups);
+        var sink = new WriteSink(writer, groups, width, stream.GroupBits, stream.TilesWide, stream.TileGroups);
         Walk(argb, stream.Copies, stream.Mapper, stream.CacheBits, cache, ref sink);
     }
 }
