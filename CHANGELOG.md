@@ -33,6 +33,17 @@ encode at effort 9 went from 4.5 GiB to 152 MiB, 31x7 from 157 to 8.5 MiB. Outpu
 five kinds of image, six sizes and every effort). Shipped in the 3.40 run numbers after #93 and #94; noted here as the
 first release line that carries them.
 
+**`SharpAstro.Webp`: the lossless encoder allocates a further 62% less in the four encoder test classes (Codecs#100).**
+Output is byte-identical (`webp-encoder-golden.tsv` untouched). Serial totals, one sitting, master against this
+branch: the four classes (`TransformRoundTrip`, `Effort`, `PathologicalInput`, `TransformSize`; 508 tests)
+19.85 GiB to 7.51 GiB, the full serial suite 60.34 GiB to 48.48 GiB. The changes: prefix codes are priced without being
+built, the clusterer reuses its pair list and tile lists are presized, `Prepare` recycles dropped candidates' pixel
+copies, `ChooseCrossColor`'s search takes a struct cost instead of a `Func<int,double>` and closures per tile, and
+`ChooseStream`/`BuildStream`/`CheapBits`/`Write` share a pooled colour cache, one distance mapper per width and a
+rented copy buffer (returned when the winning stream has no copies). Not changed, judged real work: a winning
+stream's own copy buffer (Write needs it) and each candidate's transformed pixel image, which the input images
+themselves require. A per-site trace of the remaining 7.51 GiB was not taken.
+
 ## 3.40
 
 **`SharpAstro.Svg` rung 6: blend modes and filters.** `mix-blend-mode`, `isolation` and `filter` are read into the scene:
