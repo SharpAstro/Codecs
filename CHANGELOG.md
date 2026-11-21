@@ -16,6 +16,19 @@ those notes, verbatim in substance. 3.4 has no recorded note; it was never writt
 
 ## 3.41
 
+**`SharpAstro.Heif` and `SharpAstro.Tiff`: an ICC profile's `cicp` tag gives the colour when nothing else does.**
+A BT.2020 PQ PNG exported from Lightroom Classic carries a "Rec. 2020 PQ" ICC profile whose v4.4 `cicp` tag reads
+9/16/0/1. Encoded with libheif's `heif-enc`, the HEIC keeps that profile and gets no `nclx` box and no VUI colour;
+converted with ImageMagick, the TIFF keeps it too. Both decoded as BT.709 sRGB, so a PQ image came out flat and dim.
+HEIF now takes the colour from `nclx`, then the profile's `cicp` tag (primaries and transfer), then the VUI, then the
+sRGB default; the tag's matrix and range describe the profile's RGB, so the Y'CbCr matrix and range still come from
+the VUI or the BT.601 full-range default (against the PNG master, BT.601 shifts the HEIC's channel means by 0.12 of a
+10-bit code, BT.709 by 2.30 and BT.2020 by 2.74). An integer TIFF page takes primaries, transfer and range from the
+tag when it names RGB (matrix 0). `SharpAstro.Codecs.Abstractions.IccCicp.TryRead` reads the tag, beside
+`IccProfiles.WithCicp`'s writer. `HdrSampleFormatsTests` checks one photograph as PNG, HEIC, JPEG and TIFF
+(aaron-rust/hdr-sample-images, CC0) against its PNG masters; `fetch-hdr-samples.sh` pins the files and CI keeps them
+in its cache, so the source repository's Git LFS is read only on a cache miss.
+
 **`SharpAstro.Heif`: the decoded Y'CbCr planes, for a consumer that converts elsewhere.** `HeifDecoder.DecodeYCbCr`
 returns a `HeifYCbCrImage`: an item's Y', Cb and Cr planes (a grid's tiles composed, each picture cropped to its declared
 size) and how `Decode` would convert them (`Kr`, `Kb`, identity, range, the R'G'B' `ColorEncoding`).

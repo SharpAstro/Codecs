@@ -527,8 +527,9 @@ public static class HeifDecoder
         public required double Kb { get; init; }
 
         /// <summary>
-        /// From the <c>nclx</c> property; without one, from the HEVC VUI; without either, BT.709 primaries,
-        /// the sRGB transfer and the BT.601 matrix at full range.
+        /// From the <c>nclx</c> property; without one, the primaries and transfer from the ICC profile's
+        /// <c>cicp</c> tag; without that, from the HEVC VUI; without any, BT.709 primaries, the sRGB transfer
+        /// and the BT.601 matrix at full range.
         /// </summary>
         public static Colour For(HeifImage image, HevcPicture picture) =>
             For(image, picture.VideoSignal, picture.BitDepthLuma, picture.ChromaFormatIdc);
@@ -543,6 +544,17 @@ public static class HeifDecoder
             if (image.Nclx is { } nclx)
             {
                 (primaries, transfer, matrix, fullRange) = (nclx.Primaries, nclx.Transfer, nclx.Matrix, nclx.FullRange);
+            }
+            else if (image.Icc is { } icc && IccCicp.TryRead(icc.Profile, out var iccPrimaries, out var iccTransfer, out _, out _))
+            {
+                // The profile's cicp tag names the primaries and transfer of the RGB it describes (a heif-enc HEIC of a
+                // Lightroom PQ PNG says BT.2020 PQ nowhere else). Its matrix and range describe that RGB too (matrix 0, as
+                // ICC.1:2022 requires), not the coded Y'CbCr, so those still come from the VUI, or else the same
+                // BT.601 full-range default as a file with no colour at all.
+                (primaries, transfer) = (iccPrimaries, iccTransfer);
+                (matrix, fullRange) = videoSignal is { SignalTypePresent: true } signal
+                    ? ((MatrixCoefficients)(signal.Matrix ?? (int)MatrixCoefficients.BT470BG), signal.FullRange)
+                    : (MatrixCoefficients.BT470BG, true);
             }
             else if (videoSignal is { SignalTypePresent: true } vui)
             {

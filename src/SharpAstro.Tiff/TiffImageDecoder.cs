@@ -22,7 +22,8 @@ namespace SharpAstro.Tiff;
 /// Colour meaning: float pages surface <see cref="TransferFunction.Linear"/> +
 /// <see cref="FloatSemantics.SceneReferred"/> on
 /// <see cref="IDecodedImage.ColorEncoding"/> (the float-TIFF scene-linear
-/// convention — see <see cref="TiffPageOptions"/>); integer pages keep the sRGB
+/// convention, see <see cref="TiffPageOptions"/>); integer pages take the primaries,
+/// transfer and range from their ICC profile's cicp tag, else keep the sRGB
 /// assumption. SMin/SMax stay available via <see cref="TiffReader"/> for
 /// consumers that stretch.
 /// </para>
@@ -93,9 +94,16 @@ public sealed class TiffImageDecoder : IImageDecoder
         var channels = page.SamplesPerPixel;
         if (channels is < 1 or > 4) return false;
 
+        // An integer page whose ICC profile carries a cicp tag is what the tag says: ImageMagick
+        // converting a BT.2020 PQ PNG keeps the PNG's "Rec. 2020 PQ" profile and nothing else that
+        // names the transfer. The tag describes RGB (matrix 0), so a tag naming a Y'CbCr matrix is
+        // not taken for these samples.
         var color = page.SampleFormat == TiffSampleFormat.IeeeFloat
             ? new ColorEncoding { Transfer = TransferFunction.Linear, Float = FloatSemantics.SceneReferred }
-            : ColorEncoding.AssumedSrgb;
+            : IccCicp.TryRead(page.IccProfile, out var primaries, out var transfer, out var matrix, out var fullRange)
+                && matrix == MatrixCoefficients.Identity
+                ? new ColorEncoding { Primaries = primaries, Transfer = transfer, FullRange = fullRange }
+                : ColorEncoding.AssumedSrgb;
 
         switch (page.BitsPerSample, page.SampleFormat)
         {

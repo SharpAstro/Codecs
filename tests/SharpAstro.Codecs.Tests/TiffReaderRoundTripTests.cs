@@ -141,6 +141,44 @@ public sealed class TiffReaderRoundTripTests
         page.Pixels.ShouldBe(pixels);
     }
 
+    /// <summary>
+    /// A 16-bit RGB page whose ICC profile has a cicp tag decodes as what the tag says (ImageMagick keeps a
+    /// BT.2020 PQ PNG's "Rec. 2020 PQ" profile and nothing else naming the transfer); one without the tag
+    /// keeps the sRGB assumption.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task IccCicpTag_GivesTheFacadeItsColour(bool withCicp)
+    {
+        var pixels = new byte[2 * 2 * 3 * 2];
+        for (var i = 0; i < pixels.Length; i++) pixels[i] = (byte)(i * 11);
+        var profile = withCicp
+            ? IccProfiles.WithCicp(IccProfiles.SRgbV4.Span, SharpAstro.Codecs.Abstractions.ColorPrimaries.BT2020,
+                SharpAstro.Codecs.Abstractions.TransferFunction.Pq)
+            : IccProfiles.SRgbV4.ToArray();
+        var tiff = await WriteSinglePageAsync(pixels, 2, 2, new TiffPageOptions
+        {
+            SamplesPerPixel = 3,
+            BitsPerSample = 16,
+            Photometric = TiffPhotometric.Rgb,
+            SampleFormat = TiffSampleFormat.Uint,
+            Compression = TiffCompression.Uncompressed,
+            IccProfile = profile,
+        });
+
+        TiffImageDecoder.TryDecode(tiff, out var image).ShouldBeTrue();
+        image.ColorEncoding.ShouldBe(withCicp
+            ? new SharpAstro.Codecs.Abstractions.ColorEncoding
+            {
+                Primaries = SharpAstro.Codecs.Abstractions.ColorPrimaries.BT2020,
+                Transfer = SharpAstro.Codecs.Abstractions.TransferFunction.Pq,
+                FullRange = true,
+            }
+            : SharpAstro.Codecs.Abstractions.ColorEncoding.AssumedSrgb);
+        image.Pixels.ToArray().ShouldBe(pixels, "the tag says what the samples mean and changes none of them");
+    }
+
     [Fact]
     public async Task MultiPage_TiffChain_AllPagesDecoded()
     {

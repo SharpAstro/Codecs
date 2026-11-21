@@ -256,6 +256,54 @@ public class HeifDecodeTests(ITestOutputHelper output)
             .ShouldBeFalse("a coded signal type that says narrow range is still narrow");
     }
 
+    /// <summary>
+    /// A file whose only colour statement is its ICC profile's cicp tag (heif-enc from a Lightroom Classic PQ PNG: a
+    /// "Rec. 2020 PQ" profile saying 9/16/0/1, no nclx, no VUI colour) is BT.2020 PQ, not the sRGB default.
+    /// The tag's matrix 0 describes the profile's RGB, so the Y'CbCr matrix and range stay what the same
+    /// file without a profile converts with.
+    /// </summary>
+    [Fact]
+    public void IccCicpTag_WithoutNclx_GivesThePrimariesAndTransfer()
+    {
+        var profile = SharpAstro.Color.Icc.IccProfiles.WithCicp(SharpAstro.Color.Icc.IccProfiles.SRgbV4.Span,
+            ColorPrimaries.BT2020, TransferFunction.Pq);
+        var (heif, _, _) = Wrap("x265-420p10-lowqp", HeifBuilder.Icc(profile));
+        var (bare, _, _) = Wrap("x265-420p10-lowqp", null);
+
+        var decoded = HeifDecoder.Decode(heif);
+        decoded.ColorEncoding.Primaries.ShouldBe(ColorPrimaries.BT2020);
+        decoded.ColorEncoding.Transfer.ShouldBe(TransferFunction.Pq);
+        decoded.IccProfile.ShouldBe(profile);
+
+        var reference = HeifDecoder.Decode(bare);
+        reference.ColorEncoding.Transfer.ShouldBe(TransferFunction.Srgb);
+        decoded.ColorEncoding.FullRange.ShouldBe(reference.ColorEncoding.FullRange);
+        decoded.Samples.ShouldBe(reference.Samples, "the profile changes what the codes mean, not the matrix that made them");
+    }
+
+    /// <summary>An ICC profile with no cicp tag says nothing H.273 can name, so the defaults stand.</summary>
+    [Fact]
+    public void IccProfileWithoutCicp_KeepsTheDefault()
+    {
+        var (heif, _, _) = Wrap("x265-420p10-lowqp", HeifBuilder.Icc(SharpAstro.Color.Icc.IccProfiles.SRgbV4.ToArray()));
+        var decoded = HeifDecoder.Decode(heif);
+        decoded.ColorEncoding.Primaries.ShouldBe(ColorPrimaries.BT709);
+        decoded.ColorEncoding.Transfer.ShouldBe(TransferFunction.Srgb);
+    }
+
+    /// <summary>An nclx box outranks the profile's cicp tag, as it outranks the VUI.</summary>
+    [Fact]
+    public void Nclx_OutranksTheIccCicpTag()
+    {
+        var profile = SharpAstro.Color.Icc.IccProfiles.WithCicp(SharpAstro.Color.Icc.IccProfiles.SRgbV4.Span,
+            ColorPrimaries.BT2020, TransferFunction.Pq);
+        var (heif, _, _) = Wrap("x265-420p10-lowqp", HeifBuilder.Nclx(9, 18, 9, true));
+        var image = HeifReader.Read(heif).DescribePrimary(heif) with { Icc = new HeifIccColour(profile, false) };
+        var colour = HeifDecoder.Colour.For(image, null, 10, 1);
+        colour.Encoding.Primaries.ShouldBe(ColorPrimaries.BT2020);
+        colour.Encoding.Transfer.ShouldBe(TransferFunction.Hlg);
+    }
+
     [Fact]
     public void Facade_DecodesAnSdrHeif_ToRgba8()
     {
