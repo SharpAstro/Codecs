@@ -568,7 +568,10 @@ public sealed class WebpLosslessEncoderBudgetTests
 
         long chain = 4L << plan.WindowBits;
         long heads = 4L << plan.HashBits;
-        Assert.True(allocated <= chain + heads + 4096, $"Find allocated {allocated} bytes, charged {chain + heads}");
+        // The warm-up left the chain and heads in the pool, so a warm Find allocates only what it makes anew.
+        // The old bound (chain + heads + 4 KB) would let a regression that adds a chain-sized array per call
+        // pass, so the warm call is bounded by a small constant instead.
+        Assert.True(allocated <= 1024, $"a warm Find allocated {allocated} bytes; its arrays ({chain + heads} charged) are pooled");
         Assert.True(
             8L * copies.Length + chain + heads + Vp8LEncoderPlan.FixedBytes == plan.WorkingBytes,
             "the plan charges the copy list, the chain, the heads and the fixed scratch");
