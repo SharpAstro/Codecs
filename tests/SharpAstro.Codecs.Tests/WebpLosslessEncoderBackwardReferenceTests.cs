@@ -562,9 +562,17 @@ public sealed class WebpLosslessEncoderBudgetTests
         // where it happened to be the first user (5104 bytes over the arrays). The second call measures Find.
         _ = Vp8LMatchFinder.Find(argb, image.Width, plan, mapper, copies);
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        _ = Vp8LMatchFinder.Find(argb, image.Width, plan, mapper, copies);
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        // Take the smallest of a few warm calls. ArrayPool trims its buckets on a gen 2 GC, so a collection
+        // landing between the warm-up and the measured call would make that one call re-allocate the chain and
+        // heads, which is the pool's doing and not Find's. A regression allocates on EVERY call, so the minimum
+        // still catches it while one trimmed call cannot fail the test.
+        long allocated = long.MaxValue;
+        for (int i = 0; i < 3; i++)
+        {
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            _ = Vp8LMatchFinder.Find(argb, image.Width, plan, mapper, copies);
+            allocated = Math.Min(allocated, GC.GetAllocatedBytesForCurrentThread() - before);
+        }
 
         long chain = 4L << plan.WindowBits;
         long heads = 4L << plan.HashBits;
