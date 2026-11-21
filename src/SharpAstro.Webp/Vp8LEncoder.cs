@@ -708,7 +708,8 @@ internal static class Vp8LEncoder
     {
         var layout = new Vp8LHistogramLayout(LiteralAlphabet + LengthSymbols + (cacheBits == 0 ? 0 : 1 << cacheBits));
         // A pass that hands its histograms back (the per-tile one) gives them to the caller, who returns them to the
-        // pool once clustered; any other one prices its codes and returns the sets itself, since every candidate the encoder considers is one pass (Codecs#92). Indexed through the layout only,
+        // pool once clustered; any other one prices its codes and returns the sets itself, since every
+        // candidate the encoder considers is one pass (Codecs#92). Indexed through the layout only,
         // so a rented array longer than layout.Total does no harm.
         int[][] sets = new int[groupCount][];
         for (int g = 0; g < sets.Length; g++)
