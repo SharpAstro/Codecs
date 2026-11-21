@@ -1395,8 +1395,8 @@ reproduces the source pixels exactly), and jpegenc emits byte-identical JPEG at 
 The jpegenc agreement is not luck — `-ffp-contract=off` in its build script is load-bearing, since
 otherwise clang fuses the DCT multiply-adds into FMAs that round differently per target.
 
-Local and CI skip counts should now match at **6** (the four `RegenerateGolden` opt-ins -- JPEG
-decode/encode and WebP still/animation -- and two JXR header tests), given a dev box with every
+Local and CI skip counts should now match at **7** (the five `RegenerateGolden` opt-ins -- JPEG
+decode/encode and WebP still/animation/lossless encoder -- and two JXR header tests), given a dev box with every
 oracle present. They previously differed — local 4, CI 56 — purely because a dev box has
 `Oracle/bin/` populated and CI built nothing.
 
@@ -1404,7 +1404,7 @@ The Canon HEIF/CR3 tests (`HeifCanonFileTests`, `HevcDecoderOracleTests`) and th
 (`HeifPhoneFileTests`: two iPhone 13 Pro, two Samsung Galaxy and a Xiaomi HEIC, open-licence files from test
 repositories) are a separate case: their INPUT is fetched, not their oracle (`fetch-heif-external.sh`; the
 Canon files have no licence, the phone files only their source repository's), so
-they `Assert.SkipUnless` the file and skip in CI under `REQUIRE_ORACLES` too. CI's skip count is the 6
+they `Assert.SkipUnless` the file and skip in CI under `REQUIRE_ORACLES` too. CI's skip count is the 7
 above plus those.
 
 Related knobs: `OPJ_HOME=<prefix>` points the JPEG 2000 oracle at a prefix containing
