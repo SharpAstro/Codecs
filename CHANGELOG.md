@@ -48,7 +48,10 @@ evaluates it a second time to get its codes (a little more CPU for far less allo
 nine 384x256 encodes at efforts 3, 6 and 9, warm second encode, MiB, 925.2 before the flight): unkept prefix codes
 -35.2, clusterer -39.7, `Prepare` -27.0, `Search` struct cost -35.1, per-call buffers in `ChooseStream` about 0 on this
 workload (+1.0), total 789.2. These are a small steady-state corpus, not the test classes' load, so they understate the
-test-class cut above.
+test-class cut above. The figures come from a one-thread `GC.GetAllocatedBytesForCurrentThread` probe (not committed), not
+from a `dotnet-trace` gc-verbose run as the flight's brief asked; a trace over the test classes would give the per-site
+numbers the issue wanted. The `ChooseStream`/`BuildStream`/`CheapBits` buffer saving is therefore unproven per site (it
+measures +1.0 MiB on this corpus) and shows only in the four-class totals.
 
 ## 3.40
 
