@@ -225,7 +225,7 @@ internal sealed partial class HevcPictureDecoder
         }
 
         (_rsToTs, _tsToRs, _tileOfRs, _tileFirstColumn) = TileScan(pps, _widthInCtbs, _heightInCtbs);
-        _ctbSlice = Alloc("ctbSlice", _widthInCtbs * _heightInCtbs, -1);
+        _ctbSlice = Alloc(HevcDecodeWorkspace.Slot.CtbSlice, _widthInCtbs * _heightInCtbs, -1);
         _width4 = _width >> 2;
         var blocks = _width4 * (_height >> 2);
         _ctDepth = Alloc<byte>(HevcDecodeWorkspace.Slot.CtDepth, blocks);

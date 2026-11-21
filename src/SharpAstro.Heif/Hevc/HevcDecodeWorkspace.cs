@@ -16,7 +16,7 @@ namespace SharpAstro.Heif.Hevc;
 internal sealed class HevcDecodeWorkspace
 {
     /// <summary>Every array a picture decoder takes; a name the compiler checks, where a string literal would only fail at run time.</summary>
-    internal enum Slot { Luma, Cb, Cr, CtDepth, LumaMode, ChromaMode, QpMap, Edges, Bypass, SaoType, SaoBand, SaoOffsets }
+    internal enum Slot { Luma, Cb, Cr, CtDepth, LumaMode, ChromaMode, QpMap, Edges, Bypass, SaoType, SaoBand, SaoOffsets, CtbSlice }
 
     private readonly Dictionary<Slot, Array> _arrays = [];
 
