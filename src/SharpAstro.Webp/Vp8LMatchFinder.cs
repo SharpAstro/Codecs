@@ -47,6 +47,18 @@ internal static class Vp8LMatchFinder
         }
 
         var finder = new Finder(argb, width, plan, mapper);
+        try
+        {
+            return FindCopies(ref finder, n, copies);
+        }
+        finally
+        {
+            finder.Release();
+        }
+    }
+
+    private static int FindCopies(ref Finder finder, int n, Span<ulong> copies)
+    {
         int count = 0;
         int position = 0;
         while (position + MinMatch <= n)
@@ -105,8 +117,18 @@ internal static class Vp8LMatchFinder
             _chainDepth = plan.ChainDepth;
             NiceLength = plan.NiceLength;
             Lazy = plan.Lazy;
-            _head = new int[1 << plan.HashBits];
-            _prev = new int[_windowSize];
+            // Rented, cleared over the length used (a rent can be longer and hold stale data; the hash and the
+            // window mask keep every index inside it). The window can be 4 MiB of ints (Codecs#92).
+            _head = WebpBufferPool<int>.Rent(1 << plan.HashBits);
+            Array.Clear(_head, 0, 1 << plan.HashBits);
+            _prev = WebpBufferPool<int>.Rent(_windowSize);
+            Array.Clear(_prev, 0, _windowSize);
+        }
+
+        public readonly void Release()
+        {
+            WebpBufferPool<int>.Return(_head);
+            WebpBufferPool<int>.Return(_prev);
         }
 
         private uint Hash(int p)
