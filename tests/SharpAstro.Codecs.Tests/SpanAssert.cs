@@ -22,8 +22,18 @@ internal static class SpanAssert
         }
     }
 
-    public static void Same<T>(T[] actual, T[] expected, string what)
-        where T : IEquatable<T> => Same<T>(actual.AsSpan(), expected.AsSpan(), what);
+    public static void Same<T>(T[]? actual, T[]? expected, string what)
+        where T : IEquatable<T>
+    {
+        // A null array is a failure of the check, not a nullable warning at every call site.
+        if (actual is null || expected is null)
+        {
+            Assert.Fail($"{what}: {(actual is null ? "actual" : "expected")} is null");
+            return;
+        }
+
+        Same<T>(actual.AsSpan(), expected.AsSpan(), what);
+    }
 
     public static void AllEqual<T>(ReadOnlySpan<T> actual, T value, string what)
         where T : IEquatable<T>
