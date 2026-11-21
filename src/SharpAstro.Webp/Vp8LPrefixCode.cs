@@ -251,7 +251,7 @@ internal sealed class Vp8LPrefixCode
     }
 
     /// <summary>Where <see cref="Tokenize"/> sends each code-length symbol, with its extra bits.</summary>
-    private interface ITokenSink : allows ref struct
+    private interface ITokenSink
     {
         void Add(int symbol, int extra, int extraBits);
     }
