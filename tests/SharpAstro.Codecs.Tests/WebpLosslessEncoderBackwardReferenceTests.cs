@@ -556,6 +556,12 @@ public sealed class WebpLosslessEncoderBudgetTests
         var mapper = new Vp8LDistanceMapper(image.Width);
         ulong[] copies = new ulong[plan.MaxCopies];
 
+        // Warm up first. Find rents its chain and heads from ArrayPool<int>.Shared, whose first use of a
+        // bucket on a process (the per-core partitions, one slot array per core) allocates a few KB of its
+        // own bookkeeping: that is the pool's state, not Find's, and it made this test fail once on a run
+        // where it happened to be the first user (5104 bytes over the arrays). The second call measures Find.
+        _ = Vp8LMatchFinder.Find(argb, image.Width, plan, mapper, copies);
+
         long before = GC.GetAllocatedBytesForCurrentThread();
         _ = Vp8LMatchFinder.Find(argb, image.Width, plan, mapper, copies);
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;

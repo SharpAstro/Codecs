@@ -51,7 +51,7 @@ workload (+1.0), total 789.2. These are a small steady-state corpus, not the tes
 test-class cut above. The figures come from a one-thread `GC.GetAllocatedBytesForCurrentThread` probe (not committed), not
 from a `dotnet-trace` gc-verbose run as the flight's brief asked; a trace over the test classes would give the per-site
 numbers the issue wanted. The `ChooseStream`/`BuildStream`/`CheapBits` buffer saving is therefore unproven per site (it
-measures +1.0 MiB on this corpus) and shows only in the four-class totals.
+measures +1.0 MiB on this corpus) and is not separable from the four-class totals.
 
 ## 3.40
 
