@@ -16,6 +16,12 @@ those notes, verbatim in substance. 3.4 has no recorded note; it was never writt
 
 ## 3.41
 
+**`SharpAstro.Jxl`: ImageMetadata's `extra_fields` are read (#103).** cjxl sets them for an HDR image (its tone
+mapping), so a PQ file used to be refused at the header. Orientation, the intrinsic size, the preview header and the
+tone mapping are read; `JxlImageInfo` reports `Orientation` (stored size kept) and `IntensityTarget` (10000 nits on
+cjxl's PQ file, 255 by default), and `JxlImageCodec.Decode` returns the image oriented, as libjxl does (all eight
+values checked against Magick.NET's AutoOrient of libjxl's decode). A file with a preview frame or an animation is
+refused with that reason rather than decoded from the wrong frame. `JxlBitReader.ReadF16` reads an F16 field.
 **`SharpAstro.Heif` and `SharpAstro.Tiff`: an ICC profile's `cicp` tag gives the colour when nothing else does.**
 A BT.2020 PQ PNG exported from Lightroom Classic carries a "Rec. 2020 PQ" ICC profile whose v4.4 `cicp` tag reads
 9/16/0/1. Encoded with libheif's `heif-enc`, the HEIC keeps that profile and gets no `nclx` box and no VUI colour;

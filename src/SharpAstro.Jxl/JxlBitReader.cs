@@ -114,6 +114,18 @@ internal ref struct JxlBitReader
     /// </summary>
     public uint ReadEnum() => ReadU32((0, 0), (1, 0), (2, 4), (18, 6));
 
+    /// <summary>
+    /// JPEG XL F16() (§C.1): a 16-bit IEEE 754 binary16. The spec forbids infinities and NaNs in a
+    /// conforming codestream, so one is refused rather than carried into the header.
+    /// </summary>
+    public float ReadF16()
+    {
+        var bits = (ushort)ReadBits(16);
+        if ((bits & 0x7C00) == 0x7C00)
+            throw new InvalidDataException("JPEG XL F16 field holds an infinity or NaN.");
+        return (float)BitConverter.UInt16BitsToHalf(bits);
+    }
+
     /// <summary>JPEG XL U64() (§C.1) — variable-length unsigned, chained 8-bit groups.</summary>
     public ulong ReadU64()
     {
