@@ -164,11 +164,16 @@ internal static class Vp8LHistogramClusterer
         }
 
         uint random = 0x2545f491u;
+
+        // One candidate list for every round, sized for the first (the largest: the count only falls). Growing
+        // a fresh list each round was the allocation here (Codecs#100); Clear keeps the capacity.
+        var pairs = new List<(double Delta, int I, int J)>(
+            Math.Min(clusters.Count * (candidatesPerCluster + candidatesPerCluster / 2), 1 << 20));
         for (int round = 0; round < 64 && clusters.Count > 1; round++)
         {
             int n = clusters.Count;
             int excess = n - maxGroups;
-            var pairs = new List<(double Delta, int I, int J)>();
+            pairs.Clear();
             for (int i = 0; i < n; i++)
             {
                 for (int step = 1; step <= candidatesPerCluster && i + step < n; step++)
@@ -207,7 +212,8 @@ internal static class Vp8LHistogramClusterer
 
                 consumed[i] = consumed[j] = true;
                 int[] merged = Merge(layout, clusters[i].Histogram, clusters[j].Histogram);
-                var tiles = new List<int>(clusters[i].Tiles);
+                var tiles = new List<int>(clusters[i].Tiles.Count + clusters[j].Tiles.Count);
+                tiles.AddRange(clusters[i].Tiles);
                 tiles.AddRange(clusters[j].Tiles);
                 replacement[i] = new Cluster(merged, clusters[i].Cost + clusters[j].Cost + delta, tiles, owned: true);
                 clusters[i].Release();
@@ -246,7 +252,8 @@ internal static class Vp8LHistogramClusterer
                 if (excess > 0 && i + 1 < clusters.Count)
                 {
                     int[] merged = Merge(layout, clusters[i].Histogram, clusters[i + 1].Histogram);
-                    var tiles = new List<int>(clusters[i].Tiles);
+                    var tiles = new List<int>(clusters[i].Tiles.Count + clusters[i + 1].Tiles.Count);
+                    tiles.AddRange(clusters[i].Tiles);
                     tiles.AddRange(clusters[i + 1].Tiles);
                     next.Add(new Cluster(merged, Cost(layout, merged), tiles, owned: true));
                     clusters[i].Release();

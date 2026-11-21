@@ -122,7 +122,8 @@ internal static class Vp8LEncoder
 
         // The untransformed image is always a candidate. With transforms on, the others are
         // prepared one at a time and only the best few by cheap cost are kept.
-        Prepared untransformed = Prepare(argb, width, height, Vp8LPipeline.None, plan, null);
+        var stash = new PixelStash();
+        Prepared untransformed = Prepare(argb, width, height, Vp8LPipeline.None, plan, null, null, stash);
         var kept = new List<(Prepared Prepared, long Cheap)>();
         long untransformedCheap = untransformed.HeaderBits + CheapBits(untransformed);
         kept.Add((untransformed, untransformedCheap));
@@ -133,7 +134,7 @@ internal static class Vp8LEncoder
             var memo = new PredictorMemo();
             foreach (Vp8LPipeline pipeline in Pipelines(plan, width, height, havePalette ? palette.Length : 0))
             {
-                Prepared prepared = Prepare(argb, width, height, pipeline, plan, havePalette ? palette : null, memo);
+                Prepared prepared = Prepare(argb, width, height, pipeline, plan, havePalette ? palette : null, memo, stash);
                 long cheap = prepared.HeaderBits + CheapBits(prepared);
                 kept.Add((prepared, cheap));
                 kept.Sort(static (a, b) => a.Cheap.CompareTo(b.Cheap));
@@ -141,6 +142,7 @@ internal static class Vp8LEncoder
                 while (kept.Count(static k => k.Prepared.Steps.Count > 0) > plan.Finalists)
                 {
                     int drop = kept.FindLastIndex(static k => k.Prepared.Steps.Count > 0);
+                    stash.Recycle(kept[drop].Prepared);
                     kept.RemoveAt(drop);
                 }
             }
@@ -280,7 +282,45 @@ internal static class Vp8LEncoder
 
         /// <summary>Bits of every transform (its marker, type, parameters and sub-image) and the end marker.</summary>
         public required long HeaderBits;
+
+        /// <summary>Whether <see cref="Pixels"/> is an array this candidate alone holds, so a dropped candidate can hand it back.</summary>
+        public bool PixelsAreOwned;
     }
+
+    // Exact-length arrays handed back by candidates that were dropped, for the next candidate of the same Encode call
+    // to copy into instead of cloning (Codecs#100). Per call, never shared, so nothing outlives the encode and no
+    // pooled array is longer than the image: every consumer sees the length it always did.
+    private sealed class PixelStash
+    {
+        private readonly List<int[]> _free = [];
+
+        public int[] Copy(int[] source)
+        {
+            for (int i = _free.Count - 1; i >= 0; i--)
+            {
+                if (_free[i].Length == source.Length)
+                {
+                    int[] reused = _free[i];
+                    _free.RemoveAt(i);
+                    source.CopyTo(reused, 0);
+                    return reused;
+                }
+            }
+
+            return (int[])source.Clone();
+        }
+
+        public void Recycle(Prepared prepared)
+        {
+            if (prepared.PixelsAreOwned)
+            {
+                prepared.PixelsAreOwned = false;
+                _free.Add(prepared.Pixels);
+            }
+        }
+    }
+
+    private static int[] Clone(int[] pixels, PixelStash? stash) => stash is null ? (int[])pixels.Clone() : stash.Copy(pixels);
 
     // Applies the pipeline's transforms forward, in stream order, and codes each one's sub-image.
     private static Prepared Prepare(
@@ -290,12 +330,14 @@ internal static class Vp8LEncoder
         Vp8LPipeline pipeline,
         in Vp8LEncoderPlan plan,
         int[]? paletteColors,
-        PredictorMemo? memo = null)
+        PredictorMemo? memo = null,
+        PixelStash? stash = null)
     {
         var steps = new List<TransformStep>();
         int[] pixels = argb;
         int currentWidth = width;
         bool owned = false;
+        bool cloneFromStash = false;
 
         if (pipeline.Palette)
         {
@@ -328,13 +370,22 @@ internal static class Vp8LEncoder
 
         if (pipeline.SubtractGreen)
         {
-            if (!owned)
+            // A predictor stage the memo already holds replaces these pixels, so they need no copy at all.
+            bool replacedByMemo = pipeline.PredictorBits != 0
+                && memo is { Key: { } remembered0 }
+                && remembered0 == (pipeline.Palette, pipeline.FirstSeenPalette, true, pipeline.PredictorBits, pipeline.ForcedPredictorMode);
+            if (!replacedByMemo)
             {
-                pixels = (int[])pixels.Clone();
-                owned = true;
+                if (!owned)
+                {
+                    pixels = Clone(pixels, stash);
+                    owned = true;
+                    cloneFromStash = true;
+                }
+
+                Vp8LTransforms.SubtractGreen(pixels);
             }
 
-            Vp8LTransforms.SubtractGreen(pixels);
             steps.Add(new TransformStep(SubtractGreenType, 0, 0, null, null, 0, 0));
         }
 
@@ -352,6 +403,12 @@ internal static class Vp8LEncoder
                 int[] modes = Vp8LTransforms.ChoosePredictorModes(pixels, currentWidth, height, bits, pipeline.ForcedPredictorMode);
                 int[] residuals = new int[pixels.Length];
                 Vp8LTransforms.PredictorForward(pixels, currentWidth, height, bits, modes, residuals);
+                if (cloneFromStash && owned && stash is not null)
+                {
+                    // The subtract-green copy has been read into the residuals and nothing else holds it.
+                    stash.Recycle(new Prepared { Pixels = pixels, Width = 0, Steps = steps, HeaderBits = 0, PixelsAreOwned = true });
+                }
+
                 pixels = residuals;
                 int tilesWide = Vp8LTransforms.TileCount(currentWidth, bits);
                 int tilesHigh = Vp8LTransforms.TileCount(height, bits);
@@ -380,14 +437,17 @@ internal static class Vp8LEncoder
 
             // Whatever follows (cross colour) works in place, so it gets its own copy.
             owned = false;
+            cloneFromStash = false;
         }
 
         if (pipeline.CrossColor)
         {
             if (!owned)
             {
-                pixels = (int[])pixels.Clone();
+                // The one real working copy: residuals are the memo's, and this stage rewrites them in place.
+                pixels = Clone(pixels, stash);
                 owned = true;
+                cloneFromStash = true;
             }
 
             int bits = pipeline.EffectiveCrossBits;
@@ -413,7 +473,7 @@ internal static class Vp8LEncoder
             headerBits += step.Sub?.Bits ?? 0;
         }
 
-        return new Prepared { Pixels = pixels, Width = currentWidth, Steps = steps, HeaderBits = headerBits };
+        return new Prepared { Pixels = pixels, Width = currentWidth, Steps = steps, HeaderBits = headerBits, PixelsAreOwned = cloneFromStash && owned };
     }
 
     // ---- the entropy-coded image ------------------------------------------------------------
