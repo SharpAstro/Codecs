@@ -37,7 +37,10 @@ codestream's colour encoding for integer images (BT.2020 PQ for the HDR file, no
 straight into the raster's bytes, one 272 MB copy fewer for these files. Modular sub-images now read previous-channel
 properties, skip empty channels and take NN as N in the first two rows, as jxl-oxide does, and each stream decodes
 from its own copy of the entropy state; an LZ77 window grows geometrically instead of by one entry per symbol.
-`Jxl_MatchesItsPngMaster` and `JxlOracleTests`' VarDCT cases check all of this.
+`Jxl_MatchesItsPngMaster` and `JxlOracleTests`' VarDCT cases check all of this. jxl-oxide is MIT OR Apache-2.0 and this
+repository takes it under MIT: `THIRD-PARTY-NOTICES.md` carries its notice, the `SharpAstro.Jxl` package ships that
+file, every file with ported code says so at its top, and the package description and `CODECS.md` no longer call
+the codec clean-room.
 
 **`SharpAstro.Jxl`: a permuted TOC is read (#104).** cjxl writes a large image chunk by chunk (LfGlobal, LfGroup 0
 and its PassGroups, LfGroup 1, ...) and codes that order as a Lehmer-coded permutation before the section sizes, which

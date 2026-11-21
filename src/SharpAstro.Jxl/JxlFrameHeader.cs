@@ -1,3 +1,6 @@
+// Portions of this file are ported from jxl-oxide (https://github.com/tirr-c/jxl-oxide), Copyright (c)
+// Wonwoo Choi and the jxl-oxide contributors, used under the MIT licence; see THIRD-PARTY-NOTICES.md.
+
 namespace SharpAstro.Jxl;
 
 /// <summary>JPEG XL frame pixel-data encoding (ISO/IEC 18181-1 §E.2).</summary>
