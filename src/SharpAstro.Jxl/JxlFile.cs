@@ -7,7 +7,18 @@ public readonly record struct JxlImageInfo(
     int BitsPerSample,
     bool IsFloat,
     bool HasAlpha,
-    bool IsGrayscale);
+    bool IsGrayscale)
+{
+    /// <summary>
+    /// EXIF-style orientation 1 to 8 the codestream asks for (1 = as stored). <see cref="Width"/> and
+    /// <see cref="Height"/> are the stored size; 5 to 8 swap them for display, and
+    /// <c>JxlImageCodec.Decode</c> returns the image already oriented.
+    /// </summary>
+    public int Orientation { get; init; } = 1;
+
+    /// <summary>The nits sample value 1.0 is meant to reach (<c>tone_mapping.intensity_target</c>; 255 by default).</summary>
+    public float IntensityTarget { get; init; } = 255f;
+}
 
 /// <summary>Entry points for reading JPEG XL (.jxl) files.</summary>
 public static class JxlFile
@@ -35,7 +46,11 @@ public static class JxlFile
             meta.BitDepth.BitsPerSample,
             meta.BitDepth.FloatingPoint,
             meta.HasAlpha,
-            meta.ColorSpace == JxlColorSpace.Gray);
+            meta.ColorSpace == JxlColorSpace.Gray)
+        {
+            Orientation = meta.Orientation,
+            IntensityTarget = meta.IntensityTarget,
+        };
     }
 
     /// <inheritdoc cref="ReadInfo(ReadOnlySpan{byte})"/>

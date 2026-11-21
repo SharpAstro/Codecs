@@ -35,6 +35,54 @@ public sealed class JxlOracleTests
         info.Height.ShouldBe(h);
     }
 
+    /// <summary>
+    /// extra_fields (#103): libjxl writes the orientation into ImageMetadata, ReadInfo reports it with the
+    /// stored size, and Decode returns the image turned as Magick's AutoOrient turns libjxl's own decode.
+    /// </summary>
+    [Theory]
+    [InlineData(OrientationType.TopRight, 2)]
+    [InlineData(OrientationType.BottomRight, 3)]
+    [InlineData(OrientationType.BottomLeft, 4)]
+    [InlineData(OrientationType.LeftTop, 5)]
+    [InlineData(OrientationType.RightTop, 6)]
+    [InlineData(OrientationType.RightBottom, 7)]
+    [InlineData(OrientationType.LeftBottom, 8)]
+    public void MagickEncoded_Jxl_Orientation_IsReadAndApplied(OrientationType orientation, int code)
+    {
+        using var m = new MagickImage(MagickColors.Black, 3, 2) { Depth = 8, Quality = 100, Orientation = orientation };
+        using (var pixels = m.GetPixels())
+        {
+            for (var y = 0; y < 2; y++)
+                for (var x = 0; x < 3; x++)
+                    pixels.SetPixel(x, y, [(x * 40 + y * 100) * 257f, x * 7 * 257f, y * 9 * 257f]);
+        }
+        byte[] bytes = m.ToByteArray(MagickFormat.Jxl);
+
+        JxlImageInfo info = JxlFile.ReadInfo(bytes);
+        (info.Width, info.Height, info.Orientation).ShouldBe((3, 2, code));
+
+        JxlImage ours = JxlImageCodec.Decode(bytes);
+        using var reference = new MagickImage(bytes);
+        reference.AutoOrient();
+        (ours.Width, ours.Height).ShouldBe(((int)reference.Width, (int)reference.Height));
+        var expected = reference.GetPixels().ToShortArray(0, 0, reference.Width, reference.Height, "RGB");
+        expected.ShouldNotBeNull();
+        for (var p = 0; p < ours.Width * ours.Height; p++)
+            for (var c = 0; c < 3; c++)
+                ours.Channels[c][p].ShouldBe(expected[3 * p + c] * ((1 << ours.BitsPerSample) - 1) / 65535, $"pixel {p} channel {c}");
+    }
+
+    /// <summary>
+    /// The default ImageMetadata (no extra_fields) reports orientation 1 and the default intensity target.
+    /// </summary>
+    [Fact]
+    public void MagickEncoded_Jxl_WithoutExtraFields_HasTheDefaults()
+    {
+        using var m = new MagickImage(MagickColors.SteelBlue, 8, 8);
+        JxlImageInfo info = JxlFile.ReadInfo(m.ToByteArray(MagickFormat.Jxl));
+        (info.Orientation, info.IntensityTarget).ShouldBe((1, 255f));
+    }
+
     [Fact]
     public void MagickEncoded_Jxl_MetadataMatches()
     {

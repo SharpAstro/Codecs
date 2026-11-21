@@ -55,7 +55,13 @@ public static class JxlImageCodec
     public static JxlImage Decode(ReadOnlySpan<byte> jxl)
     {
         byte[] bytes = jxl.ToArray();
-        if (PeekEncoding(bytes, out int vw, out int vh) == JxlFrameEncoding.VarDct)
+        var encoding = PeekEncoding(bytes, out int vw, out int vh, out int orientation);
+        return Orient(DecodeAsStored(bytes, encoding, vw, vh), orientation);
+    }
+
+    private static JxlImage DecodeAsStored(byte[] bytes, JxlFrameEncoding encoding, int vw, int vh)
+    {
+        if (encoding == JxlFrameEncoding.VarDct)
         {
             // Lossy VarDCT (our DCT8 path): reconstructs to 8-bit integer RGB.
             int[][] rgb = JxlVarDctFrame.DecodeToRgb24(bytes);
@@ -88,14 +94,55 @@ public static class JxlImageCodec
     public static JxlImage Decode(byte[] jxl) => Decode(jxl.AsSpan());
 
     /// <summary>Reads just the headers to learn the frame encoding (+ dimensions) so <see cref="Decode(ReadOnlySpan{byte})"/> can dispatch.</summary>
-    private static JxlFrameEncoding PeekEncoding(byte[] containerOrCodestream, out int width, out int height)
+    private static JxlFrameEncoding PeekEncoding(byte[] containerOrCodestream, out int width, out int height, out int orientation)
     {
         byte[] cs = JxlContainer.ExtractCodestream(containerOrCodestream);
         var br = new JxlBitReader(cs.AsSpan(2)); // skip FF 0A
         (width, height) = JxlSizeHeader.Read(ref br);
         JxlImageMetadata meta = JxlImageMetadata.Read(ref br);
+        orientation = meta.Orientation;
         JxlFrameHeader frame = JxlFrameHeader.Read(ref br, meta, width, height);
         return frame.Encoding;
+    }
+
+    /// <summary>
+    /// Applies the codestream's EXIF-style orientation (§D.2, the same eight values as EXIF), as libjxl does
+    /// by default: 2 mirrors left-right, 3 turns 180, 4 mirrors top-bottom, 5 transposes, 6 turns 90 clockwise,
+    /// 7 transposes about the other diagonal, 8 turns 90 anticlockwise.
+    /// </summary>
+    internal static JxlImage Orient(JxlImage image, int orientation)
+    {
+        if (orientation == 1)
+            return image;
+        int w = image.Width, h = image.Height;
+        bool swap = orientation >= 5;
+        int ow = swap ? h : w, oh = swap ? w : h;
+        var channels = new int[image.Channels.Length][];
+        for (int c = 0; c < channels.Length; c++)
+        {
+            int[] src = image.Channels[c];
+            var dst = new int[src.Length];
+            for (int y = 0; y < oh; y++)
+            {
+                for (int x = 0; x < ow; x++)
+                {
+                    (int sx, int sy) = orientation switch
+                    {
+                        2 => (w - 1 - x, y),
+                        3 => (w - 1 - x, h - 1 - y),
+                        4 => (x, h - 1 - y),
+                        5 => (y, x),
+                        6 => (y, h - 1 - x),
+                        7 => (w - 1 - y, h - 1 - x),
+                        8 => (w - 1 - y, x),
+                        _ => throw new InvalidDataException($"JPEG XL orientation {orientation} is not 1 to 8."),
+                    };
+                    dst[y * ow + x] = src[sy * w + sx];
+                }
+            }
+            channels[c] = dst;
+        }
+        return image with { Width = ow, Height = oh, Channels = channels };
     }
 
     // ---- 8-bit ----

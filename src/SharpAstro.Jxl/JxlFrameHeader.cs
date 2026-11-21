@@ -52,6 +52,11 @@ internal readonly struct JxlFrameHeader
         // after the image header and before the FrameHeader (jxl-frame Frame::parse → zero_pad_to_byte).
         br.ZeroPadToByte();
 
+        // A preview frame comes first and every reader here takes the first frame as the image, so a file
+        // with one is refused rather than decoded as its preview.
+        if (meta.HasPreview)
+            throw new NotSupportedException("JPEG XL with a preview frame is not yet supported.");
+
         bool allDefault = br.ReadBit();
 
         var encoding = JxlFrameEncoding.VarDct;
