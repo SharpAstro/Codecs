@@ -91,7 +91,7 @@ public sealed class TiffPackBitsPlanarReadTests
 
         // Exact against what libtiff was given (integers), then against Magick's read of the bytes.
         if (kind != Kind.F32)
-            viaRead.Pixels.ShouldBe(source.Bytes);
+            SpanAssert.Same(viaRead.Pixels, source.Bytes, "pixels");
 
         using var magick = new MagickImage(tiff);
         magick.Width.ShouldBe((uint)Width);

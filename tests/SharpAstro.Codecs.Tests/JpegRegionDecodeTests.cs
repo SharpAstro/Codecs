@@ -556,7 +556,7 @@ public sealed class JpegRegionDecodeTests
                 var dest = new byte[w * h * 4 + 64];
                 Array.Fill(dest, (byte)0xAB);
                 Should.Throw<ArgumentException>(() => JpegDecoder.DecodeRegionTo(jpeg, region, dest, scale), $"{region} @{scale}");
-                dest.ShouldAllBe(b => b == 0xAB, $"{region} @{scale}: nothing is written for a region that is refused");
+                SpanAssert.AllEqual(dest, (byte)0xAB, $"{region} @{scale}: nothing is written for a region that is refused");
             }
 
             // The largest valid region needs exactly w*h*4 bytes; one byte short is refused before any row is decoded.
@@ -566,7 +566,7 @@ public sealed class JpegRegionDecodeTests
             var shortBy1 = new byte[w * h * 4 - 1];
             Array.Fill(shortBy1, (byte)0xAB);
             Should.Throw<ArgumentException>(() => JpegDecoder.DecodeRegionTo(jpeg, whole, shortBy1, scale)).ParamName.ShouldBe("rgbaDestination");
-            shortBy1.ShouldAllBe(b => b == 0xAB);
+            SpanAssert.AllEqual(shortBy1, (byte)0xAB, "shortBy1");
 
             // ... and a small region needs only its own size, whatever the image.
             JpegDecoder.DecodeRegionTo(jpeg, new JpegRegion(w - 1, h - 1, 1, 1), new byte[4], scale).ShouldBe((1, 1));

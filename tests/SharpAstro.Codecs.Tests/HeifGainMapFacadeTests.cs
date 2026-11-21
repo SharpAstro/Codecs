@@ -81,8 +81,8 @@ public sealed class HeifGainMapFacadeTests
         var source = image.ShouldBeOfType<HeifGainMapDecodedImage>().Source;
 
         source.AuthoredHeadroom.ShouldBeGreaterThan(1);
-        source.Reconstruct(2).Rgba.ShouldBe(HeifGainMap.Decode(file, displayHeadroom: 2).Rgba);
-        source.Reconstruct().Rgba.ShouldBe(image!.ToFloats());
+        SpanAssert.Same(source.Reconstruct(2).Rgba, HeifGainMap.Decode(file, displayHeadroom: 2).Rgba, "headroom 2");
+        SpanAssert.Same(source.Reconstruct().Rgba, image!.ToFloats(), "authored headroom");
 
         // Headroom 1 is W = 0: the base, linearised, whatever the gain map says.
         var sdr = source.Reconstruct(1);

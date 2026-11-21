@@ -264,7 +264,7 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
         var expected = HeifDecoder.Decode(file, heif.GetItem(BaseId)).ToLinearRgbaFloat(out var encoding);
 
         hdr.Weight.ShouldBe(0);
-        hdr.Rgba.ShouldBe(expected, "bit for bit: no +offset - offset float noise at SDR headroom");
+        SpanAssert.Same(hdr.Rgba, expected, "bit for bit: no +offset - offset float noise at SDR headroom");
         hdr.ColorEncoding.ShouldBe(encoding with { Float = FloatSemantics.DisplayReferred });
     }
 
@@ -273,7 +273,7 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
     {
         var plain = Build(Base256, Mono8);
         var unspecified = Build(Base256 with { Nclx = HeifBuilder.Nclx(1, 2, 1, true) }, Mono8);
-        HeifGainMap.Decode(unspecified, displayHeadroom: 1).Rgba.ShouldBe(HeifGainMap.Decode(plain, displayHeadroom: 1).Rgba);
+        SpanAssert.Same(HeifGainMap.Decode(unspecified, displayHeadroom: 1).Rgba, HeifGainMap.Decode(plain, displayHeadroom: 1).Rgba, "unspecified against plain");
     }
 
     [Fact]
@@ -327,7 +327,7 @@ public partial class HeifGainMapTests(ITestOutputHelper output)
     public void AboveTheAuthoredHeadroom_AppliesNoMoreThanTheFullGain()
     {
         var file = Build(Base256, Mono8);
-        HeifGainMap.Decode(file, displayHeadroom: 1000).Rgba.ShouldBe(HeifGainMap.Decode(file).Rgba);
+        SpanAssert.Same(HeifGainMap.Decode(file, displayHeadroom: 1000).Rgba, HeifGainMap.Decode(file).Rgba, "headroom 1000 against authored");
     }
 
     [Fact]
