@@ -131,7 +131,8 @@ public sealed class JpegFittedDecodeTests
         else
             JpegDecoder.DecodeFittedTo(jpeg, tw, th, dest, scale, region).ShouldBe((tw, th), label);
 
-        dest.AsSpan(length).ToArray().ShouldAllBe(b => b == Sentinel, $"{label}: wrote past the target");
+        if (dest.AsSpan(length).ContainsAnyExcept(Sentinel))
+            Assert.Fail($"{label}: wrote past the target");
 
         var got = dest.AsSpan(0, length);
         var at = got.CommonPrefixLength(expected);
@@ -443,7 +444,7 @@ public sealed class JpegFittedDecodeTests
                 {
                     for (var th = 1; th <= sh; th++)
                     {
-                        RunSink(source, sw, sh, tw, th).ShouldBe(ReferenceShrink(source, sw, sh, tw, th), $"{sw}×{sh} → {tw}×{th}");
+                        SpanAssert.Same<byte>(RunSink(source, sw, sh, tw, th), ReferenceShrink(source, sw, sh, tw, th), $"{sw}×{sh} → {tw}×{th}");
                         count++;
                     }
                 }
@@ -459,7 +460,7 @@ public sealed class JpegFittedDecodeTests
         foreach (var (sw, sh, tw, th) in new[] { (300, 5, 7, 3), (5, 300, 3, 7), (257, 129, 31, 17), (1000, 1, 999, 1), (1, 1000, 1, 999), (640, 480, 213, 160) })
         {
             var source = Noise(sw, sh, 77);
-            RunSink(source, sw, sh, tw, th).ShouldBe(ReferenceShrink(source, sw, sh, tw, th), $"{sw}×{sh} → {tw}×{th}");
+            SpanAssert.Same<byte>(RunSink(source, sw, sh, tw, th), ReferenceShrink(source, sw, sh, tw, th), $"{sw}×{sh} → {tw}×{th}");
         }
     }
 
@@ -481,8 +482,8 @@ public sealed class JpegFittedDecodeTests
                     for (var th = 1; th <= sh; th++)
                     {
                         var expected = ReferenceShrink(source, sw, sh, tw, th);
-                        RunSink(source, sw, sh, tw, th, wide: false).ShouldBe(expected, $"narrow {sw}×{sh} → {tw}×{th}");
-                        RunSink(source, sw, sh, tw, th, wide: true).ShouldBe(expected, $"wide {sw}×{sh} → {tw}×{th}");
+                        SpanAssert.Same<byte>(RunSink(source, sw, sh, tw, th, wide: false), expected, $"narrow {sw}×{sh} → {tw}×{th}");
+                        SpanAssert.Same<byte>(RunSink(source, sw, sh, tw, th, wide: true), expected, $"wide {sw}×{sh} → {tw}×{th}");
                         count++;
                     }
                 }
@@ -496,8 +497,8 @@ public sealed class JpegFittedDecodeTests
         {
             var source = Noise(sw, sh, 123);
             var expected = ReferenceShrink(source, sw, sh, tw, th);
-            RunSink(source, sw, sh, tw, th, wide: false).ShouldBe(expected, $"narrow {sw}×{sh} → {tw}×{th}");
-            RunSink(source, sw, sh, tw, th, wide: true).ShouldBe(expected, $"wide {sw}×{sh} → {tw}×{th}");
+            SpanAssert.Same<byte>(RunSink(source, sw, sh, tw, th, wide: false), expected, $"narrow {sw}×{sh} → {tw}×{th}");
+            SpanAssert.Same<byte>(RunSink(source, sw, sh, tw, th, wide: true), expected, $"wide {sw}×{sh} → {tw}×{th}");
         }
     }
 
@@ -572,7 +573,7 @@ public sealed class JpegFittedDecodeTests
                 for (var abandoned = 1; abandoned < sh; abandoned++)
                 {
                     foreach (var wide in new[] { false, true })
-                        RunSink(source, sw, sh, tw, th, firstRow, abandoned, wide).ShouldBe(expected, $"row {firstRow} {sw}×{sh} → {tw}×{th} after {abandoned} rows, wide: {wide}");
+                        SpanAssert.Same<byte>(RunSink(source, sw, sh, tw, th, firstRow, abandoned, wide), expected, $"row {firstRow} {sw}×{sh} → {tw}×{th} after {abandoned} rows, wide: {wide}");
                 }
             }
         }
@@ -584,7 +585,7 @@ public sealed class JpegFittedDecodeTests
         var source = Noise(20, 16, 9);
         var expected = ReferenceShrink(source, 20, 16, 7, 5);
         foreach (var firstRow in new[] { 1, 5, 40 })
-            RunSink(source, 20, 16, 7, 5, firstRow).ShouldBe(expected, $"first row {firstRow}");
+            SpanAssert.Same<byte>(RunSink(source, 20, 16, 7, 5, firstRow), expected, $"first row {firstRow}");
     }
 
     // ============================================================ 4. a restart, through the decoder
