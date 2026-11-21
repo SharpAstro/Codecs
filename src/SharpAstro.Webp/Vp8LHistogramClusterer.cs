@@ -131,7 +131,8 @@ internal static class Vp8LHistogramClusterer
     /// costs the entropy image least). Returns the group of each tile, numbered from 0 in order of
     /// first appearance, and at most <paramref name="maxGroups"/> of them.
     /// </summary>
-    /// <param name="tileHistograms">One flat histogram of <paramref name="layout"/> per tile.</param>
+    /// <param name="tileHistograms">One flat histogram of <paramref name="layout"/> per tile. Each array may be longer than
+    /// <c>layout.Total</c> (it is rented), and is the caller's to return to <c>WebpBufferPool&lt;int&gt;</c>.</param>
     /// <param name="layout">The histogram layout.</param>
     /// <param name="maxGroups">The most groups to return (at least 1).</param>
     /// <param name="candidatesPerCluster">How many partners each cluster samples per round.</param>
