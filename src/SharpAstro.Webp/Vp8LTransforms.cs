@@ -345,39 +345,14 @@ internal static class Vp8LTransforms
                     }
                 }
 
-                int greenToRed = Search(
-                    m =>
-                    {
-                        for (int i = 0; i < n; i++)
-                        {
-                            values[i] = (reds[i] - Delta(m, greens[i])) & 0xff;
-                        }
-
-                        return ChannelCost(values, n, histogram);
-                    },
-                    minimumStep);
-                int greenToBlue = Search(
-                    m =>
-                    {
-                        for (int i = 0; i < n; i++)
-                        {
-                            values[i] = (blues[i] - Delta(m, greens[i])) & 0xff;
-                        }
-
-                        return ChannelCost(values, n, histogram);
-                    },
-                    minimumStep);
-                int redToBlue = Search(
-                    m =>
-                    {
-                        for (int i = 0; i < n; i++)
-                        {
-                            values[i] = (blues[i] - Delta(greenToBlue, greens[i]) - Delta(m, reds[i])) & 0xff;
-                        }
-
-                        return ChannelCost(values, n, histogram);
-                    },
-                    minimumStep);
+                var cost = new CrossCost(greens, reds, blues, values, histogram, n);
+                cost.Mode = 0;
+                int greenToRed = Search(ref cost, minimumStep);
+                cost.Mode = 1;
+                int greenToBlue = Search(ref cost, minimumStep);
+                cost.Mode = 2;
+                cost.GreenToBlue = greenToBlue;
+                int redToBlue = Search(ref cost, minimumStep);
                 tiles[ty * tilesWide + tx] = CrossColorPixel(greenToRed, greenToBlue, redToBlue);
             }
         }
@@ -404,12 +379,50 @@ internal static class Vp8LTransforms
 
     private const double NonZeroPenaltyBits = 6;
 
+    // The cost of one multiplier for the tile in hand: a struct, so a search allocates no delegate
+    // or closure (Codecs#100). Mode 0 is green_to_red, 1 green_to_blue, 2 red_to_blue.
+    private struct CrossCost(int[] greens, int[] reds, int[] blues, int[] values, int[] histogram, int n)
+    {
+        public int Mode;
+        public int GreenToBlue;
+
+        public readonly double Eval(int m)
+        {
+            switch (Mode)
+            {
+                case 0:
+                    for (int i = 0; i < n; i++)
+                    {
+                        values[i] = (reds[i] - Delta(m, greens[i])) & 0xff;
+                    }
+
+                    break;
+                case 1:
+                    for (int i = 0; i < n; i++)
+                    {
+                        values[i] = (blues[i] - Delta(m, greens[i])) & 0xff;
+                    }
+
+                    break;
+                default:
+                    for (int i = 0; i < n; i++)
+                    {
+                        values[i] = (blues[i] - Delta(GreenToBlue, greens[i]) - Delta(m, reds[i])) & 0xff;
+                    }
+
+                    break;
+            }
+
+            return ChannelCost(values, n, histogram);
+        }
+    }
+
     // The multiplier (-128 to 127) with the smallest cost. Zero is tried first and others have to
     // beat it by NonZeroPenaltyBits.
-    private static int Search(Func<int, double> cost, int minimumStep)
+    private static int Search(ref CrossCost cost, int minimumStep)
     {
         int best = 0;
-        double bestCost = cost(0);
+        double bestCost = cost.Eval(0);
         for (int value = -128; value <= 96; value += 32)
         {
             if (value == 0)
@@ -417,7 +430,7 @@ internal static class Vp8LTransforms
                 continue;
             }
 
-            double c = cost(value) + NonZeroPenaltyBits;
+            double c = cost.Eval(value) + NonZeroPenaltyBits;
             if (c < bestCost)
             {
                 bestCost = c;
@@ -428,14 +441,15 @@ internal static class Vp8LTransforms
         for (int step = 16; step >= Math.Max(1, minimumStep); step >>= 1)
         {
             int center = best;
-            foreach (int value in new[] { center - step, center + step })
+            for (int side = 0; side < 2; side++)
             {
+                int value = side == 0 ? center - step : center + step;
                 if (value is < -128 or > 127)
                 {
                     continue;
                 }
 
-                double c = cost(value) + (value == 0 ? 0 : NonZeroPenaltyBits);
+                double c = cost.Eval(value) + (value == 0 ? 0 : NonZeroPenaltyBits);
                 if (c < bestCost)
                 {
                     bestCost = c;

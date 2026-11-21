@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace SharpAstro.Webp;
 
 // Provenance: spec-derived from the prose and tables of RFC 9649 only. No libwebp, libvpx or
@@ -522,7 +524,7 @@ internal static class Vp8LEncoder
     // candidate pipelines are ranked.
     private static long CheapBits(Prepared prepared)
     {
-        var mapper = new Vp8LDistanceMapper(prepared.Width);
+        Vp8LDistanceMapper mapper = MapperFor(prepared.Width);
         StreamPlan stream = Evaluate(prepared.Pixels, prepared.Width, [], 0, mapper, 0, new int[1], 0, 0, null, 1, isMain: true);
         return stream.Bits;
     }
@@ -535,12 +537,13 @@ internal static class Vp8LEncoder
         Vp8LEncoderPlan plan = isMain
             ? parentPlan
             : Vp8LEncoderPlan.Create((long)width * height, parentPlan.Effort, WebpLimits.MaximumEncoderWorkingBytes);
-        var mapper = new Vp8LDistanceMapper(width);
+        Vp8LDistanceMapper mapper = MapperFor(width);
 
-        // The one large allocation of the search, sized by the plan that was charged for it.
-        ulong[] copyBuffer = plan.UseBackwardReferences ? new ulong[plan.MaxCopies] : [];
+        // The one large allocation of the search, sized by the plan that was charged for it. Rented:
+        // a winner that uses no copies hands it back (a winner that does keeps it for Write).
+        ulong[] copyBuffer = plan.UseBackwardReferences ? ArrayPool<ulong>.Shared.Rent(plan.MaxCopies) : [];
         int copyCount = Vp8LMatchFinder.Find(argb, width, plan, mapper, copyBuffer);
-        int[] cache = new int[1 << Vp8LBackwardReferences.MaxCacheBits];
+        int[] cache = RentCache();
 
         // The literal-only encoding is always a candidate; with copies, every cache size the
         // effort asks for is another.
@@ -586,7 +589,44 @@ internal static class Vp8LEncoder
             }
         }
 
+        ReturnCache(cache);
+        if (copyBuffer.Length != 0 && best.CopyCount == 0)
+        {
+            ArrayPool<ulong>.Shared.Return(copyBuffer);
+            ClearCopyBuffer(best);
+        }
+
         return best;
+    }
+
+    private static int[] RentCache() => ArrayPool<int>.Shared.Rent(1 << Vp8LBackwardReferences.MaxCacheBits);
+
+    private static void ReturnCache(int[] cache) => ArrayPool<int>.Shared.Return(cache);
+
+    // A winner without copies no longer points at the buffer that went back to the pool.
+    private static void ClearCopyBuffer(StreamPlan plan)
+    {
+        plan.CopyBuffer = [];
+    }
+
+    // The mapper is immutable once built, so one per width serves every stream of that width.
+    [ThreadStatic]
+    private static Vp8LDistanceMapper? _lastMapper;
+
+    [ThreadStatic]
+    private static int _lastMapperWidth;
+
+    private static Vp8LDistanceMapper MapperFor(int width)
+    {
+        if (_lastMapper is { } cached && _lastMapperWidth == width)
+        {
+            return cached;
+        }
+
+        var mapper = new Vp8LDistanceMapper(width);
+        _lastMapper = mapper;
+        _lastMapperWidth = width;
+        return mapper;
     }
 
     // The single candidate the test hook asks for.
@@ -600,15 +640,17 @@ internal static class Vp8LEncoder
         bool useCopies,
         int metaBits)
     {
-        var mapper = new Vp8LDistanceMapper(width);
+        Vp8LDistanceMapper mapper = MapperFor(width);
         ulong[] copyBuffer = plan.UseBackwardReferences ? new ulong[plan.MaxCopies] : [];
         int copyCount = useCopies ? Vp8LMatchFinder.Find(argb, width, plan, mapper, copyBuffer) : 0;
-        int[] cache = new int[1 << Vp8LBackwardReferences.MaxCacheBits];
+        int[] cache = RentCache();
         StreamPlan stream = Evaluate(argb, width, copyBuffer, copyCount, mapper, cacheBits, cache, 0, 0, null, 1, isMain);
         if (metaBits != 0)
         {
             stream = TryGroups(argb, width, height, plan, stream, cache, metaBits, force: true) ?? stream;
         }
+
+        ReturnCache(cache);
 
         return stream;
     }
@@ -950,7 +992,7 @@ internal static class Vp8LEncoder
         writer.WriteBits(alphaIsUsed ? 1u : 0u, 1);
         writer.WriteBits(0, 3); // version
 
-        int[] cache = new int[1 << Vp8LBackwardReferences.MaxCacheBits];
+        int[] cache = RentCache();
         foreach (TransformStep step in prepared.Steps)
         {
             writer.WriteBits(1, 1);
@@ -974,6 +1016,7 @@ internal static class Vp8LEncoder
 
         writer.WriteBits(0, 1); // no more transforms
         WriteStream(writer, prepared.Pixels, prepared.Width, stream, cache);
+        ReturnCache(cache);
         return writer.Finish().ToArray();
     }
 
