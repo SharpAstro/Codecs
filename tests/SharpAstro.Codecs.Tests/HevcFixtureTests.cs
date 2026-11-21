@@ -272,6 +272,7 @@ public class HevcFixtureTests(ITestOutputHelper output)
     /// writes one.)
     /// </summary>
     [Fact]
+    [Trait("Category", "Invariant")]
     public void Fixtures_TogetherReachEveryDeblockingTableEntry()
     {
         var all = new HevcDecodeStatistics();
