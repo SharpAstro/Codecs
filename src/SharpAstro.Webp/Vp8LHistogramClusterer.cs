@@ -52,11 +52,24 @@ internal sealed class Vp8LHistogramLayout
 /// </summary>
 internal static class Vp8LHistogramClusterer
 {
-    private sealed class Cluster(int[] histogram, double cost, List<int> tiles)
+    // A cluster's histogram is either a tile's (the caller's, never returned here) or one this class rented for a
+    // merge or a rebuild (Owned, returned to the pool once the cluster is gone). Rented arrays can be longer than
+    // layout.Total and stale beyond it, so everything is indexed through the layout (Codecs#92).
+    private sealed class Cluster(int[] histogram, double cost, List<int> tiles, bool owned = false)
     {
         public int[] Histogram = histogram;
         public double Cost = cost;
         public List<int> Tiles = tiles;
+        public bool Owned = owned;
+
+        public void Release()
+        {
+            if (Owned)
+            {
+                Owned = false;
+                WebpBufferPool<int>.Return(Histogram);
+            }
+        }
     }
 
     /// <summary>Estimated bits of one histogram segment's prefix code header, by how many symbols it uses.</summary>
@@ -100,10 +113,11 @@ internal static class Vp8LHistogramClusterer
         return cost;
     }
 
-    private static int[] Merge(int[] a, int[] b)
+    private static int[] Merge(Vp8LHistogramLayout layout, int[] a, int[] b)
     {
-        int[] merged = new int[a.Length];
-        for (int k = 0; k < merged.Length; k++)
+        int total = layout.Total;
+        int[] merged = WebpBufferPool<int>.Rent(total);
+        for (int k = 0; k < total; k++)
         {
             merged[k] = a[k] + b[k];
         }
@@ -136,7 +150,7 @@ internal static class Vp8LHistogramClusterer
         for (int tile = 0; tile < tileCount; tile++)
         {
             int[] histogram = tileHistograms[tile];
-            if (histogram.AsSpan().ContainsAnyExcept(0))
+            if (histogram.AsSpan(0, layout.Total).ContainsAnyExcept(0))
             {
                 clusters.Add(new Cluster(histogram, Cost(layout, histogram), [tile]));
             }
@@ -191,10 +205,12 @@ internal static class Vp8LHistogramClusterer
                 }
 
                 consumed[i] = consumed[j] = true;
-                int[] merged = Merge(clusters[i].Histogram, clusters[j].Histogram);
+                int[] merged = Merge(layout, clusters[i].Histogram, clusters[j].Histogram);
                 var tiles = new List<int>(clusters[i].Tiles);
                 tiles.AddRange(clusters[j].Tiles);
-                replacement[i] = new Cluster(merged, clusters[i].Cost + clusters[j].Cost + delta, tiles);
+                replacement[i] = new Cluster(merged, clusters[i].Cost + clusters[j].Cost + delta, tiles, owned: true);
+                clusters[i].Release();
+                clusters[j].Release();
                 applied++;
             }
 
@@ -228,10 +244,12 @@ internal static class Vp8LHistogramClusterer
             {
                 if (excess > 0 && i + 1 < clusters.Count)
                 {
-                    int[] merged = Merge(clusters[i].Histogram, clusters[i + 1].Histogram);
+                    int[] merged = Merge(layout, clusters[i].Histogram, clusters[i + 1].Histogram);
                     var tiles = new List<int>(clusters[i].Tiles);
                     tiles.AddRange(clusters[i + 1].Tiles);
-                    next.Add(new Cluster(merged, Cost(layout, merged), tiles));
+                    next.Add(new Cluster(merged, Cost(layout, merged), tiles, owned: true));
+                    clusters[i].Release();
+                    clusters[i + 1].Release();
                     i++;
                     excess--;
                 }
@@ -282,6 +300,11 @@ internal static class Vp8LHistogramClusterer
             previous = groupOfTile[tile] = renumber[c];
         }
 
+        foreach (Cluster cluster in clusters)
+        {
+            cluster.Release();
+        }
+
         groupCount = Math.Max(groups, 1);
         return groupOfTile;
     }
@@ -299,7 +322,7 @@ internal static class Vp8LHistogramClusterer
             float[][] price = new float[clusters.Count][];
             for (int c = 0; c < clusters.Count; c++)
             {
-                price[c] = new float[total];
+                price[c] = WebpBufferPool<float>.Rent(total);
                 foreach ((int start, int length) in layout.Segments)
                 {
                     long segmentTotal = 0;
@@ -321,7 +344,8 @@ internal static class Vp8LHistogramClusterer
             var members = new List<int>[clusters.Count];
             for (int c = 0; c < clusters.Count; c++)
             {
-                rebuilt[c] = new int[total];
+                rebuilt[c] = WebpBufferPool<int>.Rent(total);
+                Array.Clear(rebuilt[c], 0, total);
                 members[c] = [];
             }
 
@@ -365,8 +389,19 @@ internal static class Vp8LHistogramClusterer
                 if (members[c].Count > 0)
                 {
                     members[c].Sort();
-                    next.Add(new Cluster(rebuilt[c], Cost(layout, rebuilt[c]), members[c]));
+                    next.Add(new Cluster(rebuilt[c], Cost(layout, rebuilt[c]), members[c], owned: true));
                 }
+                else
+                {
+                    WebpBufferPool<int>.Return(rebuilt[c]);
+                }
+
+                WebpBufferPool<float>.Return(price[c]);
+            }
+
+            foreach (Cluster old in clusters)
+            {
+                old.Release();
             }
 
             clusters = next;
