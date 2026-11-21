@@ -200,31 +200,32 @@ public sealed class TiffSegmentReadTests
 
                 var fromSpan = Poisoned(expected.Length + 5);
                 TiffReader.ReadSegment(tiff, layout.PageIndex, i, fromSpan).ShouldBe(rect);
-                fromSpan.AsSpan(0, expected.Length).ToArray().ShouldBe(expected, label + " from span");
-                fromSpan.AsSpan(expected.Length).ToArray().ShouldAllBe(b => b == 0xEE, label + " wrote past its rectangle");
+                SpanAssert.Same<byte>(fromSpan.AsSpan(0, expected.Length), expected, label + " from span");
+                if (fromSpan.AsSpan(expected.Length).ContainsAnyExcept((byte)0xEE))
+                    Assert.Fail(label + " wrote past its rectangle");
 
                 var viaLayout = new byte[expected.Length];
                 TiffReader.ReadSegment(tiff, layout, i, viaLayout);
-                viaLayout.ShouldBe(expected, label + " from span with layout");
+                SpanAssert.Same<byte>(viaLayout, expected, label + " from span with layout");
 
                 var counting = new CountingStream(tiff);
                 var fromStream = new byte[expected.Length];
                 TiffReader.ReadSegment(counting, layout.PageIndex, i, fromStream);
-                fromStream.ShouldBe(expected, label + " from stream");
+                SpanAssert.Same<byte>(fromStream, expected, label + " from stream");
                 AssertTouchedOnlyThisSegment(counting, layout, i, label);
 
                 var withLayout = new CountingStream(tiff);
                 TiffReader.ReadSegment(withLayout, layout, i, fromStream);
-                fromStream.ShouldBe(expected, label + " from stream with layout");
+                SpanAssert.Same<byte>(fromStream, expected, label + " from stream with layout");
                 AssertTouchedOnlyThisSegment(withLayout, layout, i, label);
                 withLayout.BytesRead.ShouldBeLessThanOrEqualTo(SegmentExtent(layout, i).Sum(e => e.Length),
                     "with a layout in hand only the segment itself is read");
 
                 var fromFile = new byte[expected.Length];
                 TiffReader.ReadSegment(path, layout.PageIndex, i, fromFile);
-                fromFile.ShouldBe(expected, label + " from file");
+                SpanAssert.Same<byte>(fromFile, expected, label + " from file");
                 TiffReader.ReadSegment(path, layout, i, fromFile);
-                fromFile.ShouldBe(expected, label + " from file with layout");
+                SpanAssert.Same<byte>(fromFile, expected, label + " from file with layout");
             }
         }
         finally
