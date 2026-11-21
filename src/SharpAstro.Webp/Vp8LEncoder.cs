@@ -580,13 +580,26 @@ internal static class Vp8LEncoder
             groupBits, tilesWide, identity, tileCount, baseline.IsMain, histogramsOnly: true);
         int[][] tileHistograms = perTile.Histograms!;
         var layout = new Vp8LHistogramLayout(LiteralAlphabet + LengthSymbols + (baseline.CacheBits == 0 ? 0 : 1 << baseline.CacheBits));
-        int[] tileGroups = Vp8LHistogramClusterer.ClusterTiles(
-            tileHistograms,
-            layout,
-            plan.UseMetaPrefix ? plan.MetaMaxGroups : 16,
-            plan.UseMetaPrefix ? plan.MetaCandidatesPerCluster : 3,
-            plan.MetaRefine,
-            out int groupCount);
+        int[] tileGroups;
+        int groupCount;
+        try
+        {
+            tileGroups = Vp8LHistogramClusterer.ClusterTiles(
+                tileHistograms,
+                layout,
+                plan.UseMetaPrefix ? plan.MetaMaxGroups : 16,
+                plan.UseMetaPrefix ? plan.MetaCandidatesPerCluster : 3,
+                plan.MetaRefine,
+                out groupCount);
+        }
+        finally
+        {
+            foreach (int[] tileHistogram in tileHistograms)
+            {
+                WebpBufferPool<int>.Return(tileHistogram);
+            }
+        }
+
         if (groupCount < 2 && !force)
         {
             return null;
@@ -694,21 +707,14 @@ internal static class Vp8LEncoder
         bool histogramsOnly = false)
     {
         var layout = new Vp8LHistogramLayout(LiteralAlphabet + LengthSymbols + (cacheBits == 0 ? 0 : 1 << cacheBits));
-        // A pass that hands its histograms back owns them; any other one prices its codes and returns the sets to the
-        // pool, since every candidate the encoder considers is one pass (Codecs#92). Indexed through the layout only,
+        // A pass that hands its histograms back (the per-tile one) gives them to the caller, who returns them to the
+        // pool once clustered; any other one prices its codes and returns the sets itself, since every candidate the encoder considers is one pass (Codecs#92). Indexed through the layout only,
         // so a rented array longer than layout.Total does no harm.
         int[][] sets = new int[groupCount][];
         for (int g = 0; g < sets.Length; g++)
         {
-            if (histogramsOnly)
-            {
-                sets[g] = new int[layout.Total];
-            }
-            else
-            {
-                sets[g] = WebpBufferPool<int>.Rent(layout.Total);
-                Array.Clear(sets[g], 0, layout.Total);
-            }
+            sets[g] = WebpBufferPool<int>.Rent(layout.Total);
+            Array.Clear(sets[g], 0, layout.Total);
         }
 
         var sink = new HistogramSink(sets, layout, width, groupBits, tilesWide, tileGroups);
