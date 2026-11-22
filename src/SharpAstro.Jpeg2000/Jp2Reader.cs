@@ -42,7 +42,9 @@ internal readonly record struct Jp2Layout(int CodestreamStart, int CodestreamLen
 /// <summary>
 /// Reads the JP2 file format of T.800 Annex I far enough to find the codestream and its colour
 /// specification: the signature and file type boxes, the header superbox with its image header and
-/// colour boxes, and the contiguous codestream box.
+/// colour boxes, and the contiguous codestream box. A JPX file (ISO/IEC 15444-2 Annex M, brand
+/// <c>jpx </c> or <c>jpxb</c>) is read the same way when it holds one Part 1 picture; the JPX boxes that
+/// compose a picture from several parts are refused, as a Part 2 codestream is by the codestream reader.
 /// <para>
 /// <b>What is refused, and why each is a refusal rather than something skipped.</b> The palette
 /// (<c>pclr</c>), component mapping (<c>cmap</c>) and channel definition (<c>cdef</c>) boxes each
@@ -72,6 +74,20 @@ internal static class Jp2Reader
     private const uint ChannelDefinition = 0x63646566; // 'cdef'
     private const uint Codestream = 0x6A703263;      // 'jp2c'
 
+    // Part 2 (JPX) boxes that change what the file's picture is: a codestream split into fragments, a
+    // second codestream's header, compositing layers and their colour groups, opacity, codestream
+    // registration and a composition. A file with any of them is not a single Part 1 picture.
+    private static readonly (uint Type, string Name, string Meaning)[] JpxStructureBoxes =
+    [
+        (0x6674626C, "ftbl", "a fragment table (the codestream is stored in pieces)"),
+        (0x6A706368, "jpch", "a codestream header (more than one codestream)"),
+        (0x6A706C68, "jplh", "a compositing layer header"),
+        (0x63677270, "cgrp", "a colour group"),
+        (0x6F706374, "opct", "an opacity box"),
+        (0x63726567, "creg", "a codestream registration box"),
+        (0x636F6D70, "comp", "a composition box"),
+    ];
+
     /// <summary>True when <paramref name="data"/> begins with the JP2 signature box.</summary>
     public static bool LooksLikeJp2(ReadOnlySpan<byte> data) =>
         data.Length >= Signature.Length && data[..Signature.Length].SequenceEqual(Signature);
@@ -97,12 +113,14 @@ internal static class Jp2Reader
             switch (type)
             {
                 case FileType:
-                    // I.5.2: the brand list must name 'jp2 '. A file that does not claim Part 1
-                    // compatibility is Part 2 (JPX) or something else, and is not this decoder's.
-                    if (!ListsJp2Brand(body))
+                    // I.5.2: the brand list must name 'jp2 ', or 'jpx ' / 'jpxb' (ISO/IEC 15444-2
+                    // M.2.1). A JPX file is read when it is a Part 1 picture in JPX boxes: one
+                    // contiguous codestream without Part 2 extensions, a colour method Part 1 defines,
+                    // and none of the boxes that compose a picture from several (refused below).
+                    if (!ListsBrand(body, "jp2 "u8) && !ListsBrand(body, "jpx "u8) && !ListsBrand(body, "jpxb"u8))
                         throw new NotSupportedException(
-                            "JPEG 2000: the file type box does not list the 'jp2 ' brand, so this is not a " +
-                            "Part 1 JP2 file (JPX, Part 2, is refused).");
+                            "JPEG 2000: the file type box lists neither the 'jp2 ' nor the 'jpx ' brand, so this " +
+                            "is not a JP2 or JPX file.");
                     sawFileType = true;
                     break;
 
@@ -119,6 +137,15 @@ internal static class Jp2Reader
 
                     // The first codestream is the image (I.5.4); anything after it is not read.
                     return new Jp2Layout(bodyStart, bodyLength, colour);
+
+                default:
+                    foreach (var (jpxType, name, meaning) in JpxStructureBoxes)
+                    {
+                        if (type == jpxType)
+                            throw new NotSupportedException(
+                                $"JPEG 2000: the file has {meaning} ('{name}'), a JPX (Part 2) feature this decoder does not read.");
+                    }
+                    break;
             }
 
             // Every other top-level box (resolution, XML, UUID, IPR) is metadata about the image,
@@ -215,12 +242,12 @@ internal static class Jp2Reader
         }
     }
 
-    private static bool ListsJp2Brand(ReadOnlySpan<byte> body)
+    private static bool ListsBrand(ReadOnlySpan<byte> body, ReadOnlySpan<byte> brand)
     {
         // BR(4) MinV(4), then the compatibility list CL, four bytes an entry.
         for (var i = 8; i + 4 <= body.Length; i += 4)
         {
-            if (body[i] == (byte)'j' && body[i + 1] == (byte)'p' && body[i + 2] == (byte)'2' && body[i + 3] == (byte)' ')
+            if (body.Slice(i, 4).SequenceEqual(brand))
                 return true;
         }
 

@@ -295,7 +295,15 @@ internal static class CodestreamReader
         if (body.Length < 36)
             throw new InvalidDataException("JPEG 2000: SIZ segment is too short.");
 
-        var offset = 2; // Rsiz — capabilities; nothing here depends on it.
+        // Rsiz: capabilities. Bit 15 says the codestream uses Part 2 (ISO/IEC 15444-2) extensions,
+        // whose markers and coding tools this Part 1 decoder does not know; reading past them would
+        // decode the wrong picture with no error, so it is refused. The other values name Part 1
+        // profiles (0, 1, 2, the cinema and broadcast ones) and change nothing here.
+        var rsiz = BinaryPrimitives.ReadUInt16BigEndian(body);
+        if ((rsiz & 0x8000) != 0)
+            throw new NotSupportedException(
+                $"JPEG 2000: the codestream uses Part 2 extensions (Rsiz 0x{rsiz:X4}), which this Part 1 decoder does not read.");
+        var offset = 2;
         var x1 = (int)ReadUInt32(body, ref offset, "Xsiz");
         var y1 = (int)ReadUInt32(body, ref offset, "Ysiz");
         var x0 = (int)ReadUInt32(body, ref offset, "XOsiz");

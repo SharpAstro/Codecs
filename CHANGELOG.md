@@ -16,6 +16,16 @@ those notes, verbatim in substance. 3.4 has no recorded note; it was never writt
 
 ## 3.41
 
+**`SharpAstro.Jpeg2000`: a JPX file holding one Part 1 picture is read; a Part 2 codestream is refused.** The
+JP2 reader refused any file whose brand list lacked `jp2 `, so a JPX file (ISO/IEC 15444-2 Annex M) was refused
+even when it was only a Part 1 codestream in JPX boxes. The `jpx ` and `jpxb` brands are accepted now, and what
+Part 2 adds is refused by name instead: a codestream whose Rsiz sets bit 15 (Part 2 extensions; a raw one used to
+decode past their markers with no error), a colour method beyond Part 1's two (as before), and the boxes that
+compose a picture from several parts (`ftbl`, `jpch`, `jplh`, `cgrp`, `opct`, `creg`, `comp`). Two JPX sample
+fixtures, made from the JP2 ones by `Oracle/jpeg2000/make-jpx-fixtures.py` (brand `jpx `, compatibility `jpx `
+and `jpxb`, a reader requirements box), decode exactly as their JP2s, through the facade too; OpenJPEG reads them
+as well.
+
 **`SharpAstro.Jxl`: libjxl's lossy (VarDCT) files decode, to libjxl's pixels.** The VarDCT reader used to mirror
 only this repo's own encoder (all DCT8, default tables, no filters), so a cjxl or Magick.NET file stopped at its
 first custom section. `JxlVarDctDecoder` is a port of jxl-oxide's VarDCT path, cited per routine: local or global MA
