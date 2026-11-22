@@ -161,19 +161,68 @@ public class Jpeg2000Jp2Tests
     }
 
     /// <summary>
-    /// A file type box that does not list the <c>jp2 </c> brand is not a Part 1 file, and this
-    /// decoder does not pretend to read Part 2.
+    /// A file type box that lists neither the <c>jp2 </c> nor the <c>jpx </c> brand is neither a JP2 nor
+    /// a JPX file (a Motion JPEG 2000 one, say), and is refused.
     /// </summary>
     [Fact]
-    public void AFileWithoutTheJp2Brand_IsRefused()
+    public void AFileWithNeitherBrand_IsRefused()
     {
         var bytes = Jp2(Header(ImageHeader(), EnumeratedColour(16)), Box("jp2c", Codestream("rgb-struct64")));
 
-        // The file type box follows the 12-byte signature: LBox, TBox, BR, MinV, then CL — the
+        // The file type box follows the 12-byte signature: LBox, TBox, BR, MinV, then CL, the
         // compatibility list, whose one entry here is the brand. Rename it.
-        "jpx "u8.CopyTo(bytes.AsSpan(12 + 16));
+        "mjp2"u8.CopyTo(bytes.AsSpan(12 + 16));
 
-        Should.Throw<NotSupportedException>(() => Jpeg2000Decoder.Decode(bytes)).Message.ShouldContain("jp2 ");
+        Should.Throw<NotSupportedException>(() => Jpeg2000Decoder.Decode(bytes)).Message.ShouldContain("jpx ");
+    }
+
+    /// <summary>
+    /// The JPX sample files (<c>jpx-*.jpx</c>, made from the JP2 fixtures by <c>make-jpx-fixtures.py</c>):
+    /// brand <c>jpx </c>, a compatibility list of <c>jpx </c> and <c>jpxb</c> without <c>jp2 </c>, a reader
+    /// requirements box, then the same header and codestream. A Part 1 picture in JPX boxes decodes
+    /// exactly as its JP2 does (OpenJPEG's <c>opj_decompress</c> reads them too), through the facade as well.
+    /// </summary>
+    [Theory]
+    [InlineData("jpx-rgb-struct64", "jp2-rgb-struct64", Jp2EnumeratedColourSpace.Srgb)]
+    [InlineData("jpx-gray-struct64", "jp2-gray-struct64", Jp2EnumeratedColourSpace.Greyscale)]
+    public void JpxSampleFiles_DecodeExactlyAsTheirJp2(string name, string jp2, Jp2EnumeratedColourSpace colour)
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(FixtureDirectory, name + ".jpx"));
+        var expected = Pnm.Read(Jpeg2000FixtureTests.SourceRaster(jp2));
+
+        Jpeg2000Decoder.IsJp2(bytes).ShouldBeTrue();
+        var decoded = Jpeg2000Decoder.Decode(bytes);
+        decoded.Components.ShouldBe(expected.Components);
+        decoded.Samples.ShouldBe(expected.Samples);
+        decoded.Colour.ShouldNotBeNull();
+        decoded.Colour.EnumeratedColourSpace.ShouldBe(colour);
+
+        SharpAstro.Codecs.ImageCodecs.TryDecode(bytes, out var image).ShouldBeTrue();
+        (image.Width, image.Height, image.Channels).ShouldBe((expected.Width, expected.Height, expected.Components));
+    }
+
+    /// <summary>
+    /// A JPX box that composes the picture from more than one part (here a compositing layer header) is
+    /// refused by name rather than skipped, which would show one layer as if it were the picture.
+    /// </summary>
+    [Fact]
+    public void AJpxCompositingLayer_IsRefused()
+    {
+        var bytes = Jp2(Header(ImageHeader(), EnumeratedColour(16)), Box("jplh", []), Box("jp2c", Codestream("rgb-struct64")));
+        Should.Throw<NotSupportedException>(() => Jpeg2000Decoder.Decode(bytes)).Message.ShouldContain("jplh");
+    }
+
+    /// <summary>
+    /// Rsiz bit 15 says the codestream uses Part 2 extensions, whose markers this decoder does not know;
+    /// it is refused instead of decoded past them (raw or boxed alike).
+    /// </summary>
+    [Fact]
+    public void APart2Codestream_IsRefused()
+    {
+        var codestream = Codestream("rgb-struct64");
+        // SOC (FF4F), SIZ (FF51), Lsiz(2), then Rsiz(2).
+        codestream[6] |= 0x80;
+        Should.Throw<NotSupportedException>(() => Jpeg2000Decoder.Decode(codestream)).Message.ShouldContain("Part 2");
     }
 
     private static byte[] Jp2(params byte[][] boxes)

@@ -117,7 +117,10 @@ across its five rungs, so the estimating method here is calibrated), `SharpAstro
 Refused, and say so in the package the way `SharpAstro.Jbig2` refuses SDHUFF: **encoding**
 (a non-goal for the whole family), **ROI, the RGN marker and MAXSHIFT**, **JPEG 2000
 part 2 (JPX proper, JPM)**, and **component bit depths above 16 or signed components**
-until something asks. PDF requires only part 1. Throw `NotSupportedException` naming the
+until something asks. PDF requires only part 1. (A JPX *file* holding one Part 1 picture is
+read since 3.41: the `jpx ` brand is accepted, while a Part 2 codestream (Rsiz bit 15), a colour
+method beyond Part 1's two, and the boxes that compose a picture from several (`ftbl`, `jpch`,
+`jplh`, `cgrp`, `opct`, `creg`, `comp`) are refused by name.) Throw `NotSupportedException` naming the
 feature rather than returning a plausible raster, which is the discipline that has held
 across this repo.
 

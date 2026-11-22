@@ -33,6 +33,7 @@
 # looks like a decoder bug.
 *.j2k binary
 *.jp2 binary
+*.jpx binary
 *.pgm binary
 *.ppm binary
 *.raw binary
