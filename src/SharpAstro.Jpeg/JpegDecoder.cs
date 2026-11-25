@@ -70,6 +70,33 @@ public static class JpegDecoder
     }
 
     /// <summary>
+    /// Decodes into a caller-supplied buffer at one byte a pixel, tightly packed at <c>width</c> bytes a row, and
+    /// returns the decoded size. For a mask or any other single-component image, where <see cref="DecodeTo"/> would
+    /// hand back four equal channels: the result is a quarter of the RGBA, and the RGBA is never made (each row is
+    /// converted in one row of scratch and reduced at once).
+    /// <para>The byte is BT.601 luma, <c>(77 R + 150 G + 29 B + 128) &gt;&gt; 8</c>, of the colour
+    /// <see cref="DecodeTo"/> gives. For a single-component stream that is exactly its sample, byte for byte the R
+    /// (or G, or B) of <see cref="DecodeTo"/>; a colour stream comes out as its luma.</para>
+    /// <para>The size the buffer needs is <see cref="JpegInfo.ScaledSize"/> at <paramref name="scale"/>, width times
+    /// height. It is checked against the frame header before anything is written.</para>
+    /// </summary>
+    /// <exception cref="InvalidDataException">The stream is not a decodable JPEG.</exception>
+    /// <exception cref="ArgumentException">The destination is too small.</exception>
+    public static (int Width, int Height) DecodeGrayTo(ReadOnlySpan<byte> data, Span<byte> grayDestination, JpegScale scale = JpegScale.Full)
+    {
+        var sink = new JpegGraySink(grayDestination);
+        try
+        {
+            JpegCore.Run(data, ValidateScale(scale), ref sink);
+        }
+        finally
+        {
+            sink.Release();
+        }
+        return (sink.Width, sink.Height);
+    }
+
+    /// <summary>
     /// Decodes one rectangle of the image into a caller-supplied RGBA buffer, tightly packed at
     /// <c>region.Width * 4</c> bytes per row, and returns the region's size. For a viewer that shows part of a large
     /// scan this is the entry point that does not pay for the rest of it.
