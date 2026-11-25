@@ -14,6 +14,16 @@ it -- the `env:` block in `.github/workflows/dotnet.yml` (35 lines of prose abov
 longer holds the number) and the header comment in `Directory.Build.props`. Entries below 3.10 are
 those notes, verbatim in substance. 3.4 has no recorded note; it was never written down.
 
+## 3.42
+
+**`SharpAstro.Jpeg`: decode to one byte a pixel without making the RGBA.** `JpegDecoder.DecodeGrayTo(data,
+grayDestination, scale)` writes `width * height` bytes, BT.601 luma `(77 R + 150 G + 29 B + 128) >> 8` of the colour
+`DecodeTo` gives. The weights sum to 256, so a single-component stream comes out as exactly its sample, byte for byte
+the R of `DecodeTo`. Each row is colour-converted into one row of rented scratch and reduced at once, so a mask or
+other grey image no longer costs four times its size in RGBA on the way: the Drawboard PDF viewer decoded a 5100×6600
+soft mask to 135 MB of RGBA to keep 34 MB of it. `JpegGrayDecodeTests` holds every sampling layout, restart kind and
+scale to the RGBA decode reduced by that formula, and refuses a destination that is too small before writing a byte.
+
 ## 3.41
 
 **`SharpAstro.Jpeg2000`: a JPX file holding one Part 1 picture is read; a Part 2 codestream is refused.** The
